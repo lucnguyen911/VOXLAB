@@ -1,0 +1,1487 @@
+AGENT WORKFLOW — CLEAN
+Environment → Constraints → Interview → Spec → Plan → Build → Verify → Ship
+======================================================================
+
+PROJECT CONTEXT
+======================================================================
+
+PROJECT_NAME:
+VoxLab
+
+INITIAL_IDEA:
+VoxLab là ứng dụng desktop webview chạy local, tập trung vào xử lý chuyển văn bản thành giọng nói và văn bản
+bằng các model AI local.
+
+TARGET_PLATFORM:
+Mục tiêu chính của VoxLab là cho phép người dùng thực hiện trong một ứng dụng:
+
+- Text-to-Speech (TTS) bằng nhiều model local.
+- Voice cloning/reference voice nếu model hỗ trợ.
+- Transcribe audio/video thành văn bản bằng local ASR.
+- Tự động chuẩn hóa văn bản trước khi TTS:
+  - Unicode normalization;
+  - tối ưu khoảng trắng;
+  - chuẩn hóa dấu câu;
+  - sentence segmentation;
+  - text cleanup.
+- Có chế độ AI hỗ trợ sửa dấu câu và tối ưu văn bản trước TTS nhưng không được
+  tự ý thay đổi ý nghĩa nội dung nếu người dùng không yêu cầu.
+- Dịch văn bản bằng model local.
+- Chia văn bản thành chunk thông minh trước khi TTS.
+- Quản lý hàng đợi generation.
+- Hiển thị progress.
+- Hỗ trợ Cancel / Retry.
+- Ghép các chunk audio thành file audio hoàn chỉnh.
+- Quản lý output và các file được tạo.
+- Cho phép cấu hình model và các tham số phù hợp với phần cứng người dùng.
+- Hoạt động tốt trên nhiều cấu hình máy từ yếu đến mạnh.
+- Ưu tiên xử lý local, không phụ thuộc cloud cho các chức năng cốt lõi.
+- Thiết kế sao cho có thể bổ sung model mới sau này mà không phải rewrite toàn bộ app.
+
+Các model/runtime hiện đang được cân nhắc, chưa mặc định tất cả phải nằm trong MVP:
+
+TTS candidates:
+- OmniVoice
+- Chatterbox family
+- Qwen3-TTS family
+- các local TTS model khác nếu feasibility check cho thấy phù hợp.
+
+Transcription:
+- faster-whisper làm runtime/engine ưu tiên.
+- sử dụng các model Whisper phù hợp theo cấu hình phần cứng.
+
+Text AI / punctuation / translation:
+- ưu tiên local LLM thông qua LM Studio hoặc runtime local tương đương.
+- Qwen3.5 là candidate chính cho punctuation, text optimization và translation.
+- có thể đánh giá model chuyên dịch khác nếu thực sự đem lại lợi ích.
+
+Text normalization không cần AI khi có thể xử lý chính xác bằng deterministic code.
+
+Trước khi chốt SPEC và architecture, Agent phải thực hiện feasibility check đối
+với các model/runtime quan trọng và xác định:
+- dependency;
+- license;
+- CPU/GPU support;
+- RAM/VRAM;
+- Python/runtime compatibility;
+- model loading/unloading;
+- packaging feasibility;
+- dependency conflict;
+- performance risk.
+
+Các giá trị như:
+- chunk size;
+- concurrency;
+- worker count;
+- batch size;
+- model unload timeout;
+- buffer;
+không được chốt bằng phỏng đoán.
+Nếu cần phải đánh dấu TUNING REQUIRED và benchmark sau.
+
+TARGET_PLATFORM:
+Windows desktop là nền tảng chính cho phiên bản đầu tiên.
+
+Ưu tiên:
+- Windows 10/11 64-bit.
+- Hỗ trợ cả máy chỉ dùng CPU và máy có GPU NVIDIA khi khả thi.
+- Có hardware detection/profile để lựa chọn model hoặc cấu hình phù hợp.
+- MVP không bắt buộc hỗ trợ macOS/Linux, nhưng architecture không được tạo
+  dependency Windows-specific không cần thiết nếu có thể tránh.
+
+PREFERRED_STACK:
+Desktop application:
+- Tauri
+- React
+- TypeScript
+
+Frontend:
+- React + TypeScript.
+
+Native/Desktop layer:
+- Tauri / Rust.
+
+Local AI/model integration:
+- Model engine chạy tách khỏi UI bằng service/worker/process boundary phù hợp.
+- Không để React frontend gọi trực tiếp model runtime.
+
+TTS:
+- runtime/model-specific adapter.
+- Agent tự xác định Python/runtime/environment phù hợp sau Model Feasibility Check.
+
+Transcription:
+- faster-whisper là candidate engine mặc định.
+- model Whisper được lựa chọn theo hardware profile.
+
+Text AI:
+- LM Studio local API là candidate chính cho local LLM integration.
+- architecture không được phụ thuộc cứng vào duy nhất LM Studio nếu abstraction
+  đơn giản có thể tránh được việc đó.
+
+Storage:
+- Agent đề xuất giải pháp local đơn giản phù hợp sau khi requirement được làm rõ.
+- Không thêm database phức tạp nếu chưa cần.
+
+Architecture principle:
+- local-first;
+- modular model adapters;
+- model loading on demand;
+- không load tất cả model cùng lúc;
+- ưu tiên dependency isolation khi các model có runtime conflict;
+- không thiết kế universal AI framework quá mức;
+- chỉ tạo abstraction đủ để hỗ trợ các engine thực sự được chọn cho VoxLab.
+
+======================================================================
+1. OPERATING CONTRACT
+======================================================================
+
+You are the primary coding agent for this project.
+
+Before making changes:
+
+1. Read this entire file.
+2. Inspect the current repository.
+3. Read existing project documentation.
+4. Inspect current task state.
+5. Determine the current workflow phase.
+6. Do not repeat already approved phases unless new evidence invalidates them.
+7. Do not advance through an approval gate without approval.
+8. Load only the skills needed for the current phase.
+9. Prefer repository evidence and executable verification over assumptions.
+10. Preserve approved product behavior unless a change is explicitly approved.
+
+The USER owns decisions about:
+- product goals;
+- user-facing behavior;
+- workflow;
+- scope;
+- UI/UX;
+- product priorities;
+- privacy expectations;
+- distribution/business decisions;
+- major quality/performance trade-offs.
+
+The AGENT owns decisions about:
+- implementation architecture;
+- code organization;
+- module boundaries;
+- ordinary technical dependencies;
+- internal interfaces;
+- database implementation;
+- threads/processes/workers;
+- state management;
+- logging;
+- error handling;
+- test implementation;
+- build/packaging implementation;
+- technical verification.
+
+Do not ask the USER to decide low-level implementation details that can be
+resolved from the repository, documentation, constraints, tests, or normal
+engineering judgment.
+
+======================================================================
+2. SKILL / COMMAND ROUTING
+======================================================================
+
+When available, use:
+
+ENVIRONMENT BOOTSTRAP:
+    use Phase -1 in this file.
+
+PROJECT CONSTRAINTS:
+    /constraints
+
+REQUIREMENT INTERVIEW:
+    interview-me
+
+IDEA REFINEMENT:
+    idea-refine
+
+SPECIFICATION:
+    /spec
+
+PLANNING:
+    /plan
+
+IMPLEMENTATION:
+    prefer /build auto
+    fallback: /build or equivalent implementation workflow.
+
+TEST / VERIFICATION:
+    /test
+
+CODE REVIEW:
+    /review
+
+DEBUGGING:
+    debugging-and-error-recovery or equivalent.
+
+SECURITY:
+    security review skill when triggered by risk.
+
+WEB / WEBVIEW PERFORMANCE:
+    /webperf
+
+GENERAL PERFORMANCE:
+    performance-optimization
+
+CODE SIMPLIFICATION:
+    /code-simplify
+
+RELEASE:
+    /ship
+
+Rules:
+- If a slash command is unavailable, execute the equivalent workflow.
+- Do not skip a phase because its slash command is unavailable.
+- Do not load all skills at once.
+- Prefer explicit lifecycle commands when supported.
+
+======================================================================
+3. GLOBAL ENGINEERING RULES
+======================================================================
+
+1. Understand requirements before implementation.
+2. Medium/large features require a specification before implementation.
+3. Do not expand scope without approval.
+4. Do not add convenience features outside approved scope.
+5. Do not design for hypothetical future requirements unless necessary.
+6. Prefer the simplest architecture that satisfies approved requirements.
+7. Reuse existing code, dependencies, conventions, and infrastructure.
+8. Do not rewrite a working module when a localized change is sufficient.
+9. Do not refactor unrelated code during a task.
+10. Do not weaken tests, lint, type checks, validation, or security checks to pass.
+11. Do not suppress failures with broad exception handling.
+12. Do not hard-code secrets, API keys, tokens, or development-machine paths.
+13. Every implementation change must have a verification method.
+14. Never declare DONE solely from source-code inspection.
+15. Run applicable test/build/runtime verification when possible.
+16. Defects: reproduce → isolate → root cause → smallest correct fix → regression test.
+17. Do not hide root causes with workarounds when a correct fix is feasible.
+18. Measure before performance optimization.
+19. Do not rewrite code because another implementation merely appears faster.
+20. Do not treat guessed tuning values as optimized requirements.
+21. Workload-dependent values must use a safe default and TUNING REQUIRED when needed.
+22. Record material architecture/product/security/data/packaging decisions.
+
+Typical TUNING REQUIRED parameters:
+- chunk size;
+- batch size;
+- concurrency;
+- worker count;
+- timeout;
+- retry policy;
+- buffer size;
+- queue depth;
+- cache size;
+- model unload timeout;
+- memory threshold;
+- CPU/GPU scheduling;
+- polling interval.
+
+======================================================================
+4. USER QUESTION POLICY
+======================================================================
+
+Ask the USER only when the answer materially affects:
+- product behavior;
+- workflow;
+- UI/UX;
+- scope;
+- data ownership/lifecycle;
+- privacy;
+- security;
+- external service usage;
+- cost;
+- licensing/distribution;
+- destructive operations;
+- major performance/quality trade-offs;
+- failure behavior.
+
+Do not ask the USER about ordinary implementation details such as:
+- class names;
+- helper-file placement;
+- low-level concurrency primitives;
+- design-pattern selection;
+- internal function signatures;
+- naming style;
+- test framework when the repository already establishes one.
+
+When the USER cannot answer a technical question:
+1. Inspect repository/documentation.
+2. Determine reasonable options.
+3. Choose a safe default when risk is low.
+4. Record the decision if material.
+5. If the correct value depends on real workload, mark TUNING REQUIRED.
+6. Escalate only when the trade-off affects product behavior, risk, cost,
+   privacy, security, compatibility, or distribution.
+
+======================================================================
+5. APPROVAL GATES
+======================================================================
+
+GATE A — REQUIREMENT UNDERSTANDING
+Approve interpreted goal, MVP, scope, and major assumptions.
+
+GATE B — SPECIFICATION
+Approve product behavior and acceptance criteria.
+
+GATE C — IMPLEMENTATION PLAN
+Approve high-level architecture, milestones, major dependencies, and high-risk trade-offs.
+
+GATE D — UI / UX
+Required when UI/workflow changes are significant.
+
+GATE E — HIGH-RISK CHANGE
+Required when implementation introduces a high-risk change.
+
+GATE F — RELEASE
+Required before final shipping/release.
+
+Do not stop for ordinary low-risk implementation details.
+
+======================================================================
+6. RISK CLASSIFICATION
+======================================================================
+
+LOW RISK examples:
+- helper functions;
+- formatting;
+- small UI components;
+- localized validation;
+- simple CRUD;
+- local state;
+- unit tests;
+- ordinary configuration.
+
+Default:
+IMPLEMENT → TEST → VERIFY → CONTINUE.
+
+MEDIUM RISK examples:
+- background workers;
+- file processing;
+- model integration;
+- queues;
+- concurrency;
+- database operations;
+- approved external APIs;
+- export/import;
+- resource lifecycle.
+
+Default:
+Proceed according to approved SPEC and PLAN. Stop only if a new gate appears.
+
+HIGH RISK examples:
+- framework/runtime replacement;
+- major architecture change;
+- destructive migration;
+- irreversible data operations;
+- authentication;
+- payment;
+- license enforcement;
+- automatic updater;
+- shell execution;
+- elevated privileges;
+- new cloud/external service;
+- privacy-sensitive data flow;
+- large runtime dependency;
+- security-sensitive behavior;
+- substantial approved-UX change;
+- licensing changes affecting distribution.
+
+Default:
+STOP → explain impact/options → request approval.
+
+======================================================================
+7. PROJECT LIFECYCLE
+======================================================================
+
+NEW PROJECT:
+
+-1. ENVIRONMENT BOOTSTRAP
+ 0. PROJECT CONSTRAINTS
+ 1. REQUIREMENT INTERVIEW when needed
+ 2. IDEA REFINEMENT when needed
+ 3. SPECIFICATION
+ 4. PLAN + TASK BREAKDOWN
+ 5. PLAN REVIEW
+ 6. UI PROTOTYPE / UX GATE when needed
+ 7. BUILD AUTO / IMPLEMENTATION
+ 8. TEST / VERIFICATION
+ 9. CODE REVIEW
+10. SECURITY REVIEW when triggered
+11. PERFORMANCE / WEBPERF / TUNING when triggered
+12. CODE SIMPLIFY when useful
+13. FINAL REVIEW
+14. SHIP / RELEASE
+
+Use proportional rigor:
+
+SMALL CHANGE:
+mini-plan → build → test → verify.
+
+MEDIUM FEATURE:
+requirement check → spec delta → plan → build → test → review.
+
+LARGE / HIGH-RISK FEATURE:
+full applicable lifecycle.
+
+======================================================================
+PHASE -1 — ENVIRONMENT BOOTSTRAP
+======================================================================
+
+OBJECTIVE:
+Verify that the development machine and project skeleton can build and run the
+intended application before product implementation.
+
+Do not implement product features in this phase.
+
+A. READ CONTEXT
+- PROJECT_NAME
+- INITIAL_IDEA
+- TARGET_PLATFORM
+- PREFERRED_STACK
+- repository state
+
+If stack is undefined:
+- infer requirements;
+- propose the simplest suitable stack;
+- escalate only when stack choice materially affects product capability,
+  distribution, security, cost, or compatibility.
+
+B. AUDIT BEFORE INSTALLATION
+
+Audit only prerequisites relevant to the chosen stack, which may include:
+- OS/version;
+- CPU architecture;
+- Git;
+- Node.js;
+- npm/pnpm/yarn;
+- Python/uv/pip/venv;
+- Rust/rustup/cargo;
+- C/C++ compiler;
+- platform build tools;
+- Windows SDK;
+- WebView runtime;
+- Java/JDK;
+- .NET;
+- Docker;
+- GPU driver;
+- CUDA;
+- FFmpeg;
+- environment variables;
+- PATH;
+- project package manager;
+- lock files;
+- existing dependencies.
+
+Classify:
+INSTALLED
+MISSING
+OUTDATED
+MISCONFIGURED
+NOT REQUIRED
+
+Do not reinstall software that already works.
+
+C. WINDOWS + TAURI + REACT + TYPESCRIPT DEFAULT AUDIT
+
+If selected stack is Windows desktop with Tauri + React + TypeScript, verify:
+- supported Windows environment;
+- CPU architecture;
+- Git;
+- Node.js LTS;
+- selected JS package manager;
+- Rust stable;
+- rustup;
+- cargo;
+- MSVC-compatible Rust toolchain;
+- Microsoft C++ Build Tools;
+- Desktop development with C++ workload;
+- Windows SDK;
+- Microsoft Edge WebView2 Runtime;
+- Tauri prerequisites.
+
+Run applicable checks such as:
+git --version
+node --version
+npm --version
+rustc --version
+cargo --version
+rustup show
+
+D. INSTALL MISSING PREREQUISITES
+
+Install only missing or invalid prerequisites.
+Prefer official installers/package managers, stable/LTS releases, and minimal
+required workloads.
+
+Avoid duplicate runtimes, unnecessary global packages, experimental versions,
+and unrelated development workloads.
+
+If a step requires Administrator privileges, restart, GUI installer, manual
+selection, or login:
+STOP and provide exact required user action.
+Resume verification after completion.
+
+E. PACKAGE MANAGER POLICY
+
+Prefer one primary package manager per project.
+If a lock file exists, use its matching package manager unless migration is approved.
+Avoid unnecessary simultaneous package-lock.json, pnpm-lock.yaml, yarn.lock.
+Do not switch package managers for preference alone.
+
+F. FEATURE DEPENDENCY RESTRICTION
+
+Do not install feature-specific dependencies during bootstrap unless strictly
+necessary for the minimal skeleton.
+
+Normally defer:
+- AI/TTS models;
+- PyTorch;
+- model-specific CUDA packages;
+- FFmpeg when not needed for skeleton verification;
+- additional database frameworks;
+- large UI frameworks;
+- cloud SDKs;
+- analytics/telemetry;
+- updater frameworks;
+- authentication frameworks.
+
+G. PROJECT SKELETON
+
+If no skeleton exists:
+- initialize the minimal approved stack using official tooling/templates;
+- preserve minimal architecture;
+- do not implement product functionality.
+
+If a project exists:
+- inspect before modifying;
+- do not overwrite;
+- repair only what is needed for a valid skeleton.
+
+For Tauri + React + TypeScript, a valid skeleton normally includes:
+- React frontend;
+- TypeScript;
+- Tauri backend/runtime;
+- development configuration;
+- minimal production build configuration.
+
+H. ENVIRONMENT VERIFICATION
+
+Verify applicable evidence:
+- dependency install succeeds;
+- type checking succeeds when configured;
+- frontend build succeeds;
+- backend/runtime compiles;
+- development app starts;
+- desktop window appears for desktop apps;
+- frontend renders;
+- no fatal runtime/console error;
+- basic production build succeeds when practical.
+
+Target:
+SKELETON APPLICATION CAN BUILD AND RUN ON THE DEVELOPMENT MACHINE.
+
+I. BOOTSTRAP RESTRICTIONS
+
+Do not implement:
+- product UI beyond minimal skeleton;
+- real database design;
+- business logic;
+- AI/TTS integration;
+- model management;
+- queue processing;
+- export pipeline;
+- production feature behavior.
+
+J. OUTPUT
+
+Report:
+ENVIRONMENT AUDIT
+PROJECT SKELETON
+VERIFICATION EVIDENCE
+BLOCKERS
+VERDICT
+
+VERDICT must be:
+ENVIRONMENT READY
+or
+ENVIRONMENT NOT READY
+
+Do not proceed to Phase 0 until ENVIRONMENT READY.
+
+======================================================================
+PHASE 0 — PROJECT CONSTRAINTS
+======================================================================
+
+Use:
+/constraints
+
+OBJECTIVE:
+Establish stable project-wide engineering/product constraints.
+
+Read:
+- this workflow;
+- repository;
+- environment state;
+- existing documentation;
+- package/build configuration.
+
+Define when applicable:
+- target OS/platform;
+- supported versions;
+- stack/runtime;
+- high-level architecture;
+- frontend/backend boundary;
+- dependency policy;
+- storage/database;
+- file-system policy;
+- configuration policy;
+- logging policy;
+- error handling;
+- background jobs/process/thread policy;
+- security baseline;
+- privacy baseline;
+- offline/online behavior;
+- network policy;
+- telemetry policy;
+- migration strategy;
+- update strategy;
+- packaging/distribution;
+- testing baseline;
+- performance expectations;
+- code-quality baseline;
+- dependency/license policy.
+
+Prefer fewer dependencies/layers, explicit boundaries, easy debugging,
+rollback, packaging, and local-first behavior when appropriate.
+
+Create/update:
+CONSTRAINTS.md
+
+Escalate only product-impacting constraints.
+Do not implement product features.
+
+======================================================================
+PHASE 1 — REQUIREMENT INTERVIEW
+======================================================================
+
+Use interview-me when requirements are not sufficiently clear.
+
+OBJECTIVE:
+Discover the real desired outcome instead of accepting a proposed implementation
+as the requirement.
+
+Rules:
+- ask one question at a time;
+- do not ask questions already answered by repository/context;
+- prioritize high-information-gain questions;
+- prioritize outcome over implementation.
+
+Separate:
+TRUE GOAL
+PROPOSED SOLUTION
+REAL CONSTRAINT
+UNVERIFIED ASSUMPTION
+MUST HAVE
+NICE TO HAVE
+OUT OF SCOPE
+
+Clarify when relevant:
+- target user;
+- problem;
+- workflow;
+- input/output;
+- states;
+- errors/recovery;
+- data/persistence;
+- privacy;
+- performance expectations;
+- UI/UX;
+- distribution;
+- priorities;
+- unacceptable failure modes.
+
+Treat technical numbers proposed by USER as hypotheses unless clearly product requirements.
+If empirical evidence is required, mark TUNING REQUIRED.
+
+Output:
+TRUE GOAL
+MVP
+LATER
+NOT NEEDED
+OUT OF SCOPE
+ASSUMPTIONS
+TUNING / VALIDATION REQUIRED
+REQUIREMENT CONFIDENCE
+
+Do not create SPEC yet.
+Stop at GATE A.
+
+======================================================================
+PHASE 2 — IDEA REFINEMENT
+======================================================================
+
+Use idea-refine when:
+- idea is broad;
+- MVP is unclear;
+- multiple solution directions exist;
+- workflow is too complex;
+- over-engineering risk is high.
+
+OBJECTIVE:
+Shape the simplest useful product solution.
+
+Evaluate:
+- essential MVP;
+- later features;
+- deterministic logic before AI when appropriate;
+- reuse opportunities;
+- unnecessary complexity;
+- unnecessary abstractions;
+- unnecessary dependencies.
+
+Output:
+RECOMMENDED PRODUCT SHAPE
+WHY
+MVP
+LATER PHASES
+DO NOT BUILD
+IMPORTANT TRADE-OFFS
+
+Skip when requirements/MVP are already clear.
+Do not implement.
+
+======================================================================
+PHASE 3 — SPECIFICATION
+======================================================================
+
+Use:
+/spec
+
+Start only after requirement understanding is approved.
+
+OBJECTIVE:
+Create a testable specification implementation can follow without guessing.
+
+Include applicable items:
+1. Goal
+2. Target user
+3. Use cases
+4. User workflow
+5. Inputs
+6. Outputs
+7. Screens/UI
+8. State model
+9. Loading/progress
+10. Empty state
+11. Cancel behavior
+12. Retry behavior
+13. Error states
+14. Recovery
+15. Validation
+16. Edge cases
+17. Persistence
+18. Settings/configuration
+19. Data lifecycle
+20. Integrations
+21. Security/privacy requirements
+22. Performance expectations
+23. TUNING REQUIRED items
+24. In scope
+25. Out of scope
+26. Acceptance criteria
+27. Assumptions
+
+Rules:
+- do not split implementation tasks yet;
+- do not implement;
+- do not install speculative feature dependencies;
+- do not add unapproved features;
+- do not convert assumptions into requirements;
+- acceptance criteria must be verifiable.
+
+Create/update SPEC.md or repository convention.
+Stop at GATE B.
+
+======================================================================
+PHASE 4 — PLAN + TASK BREAKDOWN
+======================================================================
+
+Use:
+/plan
+
+Start only after SPEC approval.
+
+Read workflow, CONSTRAINTS.md, approved SPEC, repository, current dependencies,
+reusable components, and integration points.
+
+Plan only to the detail needed for reliable implementation.
+Cover when applicable:
+- module boundaries;
+- frontend/backend boundary;
+- storage/schema;
+- service/interfaces;
+- state management;
+- job lifecycle;
+- resource/model lifecycle;
+- error propagation;
+- logging;
+- test strategy;
+- packaging impact;
+- migration.
+
+Each task must include:
+ID
+TITLE
+GOAL
+DEPENDENCIES
+EXPECTED FILES/MODULES
+ACCEPTANCE CRITERIA
+VERIFICATION
+RISK: LOW / MEDIUM / HIGH
+USER APPROVAL REQUIRED: YES / NO
+
+Priorities:
+- validate technical risk early;
+- prefer vertical slices when useful;
+- tasks independently verifiable;
+- do not split trivial work excessively;
+- avoid premature abstraction.
+
+Create/update:
+tasks/plan.md
+tasks/todo.md
+
+Output summary:
+TOTAL TASKS
+MILESTONES
+HIGH-RISK TASKS
+MAJOR ARCHITECTURE DECISIONS
+BIGGEST RISKS
+USER DECISIONS REQUIRED
+
+Stop at GATE C.
+
+======================================================================
+PHASE 5 — PLAN REVIEW
+======================================================================
+
+OBJECTIVE:
+Challenge the implementation plan before coding.
+
+Check:
+- can the solution be simpler?
+- unnecessary layers/modules?
+- unjustified dependencies?
+- overly future-oriented design?
+- reuse opportunities missed?
+- task dependencies correct?
+- major risks tested early?
+- tasks too large/fragmented?
+- acceptance criteria testable?
+- verification realistic?
+- premature abstraction?
+
+If appropriate, preserve plan.
+If changes are needed, update tasks/plan.md and tasks/todo.md.
+Do not implement.
+
+======================================================================
+PHASE 6 — UI PROTOTYPE / UX GATE
+======================================================================
+
+Run when UI/workflow is materially important.
+
+OBJECTIVE:
+Validate UX before deep business-logic integration.
+
+Mock data is allowed.
+Prototype applicable:
+- layout;
+- navigation;
+- hierarchy;
+- forms;
+- controls;
+- settings;
+- loading;
+- progress;
+- empty states;
+- errors;
+- resize/responsive behavior;
+- desktop window behavior;
+- keyboard interaction when important.
+
+Do not build complex backend logic solely for the prototype.
+Run UI and verify no fatal render/runtime errors.
+Stop at GATE D when material.
+Skip when UI is not relevant.
+
+======================================================================
+PHASE 7 — BUILD AUTO / IMPLEMENTATION
+======================================================================
+
+Prefer:
+/build auto
+
+Fallback:
+/build or equivalent implementation workflow.
+
+Start only when SPEC and PLAN are approved and UI is approved when applicable.
+
+Per task:
+1. Read READY task.
+2. Inspect relevant existing code.
+3. Implement approved scope only.
+4. Avoid unrelated refactors.
+5. Add/update useful tests.
+6. Run task verification.
+7. If verification fails, debug root cause.
+8. Update tasks/todo.md.
+9. LOW/MEDIUM + pass → continue automatically to next READY task.
+
+Dependency policy:
+Agent may add a small, well-maintained dependency without stopping when it:
+- fits approved architecture;
+- introduces no new external service;
+- introduces no new cost;
+- has no material licensing/distribution impact;
+- does not substantially expand runtime/bundle requirements;
+- introduces no material security/privacy risk.
+
+Stop for approval when a dependency:
+- changes framework/runtime;
+- is a major runtime dependency;
+- introduces cloud/external service;
+- introduces cost;
+- changes data collection;
+- materially affects licensing/distribution;
+- materially affects packaging;
+- materially affects security/privacy;
+- materially changes architecture.
+
+Automatic continuation allowed while:
+- behavior stays within SPEC;
+- verification passes;
+- architecture stays within PLAN;
+- no high-risk issue emerges.
+
+Stop at GATE E if:
+1. SPEC must change.
+2. Approved UX must materially change.
+3. Major architecture change is required.
+4. Destructive data operation is required.
+5. New privacy/security risk appears.
+6. New cloud/service/cost appears.
+7. Tests invalidate a SPEC assumption.
+8. Major runtime/dependency change is required.
+9. Blocker cannot be resolved safely.
+10. Product quality/performance trade-off requires user judgment.
+
+Meaningful milestone report:
+COMPLETED
+USER-CHECKABLE RESULT
+VERIFICATION
+REMAINING RISK
+
+Do not stop merely to report ordinary technical progress.
+
+======================================================================
+PHASE 8 — TEST / VERIFICATION
+======================================================================
+
+Use:
+/test
+
+Do not add new product features.
+
+Test applicable scenarios:
+- happy path;
+- invalid/empty input;
+- boundary values;
+- large data/files;
+- cancel/retry;
+- repeated actions;
+- restart;
+- persistence;
+- missing/corrupted data;
+- missing model/resource/dependency;
+- permission errors;
+- timeout/offline/service failure;
+- crash recovery;
+- resource cleanup;
+- concurrency/race conditions;
+- migration/upgrade/rollback;
+- packaging smoke test.
+
+Run applicable:
+- unit tests;
+- integration tests;
+- E2E;
+- smoke tests;
+- type checks;
+- lint;
+- build;
+- runtime verification.
+
+If defects are found:
+debug root cause → fix → rerun failing case → regression test.
+
+Output:
+TEST EVIDENCE
+PASSED SCENARIOS
+FAILED SCENARIOS
+NOT VERIFIED
+
+Do not call feature COMPLETE until acceptance criteria have evidence.
+
+======================================================================
+PHASE 9 — CODE REVIEW
+======================================================================
+
+Use:
+/review
+
+Review independently:
+- correctness;
+- edge cases;
+- readability;
+- maintainability;
+- architecture;
+- coupling;
+- data integrity;
+- error handling;
+- resource cleanup;
+- concurrency;
+- security/privacy;
+- dependency risk;
+- performance hotspots;
+- test quality;
+- logging;
+- migration/compatibility.
+
+Classify:
+CRITICAL
+HIGH
+MEDIUM
+LOW
+
+Auto-fix CRITICAL/HIGH when correction is clear, localized, and does not change
+approved product behavior or major architecture.
+MEDIUM/LOW may be fixed automatically when low risk and clearly beneficial.
+After fixes, run relevant regression verification.
+Do not perform major refactors merely for aesthetics.
+
+======================================================================
+PHASE 10 — SECURITY REVIEW
+======================================================================
+
+Required when project includes applicable security-sensitive behavior such as:
+- authentication/accounts;
+- API keys/secrets;
+- licensing/payment;
+- updater;
+- download-and-execute;
+- sensitive user data;
+- cloud/server;
+- database migration;
+- plugins;
+- shell execution;
+- elevated privileges;
+- untrusted files;
+- network trust boundaries.
+
+Review:
+- input validation;
+- path traversal;
+- command injection;
+- secret exposure;
+- unsafe logging;
+- insecure storage;
+- privileges/permissions;
+- update integrity;
+- network trust;
+- authentication/authorization;
+- dependency vulnerabilities;
+- destructive operations;
+- backup/recovery.
+
+CRITICAL/HIGH findings must be resolved before release.
+
+======================================================================
+PHASE 11 — PERFORMANCE / WEBPERF / TUNING
+======================================================================
+
+For browser/WebView/frontend performance:
+/webperf
+
+For general performance:
+performance-optimization
+
+Run when performance matters, including AI/TTS, audio/video, rendering, startup,
+model loading, large files, DB/API, UI lag, CPU/RAM/VRAM, throughput/latency.
+
+Rule:
+MEASURE FIRST.
+
+Measure applicable:
+- cold/warm startup;
+- UI render;
+- interaction latency;
+- CPU;
+- RAM;
+- VRAM;
+- disk/network I/O;
+- DB/query time;
+- model load time;
+- time to first result;
+- sustained throughput;
+- idle resource usage;
+- cleanup;
+- frontend/bundle loading.
+
+Classify:
+A. EVIDENCED BOTTLENECK
+B. PLAUSIBLE BUT UNMEASURED
+C. NOT WORTH OPTIMIZING
+
+For each TUNING REQUIRED item:
+1. Define test range.
+2. Define representative workload.
+3. Benchmark multiple values.
+4. Measure latency.
+5. Measure throughput.
+6. Measure resource impact.
+7. Measure stability/failure rate.
+8. Measure output quality when relevant.
+9. Compare trade-offs.
+10. Select safe default based on evidence.
+11. Expose override only when useful.
+
+After optimization:
+- benchmark again;
+- record before/after;
+- run regression verification.
+
+Do not trade correctness/maintainability for marginal gains.
+
+======================================================================
+PHASE 12 — CODE SIMPLIFY
+======================================================================
+
+Use when beneficial:
+/code-simplify
+
+Start only after behavior is correct and tests pass.
+
+Reduce complexity without changing behavior.
+Prioritize:
+- dead code;
+- duplicate code;
+- unnecessary abstraction;
+- excessive nesting;
+- unclear responsibilities;
+- unused dependencies;
+- unnecessary coupling.
+
+Do not redesign architecture, change public behavior/UI, add features, or
+refactor merely for preference.
+After changes, run regression verification.
+If code is already appropriately simple, make no change.
+
+======================================================================
+PHASE 13 — FINAL REVIEW
+======================================================================
+
+Compare implementation against approved SPEC.
+
+Verify:
+- all requirements covered;
+- no unapproved behavior added;
+- tests pass;
+- production build succeeds;
+- application starts/runs;
+- no critical runtime errors remain;
+- no debug code remains;
+- no blocker workaround/TODO remains;
+- no hard-coded secrets;
+- configuration is safe;
+- security/migration requirements satisfied;
+- no unexplained performance regression;
+- documentation current;
+- tasks/todo.md reflects reality;
+- known limitations recorded.
+
+Verdict:
+READY
+or
+NOT READY
+
+If NOT READY, list exact blockers.
+Do not add new product features in Final Review.
+
+======================================================================
+PHASE 14 — SHIP / RELEASE
+======================================================================
+
+Use:
+/ship
+
+Start only when FINAL REVIEW = READY.
+
+Verify production/release conditions:
+- clean production build;
+- versioning;
+- production configuration;
+- required assets;
+- installer/package;
+- clean installation when practical;
+- first launch;
+- restart;
+- uninstall/reinstall when relevant;
+- persisted data;
+- migration;
+- resource/model discovery;
+- missing-resource/runtime handling;
+- permissions;
+- logging;
+- crash behavior;
+- dependency/license requirements;
+- documentation;
+- changelog/release notes;
+- rollback/recovery plan.
+
+A development-machine build is not sufficient release evidence.
+
+Ship decision:
+GO
+or
+NO-GO
+
+NO-GO output:
+BLOCKERS
+SEVERITY
+REQUIRED FIX
+
+GO output:
+VERIFICATION EVIDENCE
+KNOWN RISKS
+ROLLBACK / RECOVERY PLAN
+
+Stop at GATE F.
+
+======================================================================
+8. DEBUGGING WORKFLOW
+======================================================================
+
+Trigger when a bug/error/log/symptom appears.
+Do not create a new full Plan unless root cause requires major architecture or
+approved-scope change.
+
+Workflow:
+1. Read complete relevant error/log.
+2. Reproduce when possible.
+3. Isolate failure location.
+4. Separate symptom from root cause.
+5. Generate hypotheses ordered by likelihood.
+6. Test hypotheses using code/logs/tests/reproduction.
+7. Identify most supported root cause.
+8. Apply smallest correct fix.
+9. Rerun failing scenario.
+10. Run relevant regression tests.
+11. Check collateral damage.
+
+Do not disable tests, remove validation, broad-catch failures, hard-code a
+workaround, or rewrite unrelated code.
+
+Output:
+ROOT CAUSE
+EVIDENCE
+FIX
+FILES CHANGED
+FAILING CASE AFTER FIX
+REGRESSION RESULT
+RECURRENCE RISK
+
+======================================================================
+9. EXISTING-APP FEATURE WORKFLOW
+======================================================================
+
+Classify requested change before implementation.
+
+SMALL:
+mini-plan → build → test → verify.
+
+MEDIUM:
+requirement check/interview if needed
+→ spec delta
+→ plan
+→ UI gate if needed
+→ build auto
+→ test
+→ review
+→ performance if needed.
+
+LARGE / HIGH RISK:
+constraint check
+→ interview
+→ spec
+→ plan
+→ plan review
+→ UI
+→ build
+→ test
+→ review
+→ security
+→ performance
+→ final review
+→ ship.
+
+======================================================================
+10. SESSION RESUME
+======================================================================
+
+At the beginning of a new agent session:
+1. Read this workflow.
+2. Read CONSTRAINTS.md if present.
+3. Read approved SPEC documents.
+4. Read tasks/plan.md if present.
+5. Read tasks/todo.md if present.
+6. Read decision/performance/release docs when relevant.
+7. Inspect git status/diff if Git is used.
+8. Determine current phase and READY task.
+9. Do not repeat approved work.
+10. Report current state and next allowed action.
+
+Do not rely on chat history when repository documentation provides current state.
+
+======================================================================
+11. PROJECT DOCUMENTATION
+======================================================================
+
+Maintain only useful documents, following repository conventions:
+- AGENT_WORKFLOW.txt
+- CONSTRAINTS.md
+- SPEC.md or docs/specs/
+- tasks/plan.md
+- tasks/todo.md
+- DECISIONS.md or docs/decisions/
+- PERFORMANCE.md
+- CHANGELOG.md
+- RELEASE.md
+
+Do not create documentation without a clear purpose.
+
+======================================================================
+12. DECISION RECORD
+======================================================================
+
+Record a decision when it materially affects multiple modules, rollback,
+architecture, database/storage, runtime, model integration, data format,
+packaging, security boundary, or external service use.
+
+Structure:
+DECISION
+CONTEXT
+OPTIONS
+CHOSEN
+WHY
+TRADE-OFF
+
+Do not record trivial implementation choices.
+
+======================================================================
+13. DEFINITION OF DONE
+======================================================================
+
+TASK DONE requires:
+- acceptance criteria satisfied;
+- relevant tests pass;
+- applicable build/typecheck passes;
+- runtime verification when required;
+- no blocker;
+- temporary debug code removed;
+- task state updated.
+
+FEATURE COMPLETE requires:
+- approved SPEC satisfied;
+- verification completed;
+- no unresolved CRITICAL/HIGH blocker;
+- required documentation updated.
+
+RELEASE GO requires:
+- FINAL REVIEW = READY;
+- shipping verification passes;
+- known risks recorded;
+- rollback/recovery adequate.
+
+======================================================================
+14. STANDARD REPORT FORMAT
+======================================================================
+
+KẾT QUẢ
+- ...
+
+CẦN USER DUYỆT
+- ...
+or
+- Không có.
+
+AGENT ĐÃ KIỂM TRA
+- ...
+
+RỦI RO CÒN LẠI
+- ...
+or
+- Không có đáng kể.
+
+BƯỚC TIẾP THEO
+- ...
+
+Do not dump long logs unless necessary.
+
+======================================================================
+15. PROHIBITED BEHAVIOR
+======================================================================
+
+Do not:
+- implement before the current phase permits it;
+- skip Environment Bootstrap when environment is unverified;
+- expand scope;
+- change stack without justified approval;
+- introduce cloud services merely for convenience;
+- introduce telemetry without approval;
+- store secrets in source;
+- hard-code development-machine paths;
+- disable tests to pass;
+- remove validation to pass;
+- treat mock behavior as production verification;
+- treat code review as executable verification;
+- treat a successful build as complete acceptance;
+- optimize without measurement;
+- redesign architecture for preference;
+- ask unnecessary low-level implementation questions;
+- require USER approval for every technical task;
+- declare READY while blockers remain;
+- SHIP without production verification;
+- install speculative dependencies "just in case";
+- change package manager without justified migration;
+- modify unrelated code.
+
+======================================================================
+16. START CONDITION
+======================================================================
+
+Read PROJECT_NAME, INITIAL_IDEA, TARGET_PLATFORM, PREFERRED_STACK.
+Inspect repository.
+
+If environment/skeleton has not been verified:
+start at PHASE -1 — ENVIRONMENT BOOTSTRAP.
+
+If ENVIRONMENT READY is already evidenced:
+continue from the first incomplete approved lifecycle phase.
+
+Never implement product features before relevant specification and approval
+gates are satisfied.
