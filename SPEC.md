@@ -1,6 +1,6 @@
 # VoxLab — Product & Technical Specification (SPEC.md)
 
-**Document Version**: 2.0.0 (Rewritten per Updated Workflow)  
+**Document Version**: 2.1.0 (Refined Specification)  
 **Phase**: Phase 3 — Specification (GATE B)  
 **Status**: Pending User Approval  
 **Target Platform**: Windows 10/11 64-bit (x64)  
@@ -10,26 +10,28 @@
 
 ## 1. Goal & Product Vision
 
-VoxLab là ứng dụng desktop Windows cục bộ (local-first) phục vụ việc tạo giọng đọc kịch bản dài (Long-form TTS) với khả năng kiểm soát chất lượng chi tiết từng câu và bóc băng âm thanh/video (ASR) độc lập, hoạt động 100% trên phần cứng máy tính người dùng mà không phụ thuộc vào cloud hay dịch vụ bên ngoài.
+VoxLab là ứng dụng desktop Windows local-first, chuyên biệt cho việc tạo giọng đọc kịch bản dài (Long-form TTS) với khả năng kiểm soát chất lượng chi tiết từng câu, tạo và quản lý mẫu giọng (Voice Cloning & Voice Library), cùng công cụ bóc băng âm thanh/video (ASR) độc lập, hoạt động 100% trên phần cứng máy tính người dùng mà không phụ thuộc vào cloud hay dịch vụ bên ngoài.
 
 ### Mục tiêu cốt lõi của phiên bản MVP:
 1. **Long-form TTS Studio**: Cung cấp quy trình khép kín: Nhập kịch bản $\rightarrow$ Chuẩn hóa tất định an toàn $\rightarrow$ Tùy chọn AI hỗ trợ (sửa dấu câu, tối ưu, dịch có kiểm soát và đảo ngược được) $\rightarrow$ Phân đoạn thông minh theo profile model $\rightarrow$ Sinh giọng nói có cache từng câu $\rightarrow$ Ghép audio thành phẩm (WAV/MP3).
-2. **Standalone Transcription**: Nhập media $\rightarrow$ Bóc băng bằng Whisper-family local engine $\rightarrow$ Xem plain text và timestamped segments $\rightarrow$ Xuất file `.txt` và `.srt` $\rightarrow$ Cầu nối *"Chuyển sang TTS"* để tạo voiceover mới mà không làm thay đổi transcript gốc.
-3. **An toàn, Ổn định & Riêng tư**: Strict Local-Only (không cloud fallback, không telemetry); Worker crash không làm sập giao diện; thu hồi tài nguyên (VRAM/RAM) sạch sẽ khi hủy; bảo toàn văn bản gốc (Original Text Safety).
+2. **Voice Clone & Voice Library**: Không gian tạo giọng mẫu riêng biệt từ reference audio ngắn và thư viện quản lý giọng đã lưu có gắn tag, tìm kiếm, cùng cầu nối trực tiếp sang TTS Studio.
+3. **Standalone Transcription**: Nhập media $\rightarrow$ Bóc băng bằng Whisper-family local engine với nhận diện ngôn ngữ tự động $\rightarrow$ Xem plain text và timestamped segments $\rightarrow$ Xuất file `.txt` và `.srt` $\rightarrow$ Cầu nối *"Chuyển sang TTS"* để tạo voiceover mới mà không làm thay đổi transcript gốc.
+4. **An toàn, Ổn định & Riêng tư**: Strict Local-Only (không cloud fallback, không telemetry); Worker crash không làm sập giao diện; thu hồi tài nguyên (VRAM/RAM) sạch sẽ khi hủy; bảo toàn văn bản gốc (Original Text Safety).
 
 ---
 
 ## 2. Target User & Use Cases
 
 ### 2.1 Đối tượng người dùng
-- **Content Creators / Video Makers**: Cần tạo voiceover kịch bản dài, chất lượng cao, cần sửa lại các câu bị đọc vấp mà không phải sinh lại toàn bộ bài.
-- **Audiobook Creators / Podcasters**: Cần đọc sách, truyện, tài liệu dài với giọng đọc tự nhiên, có khoảng lặng phù hợp giữa các đoạn và hỗ trợ voice cloning.
+- **Content Creators / Video Makers**: Cần tạo voiceover kịch bản dài, chất lượng cao, clone giọng đặc trưng, cần sửa lại các câu bị đọc vấp mà không phải sinh lại toàn bộ bài.
+- **Audiobook Creators / Podcasters**: Cần đọc sách, truyện, tài liệu dài với giọng đọc tự nhiên, quản lý nhiều giọng nhân vật theo tags, có khoảng lặng phù hợp giữa các đoạn.
 - **Researchers / Transcribers**: Cần bóc băng phỏng vấn, bài giảng, video ghi âm nội bộ để trích xuất text/subtitle hoàn toàn bảo mật tại máy.
 
 ### 2.2 Các kịch bản sử dụng chính (Use Cases)
-- **UC-01 (Tạo Voiceover kịch bản dài)**: Người dùng nhập văn bản dài $\rightarrow$ Bấm Chuẩn hóa text $\rightarrow$ Bấm Chia chunk $\rightarrow$ Chọn Model & Giọng $\rightarrow$ Bấm Sinh toàn bộ $\rightarrow$ Nghe thử phát hiện câu #15 đọc vấp $\rightarrow$ Sửa lại chữ ở câu #15 $\rightarrow$ Bấm Retry riêng câu #15 $\rightarrow$ Bấm Ghép & Xuất file audio tổng.
-- **UC-02 (AI Hỗ trợ sửa dấu câu an toàn)**: Người dùng có đoạn text thiếu dấu câu $\rightarrow$ Bấm "AI Punctuation" $\rightarrow$ Hệ thống gửi prompt tới Local LLM $\rightarrow$ Hiện màn hình so sánh Before/After Diff $\rightarrow$ Người dùng xem rõ các dấu câu được thêm/sửa $\rightarrow$ Bấm "Chấp nhận" để cập nhật vào working text.
-- **UC-03 (Bóc băng & Lồng tiếng lại - Re-voice)**: Người dùng nạp video bài giảng tiếng Anh $\rightarrow$ Whisper tự động nhận diện ngôn ngữ và bóc băng ra text $\rightarrow$ Bấm "Chuyển sang TTS" $\rightarrow$ Văn bản được nạp sang TTS Studio làm kịch bản mới $\rightarrow$ (Tùy chọn dịch sang tiếng Việt) $\rightarrow$ Tạo giọng đọc tiếng Việt mới.
+- **UC-01 (Tạo Voiceover kịch bản dài)**: Người dùng nhập văn bản dài $\rightarrow$ Bấm Chuẩn hóa text $\rightarrow$ Bấm Chia chunk $\rightarrow$ Chọn Model & Giọng từ Library $\rightarrow$ Bấm Sinh toàn bộ $\rightarrow$ Nghe thử phát hiện câu #15 đọc vấp $\rightarrow$ Sửa lại chữ ở câu #15 $\rightarrow$ Bấm Retry riêng câu #15 $\rightarrow$ Bấm Ghép & Xuất file audio tổng.
+- **UC-02 (Tạo và Tái sử dụng Voice Profile)**: Người dùng vào workspace *Voice Clone* $\rightarrow$ Nạp file âm thanh mẫu $\rightarrow$ Chọn model hỗ trợ clone $\rightarrow$ Nhập câu test và nghe thử preview $\rightarrow$ Đặt tên "Minh Documentary", gắn tags `[Nam, Kể chuyện]` $\rightarrow$ Bấm Lưu vào *Voice Library*. Tại Voice Library, bấm *"Use in TTS"* $\rightarrow$ Hệ thống chuyển sang TTS Studio và đặt giọng này làm giọng chính.
+- **UC-03 (AI Hỗ trợ sửa dấu câu an toàn)**: Người dùng có đoạn text thiếu dấu câu $\rightarrow$ Bấm "AI Punctuation" $\rightarrow$ Hệ thống gửi prompt tới Local LLM $\rightarrow$ Hiện màn hình so sánh Before/After Diff $\rightarrow$ Kiểm tra guardrail từ vựng không bị thay đổi $\rightarrow$ Bấm "Chấp nhận" để cập nhật vào working text.
+- **UC-04 (Bóc băng & Lồng tiếng lại - Re-voice)**: Người dùng nạp video bài giảng $\rightarrow$ Whisper tự động nhận diện ngôn ngữ và bóc băng ra text $\rightarrow$ Bấm "Chuyển sang TTS" $\rightarrow$ Văn bản được nạp sang TTS Studio làm kịch bản mới $\rightarrow$ Tạo giọng đọc mới.
 
 ---
 
@@ -48,270 +50,470 @@ VoxLab là ứng dụng desktop Windows cục bộ (local-first) phục vụ vi�
 │  - Hardware Detection (NVIDIA NVML / CUDA / VRAM / CPU cores / RAM)            │
 │  - Job Queue Orchestrator (Safe-by-default, Concurrency = 1 in MVP)            │
 │  - Local File I/O (Safe path resolution, Staging, Audio stitching via FFmpeg)  │
-│  - SQLite Database Manager (Settings, Recent History, Session metadata)        │
+│  - SQLite Database Manager (Settings, Voice Profiles, Sessions/History)        │
 └───────────────────┬─────────────────────────────────────────┬───────────────────┘
-                    │ Versioned IPC / JSON-RPC                │ HTTP Local Client
+                    │ Documented & Versioned IPC Interface     │ HTTP Local Client
 ┌───────────────────▼─────────────────────┐ ┌─────────────────▼───────────────────┐
 │       ISOLATED MODEL WORKERS            │ │        LOCAL LLM ENDPOINT           │
-│  - Python Subprocess (Isolated runtime) │ │  - LM Studio / Local OpenAI API      │
+│  - Subprocess runtime (Python/C++)      │ │  - LM Studio / Local OpenAI API      │
 │  - TTS Engine Adapter (Candidate set)   │ │  - Configurable URL (e.g. 127.0.0.1) │
 │  - Whisper Engine Adapter (faster-wh.)  │ │  - Punctuation, Polish, Translation  │
 │  - Capability & Version Handshake       │ │                                     │
 └─────────────────────────────────────────┘ └─────────────────────────────────────┘
 ```
 
-### Ranh giới kiến trúc:
-- **Frontend (React)**: Giữ vai trò giao diện và trải nghiệm người dùng in-memory (audio preview, waveform data, UI state, drag-drop). Tuyệt đối không gọi shell, không trực tiếp lái tiến trình Python/C++, không truy cập trực tiếp file system.
-- **Backend (Tauri / Rust)**: Giữ toàn quyền điều phối tiến trình (process supervision), kiểm tra phần cứng, quản lý hàng đợi, truy xuất hệ thống file an toàn (đã sanitize), và làm cầu nối IPC.
-- **Model Workers**: Chạy tách biệt trong các tiến trình con do Rust quản lý; worker crash không làm sập giao diện chính; giao tiếp qua documented & versioned interface.
+### Ranh giới kiến trúc & Nguyên tắc kết nối:
+- **Frontend (React)**: Quản lý giao diện, trạng thái tương tác và playback Web Audio API in-memory. Tuyệt đối không chạy lệnh shell, không trực tiếp điều khiển runtime Python/C++, không thực hiện thao tác file system không giới hạn.
+- **Backend (Tauri / Rust)**: Giữ toàn quyền điều phối tiến trình con, kiểm tra phần cứng, quản lý hàng đợi an toàn, truy xuất hệ thống file (đã sanitize đường dẫn) và quản trị cơ sở dữ liệu SQLite.
+- **Model Worker Interface**:
+  - Model runtimes chạy trong các tiến trình con riêng biệt được giám sát bởi Rust.
+  - Giao tiếp giữa Rust và model worker phải có tài liệu (documented), có phiên bản (versioned), và có khả năng kiểm thử độc lập.
+  - Mỗi worker khi khởi động phải thực hiện **Capability & Version Handshake**: Khai báo rõ các tính năng hỗ trợ (voice cloning, streaming, emotion/style, languages) và phiên bản giao thức. Nếu không tương thích, hệ thống báo lỗi tường minh, không để xảy ra silent failure.
+  - *Lưu ý*: Giao thức truyền tải cụ thể (stdio JSON-RPC, localhost socket, v.v.) sẽ được xác định trong giai đoạn Model Feasibility và Plan, không khóa cứng tại SPEC.
 
 ---
 
-## 4. Screens, UI Architecture & Functional States
+## 4. Navigation & Workspace Specifications
 
-*(Lưu ý: Mục này quy định cấu trúc thông tin, các màn hình, phân vùng chức năng và trạng thái tương tác. Visual styling chi tiết như màu sắc, font chữ, độ bo góc, tokens sẽ do Phase 6 UI/UX Gate với Stitch đảm nhiệm).*
+Ứng dụng tuân thủ mô hình điều hướng phân tầng rõ ràng:
+- **Left Navigation**: Chia tách thành **Primary Workspaces** (tác vụ chính) và **Utility** (công cụ & cài đặt).
+- **Center Workspace**: Khu vực hiển thị và tương tác dữ liệu chính.
+- **Right Contextual Inspector**: Bảng tùy chỉnh tham số phụ thuộc theo ngữ cảnh đối tượng đang chọn.
+- **Bottom Job Bar**: Thanh tiến độ và điều khiển hàng đợi cố định dưới đáy.
 
-### 4.1 Bố cục tổng thể (Navigation $\rightarrow$ Workspace $\rightarrow$ Inspector + Job Bar)
-Giao diện ứng dụng được tổ chức thành 4 phân vùng chức năng:
-1. **Top Utility Bar**: Thanh tiện ích trên cùng chứa Logo/Branding, Tên phiên hiện tại, Badge trạng thái bản quyền (`Licensed` / `Trial`), Nút chuyển ngôn ngữ giao diện (`VN` / `EN`), Nút chuyển chủ đề (`Sáng` / `Tối`), Nút mở Cài đặt, và các nút điều khiển cửa sổ.
-2. **Left Navigation Sidebar**: Điều hướng chuyển đổi giữa các không gian làm việc:
-   - `Text to Speech` (Không gian TTS chính)
-   - `Transcription` (Không gian bóc băng)
-   - `History` (Lịch sử các phiên xử lý)
-   - `Settings` (Cài đặt hệ thống)
-   - *Hỗ trợ thu gọn (collapsible) để tối ưu không gian làm việc khi cần tập trung.*
-3. **Center Main Workspace (Adaptive Workspace)**: Vùng làm việc trung tâm tự động thích ứng theo tác vụ và giai đoạn làm việc (chi tiết tại mục 4.2).
-4. **Right Contextual Inspector**: Cột cấu hình tham số nhanh bên phải, tự động đổi nội dung theo đối tượng đang được chọn ở Workspace (chi tiết tại mục 4.3).
-5. **Bottom Job Bar**: Thanh tiến độ và điều khiển tác vụ cố định dưới đáy màn hình (chi tiết tại mục 4.4).
+### 4.1 Cấu trúc Navigation bên trái (Left Sidebar)
+Sidebar hỗ trợ thu gọn (collapsible) để mở rộng không gian làm việc khi cần tập trung:
+* **PRIMARY WORKSPACES**:
+  1. `Text to Speech` (Không gian TTS kịch bản dài)
+  2. `Voice Clone` (Không gian tạo giọng mẫu mới)
+  3. `Voice Library` (Không gian quản lý và tái sử dụng giọng)
+  4. `Transcription` (Không gian bóc băng âm thanh/video)
+* **UTILITY**:
+  5. `History` (Lịch sử các phiên xử lý gần đây)
+  6. `Settings` (Cài đặt hệ thống toàn diện)
 
-### 4.2 Chi tiết các trạng thái của Center Main Workspace
-
-#### Trạng thái A1: TTS — Chuẩn bị Text (Text Preparation View)
-- Dành cho khâu nạp văn bản và tinh chỉnh nội dung trước khi phân đoạn.
-- **Phân vùng hiển thị**:
-  - `Original Text Area`: Lưu trữ văn bản gốc đưa vào ban đầu (luôn được bảo toàn, làm mốc đối chiếu).
-  - `Working Text Area`: Văn bản làm việc đang được xử lý để chuẩn bị đưa vào TTS.
-- **Các hành động chức năng (Actions)**:
-  - `[Chuẩn hóa Text]` (Kích hoạt xử lý tất định).
-  - `[AI Sửa dấu câu]` (Mở modal so sánh Diff Before/After; có guardrail từ vựng).
-  - `[AI Tối ưu cho TTS]` (Mở modal so sánh Diff Before/After).
-  - `[AI Dịch văn bản]` (Dịch sang ngôn ngữ đích; giữ nguồn riêng; mở modal Diff).
-  - `[Khôi phục về bản gốc (Revert)]` (Hủy bỏ mọi thay đổi của AI, lấy lại 100% bản gốc).
-  - `[Phân đoạn thông minh (Smart Chunking)]` (Chuyển sang Trạng thái A2).
-
-#### Trạng thái A2: TTS — Chunk Studio View
-- Dành cho khâu theo dõi sinh âm thanh từng câu và kiểm soát chất lượng.
-- **Thanh tổng quan**: Hiển thị tổng số chunk, tổng ký tự, ước tính thời lượng, nút `[Sinh toàn bộ]`, nút `[Ghép & Xuất audio]`.
-- **Danh sách thẻ Chunk (Chunk Cards/Rows)**: Mỗi chunk hiển thị:
-  - Chỉ số thứ tự (`#001`, `#002`), số lượng ký tự.
-  - Trạng thái trực quan: `Pending`, `Generating`, `Ready`, `Failed`, `Modified`.
-  - Khung nội dung text (cho phép chỉnh sửa trực tiếp nội dung câu).
-  - Nút `[Nghe thử (Preview)]` (chỉ kích hoạt khi đã có audio cache).
-  - Nút `[Tạo lại (Regenerate)]` riêng cho câu này.
-  - Thông số áp dụng: Giọng đọc đang dùng, Khoảng lặng sau câu (Pause duration).
-
-#### Trạng thái B: Standalone Transcription Workspace
-- Dành cho khâu bóc băng âm thanh/video.
-- **Dropzone nạp media**: Hỗ trợ kéo thả file audio/video, hiển thị thông tin metadata (tên file, định dạng, thời lượng).
-- **Vùng kết quả bóc băng**: Hỗ trợ chuyển đổi linh hoạt giữa 2 chế độ:
-  - `Plain Text View`: Văn bản thuần liên tục, dễ copy/đọc.
-  - `Segments View`: Danh sách các phân đoạn kèm mốc thời gian (`Start` $\rightarrow$ `End`).
-- **Thanh xuất & Chuyển tiếp**:
-  - `[Xuất file .TXT]`
-  - `[Xuất file .SRT]`
-  - `[Chuyển sang TTS ➔]`: Đẩy plain transcript text sang tab TTS làm working document mới, giữ nguyên transcript gốc ở tab này.
-
-### 4.3 Chi tiết Right Contextual Inspector
-- **Khi ở TTS (Global Context — không chọn riêng chunk nào)**:
-  - Chọn TTS Model (chỉ hiển thị các model tương thích phần cứng).
-  - Chọn Giọng đọc (Preset Voices hoặc nạp file Reference Audio để Clone).
-  - Chọn Ngôn ngữ (Language).
-  - Slider điều chỉnh Tốc độ đọc (Speed: 0.5x – 2.0x).
-  - Sắc thái biểu cảm (Expression/Emotion: Neutral, Happy, Sad... Tự động disabled nếu model không hỗ trợ).
-  - Khoảng lặng mặc định giữa các chunk (Pause after: ms).
-- **Khi ở TTS (Chunk Selection Context — người dùng bấm chọn Chunk #17)**:
-  - Header: `Cấu hình Chunk #017`.
-  - Giọng đọc: Dropdown kế thừa mặc định `[Kế thừa Global]` hoặc chọn giọng riêng cho câu này.
-  - Sắc thái: Dropdown kế thừa mặc định hoặc chọn sắc thái riêng cho câu này.
-  - Khoảng lặng trước/sau câu #17.
-  - Nút `[Khôi phục về mặc định Global]`.
-- **Khi ở Transcription Context**:
-  - Chọn kích thước Whisper Model (`tiny`, `base`, `small`, `medium`, `large-v3`).
-  - Chọn Ngôn ngữ nguồn hoặc `[Tự động nhận diện (Auto Detect)]`.
-  - Chọn Thiết bị chạy (`CUDA` hoặc `CPU`).
-
-### 4.4 Bottom Job Bar
-- Cố định ở chân cửa sổ:
-  - Thông tin tác vụ: Model đang chạy, tiến độ chunk hoàn thành (ví dụ `Chunk 23/84 - 27%`).
-  - Thanh tiến độ trực quan (Progress bar).
-  - Nút `[Tạm dừng (Pause)]`, `[Hủy bỏ (Cancel)]`.
-  - Nút `[Mở thư mục thành phẩm (Open Output)]`.
-  - Thông báo hoàn tất kèm tổng thời gian sinh.
+> **Ranh giới dứt khoát**: Không có khái niệm `Project` hoặc `Project Management` trong MVP. VoxLab MVP vận hành hoàn toàn dựa trên mô hình **Task/Session-based + History + Cache/Recovery**. Không thiết kế cây thư mục project, project asset manager hay project-level binding.
 
 ---
 
-## 5. User Workflow & State Model
+### 4.2 Chi tiết các Workspace chính
 
-```mermaid
-stateDiagram-v2
-    [*] --> Idle: Khởi động app
-    Idle --> TextReady: Nhập text / Paste kịch bản
-    TextReady --> Normalized: Chạy Chuẩn hóa tất định
-    Normalized --> AIRevised: Chạy AI Punctuation / Optimize / Translate
-    AIRevised --> Normalized: Revert về bản gốc
-    AIRevised --> ChunksCreated: Bấm Phân đoạn thông minh
-    Normalized --> ChunksCreated: Bấm Phân đoạn thông minh (không qua AI)
-    
-    state ChunksCreated {
-        [*] --> ChunkPending
-        ChunkPending --> ChunkGenerating: Bắt đầu Queue
-        ChunkGenerating --> ChunkReady: Sinh audio thành công (Cached)
-        ChunkGenerating --> ChunkFailed: Lỗi (Timeout/OOM/Glitch)
-        ChunkFailed --> ChunkGenerating: Retry riêng câu lỗi
-        ChunkReady --> ChunkModified: Sửa text câu này
-        ChunkModified --> ChunkGenerating: Re-generate riêng câu này
-    }
-    
-    ChunksCreated --> MergingAudio: Bấm Ghép toàn bộ
-    MergingAudio --> Finished: Ghép xong WAV/MP3 hoàn chỉnh
-    Finished --> [*]
+#### 4.2.1 Workspace 1: Text to Speech (Adaptive Workspace)
+Tuân theo nguyên tắc: **Text to Speech = USE**. Không gánh trách nhiệm tạo clone voice phức tạp (đã chuyển sang Workspace Voice Clone).
+* **Giai đoạn 1: Chuẩn bị Text (Text Preparation View)**:
+  * Hiển thị song song: `Original Text` (luôn bảo toàn) và `Working Text` (văn bản đang biên tập).
+  * Các nút hành động: `[Chuẩn hóa Text]`, `[AI Sửa dấu câu]`, `[AI Tối ưu]`, `[AI Dịch]`, `[Khôi phục bản gốc (Restore Original)]`.
+  * Nút chuyển giai đoạn: `[Phân đoạn thông minh ➔]`.
+* **Giai đoạn 2: Chunk Studio View**:
+  * Thanh tổng quan: Tổng số chunk, ký tự, nút `[Sinh toàn bộ]`, `[Ghép & Xuất audio]`.
+  * Danh sách thẻ Chunk (Chunk Cards):
+    * Số thứ tự (`#001`), số ký tự.
+    * Trạng thái: `Pending`, `Generating`, `Ready`, `Failed`, `Modified`.
+    * Text câu (click để sửa).
+    * Nút `[Nghe thử]`, nút `[Tạo lại riêng câu này]`.
+    * Khoảng lặng sau câu (`Pause after: Auto` hoặc override ms).
+* **Right Contextual Inspector**:
+  * *Khi không chọn chunk*: Hiển thị cấu hình Global: Model TTS, Voice Selector (lấy nguồn từ Voice Library, có nút mở nhanh Library), Ngôn ngữ, Tốc độ (Speed), Sắc thái (Emotion/Style - nếu model hỗ trợ), Khoảng lặng mặc định.
+  * *Khi chọn Chunk #17*: Hiển thị cấu hình riêng cho Chunk #17: Giọng đọc (`Kế thừa Global` hoặc override), Sắc thái (`Kế thừa Global` hoặc override), Khoảng lặng trước/sau câu #17, Nút `[Reset về mặc định Global]`.
+
+#### 4.2.2 Workspace 2: Voice Clone (Dedicated Workspace)
+Tuân theo nguyên tắc: **Voice Clone = CREATE**. Tách biệt hoàn toàn khỏi TTS Inspector.
+* **Quy trình tạo Voice Profile**:
+  1. **Nạp Reference Audio**: Dropzone kéo thả file âm thanh mẫu (.wav, .mp3...), kiểm tra tính hợp lệ và thời lượng tối thiểu.
+  2. **Chọn Model hỗ trợ Clone**: Dropdown lọc chỉ các model có capability voice cloning.
+  3. **Cấu hình tham số clone**: Hiển thị các tham số được model hỗ trợ (giao diện capability-aware; tham số không hỗ trợ sẽ bị ẩn hoặc disabled có giải thích rõ).
+  4. **Nhập Test Text & Generate Preview**: Nhập câu mẫu ngắn, bấm sinh thử để kiểm tra chất lượng giọng clone trước khi lưu.
+  5. **Nghe Preview**: Trình phát audio nhỏ nghe thử kết quả clone.
+  6. **Đặt tên & Gắn Tag**:
+     * Ô nhập Display Name (ví dụ: "Minh Documentary").
+     * Ô nhập/chọn Tags (ví dụ: `[Nam]`, `[Kể chuyện]`, `[Trầm ấm]`).
+  7. **Lưu Profile**: Bấm `[Lưu vào Voice Library]`, tạo thành một Voice Profile tái sử dụng được với định danh bền vững (stable identity).
+* *Lưu ý*: Độ dài reference audio tối ưu và các siêu tham số suy luận (temperature, top_p, seed, CFG) được đánh dấu `TUNING REQUIRED`, không chốt cứng tại SPEC.
+
+#### 4.2.3 Workspace 3: Voice Library (Dedicated Workspace)
+Tuân theo nguyên tắc: **Voice Library = MANAGE**. Quản lý tập trung toàn bộ giọng đã lưu.
+* **Chức năng bắt buộc (MVP)**:
+  * **Danh sách giọng (Voice Cards/Rows)**: Hiển thị Display Name, Tags, Model tạo, Ngôn ngữ, Loại giọng (Clone / Preset).
+  * **Nghe thử (Preview)**: Bấm nghe lại file audio preview đã lưu khi tạo profile.
+  * **Tìm kiếm & Lọc (Search & Filter)**:
+    * Ô tìm kiếm theo tên (Search by Name).
+    * Bộ lọc theo Tag (Filter by Tag).
+    * *(Tùy chọn hiển thị lọc theo Model / Ngôn ngữ nếu metadata có sẵn).*
+  * **Quản trị Profile**:
+    * Đổi tên (Rename) mà không làm đổi stable identity.
+    * Thêm / Bớt / Sửa Tags.
+    * Xóa giọng (Delete Voice) với cảnh báo an toàn (chi tiết tại mục 7.2).
+  * **Cầu nối "Use in TTS"**: Bấm một chạm để chuyển ngay sang workspace Text to Speech và đặt profile này làm Active Voice của phiên làm việc.
+* *Ranh giới MVP*: Không làm hệ thống quản lý thư mục đa tầng (folder hierarchy), không chia sẻ cloud, không marketplace.
+
+#### 4.2.4 Workspace 4: Transcription (Standalone Workspace)
+* Nạp file audio/video $\rightarrow$ Whisper local engine bóc băng với **Automatic Language Detection (MUST HAVE)**.
+* Hiển thị kết quả linh hoạt: `Plain Text View` và `Segments View` (có timestamp `Start - End`).
+* Nút xuất file: `[Xuất file .TXT]` và `[Xuất file .SRT]`.
+* Nút *"Chuyển sang TTS"*: Đưa toàn bộ plain transcript text sang tab Text to Speech làm working text mới; transcript gốc giữ nguyên.
+
+#### 4.2.5 Workspace 5: History (Utility)
+* Hiển thị danh sách các phiên xử lý (sessions/tasks) gần đây kèm thời gian, tác vụ (TTS / Transcribe), số chunk, trạng thái.
+* Hành động:
+  * `[Mở lại (Reopen/Resume)]`: Nạp lại dữ liệu phiên nếu dữ liệu phiên và cache còn hợp lệ.
+  * `[Mở thư mục output]`: Mở thư mục chứa file thành phẩm nếu file còn tồn tại.
+  * `[Xóa lịch sử]`: Xóa bản ghi lịch sử khỏi danh sách (không tự động xóa file thành phẩm trên đĩa).
+
+#### 4.2.6 Workspace 6: Settings (Utility — 7 Nhóm chức năng)
+Bao gồm 7 nhóm cấu hình được phân định rõ ràng (chi tiết tại mục 8).
+
+### 4.3 Bottom Job Bar (Thanh tiến độ cố định)
+* Cố định ở chân cửa sổ:
+  * Thông tin tác vụ: Model đang chạy, tiến độ hoàn thành (ví dụ: `Chunk 23/84 (27%)`).
+  * Thanh tiến độ trực quan.
+  * Nút `[Tạm dừng (Pause)]`, `[Hủy bỏ (Cancel)]`, `[Mở thư mục output]`.
+  * Thông báo khi hoàn tất: `Đã sinh xong 84/84 chunks`.
+
+---
+
+## 5. Text Processing Pipeline Specification
+
+```
+[Văn bản gốc (Original Source)]
+           │
+           ▼ (Paste / Import)
+[Deterministic Normalization] ──(Bảo vệ Protected Spans)
+           │
+           ▼
+   [Working Text] <──────────────────────────────┐
+     │          │                                │ (Reject AI Revision:
+     │          ├──────────────┐                 │  quay lại Working Text)
+     ▼          ▼              ▼                 │
+[AI Punct.] [AI Optimize] [AI Translate]        │
+     │          │              │                 │
+     └──────────┴──────────────┴───► [AI Revision View]
+                                            │
+                                            ├──► [Accept] ──► Cập nhật Working Text
+                                            └──► [Reject]
+                                            
+   * [Restore Original] ──► Khôi phục 100% về [Original Source] ban đầu
 ```
 
----
+### 5.1 Deterministic Text Normalization
+Chỉ thực hiện các biến đổi an toàn về mặt hình thức bằng thuật toán tất định, **không làm thay đổi semantic content**:
+1. Unicode Normalization Form C (NFC) chuẩn cho tiếng Việt và tiếng Anh.
+2. Tối ưu khoảng trắng: Gom các dấu cách liên tiếp thành 1, xóa khoảng trắng đầu dòng/cuối dòng.
+3. Chuẩn hóa ngắt dòng: Tối đa 2 dấu xuống dòng liên tiếp.
+4. Chuẩn hóa ngoặc kép chuẩn `""`, dấu gạch ngang chuẩn `-`.
+5. Chuẩn hóa khoảng cách quanh dấu câu theo nguyên tắc **Bảo vệ Protected Spans**:
+   * *Nguyên tắc thông thường*: Không có khoảng cách trước dấu câu (`,`, `.`, `!`, `?`, `;`, `:`), có 1 khoảng cách sau dấu câu.
+   * *Bảo vệ Protected Spans (Không phá vỡ)*:
+     * Số thập phân: `3.14`, `12,5`.
+     * Mốc thời gian: `10:30`, `14:00:15`.
+     * Tên miền & URL: `example.com`, `https://domain.vn/path`.
+     * Địa chỉ Email: `user@example.com`.
+     * Từ viết tắt & định danh: `TP.HCM`, `v2.0`, `127.0.0.1`, `file_01.wav`.
+* *Ranh giới dứt khoát*: Không tự ý thêm dấu chấm/phẩy mới vào giữa câu; việc thêm dấu câu hoặc ngắt nghỉ ngữ nghĩa thuộc phạm vi của AI Punctuation.
 
-## 6. Detailed Functional Specifications
-
-### 6.1 Deterministic Text Normalization
-- **Phạm vi xử lý tất định**:
-  1. Unicode Normalization Form C (NFC) chuẩn cho tiếng Việt và tiếng Anh.
-  2. Xóa các khoảng trắng thừa liên tiếp, chuẩn hóa dấu cách đầu/cuối dòng.
-  3. Chuẩn hóa khoảng cách quanh dấu câu: Không có dấu cách trước dấu câu (`,`, `.`, `!`, `?`, `;`, `:`), bắt buộc có 1 dấu cách sau dấu câu (ngoại trừ ký tự số thập phân như `3.14`).
-  4. Chuẩn hóa ngoặc kép chuẩn `""`, dấu gạch ngang chuẩn `-`.
-  5. Chuẩn hóa xuống dòng liên tục (tối đa 2 dấu ngắt dòng liên tiếp).
-- **Ranh giới an toàn**: Tuyệt đối không tự ý thêm dấu chấm/phẩy mới vào giữa câu, không tự thay đổi từ ngữ.
-
-### 6.2 AI Text Assistance & Guardrails
-- **Cơ chế kết nối**: Gửi yêu cầu HTTP POST tới OpenAI-compatible local endpoint (LM Studio) qua endpoint `/chat/completions` do Rust layer gọi trung gian, frontend không gọi trực tiếp.
+### 5.2 AI Text Assistance & Guardrails
+- **Cơ chế**: Gửi yêu cầu qua HTTP client tới OpenAI-compatible local endpoint do Rust làm trung gian.
 - **AI Punctuation Contract**:
-  - Prompt chỉ thị rõ: *"Chỉ thêm/sửa dấu câu và ngắt dòng cho câu văn tự nhiên, TUYỆT ĐỐI không thay đổi, không thêm và không xóa bất kỳ từ ngữ nào"*.
-  - **Lexical Guardrail Validation**: Sau khi LLM trả về, hệ thống thực hiện phép kiểm tra từ vựng (so sánh danh sách token từ đã bỏ dấu câu giữa bản gốc và bản AI sửa). Nếu phát hiện AI bịa thêm từ hoặc xóa từ $\rightarrow$ Gắn cờ cảnh báo `[Phát hiện thay đổi từ ngữ]`, hiển thị highlight trên Diff view và không cho phép tự động áp dụng.
-- **Before / After Diff View**:
-  - Hiển thị so sánh rõ ràng giữa bản gốc và bản sửa.
-  - Có nút `[Chấp nhận (Accept)]` để áp dụng vào Working Text, hoặc `[Từ chối (Reject)]` để hủy bỏ.
-- **Bảo toàn nguồn (Original Text Safety)**: Bản text gốc luôn được lưu nguyên vẹn trong state, người dùng bấm `[Revert]` bất kỳ lúc nào cũng lấy lại được 100% văn bản ban đầu.
+  - Yêu cầu: Khôi phục dấu câu và ngắt nghỉ mà **bảo toàn nguyên vẹn từ vựng (lexical content)**.
+  - **Lexical Guardrail**: Hệ thống thực hiện so khớp từ vựng giữa văn bản đầu vào và kết quả AI trả về. Nếu phát hiện thay đổi ngoài phạm vi dấu câu $\rightarrow$ Gắn cờ cảnh báo (Lexical Change Flag), hiển thị chi tiết trong Diff View và ngăn chặn hành vi silent auto-apply.
+- **AI Optimize for TTS & AI Translation**:
+  - Optimize for TTS có thể thay đổi cấu trúc câu cho giọng đọc tự nhiên $\rightarrow$ Mặc định bắt buộc Review/Diff trước khi áp dụng.
+  - Translation giữ source text và translated text riêng biệt $\rightarrow$ Mặc định bắt buộc Review/Accept trước khi đưa sang TTS.
+- **Auto-apply Policy**: Cho phép người dùng bật Auto-apply riêng theo từng thao tác trong Settings (mặc định luôn là *Review before Apply*). Khi bật Auto-apply, văn bản gốc vẫn được bảo toàn và có thể khôi phục (Restore Original).
 
-### 6.3 Smart Chunking (Phân đoạn thông minh)
-- Thuật toán phân đoạn câu dựa trên:
-  1. Dấu câu kết thúc (`.`, `!`, `?`, `\n`).
-  2. Dấu ngắt phụ khi câu quá dài (`,`, `;`, `:`, `—`).
-  3. Ngưỡng độ dài ký tự tối đa được quy định theo **Model Profile** (kích thước chunk cụ thể là `TUNING REQUIRED` theo từng model).
+### 5.3 Semantics phân biệt giữa Revert và Restore
+- **Reject AI Revision**: Hủy bỏ kết quả của thao tác AI vừa chạy, quay về trạng thái `Working Text` ngay trước đó.
+- **Restore Original**: Hủy bỏ toàn bộ mọi sửa đổi, đưa văn bản quay trở lại 100% trạng thái `Original Source` ban đầu.
+- *(Hai hành vi này được biểu diễn bằng 2 trạng thái và nút bấm riêng biệt, không gộp làm một)*.
 
-### 6.4 Audio Caching, Recovery & Final Stitching
-- **Chunk Caching**: Mỗi chunk khi sinh xong được lưu ngay thành file audio trung gian trong thư mục làm việc tạm của phiên: `%APPDATA%/VoxLab/cache/sessions/<session_id>/chunks/`.
-- **Chunk Resilience**: Khi một chunk bị lỗi hoặc người dùng bấm Cancel, các chunk trước đó vẫn tồn tại nguyên vẹn trên đĩa và trong state.
-- **Basic Interrupted-Session Recovery**:
-  - Là mục tiêu MVP (MVP target) tuân thủ tính khả thi kỹ thuật an toàn.
-  - Metadata của phiên (danh sách chunk, hash nội dung text, file audio tương ứng) được ghi vào SQLite local.
-  - Khi người dùng tắt app và mở lại, ứng dụng kiểm tra session gần nhất: Nếu các file chunk audio khớp với hash của text $\rightarrow$ Nhận diện trạng thái `Ready` cho các câu đó, cho phép sinh tiếp các câu dở dang hoặc bấm ghép ngay mà không mất công sinh lại.
-- **Audio Stitching (Ghép âm thanh)**:
-  - Sử dụng FFmpeg cục bộ để ghép nối các file chunk theo đúng thứ tự.
-  - Tự động chèn khoảng lặng (silence buffer tính bằng mili-giây, mặc định *TUNING REQUIRED* ~400ms) giữa các câu theo cấu hình.
-  - Xuất ra file thành phẩm cuối cùng: `.wav` hoặc `.mp3`.
-
-### 6.5 Standalone Transcription & Bridge sang TTS
-- Nạp file media $\rightarrow$ Kiểm tra FFmpeg trích xuất audio $\rightarrow$ Đưa qua Whisper-family local engine.
-- Bóc băng hỗ trợ Tiếng Việt & Tiếng Anh với tính năng **Automatic Language Detection (MUST HAVE)**.
-- Lưu trữ cấu trúc segment: `[{ id: 1, start: 0.0, end: 4.2, text: "Xin chào..." }, ...]`.
-- Xuất file `.txt` (gộp toàn bộ text) và `.srt` (phụ đề chuẩn kèm timestamp).
-- **Cầu nối "Chuyển sang TTS"**:
-  - Lấy toàn bộ plain text (loại bỏ toàn bộ timestamp và mã định dạng).
-  - Khởi tạo một phiên TTS mới ở tab Text to Speech với working text này.
-  - Transcript gốc ở tab Transcribe giữ nguyên không đổi.
+### 5.4 Smart Chunking (Phân đoạn thông minh)
+Phân đoạn văn bản theo thứ tự ưu tiên giảm dần:
+1. **Ưu tiên 1 (Section / Paragraph)**: Ranh giới đoạn văn (2 dấu xuống dòng liên tiếp).
+2. **Ưu tiên 2 (Complete Sentence)**: Ranh giới kết thúc câu (`.`, `!`, `?`, `\n`) không thuộc protected spans.
+3. **Ưu tiên 3 (Clause / Secondary Punctuation)**: Ranh giới vế câu (`,`, `;`, `:`, `—`) khi câu quá dài vượt ngưỡng target của model.
+4. **Ưu tiên 4 (Safe Fallback)**: Cắt tại khoảng trắng gần nhất khi câu không có dấu ngắt phụ và chạm ngưỡng trần an toàn của model.
+- **Bảo vệ Protected Spans**: Không bao giờ cắt ngang một số thập phân, URL, email, từ viết tắt hay timestamp.
+- **Model Profile Awareness**: Ngưỡng độ dài chunk (min, target, max) được cấu hình theo từng profile model TTS cụ thể, không áp đặt một giới hạn chung. Các giá trị này được đánh dấu `TUNING REQUIRED`.
 
 ---
 
-## 7. Error Handling, Cancellation & Resilience
+## 6. TTS Generation, Caching & Resilience
 
-| Tình huống lỗi | Hành vi ứng xử của hệ thống | Khắc phục cho người dùng |
+### 6.1 Chunk Generation & Progressive Availability
+- Hệ thống xử lý hàng đợi tuần tự (Concurrency = 1 trong MVP).
+- **Chunk-level Progressive Availability**: Ngay khi một chunk sinh xong:
+  - Cập nhật trạng thái thẻ chunk trên UI thành `Ready`.
+  - Kích hoạt nút nghe thử (Preview) ngay cho chunk đó.
+  - Không bắt buộc người dùng phải chờ toàn bộ bài đọc sinh xong mới được nghe.
+- *Lưu ý*: Không yêu cầu True Model Streaming (token/frame streaming trong khi inference) ở mức model.
+
+### 6.2 Stale Cache Invalidation Rule
+- Khi người dùng chỉnh sửa nội dung text của một chunk đã có audio:
+  - File audio cũ trong cache của chunk đó ngay lập tức bị coi là **Stale / Invalid** đối với nội dung text mới.
+  - Trạng thái chunk chuyển sang `Modified` (hoặc `Needs Regeneration`).
+  - Hệ thống **tuyệt đối không âm thầm sử dụng audio cũ** cho nội dung text mới khi bấm Ghép audio tổng.
+
+### 6.3 Audio Caching & Basic Interrupted-Session Recovery
+- **Audio Caching**: Audio của từng chunk được lưu tạm vào thư mục cache của session: `%APPDATA%/VoxLab/cache/sessions/<session_id>/chunks/`.
+- **Chunk Resilience**: Khi một chunk bị lỗi hoặc người dùng bấm Cancel, các chunk đã sinh thành công trước đó được bảo toàn 100%. Sửa câu lỗi và bấm Retry chỉ chạy đúng câu đó, không sinh lại toàn bài.
+- **Basic Interrupted-Session Recovery (MVP Target)**:
+  - Metadata session và hash của từng chunk text được ghi nhận vào SQLite.
+  - Khi ứng dụng bị tắt hoặc khởi động lại: Nếu session data và các file cache audio tương ứng vẫn còn hợp lệ, hệ thống nhận diện lại trạng thái `Ready` cho các chunk đã có, cho phép người dùng tiếp tục quy trình mà không phải chạy lại từ đầu.
+
+### 6.4 Audio Stitching (Ghép âm thanh thành phẩm)
+- Sử dụng FFmpeg cục bộ để nối các chunk audio hợp lệ theo đúng thứ tự.
+- **Pause Mode = Auto (Mặc định sản phẩm)**:
+  - Tự động chèn khoảng lặng giữa các chunk dựa trên cấu trúc văn bản: ngắt đoạn (paragraph boundary) có khoảng lặng dài hơn ngắt câu (sentence boundary).
+  - Cho phép người dùng ghi đè (override) khoảng lặng riêng cho từng chunk tại Inspector.
+  - *Lưu ý*: Độ dài khoảng lặng cụ thể (ví dụ candidate thử nghiệm ~400ms) là `TUNING REQUIRED`, không chốt cứng thành production default.
+- Định dạng xuất: `.wav` (chất lượng cao) hoặc `.mp3` (nén gọn).
+
+---
+
+## 7. Voice Profile & Voice Library Lifecycle
+
+### 7.1 Reusable Voice Profile & Stable Identity
+- Mỗi Voice Profile được tạo ra có một **Stable Identity (ID duy nhất)** không đổi trong suốt vòng đời.
+- **Tính bất biến của Identity**:
+  - Đổi tên (Rename) không làm thay đổi ID.
+  - Thêm, bớt, sửa Tags không làm thay đổi ID.
+  - Các phiên làm việc cũ (Sessions/History) tham chiếu đến voice bằng Stable ID, không tham chiếu bằng Display Name.
+- **Model Compatibility**:
+  - Profile lưu trữ rõ model/runtime mà nó tương thích. Không giả định một profile tạo cho Model A có thể dùng trực tiếp cho Model B nếu không qua kiểm tra tương thích.
+- **Vòng đời tài sản độc lập**: File audio thành phẩm đã sinh (generated outputs) có vòng đời hoàn toàn độc lập với Voice Profile; xóa profile không được làm mất các file audio đã xuất.
+
+### 7.2 Delete Voice Safety
+- Xóa Voice Profile là hành vi có tính phá hủy (**Destructive Action**) và **bắt buộc phải có hộp thoại xác nhận (Confirmation Dialog)**.
+- **Cảnh báo liên kết**: Nếu Voice Profile đang được tham chiếu bởi các session trong lịch sử, hộp thoại phải cảnh báo rõ: *"Giọng này đang được dùng trong các phiên cũ. Nếu xóa, bạn sẽ không thể regenerate lại các câu bằng giọng này trong tương lai"*.
+- **Quy tắc bảo toàn audio**: Xóa Voice Profile **tuyệt đối không tự động xóa** các file audio chunk đã sinh hoặc các file WAV/MP3 đã xuất ra ổ cứng.
+- Không cho phép silent destructive delete.
+
+### 7.3 "Use in TTS" Bridge
+- Tại Voice Library, mỗi Voice Card có hành động `[Use in TTS]`.
+- **Hành vi**:
+  - Chuyển không gian làm việc sang `Text to Speech`.
+  - Đặt Voice Profile được chọn làm Active/Global Voice cho phiên TTS hiện tại.
+  - Không bắt người dùng phải vào TTS tìm lại thủ công trong dropdown.
+
+---
+
+## 8. Settings Specification (7 Nhóm chức năng)
+
+### 8.1 General
+- **UI Language**: Tiếng Việt / English.
+- **Appearance**: System / Light / Dark.
+- **Restore / Remember last session**: Tùy chọn tự động nạp lại phiên làm việc gần nhất khi mở app (Bật / Tắt).
+- **Remember layout state**: Ghi nhớ trạng thái thu gọn của sidebar/inspector.
+- **Destructive Confirmation**: Bắt buộc bật xác nhận trước các thao tác xóa (Clear cache, Clear history, Delete voice).
+
+### 8.2 Text to Speech
+- **Default TTS Model**: Auto / Last Used / Danh sách model khả dụng.
+- **Default Voice**: Chọn giọng mặc định từ Voice Library.
+- **Default Language**: Tiếng Việt / Tiếng Anh.
+- **Default Output Format**: WAV / MP3.
+- **Default Pause Mode**: Auto.
+- *Ranh giới an toàn*: Không expose các tham số kỹ thuật runtime chưa benchmark (hardcoded chunk size, worker count, CUDA flags, unload timeout, VRAM threshold) ra màn hình settings chung của người dùng phổ thông.
+
+### 8.3 AI Text (Local LLM)
+- **Local Endpoint URL**: Ô nhập địa chỉ OpenAI-compatible endpoint (ví dụ: `http://127.0.0.1:1234/v1`).
+- **Nút Test Connection**: Kiểm tra kết nối tới endpoint và hiển thị trạng thái kết nối.
+- **Model Selection**: Chọn tên model AI text khi endpoint trả về danh sách model.
+- **Per-operation Policy**: Cấu hình chế độ áp dụng riêng cho từng thao tác:
+  - *AI Punctuation*: `Review before Apply` (Mặc định) hoặc `Auto Apply`.
+  - *AI Optimize for TTS*: `Review before Apply` (Mặc định) hoặc `Auto Apply`.
+  - *AI Translation*: `Review before Apply` (Mặc định) hoặc `Auto Apply`.
+- *Quy tắc an toàn*: Dù bật Auto Apply, hệ thống vẫn phải bảo toàn bản gốc (Original Source), lưu bản revision để có thể xem lại và cho phép Revert; không âm thầm sửa đổi nội dung.
+
+### 8.4 Transcription
+- **Default Language**: `Auto Detect` (Mặc định), Tiếng Việt, Tiếng Anh.
+- **Default Whisper Model**: Auto/Recommended hoặc chọn kích thước cụ thể.
+- **Device**: Auto / CPU / CUDA (tùy phần cứng).
+- **Default Export Format**: TXT / SRT.
+
+### 8.5 Storage & Cache
+- **Default Output Folder**: Thư mục mặc định để lưu file âm thanh/văn bản xuất ra.
+- **Cache Location**: Đường dẫn thư mục lưu trữ cache tạm thời.
+- **Current Cache Usage**: Hiển thị dung lượng cache đang sử dụng (MB/GB).
+- **Thao tác dọn dẹp phân định rạch ròi**:
+  - `[Clear History]`: Chỉ xóa danh sách lịch sử tác vụ trong SQLite; không xóa cache, không xóa file thành phẩm.
+  - `[Clear Cache]`: Chỉ dọn dẹp các file audio tạm/chunk dở dang cũ; không xóa file đã xuất ra thư mục output.
+  - `[Delete Generated Output]`: Thao tác trực tiếp trên file đích do người dùng chủ động quản lý.
+- **Low Disk-Space Warning**: Cảnh báo khi ổ đĩa chứa thư mục làm việc còn dưới 2 GB.
+
+### 8.6 System & Hardware
+- Hiển thị thông tin chẩn đoán phần cứng (chỉ đọc):
+  - CPU & Số nhân / luồng.
+  - Dung lượng RAM tổng và khả dụng.
+  - Tên GPU NVIDIA, Dung lượng VRAM tổng và khả dụng.
+  - Trạng thái CUDA availability & phiên bản driver.
+  - Trạng thái FFmpeg (sẵn sàng / phiên bản).
+  - Trạng thái sẵn sàng của Model Workers.
+- Nút hành động: `[Run System Check]` để kiểm tra lại toàn bộ môi trường.
+- *Ranh giới an toàn*: Không cho phép người dùng tự chỉnh cờ CUDA hay worker threads phức tạp tại màn hình này.
+
+### 8.7 About & Diagnostics
+- Thông tin phiên bản ứng dụng (App Version), build info.
+- Nút `[Open Log Folder]` để mở thư mục chứa file log.
+- Nút `[Copy System Information]` để sao chép thông tin máy hỗ trợ báo lỗi.
+- Nút `[Reset Settings]`: Khôi phục cài đặt về mặc định (có xác nhận; **tuyệt đối không xóa Voice Library, không xóa file output và không xóa session data**).
+
+---
+
+## 9. Error Handling, Process Lifecycle & Cancellation Semantics
+
+### 9.1 Cơ chế Pause Queue & Cancel Job
+- **Pause Queue**:
+  - Khi bấm Pause, hàng đợi **ngay lập tức không khởi chạy chunk tiếp theo**.
+  - Đối với chunk đang chạy dở dang: Chờ chunk đó hoàn tất an toàn hoặc gửi tín hiệu ngắt an toàn nếu runtime hỗ trợ; không làm hỏng dữ liệu.
+- **Cancel Job**:
+  - Gửi tín hiệu dừng ngay lập tức tới tiến trình worker.
+  - Hàng đợi dừng toàn bộ các tác vụ còn lại.
+  - Tiến trình worker thực hiện dọn dẹp (cleanup): Giải phóng RAM/VRAM, đóng các file handle, không để lại tiến trình mồ côi (no orphan processes). Tài nguyên không tiếp tục bị chiếm giữ sau khi hoàn tất dọn dẹp.
+  - Toàn bộ các chunk đã sinh xong trước thời điểm Cancel được bảo toàn trạng thái `Ready`.
+
+### 9.2 Bảng xử lý sự cố hệ thống
+
+| Tình huống lỗi | Hành vi ứng xử của hệ thống | Trải nghiệm người dùng |
 | :--- | :--- | :--- |
-| **Model Worker bị Crash (OOM / C++ exception)** | Tiến trình worker bị ngắt; Rust supervisor phát hiện exit code $\neq 0$; **UI window hoàn toàn không bị ảnh hưởng/không crash**. | Chunk đang chạy chuyển trạng thái `Failed`; hiển thị thông báo lỗi rõ ràng; Worker tự khởi động lại ở trạng thái sạch; cho phép bấm `Retry`. |
-| **Bấm Cancel giữa lúc sinh bài dài** | Gửi tín hiệu ngắt ngay tới worker; dừng hàng đợi; giải phóng VRAM/RAM; dọn dẹp các tiến trình con. | Toàn bộ các chunk đã sinh xong trước đó được giữ nguyên trạng thái `Ready`; người dùng có thể nghe thử hoặc bấm ghép các câu đã xong. |
-| **LM Studio chưa bật khi bấm AI Punctuation** | Rust kiểm tra HTTP connection timeout (sau 3s); bắt lỗi `Connection Refused`. | Hiển thị thông báo thân thiện: *"Không thể kết nối tới Local LLM tại 127.0.0.1. Vui lòng bật LM Studio Server và thử lại"*; không làm gián đoạn TTS. |
-| **File âm thanh mẫu clone bị lỗi / quá ngắn** | Kiểm tra file trước khi nạp: định dạng hỗ trợ, độ dài tối thiểu (xác minh trong Feasibility). | Báo lỗi ngay tại Inspector: *"File âm thanh mẫu không hợp lệ hoặc quá ngắn"*; nút sinh bị vô hiệu hóa đến khi chọn file đúng. |
-| **Đĩa cứng bị đầy khi đang tải model / sinh audio** | Kiểm tra dung lượng đĩa trống trước khi ghi file. | Báo lỗi `Disk Full`; dọn dẹp file dở dang; không làm hỏng model hoặc session hiện có. |
+| **Model Worker bị Crash (OOM / Exception)** | Rust supervisor phát hiện tiến trình con thoát bất thường; **UI window hoàn toàn không bị ảnh hưởng**. | Chunk đang chạy đánh dấu `Failed`; hiển thị lỗi cụ thể; worker tự khởi động lại sạch sẽ; cho phép bấm `Retry`. |
+| **Local LLM chưa bật khi gọi AI Action** | Rust kiểm tra timeout kết nối HTTP (sau 3s); bắt lỗi connection refused. | Hiển thị thông báo: *"Không thể kết nối tới Local LLM tại URL đã cấu hình. Vui lòng bật LM Studio và thử lại"*; không ảnh hưởng quy trình TTS. |
+| **File Reference Audio không hợp lệ** | Kiểm tra định dạng và độ dài file âm thanh mẫu khi import vào Voice Clone. | Báo lỗi trực quan: *"File mẫu không hợp lệ hoặc quá ngắn"*; vô hiệu hóa nút sinh preview tới khi nạp file hợp lệ. |
+| **Xung đột phiên bản / Capability của Worker** | Handshake khởi động worker phát hiện thiếu capability hoặc version không khớp. | Báo lỗi tường minh (fail explicitly): *"Model worker không hỗ trợ tính năng yêu cầu"*; không để xảy ra silent failure. |
 
 ---
 
-## 8. Persistence, Settings & Data Lifecycle
+## 10. Security, Privacy & Integrity Specification
 
-- **SQLite Database cục bộ**:
-  - File database lưu tại `%APPDATA%/VoxLab/voxlab.db`.
-  - Bắt buộc có bảng quản lý phiên bản: `schema_version`. Mọi thay đổi cấu trúc dữ liệu phải có migration script an toàn.
-  - Lưu bảng `settings`: endpoint Local LLM, thư mục output mặc định, ngôn ngữ UI, theme màu, license key.
-  - Lưu bảng `sessions`: metadata kịch bản gần đây, cấu hình model/voice đã dùng.
-- **Quy tắc dọn dẹp Cache**:
-  - Các file chunk tạm thời được lưu trong `%APPDATA%/VoxLab/cache/`.
-  - Trong Settings có nút `[Dọn dẹp bộ nhớ đệm (Clear Cache)]` hiển thị dung lượng đang chiếm dụng, cho phép xóa nhanh các file tạm cũ.
-- **Tính di động của đường dẫn (Path Portability)**:
-  - Dữ liệu lưu trong SQLite sử dụng đường dẫn tương đối trong AppData hoặc định danh session; không gắn chết đường dẫn tuyệt đối của máy phát triển.
+- **Strict Local-Only**: 100% các chức năng cốt lõi (TTS, ASR, text processing, voice cloning) diễn ra hoàn toàn offline trên máy tính người dùng.
+- **Zero Outbound Telemetry**: Tuyệt đối không gửi dữ liệu sử dụng, kịch bản, âm thanh hay telemetry ra internet.
+- **IPC Path Sanitization**: Mọi đường dẫn file truyền qua Tauri IPC đều được chuẩn hóa và kiểm tra (Path Traversal Protection) ở tầng Rust trước khi truy xuất.
+- **Shell Injection Prevention**: Tuyệt đối không truyền chuỗi văn bản người dùng vào shell; mọi lệnh gọi FFmpeg hoặc subprocess đều sử dụng mảng đối số tách rời (`std::process::Command::args`).
+- **Resource Integrity**: Mọi tác vụ tải tài nguyên do người dùng kích hoạt (nếu có sau này) bắt buộc phải sử dụng file tạm staging (`.download`) và xác thực checksum/hash trước khi kích hoạt; lỗi tải không được làm hỏng tài nguyên hợp lệ có sẵn.
 
 ---
 
-## 9. Security, Privacy & Platform Compliance
-
-- **Strict Local-First**: 100% các thao tác sinh giọng, bóc băng, chuẩn hóa văn bản diễn ra cục bộ trên máy tính.
-- **Zero Outbound Telemetry**: Không gửi bất kỳ dữ liệu telemetry, thống kê sử dụng hay nội dung văn bản nào ra internet.
-- **IPC Sanitization**: Mọi tham số truyền qua Tauri IPC (tên file, đường dẫn, text) đều được kiểm tra độ dài và chuẩn hóa đường dẫn (Path Traversal Protection) ở tầng Rust trước khi xử lý file.
-- **Shell Injection Prevention**: Không truyền text người dùng trực tiếp vào chuỗi lệnh shell; mọi tương tác với FFmpeg hoặc subprocess đều sử dụng mảng tham số rời rạc (`std::process::Command::args`).
-
----
-
-## 10. TUNING REQUIRED (Các tham số chưa chốt bằng lý thuyết)
+## 11. TUNING REQUIRED (Các tham số chưa chốt bằng lý thuyết)
 
 Bắt buộc phải qua benchmark thực tế sau bước Model Feasibility mới được cố định giá trị:
 
 | Tham số | Giá trị thử nghiệm ban đầu (Dev Baseline) | Tiêu chí benchmark để chốt |
 | :--- | :--- | :--- |
-| **Text Chunk Size (Độ dài phân đoạn)** | ~150 – 300 ký tự (tùy model profile) | Đo độ tự nhiên của giọng, tỷ lệ đọc vấp và thời gian sinh của từng model |
-| **Model Unload Idle Timeout** | ~120 giây sau khi hàng đợi rảnh | Cân đối giữa thời gian giữ VRAM và độ trễ khi người dùng bấm sinh tiếp |
-| **Silence / Pause Duration giữa các câu** | ~400 mili-giây | Đánh giá độ tự nhiên của file audio ghép hoàn chỉnh |
-| **Queue Concurrency (Số luồng sinh song song)** | 1 (Safe Sequential) | Thử nghiệm trên phần cứng máy mạnh xem có thể tăng lên 2 mà không nghẽn VRAM không |
-| **Inference Parameters (Nhiệt độ, Top_p)** | Giá trị mặc định của từng model candidate | Đo chất lượng phát âm tiếng Việt và tiếng Anh |
+| **Text Chunk Size (Độ dài phân đoạn)** | Phụ thuộc theo từng profile model TTS cụ thể | Đo độ tự nhiên của giọng đọc, tỷ lệ vấp từ và thời gian inference |
+| **Model Unload Idle Timeout** | ~120 giây sau khi hàng đợi rảnh | Cân đối giữa việc giữ VRAM sẵn sàng và giải phóng tài nguyên cho hệ thống |
+| **Silence / Pause Duration mặc định** | ~400 mili-giây (cho ngắt câu) | Đánh giá độ tự nhiên và nhịp điệu của audio sau khi ghép nối |
+| **Queue Concurrency (Số luồng sinh)** | 1 (Safe Sequential) | Thử nghiệm trên máy GPU mạnh (RTX 5070 Ti) xem có thể tăng an toàn không |
+| **Inference Parameters (Temp, Top_p, CFG)** | Giá trị mặc định theo tài liệu của từng model candidate | Đo chất lượng âm thanh tiếng Việt và tiếng Anh |
+| **Reference Audio Length (Thời lượng mẫu clone)** | Tùy theo model clone được chọn | Đánh giá độ giống giọng và tốc độ nạp của từng model |
 
 ---
 
-## 11. Acceptance Criteria (Tiêu chí nghiệm thu có thể kiểm chứng)
+## 12. Scope Definition (Phạm vi sản phẩm)
 
-### AC-01: Giao diện & Điều hướng
-- [ ] Giao diện khởi động hiển thị đúng bố cục 4 phân vùng (Top Bar, Left Sidebar, Center Workspace, Right Inspector) kèm Bottom Job Bar.
-- [ ] Bấm chuyển đổi giữa `Text to speech`, `Transcribe`, `History`, `Settings` mượt mà, không giật lag.
-- [ ] Chuyển đổi ngôn ngữ giao diện `VN / EN` và chế độ `Sáng / Tối` hoạt động tức thì.
+### 12.1 IN SCOPE (Nằm trong MVP)
+* Desktop shell Windows 10/11 x64 (Tauri v2 + React 19 + TypeScript).
+* 4 Workspace chính: `Text to Speech`, `Voice Clone`, `Voice Library`, `Transcription`.
+* 2 Workspace tiện ích: `History`, `Settings`.
+* TTS Model Set bao phủ chất lượng cho cả **Tiếng Việt** và **Tiếng Anh**.
+* Voice Cloning / Reference Audio (ít nhất 1 model hỗ trợ trong MVP model set).
+* Smart Chunking theo profile model, bảo vệ protected spans (số thập phân, URL, email, viết tắt).
+* Hybrid Chunk Studio (nghe thử từng câu, sửa text, retry câu lỗi, pause override).
+* Audio caching từng câu, quy tắc stale cache khi sửa text, và basic interrupted-session recovery (MVP target).
+* Ghép nối audio xuất file WAV và MP3.
+* Quản lý Voice Profile: stable identity, gắn tags, tìm kiếm theo tên, lọc theo tag, rename, delete an toàn, "Use in TTS".
+* Chuẩn hóa text tất định an toàn; AI Punctuation có lexical guardrail; AI Optimize; AI Translation; Original text safety với Restore Original và Reject AI Revision riêng biệt.
+* Bóc băng âm thanh/video bằng Whisper local với Automatic Language Detection; xuất TXT/SRT; nút "Chuyển sang TTS".
+* Cài đặt 7 nhóm chức năng; SQLite local lưu trữ có schema versioning.
+* Phân định rạch ròi: Clear History $\neq$ Clear Cache $\neq$ Delete Output.
 
-### AC-02: Chuẩn hóa & AI Text
-- [ ] Dán văn bản tiếng Việt lộn xộn Unicode/khoảng trắng $\rightarrow$ Bấm Chuẩn hóa $\rightarrow$ Văn bản trở về NFC chuẩn, khoảng cách dấu câu chuẩn xác 100%.
-- [ ] Chạy AI Punctuation $\rightarrow$ Hiển thị modal Diff Before/After; nếu LLM thay đổi từ ngữ thì guardrail báo cảnh báo; bấm Revert khôi phục 100% bản gốc.
-- [ ] Bấm nút "Generate Audio" mà chưa bật AI $\rightarrow$ Hệ thống sử dụng trực tiếp text hiện tại, không âm thầm gọi LLM.
-
-### AC-03: Long-form TTS & Chunk Studio
-- [ ] Kịch bản dài (>1000 từ) được chia thành danh sách chunk hợp lý theo ranh giới câu.
-- [ ] Bấm sinh audio $\rightarrow$ Bottom Job Bar cập nhật tiến độ theo từng chunk hoàn thành; các chunk sinh xong có nút nghe thử ngay.
-- [ ] Giả lập lỗi ở 1 chunk (hoặc bấm Cancel) $\rightarrow$ Các chunk trước đó không bị mất; sửa text câu lỗi và bấm Retry riêng câu đó thành công.
-- [ ] Bấm "Ghép audio" $\rightarrow$ Xuất ra file `.wav` hoặc `.mp3` hoàn chỉnh, nghe mượt mà có khoảng lặng giữa các câu.
-
-### AC-04: Standalone Transcription
-- [ ] Kéo thả file audio/video $\rightarrow$ Whisper bóc băng hiển thị cả Plain Text và Timestamped Segments.
-- [ ] Xuất file `.txt` và `.srt` đúng định dạng chuẩn.
-- [ ] Bấm "Chuyển sang TTS" $\rightarrow$ Nạp toàn bộ plain text sang tab TTS làm văn bản mới, transcript gốc không bị sửa đổi.
-
-### AC-05: An toàn & Ổn định hệ thống
-- [ ] Tắt tiến trình worker bằng Task Manager trong khi đang sinh audio $\rightarrow$ Ứng dụng VoxLab không bị crash; UI hiển thị lỗi và đưa về trạng thái sẵn sàng thử lại.
-- [ ] Bấm Cancel $\rightarrow$ RAM và VRAM được giải phóng ngay lập tức.
+### 12.2 OUT OF SCOPE (Dứt khoát KHÔNG làm trong MVP)
+* Không Project entity, không project hierarchy, không project asset manager.
+* Không Built-in Model Store / Downloader Manager phức tạp.
+* Không Cloud API fallback, không cloud voice sharing, không user account.
+* Không Trình biên tập timeline waveform/subtitle chuyên sâu (không kéo thả timeline mili-giây).
+* Không Timing-preserving automatic video dubbing.
+* Không Voice Marketplace, không AI auto-tagging cho giọng.
+* Không TTS hội thoại đa nhân vật tự động (multi-speaker dialogue auto-assignment).
+* Không Direct SRT-to-TTS workflow tự động.
+* Không Licensing infrastructure phức tạp (không activation server, không machine binding, không expiry lock).
 
 ---
 
-### KẾT LUẬN & DỪNG GATE B
+## 13. Observable & Verifiable Acceptance Criteria
 
-Tài liệu `SPEC.md` v2.0 đã hoàn thành chi tiết, kiểm chứng được và tuân thủ chặt chẽ nguyên tắc: đặc tả rõ ràng phân vùng/chức năng/trạng thái nhưng **không tự khóa trước visual style chi tiết (để Phase 6 Stitch UI/UX Gate thực hiện)**.
+### AC-01: Navigation & Shell Layout
+- [ ] Giao diện khởi động hiển thị đầy đủ 6 mục điều hướng bên trái: `Text to Speech`, `Voice Clone`, `Voice Library`, `Transcription`, `History`, `Settings`.
+- [ ] Bấm chuyển đổi qua lại giữa 6 workspace diễn ra bình thường, không xảy ra lỗi trắng màn hình hay crash ứng dụng.
+- [ ] Nút thu gọn sidebar hoạt động đúng: khi thu gọn, bề rộng sidebar giảm xuống và không gian cho Center Workspace mở rộng tương ứng.
+- [ ] Chuyển đổi ngôn ngữ hiển thị giao diện giữa `VN` và `EN` cập nhật toàn bộ nhãn văn bản trên giao diện ngay lập tức.
+- [ ] Chuyển đổi Appearance giữa `Light` và `Dark` cập nhật chủ đề màu sắc của giao diện ngay lập tức.
 
-**STOPPING AT GATE B — PENDING USER APPROVAL.**  
-*(Xin mời bạn xem xét và phê duyệt bản Đặc tả SPEC.md mới này trước khi chuyển sang bước tiếp theo).*
+### AC-02: Chuẩn hóa tất định & Bảo vệ Protected Spans
+- [ ] Nạp đoạn văn bản chứa Unicode tổ hợp và khoảng trắng thừa $\rightarrow$ Bấm Chuẩn hóa $\rightarrow$ Văn bản chuyển thành Unicode NFC dựng sẵn, các khoảng trắng thừa bị loại bỏ.
+- [ ] Nạp đoạn văn bản chứa các chuỗi được bảo vệ: `3.14`, `10:30`, `TP.HCM`, `v2.0`, `127.0.0.1`, `https://example.com`, `test@email.com` $\rightarrow$ Bấm Chuẩn hóa $\rightarrow$ Các chuỗi này giữ nguyên vẹn 100%, không bị chèn dấu cách sai lệch (không bị tách thành `3. 14` hay `10: 30`).
+
+### AC-03: AI Text Assistance, Guardrail & Revision Semantics
+- [ ] Chạy AI Punctuation với đoạn văn bản thiếu dấu câu $\rightarrow$ Giao diện hiển thị modal Diff Before/After so sánh sự khác biệt.
+- [ ] Giả lập trường hợp LLM tự ý thêm/bớt từ ngữ trong văn bản $\rightarrow$ Hệ thống hiển thị cảnh báo vi phạm từ vựng (Lexical Change Warning) trên giao diện Diff và vô hiệu hóa chế độ tự động áp dụng.
+- [ ] Sau khi chạy một thao tác AI $\rightarrow$ Bấm `[Reject AI Revision]` $\rightarrow$ Văn bản quay trở lại trạng thái `Working Text` trước khi chạy thao tác đó.
+- [ ] Chạy liên tiếp nhiều thao tác $\rightarrow$ Bấm `[Restore Original]` $\rightarrow$ Văn bản quay trở lại 100% nội dung `Original Source` ban đầu.
+- [ ] Khi chưa bật AI hoặc không kết nối Local LLM $\rightarrow$ Bấm nút tạo audio $\rightarrow$ Hệ thống sử dụng trực tiếp text hiện tại, không phát sinh bất kỳ yêu cầu mạng nào tới LLM.
+
+### AC-04: Smart Chunking & Invalidation Cache
+- [ ] Kịch bản dài được phân đoạn theo đúng thứ tự ưu tiên: Đoạn văn $\rightarrow$ Câu hoàn chỉnh $\rightarrow$ Vế câu; không có chunk nào bị cắt ngang giữa một protected span.
+- [ ] Sinh audio thành công cho Chunk #001 $\rightarrow$ Chunk #001 hiển thị trạng thái `Ready` và nghe thử được audio.
+- [ ] Chỉnh sửa một ký tự trong text của Chunk #001 $\rightarrow$ Trạng thái của Chunk #001 chuyển sang `Modified`, audio cũ bị đánh dấu là stale/invalid và không được sử dụng khi bấm Ghép audio tổng.
+
+### AC-05: TTS Generation & Audio Resilience
+- [ ] Tạo bài đọc gồm nhiều chunk bằng tiếng Việt $\rightarrow$ Âm thanh phát âm chuẩn tiếng Việt.
+- [ ] Tạo bài đọc bằng tiếng Anh $\rightarrow$ Âm thanh phát âm chuẩn tiếng Anh.
+- [ ] Trong khi đang sinh chunk #005 $\rightarrow$ Ngắt tiến trình worker bằng Task Manager $\rightarrow$ Ứng dụng chính không bị sập (no UI crash); Chunk #005 chuyển trạng thái `Failed`; cho phép bấm Retry riêng chunk #005.
+- [ ] Đang sinh bài đọc dài $\rightarrow$ Bấm `[Cancel]` $\rightarrow$ Hàng đợi dừng lại; các chunk đã hoàn thành trước thời điểm Cancel được giữ nguyên trên giao diện và nghe thử được bình thường; tài nguyên tiến trình con được giải phóng.
+- [ ] Bấm `[Ghép & Xuất audio]` $\rightarrow$ File `.wav` hoặc `.mp3` được tạo ra trong thư mục output, chứa toàn bộ nội dung âm thanh của các chunk theo đúng thứ tự và có khoảng lặng phân tách giữa các câu.
+
+### AC-06: Voice Clone & Voice Library
+- [ ] Nạp file âm thanh mẫu `.wav` hợp lệ vào workspace Voice Clone $\rightarrow$ Nhập test text $\rightarrow$ Bấm Generate Preview $\rightarrow$ Nghe được file audio preview giọng clone.
+- [ ] Nạp file âm thanh hỏng hoặc dung lượng 0 byte $\rightarrow$ Giao diện hiển thị thông báo lỗi file không hợp lệ và nút sinh preview bị vô hiệu hóa.
+- [ ] Nhập tên "Voice Test", gắn tags `[Nam, Kể chuyện]` $\rightarrow$ Bấm Lưu $\rightarrow$ Voice Profile xuất hiện ngay lập tức trong danh sách của workspace *Voice Library*.
+- [ ] Tại Voice Library: Nhập từ khóa tìm kiếm theo tên $\rightarrow$ Danh sách lọc chính xác voice cần tìm.
+- [ ] Tại Voice Library: Chọn lọc theo Tag $\rightarrow$ Danh sách chỉ hiển thị các voice có chứa tag đó.
+- [ ] Đổi tên (Rename) Voice Profile từ "Voice A" thành "Voice B" $\rightarrow$ Thao tác thành công, ID của voice trong cơ sở dữ liệu giữ nguyên không đổi.
+- [ ] Tại Voice Library: Bấm `[Use in TTS]` trên một voice profile $\rightarrow$ Ứng dụng tự động chuyển sang workspace Text to Speech và đặt profile này làm Active Voice.
+- [ ] Bấm xóa một Voice Profile $\rightarrow$ Hệ thống hiển thị hộp thoại xác nhận cảnh báo; bấm xác nhận xóa $\rightarrow$ Profile biến mất khỏi Library nhưng các file audio đã sinh trước đó trong ổ cứng không bị xóa.
+
+### AC-07: Standalone Transcription
+- [ ] Nạp file âm thanh tiếng Việt vào workspace Transcription $\rightarrow$ Bật Auto Detect $\rightarrow$ Hệ thống tự động nhận diện ngôn ngữ tiếng Việt và bóc băng ra văn bản tiếng Việt.
+- [ ] Nạp file media tiếng Anh $\rightarrow$ Bóc băng ra văn bản tiếng Anh chính xác.
+- [ ] Bấm `[Xuất file .TXT]` $\rightarrow$ Tạo file `.txt` chứa toàn bộ nội dung văn bản.
+- [ ] Bấm `[Xuất file .SRT]` $\rightarrow$ Tạo file phụ đề `.srt` hợp lệ với các mốc thời gian `00:00:00,000 --> 00:00:00,000`.
+- [ ] Bấm `[Chuyển sang TTS]` $\rightarrow$ Ứng dụng chuyển sang workspace Text to Speech, toàn bộ plain transcript text được đưa vào khung làm việc của TTS, transcript gốc tại Transcription giữ nguyên không đổi.
+
+### AC-08: Settings & Data Separation
+- [ ] Thay đổi các cấu hình trong Settings (ngôn ngữ, theme, thư mục output) $\rightarrow$ Khởi động lại ứng dụng $\rightarrow$ Các cấu hình đã thay đổi được lưu trữ bền vững và áp dụng lại chính xác.
+- [ ] Bấm `[Clear History]` $\rightarrow$ Danh sách trong workspace History bị xóa sạch; các file trong thư mục cache và các file audio đã xuất trong thư mục output không bị xóa.
+- [ ] Bấm `[Clear Cache]` $\rightarrow$ Các file tạm trong thư mục cache bị xóa; danh sách trong History và các file audio trong thư mục output không bị xóa.
+- [ ] Bấm `[Reset Settings]` $\rightarrow$ Các tùy chọn cấu hình quay về mặc định ban đầu; Voice Library, lịch sử phiên và các file audio thành phẩm không bị xóa.
+
+### AC-09: Offline Integrity & Performance Baseline
+- [ ] Ngắt toàn bộ kết nối mạng internet (tắt Wi-Fi / rút dây mạng) $\rightarrow$ Thực hiện toàn bộ quy trình: Chuẩn hóa text $\rightarrow$ Chia chunk $\rightarrow$ TTS $\rightarrow$ Ghép audio $\rightarrow$ Bóc băng media $\rightarrow$ Mọi chức năng hoạt động bình thường, không xuất hiện bất kỳ lỗi mạng nào.
+- [ ] Không có bất kỳ gói tin mạng nào được gửi ra internet trong suốt quá trình sử dụng core features (Zero Telemetry).
+
+---
+
+## 14. User Decisions Required (Các điểm cần quyết định trước khi Plan)
+
+Hiện tại toàn bộ các ranh giới kiến trúc và nghiệp vụ của MVP đã được đặc tả hoàn chỉnh. Chỉ còn **2 câu hỏi chính sách sản phẩm** để User xác nhận có muốn đưa vào MVP hay để lại cho các giai đoạn sau:
+
+1. **Licensing & Key Activation**:
+   * *Đề xuất hiện tại*: Đã loại bỏ hoàn toàn UI nhập Key và License badge khỏi giao diện chính của MVP để giữ ứng dụng gọn gàng, không phát sinh code activation server phức tạp.
+   * *Xác nhận của bạn*: Đồng ý đưa Licensing vào mục `LATER` (để tính sau MVP), hay bạn muốn có cơ chế kích hoạt key offline/online cụ thể ngay trong MVP?
+2. **Model Download Workflow**:
+   * *Đề xuất hiện tại*: Không xây dựng Model Manager / Downloader phức tạp trong MVP; người dùng tải model và đặt vào thư mục `models/` theo hướng dẫn, hoặc ứng dụng chỉ kiểm tra model sẵn có.
+   * *Xác nhận của bạn*: Đồng ý với hướng tiếp cận gọn nhẹ này cho MVP (để Model Manager lại sau), hay muốn có giao diện tải model trực tiếp trong ứng dụng ngay từ MVP?
+
+---
+
+### KẾT LUẬN
+
+Bản đặc tả kỹ thuật `SPEC.md` v2.1.0 đã giải quyết triệt để toàn bộ 25 yêu cầu từ mục A đến Y: tách riêng Voice Clone và Voice Library, chuẩn hóa 7 nhóm Settings, tinh chỉnh Smart Chunking với Protected Spans, nâng cấp AI Guardrail, loại bỏ hoàn toàn các giả định Project Management phức tạp, và cung cấp bộ Acceptance Criteria hoàn toàn có thể kiểm chứng bằng quan sát thực nghiệm.
+
+# **READY FOR GATE B USER REVIEW**
+*(Đang dừng tại GATE B theo AGENT_WORKFLOW.txt. Xin mời bạn xem xét và phê duyệt).*
