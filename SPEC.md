@@ -1,6 +1,6 @@
 # VoxLab — Product & Technical Specification (SPEC.md)
 
-**Document Version**: 2.3.0 (Final Consistency Pass)  
+**Document Version**: 2.4.0 (Application Update & Persistent Data Compatibility)  
 **Phase**: Phase 3 — Specification (GATE B)  
 **Status**: Pending User Approval  
 **Target Platform**: Windows 10/11 64-bit (x64)  
@@ -41,7 +41,7 @@ VoxLab là ứng dụng desktop Windows được thiết kế theo kiến trúc 
 
 ---
 
-## 3. High-Level Architecture & Storage Boundaries
+## 3. High-Level Architecture, Storage Boundaries & Lifecycle
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -59,6 +59,7 @@ VoxLab là ứng dụng desktop Windows được thiết kế theo kiến trúc 
 │  - SQLite Database Manager (Settings, Voice Profiles, Sessions/History)        │
 │  - Secure Credential Storage Bridge (Windows DPAPI / OS Credential Store)      │
 │  - Safe Data Root Migration Orchestrator (Copy -> Verify -> Activate/Rollback) │
+│  - App Update Manager & Ordered Schema Migrations ($N \rightarrow N+1$)        │
 └──────────────┬───────────────────────────────┬───────────────────────────┬──────┘
                │ Documented IPC Interface      │ Local HTTP                │ HTTPS
 ┌──────────────▼──────────────┐ ┌──────────────▼─────────────┐ ┌───────────▼──────┐
@@ -89,6 +90,36 @@ Hệ thống phân định rạch ròi 4 loại đường dẫn, không gộp ch
 - **VoxLab KHÔNG**: Tải file model LLM, không quản lý file GGUF, không load file `.gguf`, không trực tiếp quản lý VRAM/offload/context của LLM, không yêu cầu người dùng chọn thư mục LLM trong VoxLab.
 - **Ranh giới**: `LLM Model Management = OUTSIDE VOXLAB` và `Local LLM Connection Configuration = IN SCOPE`.
 - **Cơ chế**: VoxLab kết nối qua HTTP tới OpenAI-compatible endpoint của LM Studio (hoặc provider tương đương), kiểm tra kết nối (`Test Connection`), tự động truy vấn danh sách model khả dụng qua API để hiển thị dropdown cho người dùng chọn. Trạng thái kết nối hiển thị rõ ràng: *Connected*, *Not Connected*, *No Model Available*, *Model Ready*, *Provider Error*.
+
+### 3.3 Vòng đời Cập nhật Ứng dụng & Tương thích Dữ liệu Bền vững (Application Update & Persistent Data Compatibility)
+- **Nguyên tắc cốt lõi**: Cập nhật phiên bản ứng dụng VoxLab **TUYỆT ĐỐI KHÔNG ĐƯỢC XÓA HOẶC RESET DỮ LIỆU CỦA NGƯỜI DÙNG** (Updating VoxLab MUST NOT delete or reset existing user data).
+- **Phân định đối tượng thay thế khi Update**:
+  - *Được phép thay thế (MAY REPLACE)*: File thực thi ứng dụng (`voxlab.exe`), tài nguyên giao diện frontend (`dist/`), runtime/backend đi kèm, bundled worker scripts, các file tĩnh bất biến của app.
+  - *Bắt buộc bảo toàn nguyên vẹn (MUST PRESERVE)*: Cơ sở dữ liệu SQLite (`voxlab.db`), toàn bộ cài đặt (settings), metadata các phiên và lịch sử (sessions/history), các Voice Profiles, toàn bộ tài sản âm thanh mẫu được quản lý (managed reference assets), cấu hình đường dẫn (`Configured Data Root`, `TTS Model Path`, `Transcription Model Path`, `Output Path`), các model TTS đã tải, các model faster-whisper đã tải, các file âm thanh/văn bản người dùng đã xuất, và thông tin xác thực bảo mật (credentials).
+  - Quá trình cập nhật tuyệt đối không được đối xử như một lần cài mới (clean install) trừ khi người dùng chủ động yêu cầu xóa sạch dữ liệu khi gỡ cài đặt.
+- **Cơ chế Định vị Data Root khi Cập nhật / Khởi động (Bootstrap Data Root Discovery)**:
+  - Do người dùng có thể cấu hình App Data Root ở ổ đĩa tùy chọn ngoài mặc định (ví dụ `D:\VoxLabData`), bản binary mới sau khi cập nhật phải có cơ chế bootstrap bền vững (stable bootstrap mechanism qua file cấu hình nhẹ tại vị trí người dùng chuẩn của OS hoặc registry) để tự động nhận diện lại đúng Data Root đang hoạt động.
+  - Nếu không thể tự động định vị Data Root: **Tuyệt đối không âm thầm khởi tạo môi trường rỗng mới** (khiến người dùng tưởng bị mất dữ liệu). Hệ thống bắt buộc phải hiển thị giao diện phục hồi: *"Không tìm thấy thư mục dữ liệu cũ, vui lòng chọn lại đường dẫn Data Root hiện có (Locate Existing Data Root)"*.
+- **Versioned Persistent Data & Ordered Schema Migrations**:
+  - Cơ sở dữ liệu SQLite bắt buộc có cơ chế quản lý phiên bản schema tường minh (`PRAGMA user_version` hoặc bảng `schema_version`).
+  - Khi phiên bản VoxLab mới yêu cầu cấu trúc schema mới:
+    - *Quy trình an toàn*: **Schema cũ $\rightarrow$ Sao lưu có thể phục hồi (Recoverable Backup) $\rightarrow$ Chạy các migrations theo thứ tự tuần tự ($N \rightarrow N+1 \rightarrow N+2$) $\rightarrow$ Kiểm chứng toàn vẹn (Validation) $\rightarrow$ Kích hoạt schema mới**.
+    - Tuyệt đối không xóa hay ghi đè hủy hoại cơ sở dữ liệu. Migrations phải có tính tất định (deterministic) và có phiên bản.
+  - **Xử lý sự cố Migration (Migration Failure Recovery)**: Nếu quá trình migration gặp lỗi:
+    - Lập tức dừng lại, phục hồi lại dữ liệu cũ từ bản backup, không xóa bản backup.
+    - Tuyệt đối không âm thầm khởi tạo một file database trống thay thế.
+    - Báo lỗi nâng cấp tường minh kèm thông tin chẩn đoán.
+    - Việc cài đặt file thực thi mới thành công chưa đủ để coi là update thành công; bắt buộc phải vượt qua bước xác thực tương thích dữ liệu trong lần khởi động đầu tiên (First-launch data compatibility verification).
+- **Tách biệt Dữ liệu Bền vững và Bộ nhớ đệm Tái tạo được (Cache Compatibility)**:
+  - Phân định rạch ròi giữa dữ liệu bền vững (DB, sessions, Voice Profiles, managed assets, settings) và cache tạm có thể tái tạo (temporary chunk cache, waveform data, chỉ mục tạm).
+  - Nếu định dạng cache bị thay đổi giữa các phiên bản phần mềm: Cache có thể bị vô hiệu hóa hoặc xây dựng lại (rebuild) an toàn.
+  - Tuyệt đối không xóa file xuất, file nguồn, voice assets hay thư mục model dưới danh nghĩa "dọn dẹp cache".
+- **Ranh giới độc lập giữa Cập nhật Ứng dụng và Cập nhật Model (Model Update Boundary)**:
+  - Cập nhật phiên bản VoxLab **tuyệt đối không tự động ghi đè hoặc xóa** các file model TTS và ASR.
+  - Cập nhật app và cập nhật model là 2 vòng đời hoàn toàn độc lập.
+  - Nếu phiên bản mới yêu cầu hoặc khuyến nghị revision model mới: hệ thống phát hiện tương thích, thông báo cho người dùng, người dùng chủ động kích hoạt tải model mới (có staging + validation). Tuyệt đối không tải lại hay xóa model tương thích đã có chỉ vì phiên bản app thay đổi.
+- **An toàn khi Hạ cấp Phiên bản (Downgrade Safety)**:
+  - Nếu một phiên bản VoxLab cũ hơn cố gắng mở cơ sở dữ liệu có schema phiên bản mới hơn: hệ thống **báo lỗi không tương thích tường minh (fail explicitly)**, **tuyệt đối không ghi/thay đổi database**, và thông báo cho người dùng rằng dữ liệu này yêu cầu phiên bản VoxLab mới hơn. (Không yêu cầu migration hạ cấp tự động trong MVP).
 
 ---
 
@@ -366,6 +397,13 @@ Bắt buộc phải qua benchmark thực tế trong bước Model Feasibility m�
 * Kiến trúc **Local-First Core + Explicit Optional Online Providers**.
 * Cam kết tích hợp ít nhất một official Online Voice Provider nếu vượt qua thẩm định kỹ thuật/pháp lý.
 * Configurable App Data Root với quy trình **Safe Data Migration** (Copy $\rightarrow$ Verify $\rightarrow$ Activate/Rollback).
+* **Application Update & Persistent Data Compatibility**:
+  * Tách biệt đối tượng thay thế (app binary, assets) và đối tượng bảo toàn (DB, settings, profiles, assets, models, outputs).
+  * Bootstrap Data Root Discovery tự động nhận diện Data Root đã cấu hình khi cập nhật app hoặc mở giao diện phục hồi nếu mất dấu.
+  * Versioned Persistent Data & Ordered Schema Migrations ($N \rightarrow N+1 \rightarrow N+2$) có backup phục hồi và kiểm chứng tương thích khi khởi động lần đầu.
+  * Tách biệt dữ liệu bền vững và cache tạm tái tạo được.
+  * Độc lập vòng đời giữa cập nhật app và cập nhật model.
+  * Cơ chế Downgrade Safety ngăn ngừa hỏng database khi mở bằng bản cũ.
 * Configurable Model Paths độc lập cho TTS và Transcription.
 * Model Discovery, Rescan và tái sử dụng model tương thích có sẵn.
 * Minimal User-Initiated Download cho TTS Models và faster-whisper Models (có staging, progress, cancel, integrity validation).
@@ -392,6 +430,7 @@ Bắt buộc phải qua benchmark thực tế trong bước Model Feasibility m�
 * Không Direct SRT-to-TTS workflow tự động.
 * Không Licensing / Key Activation infrastructure trong MVP.
 * Không cam kết sử dụng CapCut / Edge-TTS hoặc các endpoint không chính thức trong MVP nếu chưa qua kiểm chứng pháp lý/điều khoản dịch vụ (`FEASIBILITY / LEGAL / TERMS VALIDATION REQUIRED`).
+* Không yêu cầu automatic downgrade migration cho schema database (chỉ yêu cầu fail an toàn, không làm hỏng dữ liệu).
 
 ---
 
@@ -484,21 +523,23 @@ Bắt buộc phải qua benchmark thực tế trong bước Model Feasibility m�
 - [ ] Hệ thống kiểm tra cache và metadata $\rightarrow$ 10 chunk đã sinh thành công được khôi phục trạng thái `Ready` và nghe thử được ngay lập tức.
 - [ ] Người dùng bấm Sinh tiếp $\rightarrow$ Hệ thống chỉ sinh tiếp từ chunk #11 đến #20 mà không sinh lại 10 chunk đầu tiên; sau khi hoàn thành bấm Ghép audio tạo ra file hoàn chỉnh 20 chunk.
 
+### AC-14: Application Update & Persistent Data Preservation
+- [ ] Cài đặt VoxLab phiên bản N, tạo cấu hình: đổi theme, chỉnh TTS Model Path và Transcription Model Path sang ổ D, đổi Data Root sang `D:\VoxLabData`, tạo một Voice Profile kèm reference audio, chạy 1 session TTS và xuất file `.wav`.
+- [ ] Nâng cấp ứng dụng lên phiên bản N+1 (thay thế binary executable/assets).
+- [ ] Khởi động lần đầu phiên bản N+1: Bootstrap Data Root Discovery tự động nhận diện chính xác `D:\VoxLabData`; nếu phiên bản N+1 yêu cầu DB schema mới, hệ thống tự động chạy ordered migration thành công; toàn bộ Voice Profiles đã lưu hiển thị đầy đủ và phát được preview; History/Sessions cũ được giữ nguyên; cấu hình settings và model paths giữ nguyên; các model TTS và faster-whisper trong thư mục đã cấu hình được nhận diện và tái sử dụng trực tiếp mà không tải lại; file audio đã xuất trong thư mục output giữ nguyên vẹn 100%.
+
+### AC-15: Migration Failure Recovery, Cache Invalidation & Downgrade Safety
+- [ ] Giả lập lỗi trong quá trình thực thi DB migration khi update lên phiên bản mới: Hệ thống tự động rollback phục hồi lại database cũ từ bản backup, không xóa bản backup, không tự ý kích hoạt một database rỗng thay thế, và hiển thị thông báo lỗi nâng cấp rõ ràng cho người dùng.
+- [ ] Giả lập định dạng cache cũ không tương thích giữa 2 phiên bản phần mềm: Hệ thống tự động vô hiệu hóa/rebuild cache mà không xóa hoặc làm hỏng database, Voice Profiles, file output hoặc thư mục model.
+- [ ] Sử dụng phiên bản VoxLab cũ để mở database đã được nâng cấp lên schema mới hơn: Ứng dụng từ chối mở, hiển thị lỗi không tương thích phiên bản, và không thực hiện bất kỳ thao tác ghi đè hay thay đổi nào lên database.
+
 ---
 
 ### KẾT LUẬN & DỪNG GATE B
 
-Tài liệu `SPEC.md` v2.3.0 đã hoàn thành **Final Consistency Pass**, giải quyết triệt để cả 8 yêu cầu tinh chỉnh của bạn:
-1. Đã có quy trình **Safe Data Root Migration** an toàn (Copy $\rightarrow$ Verify $\rightarrow$ Activate/Rollback) kèm AC-11.
-2. Đã khôi phục chi tiết quy trình **Basic Interrupted-Session Recovery** kèm AC-13.
-3. Đã khôi phục chính sách độc lập **Review before Apply / Auto Apply** cho Translation kèm AC-10.
-4. Đã đặc tả năng lực **Voice Clone Multilingual + Capability-driven** kèm AC-06.
-5. Đã loại bỏ 100% từ ngữ cảm tính chủ quan khỏi Acceptance Criteria (AC-08 chuyển sang tiêu chí nhị phân kiểm chứng được).
-6. Đã chuẩn hóa quy trình **Integrity Validation** (dùng trusted checksum nếu nguồn hỗ trợ; nếu không dùng cơ chế xác thực mạnh nhất theo định dạng; lỗi không bao giờ chuyển sang Ready) kèm AC-09.
-7. Đã chốt **Online Voice Provider Commitment** (cam kết ít nhất 1 official provider nếu vượt qua thẩm định; loại bỏ endpoint lậu; defer nếu không đạt).
-8. Toàn bộ các yêu cầu nền tảng đã duyệt đều được bảo toàn nguyên vẹn 100%.
+Tài liệu `SPEC.md` v2.4.0 đã bổ sung hoàn chỉnh yêu cầu **Application Update & Persistent Data Compatibility**, bảo đảm vòng đời cập nhật ứng dụng luôn an toàn, không bao giờ xóa dữ liệu người dùng, quản lý schema migration tuần tự và có cơ chế rollback tin cậy.
 
-Không còn bất kỳ blocker hay điểm mơ hồ nào cản trở việc chuyển sang Phase 4 (Plan).
+Không còn bất kỳ điểm mơ hồ nào cản trở việc chuyển sang Phase 4 (Plan).
 
 # **READY FOR GATE B USER REVIEW**
 *(Đang dừng tại GATE B theo AGENT_WORKFLOW.txt. Xin mời bạn xem xét và đưa ra quyết định phê duyệt chính thức).*
