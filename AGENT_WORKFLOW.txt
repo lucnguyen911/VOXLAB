@@ -1,5 +1,5 @@
-AGENT WORKFLOW — CLEAN
-Environment → Constraints → Interview → Spec → Plan → Build → Verify → Ship
+AGENT WORKFLOW — CLEAN + STITCH UI/UX
+Environment → Constraints → Interview → Spec → Plan → UI/UX (Stitch) → Build → Verify → Ship
 ======================================================================
 
 PROJECT CONTEXT
@@ -146,9 +146,11 @@ Before making changes:
 5. Determine the current workflow phase.
 6. Do not repeat already approved phases unless new evidence invalidates them.
 7. Do not advance through an approval gate without approval.
-8. Load only the skills needed for the current phase.
+8. Load only the skills/tools needed for the current phase.
 9. Prefer repository evidence and executable verification over assumptions.
 10. Preserve approved product behavior unless a change is explicitly approved.
+11. For material UI/UX work, treat approved UI design artifacts and user-provided
+    sketches/references as product requirements, not optional inspiration.
 
 The USER owns decisions about:
 - product goals;
@@ -156,6 +158,7 @@ The USER owns decisions about:
 - workflow;
 - scope;
 - UI/UX;
+- visual direction when materially important;
 - product priorities;
 - privacy expectations;
 - distribution/business decisions;
@@ -204,6 +207,10 @@ SPECIFICATION:
 PLANNING:
     /plan
 
+UI / UX DESIGN + PROTOTYPING:
+    prefer Stitch when available for material UI/workflow design.
+    fallback: equivalent visual design/prototyping workflow when Stitch is unavailable.
+
 IMPLEMENTATION:
     prefer /build auto
     fallback: /build or equivalent implementation workflow.
@@ -233,10 +240,13 @@ RELEASE:
     /ship
 
 Rules:
-- If a slash command is unavailable, execute the equivalent workflow.
-- Do not skip a phase because its slash command is unavailable.
-- Do not load all skills at once.
+- If a slash command or named design tool is unavailable, execute the equivalent workflow.
+- Do not skip a phase because its preferred tool is unavailable.
+- Do not load all skills/tools at once.
 - Prefer explicit lifecycle commands when supported.
+- Stitch is a UI/UX design aid, not a source of authority over approved SPEC/scope.
+- Do not blindly copy generated UI code from Stitch or another design tool; adapt it to the
+  approved stack, repository conventions, accessibility, security, and quality constraints.
 
 ======================================================================
 3. GLOBAL ENGINEERING RULES
@@ -264,6 +274,10 @@ Rules:
 20. Do not treat guessed tuning values as optimized requirements.
 21. Workload-dependent values must use a safe default and TUNING REQUIRED when needed.
 22. Record material architecture/product/security/data/packaging decisions.
+23. For material UI, do not begin deep UI implementation before the applicable UI/UX gate.
+24. After UI approval, preserve approved information architecture, major layout, hierarchy,
+    workflow, and interaction model unless the USER approves a material change.
+25. Visual polish must not reduce accessibility, clarity, performance, or usability.
 
 Typical TUNING REQUIRED parameters:
 - chunk size;
@@ -288,6 +302,7 @@ Ask the USER only when the answer materially affects:
 - product behavior;
 - workflow;
 - UI/UX;
+- visual direction when multiple materially different options remain;
 - scope;
 - data ownership/lifecycle;
 - privacy;
@@ -306,7 +321,8 @@ Do not ask the USER about ordinary implementation details such as:
 - design-pattern selection;
 - internal function signatures;
 - naming style;
-- test framework when the repository already establishes one.
+- test framework when the repository already establishes one;
+- trivial CSS/component implementation details once UI direction is approved.
 
 When the USER cannot answer a technical question:
 1. Inspect repository/documentation.
@@ -315,7 +331,7 @@ When the USER cannot answer a technical question:
 4. Record the decision if material.
 5. If the correct value depends on real workload, mark TUNING REQUIRED.
 6. Escalate only when the trade-off affects product behavior, risk, cost,
-   privacy, security, compatibility, or distribution.
+   privacy, security, compatibility, distribution, or material UX.
 
 ======================================================================
 5. APPROVAL GATES
@@ -330,8 +346,23 @@ Approve product behavior and acceptance criteria.
 GATE C — IMPLEMENTATION PLAN
 Approve high-level architecture, milestones, major dependencies, and high-risk trade-offs.
 
-GATE D — UI / UX
-Required when UI/workflow changes are significant.
+GATE D — UI / UX DESIGN + PROTOTYPE
+Required when UI/workflow is materially important or materially changed.
+Approve, as applicable:
+- information architecture;
+- navigation;
+- major layout;
+- visual direction;
+- hierarchy;
+- key controls/interactions;
+- loading/progress/empty/error/disabled states;
+- desktop resize/responsive behavior;
+- light/dark behavior when required;
+- representative prototype in the actual app when practical.
+
+When Stitch is available and the UI is material, use Stitch during this gate before
+committing to deep frontend implementation. Stitch output is a design reference;
+final authority remains the approved SPEC, constraints, USER feedback, and verified app.
 
 GATE E — HIGH-RISK CHANGE
 Required when implementation introduces a high-risk change.
@@ -348,7 +379,7 @@ Do not stop for ordinary low-risk implementation details.
 LOW RISK examples:
 - helper functions;
 - formatting;
-- small UI components;
+- small UI components that preserve approved design;
 - localized validation;
 - simple CRUD;
 - local state;
@@ -367,10 +398,11 @@ MEDIUM RISK examples:
 - database operations;
 - approved external APIs;
 - export/import;
-- resource lifecycle.
+- resource lifecycle;
+- moderate UI implementation within an approved design direction.
 
 Default:
-Proceed according to approved SPEC and PLAN. Stop only if a new gate appears.
+Proceed according to approved SPEC, PLAN, and UI direction. Stop only if a new gate appears.
 
 HIGH RISK examples:
 - framework/runtime replacement;
@@ -406,7 +438,7 @@ NEW PROJECT:
  3. SPECIFICATION
  4. PLAN + TASK BREAKDOWN
  5. PLAN REVIEW
- 6. UI PROTOTYPE / UX GATE when needed
+ 6. UI / UX DESIGN + PROTOTYPE GATE — Stitch when available and applicable
  7. BUILD AUTO / IMPLEMENTATION
  8. TEST / VERIFICATION
  9. CODE REVIEW
@@ -422,7 +454,7 @@ SMALL CHANGE:
 mini-plan → build → test → verify.
 
 MEDIUM FEATURE:
-requirement check → spec delta → plan → build → test → review.
+requirement check → spec delta → plan → UI gate if materially affected → build → test → review.
 
 LARGE / HIGH-RISK FEATURE:
 full applicable lifecycle.
@@ -801,7 +833,9 @@ Rules:
 - do not install speculative feature dependencies;
 - do not add unapproved features;
 - do not convert assumptions into requirements;
-- acceptance criteria must be verifiable.
+- acceptance criteria must be verifiable;
+- for material UI, describe required screens, workflows, states, and product behavior
+  without prematurely hard-coding visual styling that belongs in Phase 6.
 
 Create/update SPEC.md or repository convention.
 Stop at GATE B.
@@ -831,7 +865,8 @@ Cover when applicable:
 - logging;
 - test strategy;
 - packaging impact;
-- migration.
+- migration;
+- UI implementation boundaries without pre-empting Gate D visual decisions.
 
 Each task must include:
 ID
@@ -884,40 +919,142 @@ Check:
 - acceptance criteria testable?
 - verification realistic?
 - premature abstraction?
+- does the plan leave enough room for Gate D UI/UX decisions without forcing a design prematurely?
 
 If appropriate, preserve plan.
 If changes are needed, update tasks/plan.md and tasks/todo.md.
 Do not implement.
 
 ======================================================================
-PHASE 6 — UI PROTOTYPE / UX GATE
+PHASE 6 — UI / UX DESIGN + PROTOTYPE GATE
+STITCH WHEN AVAILABLE
 ======================================================================
 
 Run when UI/workflow is materially important.
+Skip when UI is not relevant or the change is truly trivial and does not affect
+approved layout/workflow.
 
 OBJECTIVE:
-Validate UX before deep business-logic integration.
+Design and validate a modern, coherent, usable product UI before deep business-logic
+integration, while preserving approved product behavior and scope.
 
-Mock data is allowed.
+PRECONDITIONS:
+- GATE B — SPEC approved.
+- GATE C — PLAN approved.
+- Read approved SPEC, CONSTRAINTS.md, relevant user feedback, sketches, screenshots,
+  brand references, existing UI, and repository constraints.
+
+A. DESIGN SOURCE OF TRUTH
+
+Use the following priority:
+1. Approved SPEC/product behavior.
+2. Explicit USER UI/UX decisions and supplied sketches/references.
+3. Existing approved product design/conventions.
+4. Stitch design exploration when available.
+5. Agent design judgment for ordinary details.
+
+Do not invent product features merely to make a mockup look richer.
+Do not remove required controls/states for visual simplicity.
+
+B. STITCH POLICY
+
+When Stitch is available and UI/workflow is material:
+- use Stitch to create/explore the UI direction before deep frontend implementation;
+- feed it the approved product scope, target platform, relevant screens/states,
+  and USER-provided sketch/reference when available;
+- if the USER already supplied a clear layout direction, refine that direction rather
+  than replacing it with an unrelated design;
+- if visual direction is genuinely unresolved, create 2–3 meaningfully different
+  directions at most, then let the USER choose before implementing the app prototype;
+- do not generate many cosmetic variants with no workflow difference;
+- keep desktop-first density, hierarchy, readability, and real application workflow in mind;
+- avoid generic "AI dashboard" styling, decorative complexity, excessive cards,
+  gradients, glass effects, or animation unless they serve the approved product direction;
+- prefer clear typography, spacing, alignment, hierarchy, discoverability, and consistency;
+- design light/dark variants only when required by the product/SPEC;
+- record the approved direction in UI_DESIGN.md or docs/ui/ when useful.
+
+If Stitch is unavailable:
+- do not block or skip the gate;
+- use an equivalent wireframe/mockup/prototyping method;
+- document that Stitch was unavailable and continue with the same UX quality bar.
+
+C. REQUIRED UI COVERAGE
+
 Prototype applicable:
-- layout;
+- application shell;
 - navigation;
+- major workspace layout;
 - hierarchy;
 - forms;
 - controls;
 - settings;
+- primary actions;
+- contextual panels/inspectors when applicable;
 - loading;
 - progress;
 - empty states;
+- success states;
 - errors;
+- disabled/unavailable states;
+- cancel/retry states;
 - resize/responsive behavior;
 - desktop window behavior;
-- keyboard interaction when important.
+- keyboard interaction when important;
+- light/dark theme when required;
+- representative long/large-content states when relevant.
 
-Do not build complex backend logic solely for the prototype.
-Run UI and verify no fatal render/runtime errors.
+For complex apps, cover the critical screens/states named in SPEC rather than only
+one attractive landing screen.
+
+D. VISUAL / UX QUALITY BAR
+
+The design should be:
+- modern but not trend-dependent;
+- appropriate for the target platform and product category;
+- visually coherent across screens;
+- information-dense enough for desktop productivity without becoming cluttered;
+- readable at realistic content lengths;
+- consistent in spacing, typography, component behavior, icon usage, and hierarchy;
+- accessible enough for practical keyboard/focus/contrast/readability needs;
+- resilient to localization, long labels, empty data, errors, and loading;
+- usable at supported desktop window sizes.
+
+Do not sacrifice clarity or workflow efficiency for decoration.
+
+E. PROTOTYPE IMPLEMENTATION
+
+After the USER selects/approves the design direction when selection is needed:
+- implement a lightweight representative UI prototype in the actual app when practical;
+- mock data is allowed;
+- do not build complex backend/business logic solely for the prototype;
+- reuse the real design system/components when doing so does not prematurely couple backend logic;
+- run the UI and verify no fatal render/runtime errors;
+- verify key resize/layout states;
+- compare the running prototype against the approved design direction.
+
+F. CHANGE CONTROL
+
+After GATE D approval:
+- approved information architecture, navigation, major layout, hierarchy, and workflow
+  become controlled product behavior;
+- ordinary implementation details may be adjusted by the AGENT;
+- any material deviation that changes user workflow, major layout, navigation, or visual
+  direction requires USER approval before proceeding;
+- minor spacing/polish/accessibility fixes that preserve the approved design do not require a new gate.
+
+G. OUTPUT
+
+Report:
+UI DESIGN SUMMARY
+STITCH / DESIGN TOOL USED: YES / NO + reason
+SCREENS / STATES COVERED
+APPROVED DIRECTION OR OPTIONS REQUIRING USER CHOICE
+RUNNING PROTOTYPE VERIFICATION
+KNOWN UI RISKS / LIMITATIONS
+
 Stop at GATE D when material.
-Skip when UI is not relevant.
+Do not begin deep business-logic integration until GATE D is approved.
 
 ======================================================================
 PHASE 7 — BUILD AUTO / IMPLEMENTATION
@@ -935,12 +1072,13 @@ Per task:
 1. Read READY task.
 2. Inspect relevant existing code.
 3. Implement approved scope only.
-4. Avoid unrelated refactors.
-5. Add/update useful tests.
-6. Run task verification.
-7. If verification fails, debug root cause.
-8. Update tasks/todo.md.
-9. LOW/MEDIUM + pass → continue automatically to next READY task.
+4. For UI work, read the approved UI design artifact/reference first.
+5. Avoid unrelated refactors.
+6. Add/update useful tests.
+7. Run task verification.
+8. If verification fails, debug root cause.
+9. Update tasks/todo.md.
+10. LOW/MEDIUM + pass → continue automatically to next READY task.
 
 Dependency policy:
 Agent may add a small, well-maintained dependency without stopping when it:
@@ -966,6 +1104,7 @@ Automatic continuation allowed while:
 - behavior stays within SPEC;
 - verification passes;
 - architecture stays within PLAN;
+- UI stays within the approved Gate D direction when applicable;
 - no high-risk issue emerges.
 
 Stop at GATE E if:
@@ -1014,7 +1153,8 @@ Test applicable scenarios:
 - resource cleanup;
 - concurrency/race conditions;
 - migration/upgrade/rollback;
-- packaging smoke test.
+- packaging smoke test;
+- material UI states and resize behavior where applicable.
 
 Run applicable:
 - unit tests;
@@ -1060,7 +1200,8 @@ Review independently:
 - performance hotspots;
 - test quality;
 - logging;
-- migration/compatibility.
+- migration/compatibility;
+- adherence to approved UI/UX when applicable.
 
 Classify:
 CRITICAL
@@ -1069,7 +1210,7 @@ MEDIUM
 LOW
 
 Auto-fix CRITICAL/HIGH when correction is clear, localized, and does not change
-approved product behavior or major architecture.
+approved product behavior, major architecture, or approved UI direction.
 MEDIUM/LOW may be fixed automatically when low risk and clearly beneficial.
 After fixes, run relevant regression verification.
 Do not perform major refactors merely for aesthetics.
@@ -1195,11 +1336,12 @@ If code is already appropriately simple, make no change.
 PHASE 13 — FINAL REVIEW
 ======================================================================
 
-Compare implementation against approved SPEC.
+Compare implementation against approved SPEC and approved UI/UX when applicable.
 
 Verify:
 - all requirements covered;
 - no unapproved behavior added;
+- approved major UI/workflow is preserved;
 - tests pass;
 - production build succeeds;
 - application starts/runs;
@@ -1318,7 +1460,7 @@ MEDIUM:
 requirement check/interview if needed
 → spec delta
 → plan
-→ UI gate if needed
+→ UI/UX design + prototype gate if materially affected
 → build auto
 → test
 → review
@@ -1330,7 +1472,7 @@ constraint check
 → spec
 → plan
 → plan review
-→ UI
+→ UI/UX design + prototype gate (Stitch when available)
 → build
 → test
 → review
@@ -1349,11 +1491,12 @@ At the beginning of a new agent session:
 3. Read approved SPEC documents.
 4. Read tasks/plan.md if present.
 5. Read tasks/todo.md if present.
-6. Read decision/performance/release docs when relevant.
-7. Inspect git status/diff if Git is used.
-8. Determine current phase and READY task.
-9. Do not repeat approved work.
-10. Report current state and next allowed action.
+6. Read UI_DESIGN.md or docs/ui/ when present and relevant.
+7. Read decision/performance/release docs when relevant.
+8. Inspect git status/diff if Git is used.
+9. Determine current phase and READY task.
+10. Do not repeat approved work.
+11. Report current state and next allowed action.
 
 Do not rely on chat history when repository documentation provides current state.
 
@@ -1367,6 +1510,7 @@ Maintain only useful documents, following repository conventions:
 - SPEC.md or docs/specs/
 - tasks/plan.md
 - tasks/todo.md
+- UI_DESIGN.md or docs/ui/ when material UI design needs a durable reference
 - DECISIONS.md or docs/decisions/
 - PERFORMANCE.md
 - CHANGELOG.md
@@ -1374,13 +1518,23 @@ Maintain only useful documents, following repository conventions:
 
 Do not create documentation without a clear purpose.
 
+UI design documentation, when needed, should record only durable decisions such as:
+- approved information architecture;
+- major layout/navigation;
+- visual direction;
+- component/state conventions;
+- representative Stitch/design references;
+- important responsive/desktop behavior.
+
+Do not turn UI_DESIGN.md into a pixel-by-pixel implementation dump.
+
 ======================================================================
 12. DECISION RECORD
 ======================================================================
 
 Record a decision when it materially affects multiple modules, rollback,
 architecture, database/storage, runtime, model integration, data format,
-packaging, security boundary, or external service use.
+packaging, security boundary, external service use, or major UI/workflow direction.
 
 Structure:
 DECISION
@@ -1401,12 +1555,14 @@ TASK DONE requires:
 - relevant tests pass;
 - applicable build/typecheck passes;
 - runtime verification when required;
+- approved UI direction preserved when applicable;
 - no blocker;
 - temporary debug code removed;
 - task state updated.
 
 FEATURE COMPLETE requires:
 - approved SPEC satisfied;
+- approved UI/UX satisfied when applicable;
 - verification completed;
 - no unresolved CRITICAL/HIGH blocker;
 - required documentation updated.
@@ -1468,7 +1624,12 @@ Do not:
 - SHIP without production verification;
 - install speculative dependencies "just in case";
 - change package manager without justified migration;
-- modify unrelated code.
+- modify unrelated code;
+- skip a material UI/UX gate because Stitch is unavailable;
+- treat Stitch-generated design/code as automatically approved or production-ready;
+- replace a clear USER-provided UI direction with an unrelated generated design without approval;
+- materially change approved layout/navigation/workflow during implementation without USER approval;
+- add decorative UI complexity that harms clarity, accessibility, responsiveness, or performance.
 
 ======================================================================
 16. START CONDITION
@@ -1482,6 +1643,10 @@ start at PHASE -1 — ENVIRONMENT BOOTSTRAP.
 
 If ENVIRONMENT READY is already evidenced:
 continue from the first incomplete approved lifecycle phase.
+
+If the project has a material GUI and reaches Phase 6:
+use Stitch when available, otherwise use an equivalent UI/UX design workflow;
+do not skip GATE D.
 
 Never implement product features before relevant specification and approval
 gates are satisfied.
