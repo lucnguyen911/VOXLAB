@@ -2,7 +2,7 @@
 
 **Document Version**: 2.4.0 (Application Update & Persistent Data Compatibility)  
 **Phase**: Phase 3 — Specification (GATE B)  
-**Status**: Pending User Approval  
+**Status**: APPROVED (GATE B CLOSED)  
 **Target Platform**: Windows 10/11 64-bit (x64)  
 **Core Stack**: Tauri v2 (Rust) + React 19 + TypeScript + Vite  
 
@@ -236,7 +236,7 @@ Sidebar hỗ trợ thu gọn (collapsible) với 6 không gian làm việc:
 
 ### 5.1 Deterministic Text Normalization & Protected Spans
 Chỉ thực hiện các biến đổi an toàn về hình thức, không làm thay đổi semantic content:
-1. Unicode Normalization Form C (NFC) chuẩn cho tiếng Việt và tiếng Anh.
+1. Unicode Normalization Form C (NFC) chuẩn hóa ký tự sang dạng dựng sẵn (precomposed characters), áp dụng thống nhất đa ngôn ngữ.
 2. Gom các khoảng trắng liên tiếp thành 1; chuẩn hóa khoảng trắng đầu/cuối dòng; tối đa 2 dấu ngắt dòng liên tiếp.
 3. Chuẩn hóa ngoặc kép chuẩn `""`, dấu gạch ngang chuẩn `-`.
 4. **Bảo vệ Protected Spans (Tuyệt đối không chèn khoảng cách làm vỡ cấu trúc)**:
