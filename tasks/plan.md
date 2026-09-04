@@ -1,6 +1,6 @@
 # VoxLab — Implementation Plan & Architecture Specification
 
-**Document Version**: 2.0.0 (Final Plan Consistency Pass)  
+**Document Version**: 2.0.1 (Micro Consistency Patch)  
 **Phase**: Phase 4 — Plan + Task Breakdown (GATE C)  
 **Status**: Pending User Approval  
 **Source Documents**: [`SPEC.md`](file:///f:/Source%20Code%20Tool/Voxlab/SPEC.md) (v2.4.0, Approved), [`CONSTRAINTS.md`](file:///f:/Source%20Code%20Tool/Voxlab/CONSTRAINTS.md) (Approved)  
@@ -247,40 +247,45 @@ Kế hoạch triển khai VoxLab được tổ chức theo phương pháp **Vert
 - **User Approval Required**: NO.
 
 #### [TASK-16] faster-whisper Production Engine Adapter Integration
-- **Goal**: Xây dựng worker adapter cho engine faster-whisper (`Medium`, `Large V3`, `Large V3 Turbo`, `Auto`) hỗ trợ đa ngôn ngữ và Auto Detect.
-- **Dependencies**: TASK-08, TASK-10, TASK-11, TASK-14.
-- **Expected Files**: `workers/asr/whisper_worker.py`, `src-tauri/src/workers/asr_adapter.rs`.
+- **Goal**: Xây dựng worker adapter cho engine faster-whisper (`Medium`, `Large V3`, `Large V3 Turbo`, `Auto`) hỗ trợ đa ngôn ngữ, Auto Detect và xử lý đầu vào media (audio và video) thông qua FFmpeg/local decoder.
+- **Dependencies**: TASK-08, TASK-10, TASK-11, TASK-13, TASK-14.
+- **Expected Files**: `workers/asr/whisper_worker.py`, `src-tauri/src/workers/asr_adapter.rs`, `src-tauri/src/audio/media_decode.rs`.
 - **Acceptance Criteria**:
   - Tích hợp model set đã duyệt; áp dụng thuật toán Auto selection từ kết quả Task 08.
+  - Xử lý đầu vào Media Input: File âm thanh hoặc file video (MP4, MKV, AVI...) được trích xuất hoặc chuẩn hóa âm thanh (WAV 16kHz mono tương thích) qua FFmpeg/local decoder trước khi đưa vào faster-whisper worker (video transcription có implementation owner rõ ràng, không tạo subsystem media-editor phức tạp).
   - Bóc băng audio/video, tự động nhận diện ngôn ngữ nguồn (`Auto Detect` metadata trả về đúng).
   - Trích xuất cấu trúc segments có timestamp chuẩn (`Start --> End`), xuất dữ liệu transcript hợp lệ, không rỗng.
-- **Verification**: `cargo test test_whisper_adapter_transcription`.
+- **Verification**: `cargo test test_whisper_adapter_transcription_audio_and_video`.
 - **Risk**: MEDIUM.
 - **User Approval Required**: NO.
 
 #### [TASK-17] Approved MVP TTS Model Set Adapter Integration
-- **Goal**: Xây dựng worker adapter cho tổ hợp model TTS đã được phê duyệt từ kết quả Task 07 (đáp ứng Tiếng Việt + Tiếng Anh và Voice Cloning).
-- **Dependencies**: TASK-07, TASK-10, TASK-11, TASK-14.
+- **Goal**: Xây dựng worker adapter cho tổ hợp model TTS đã được User phê duyệt từ kết quả Task 07 và CHECKPOINT 1 (bao phủ Tiếng Việt + Tiếng Anh và Voice Cloning). Agent tuyệt đối không tự ý quyết định danh sách model set cuối cùng.
+- **Dependencies**: TASK-07 (Completed), CHECKPOINT 1 (USER APPROVED), TASK-10, TASK-11, TASK-14.
 - **Expected Files**: `workers/tts/tts_worker.py`, `src-tauri/src/workers/tts_adapter.rs`.
 - **Acceptance Criteria**:
-  - Hỗ trợ tổ hợp model TTS đã duyệt: bao phủ phát âm hợp lệ cho cả Tiếng Việt và Tiếng Anh (xuất ra file audio hợp lệ, phát được).
+  - Hỗ trợ tổ hợp model TTS đã duyệt qua Checkpoint 1: bao phủ phát âm hợp lệ cho cả Tiếng Việt và Tiếng Anh (xuất ra file audio hợp lệ, phát được).
   - Hỗ trợ Voice Cloning từ file audio mẫu: tiếp nhận file mẫu, áp dụng các tham số clone được hỗ trợ.
   - Triển khai Capability Handshake tương thích hoàn toàn với Rust supervisor; không xảy ra lỗi crash/corruption.
 - **Verification**: `cargo test test_tts_model_set_adapter_generation`.
 - **Risk**: HIGH.
-- **User Approval Required**: NO.
+- **User Approval Required**: NO (Đã được chặn và phê duyệt tại CHECKPOINT 1 trước khi bắt đầu).
 
 #### [TASK-18] Official Online Voice Provider Adapter Integration
-- **Goal**: Tích hợp adapter cho nhà cung cấp Online Voice chính thức nếu vượt qua thẩm định tại Task 09 (hoặc đánh dấu deferred nếu không đạt).
-- **Dependencies**: TASK-05, TASK-09.
+- **Goal**: Tích hợp adapter cho nhà cung cấp Online Voice chính thức nếu vượt qua thẩm định tại Task 09 và được User phê duyệt tại CHECKPOINT 2 (hoặc đánh dấu deferred nếu không đạt). Agent tuyệt đối không tự ý chọn Online Provider hoặc dùng endpoint lậu.
+- **Dependencies**: TASK-05, TASK-09 (Completed), CHECKPOINT 2 (USER APPROVED).
 - **Expected Files**: `src-tauri/src/voice/online_provider.rs`.
 - **Acceptance Criteria**:
-  - Nếu Task 09 phê duyệt provider chính thức: Tích hợp API synthesis, quản lý xác thực an toàn qua DPAPI, gắn cờ `ONLINE` cho giọng.
-  - Hiển thị thông báo khi gửi text ra ngoài; lỗi mạng không làm ảnh hưởng tới các giọng Local.
-  - Nếu không có provider nào đạt: Đánh dấu deferred trong cấu hình, không dùng endpoint lậu thay thế.
+  - Nếu Checkpoint 2 phê duyệt provider chính thức (Microsoft, Google):
+    - Khám phá danh mục giọng đọc của provider (provider voice catalog discovery / listing) và hỗ trợ làm mới danh mục (refresh voice catalog).
+    - Chuẩn hóa thông tin từng giọng vào cấu trúc chung VoxLab Voice DTO: Provider voice stable ID, display name, language/locale, metadata năng lực phù hợp (relevant capability metadata).
+    - Thực hiện tổng hợp âm thanh (synthesis) sử dụng giọng online đã chọn.
+    - Quản lý xác thực an toàn qua DPAPI; bắt buộc gắn nhãn `ONLINE` rõ ràng và hiển thị cảnh báo gửi dữ liệu ra ngoài.
+    - Lỗi mạng được cô lập hoàn toàn, không làm ảnh hưởng tới các giọng Local.
+  - Nếu không có provider nào đạt: Đánh dấu deferred trong cấu hình theo quy định của SPEC; tuyệt đối không dùng CapCut, Edge-TTS hay reverse-engineered endpoint để thay thế.
 - **Verification**: `cargo test test_online_voice_provider_integration`.
 - **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+- **User Approval Required**: NO (Đã được chặn và phê duyệt tại CHECKPOINT 2 trước khi bắt đầu).
 
 ---
 
@@ -379,12 +384,13 @@ Kế hoạch triển khai VoxLab được tổ chức theo phương pháp **Vert
 - **User Approval Required**: NO.
 
 #### [TASK-26] Voice Library Business Logic & Safe Delete Orchestration
-- **Goal**: Các dịch vụ quản lý thư viện giọng: Liệt kê, tìm kiếm theo tên, lọc theo tag, lọc theo nguồn (Local / Online), xóa an toàn có cảnh báo, và cầu nối `[Use in TTS]`.
-- **Dependencies**: TASK-18, TASK-25.
+- **Goal**: Các dịch vụ quản lý thư viện giọng: Liệt kê, tìm kiếm theo tên, lọc theo tag, lọc theo nguồn (Local / Online), xóa an toàn có cảnh báo, và cầu nối `[Use in TTS]`. Phải hoạt động độc lập và đầy đủ 100% cho Local Voices ngay cả khi tính năng Online Voice bị deferred.
+- **Dependencies**: TASK-25 (Bắt buộc); TASK-18 (Có điều kiện: chỉ phụ thuộc nếu Checkpoint 2 phê duyệt Online Provider; nếu Online Voice bị deferred thì TASK-26 KHÔNG bị block).
 - **Expected Files**: `src-tauri/src/voice/library.rs`.
 - **Acceptance Criteria**:
   - Tìm kiếm voice theo tên và lọc chính xác theo mảng tags.
-  - Phân loại nguồn voice: Local My Voices, Preset Local, và Online Voices (gắn nhãn ONLINE).
+  - Phân loại nguồn voice: Local My Voices, Preset Local, và Online Voices (nếu có; bắt buộc gắn nhãn ONLINE).
+  - Đảm bảo Local Voice Library hoạt động hoàn hảo 100% khi không có Online Voice Provider nào được kích hoạt.
   - Xóa an toàn: Kiểm tra liên kết với session cũ, yêu cầu xác nhận và cảnh báo; xóa profile chỉ xóa managed assets của profile đó, tuyệt đối không xóa audio đã sinh trong session cũ.
   - Action `Use in TTS`: Trả về Voice Profile được chọn để đặt làm active voice cho TTS.
 - **Verification**: `cargo test test_voice_library_safe_delete`.
@@ -510,13 +516,20 @@ Kế hoạch triển khai VoxLab được tổ chức theo phương pháp **Vert
 - **User Approval Required**: NO.
 
 #### [TASK-35] Production Packaging, Upgrade Migration & Downgrade Safety Verification
-- **Goal**: Kiểm chứng toàn diện quy trình đóng gói sản phẩm (`cargo tauri build`), vòng đời cài đặt sạch, nâng cấp phiên bản N $\rightarrow$ N+1 bảo toàn dữ liệu, và an toàn hạ cấp.
-- **Dependencies**: TASK-02, TASK-03, TASK-04, TASK-14, TASK-32.
+- **Goal**: Kiểm chứng toàn diện quy trình đóng gói sản phẩm (`cargo tauri build`), vòng đời cài đặt sạch, nâng cấp phiên bản N $\rightarrow$ N+1 bảo toàn dữ liệu, an toàn hạ cấp, và kiểm tra khả năng phục hồi lỗi khi thiếu tài nguyên/runtime.
+- **Dependencies**: TASK-02, TASK-03, TASK-04, TASK-06, TASK-14, TASK-32.
 - **Expected Files**: `tests/lifecycle_package_test.rs`, `src-tauri/tauri.conf.json`.
 - **Acceptance Criteria**:
   - Đóng gói installer Windows hoàn tất thành công.
-  - Kiểm tra Clean Install, First Launch, Restart, khởi động worker và kiểm tra tính sẵn sàng của FFmpeg.
-  - Nâng cấp N $\rightarrow$ N+1: Data Root được định vị chính xác, database migration tự động chạy thành công, Voice Profiles, History, settings, model paths và output files được bảo toàn nguyên vẹn 100% (AC-14).
+  - Kiểm tra Thông tin phiên bản & bản dựng (Version / Build info) hiển thị chính xác.
+  - Kiểm tra Ghi log ứng dụng (Application logs) ghi nhận đầy đủ sự kiện vào thư mục `logs/`.
+  - Kiểm tra Tính sẵn sàng của worker, runtime và tài nguyên (worker/runtime/resource availability).
+  - **Hành vi khi thiếu tài nguyên hoặc lỗi worker (Missing Resource Behavior)**:
+    - Trường hợp thiếu FFmpeg: Ứng dụng hiển thị thông báo lỗi phục hồi rõ ràng (explicit recoverable error), hướng dẫn người dùng, tuyệt đối không làm crash app.
+    - Trường hợp worker khởi động thất bại: Báo lỗi khởi động worker tường minh (explicit recoverable error), không làm sập ứng dụng chính.
+  - Kiểm tra Clean-install first launch: Khởi động lần đầu sạch sẽ, tạo các thư mục cấu trúc mặc định an toàn.
+  - Kiểm tra Post-upgrade first launch: Nâng cấp N $\rightarrow$ N+1, Data Root được định vị chính xác, database migration tự động chạy thành công, Voice Profiles, History, settings, model paths và output files được bảo toàn nguyên vẹn 100% (AC-14).
+  - Kiểm tra Restart after upgrade: Khởi động lại sau nâng cấp tiếp tục nhận diện đúng trạng thái bền vững.
   - Thử nghiệm mở DB mới bằng bản cũ: Báo lỗi không tương thích phiên bản an toàn, không làm hỏng database (Downgrade safety, AC-15).
   - Gỡ cài đặt hoặc update app không âm thầm xóa dữ liệu người dùng.
 - **Verification**: Automated full lifecycle test & build package verification.
@@ -527,7 +540,7 @@ Kế hoạch triển khai VoxLab được tổ chức theo phương pháp **Vert
 
 ## 4. Tóm tắt Kế hoạch (Plan Summary)
 
-* **PLAN VERSION**: **2.0.0**
+* **PLAN VERSION**: **2.0.1** (Micro Consistency Patch)
 * **TOTAL TASKS**: **35 Tasks** (Từ `TASK-01` đến `TASK-35`).
 * **MILESTONES**: **9 Milestones** chiến lược.
 * **HIGH-RISK TASKS (10 Tasks — Danh sách và Số lượng khớp 100%)**:
@@ -543,8 +556,8 @@ Kế hoạch triển khai VoxLab được tổ chức theo phương pháp **Vert
   10. `TASK-35`: Production Packaging, Upgrade Migration & Downgrade Safety Verification
 * **USER APPROVAL CHECKPOINTS**:
   - **GATE C**: Phê duyệt Implementation Plan này (hiện tại).
-  - **CHECKPOINT 1 (Sau Task 07)**: Phê duyệt Báo cáo Thẩm định Model Feasibility (TTS Candidate Models).
-  - **CHECKPOINT 2 (Sau Task 09)**: Phê duyệt Báo cáo Thẩm định Online Voice Provider (nếu có provider chính thức đạt chuẩn).
+  - **CHECKPOINT 1 (Sau Task 07)**: Phê duyệt Báo cáo Thẩm định TTS Candidate Models $\rightarrow$ Tiền đề bắt buộc để mở khóa `TASK-17`.
+  - **CHECKPOINT 2 (Sau Task 09)**: Phê duyệt Báo cáo Thẩm định Online Voice Providers $\rightarrow$ Tiền đề bắt buộc để mở khóa `TASK-18` (nếu đạt) hoặc quyết định defer.
   - **GATE D (Sau Task 27)**: Phê duyệt Phase 6 — UI / UX Design Gate với Stitch.
   - **GATE F**: Phê duyệt Final Release trước khi xuất xưởng.
 * **GATE D POSITION**: Nằm ngay sau `TASK-27` (hoàn tất các hợp đồng IPC và Domain DTOs) và trước `TASK-28` (bắt đầu triển khai giao diện frontend chi tiết).
@@ -561,8 +574,8 @@ Kế hoạch triển khai VoxLab được tổ chức theo phương pháp **Vert
 | **AC-04** | Smart Chunking & Invalidation Cache khi sửa text câu | TASK-04, TASK-20 | TASK-20, TASK-29, TASK-33 |
 | **AC-05** | TTS Generation (VI + EN playable) & Bounded Cancellation | TASK-12, TASK-17 | TASK-17, TASK-29, TASK-34 |
 | **AC-06** | Voice Clone Multilingual & Quản lý Reference Assets | TASK-07, TASK-17, TASK-24, TASK-25 | TASK-17, TASK-30 |
-| **AC-07** | Voice Library, Online Voices (gắn nhãn) & "Use in TTS" | TASK-09, TASK-18, TASK-26 | TASK-18, TASK-26, TASK-30 |
-| **AC-08** | Standalone Transcription với faster-whisper & Auto Detect | TASK-08, TASK-16 | TASK-16, TASK-31 |
+| **AC-07** | Voice Library, Online Voices (gắn nhãn) & "Use in TTS" | TASK-09, TASK-18 (Conditional), TASK-26 | TASK-18 (Conditional), TASK-26, TASK-30 |
+| **AC-08** | Standalone Transcription với faster-whisper & Auto Detect | TASK-08, TASK-13, TASK-16 | TASK-16, TASK-31 |
 | **AC-09** | Model Discovery, Rescan & User-Initiated Download có Staging | TASK-14, TASK-15 | TASK-14, TASK-15, TASK-32 |
 | **AC-10** | Translation Providers (Local/Cloud) & Per-Operation Policy | TASK-05, TASK-22 | TASK-22, TASK-29 |
 | **AC-11** | Configurable Data Root, Safe Migration & Data Separation | TASK-01, TASK-03 | TASK-03, TASK-32 |
@@ -574,4 +587,4 @@ Kế hoạch triển khai VoxLab được tổ chức theo phương pháp **Vert
 ---
 
 ### DỪNG TẠI GATE C (CHỜ USER DUYỆT)
-Kế hoạch triển khai kỹ thuật v2.0.0 đã hoàn thiện toàn diện, không còn bất kỳ điểm thiếu sót nào. Không viết code cho đến khi nhận được phê duyệt chính thức GATE C từ bạn!
+Kế hoạch triển khai kỹ thuật v2.0.1 đã hoàn thiện toàn diện theo đúng Micro Consistency Patch. Không viết code cho đến khi nhận được phê duyệt chính thức GATE C từ bạn!

@@ -1,6 +1,6 @@
 # VoxLab — Task Checklist (TODO.md)
 
-**Document Version**: 2.0.0 (Final Plan Consistency Pass)  
+**Document Version**: 2.0.1 (Micro Consistency Patch)  
 **Status**: Initialized (Pending GATE C Approval)  
 **Total Tasks**: 35  
 
@@ -28,9 +28,9 @@
 ## Milestone 4: Model Discovery, Provisioning & Production Engine Adapters
 - [ ] **TASK-14**: Model Discovery, Inspection & Registry Service (RISK: MEDIUM)
 - [ ] **TASK-15**: Minimal User-Initiated Model Provisioning & Download Service (RISK: HIGH)
-- [ ] **TASK-16**: faster-whisper Production Engine Adapter Integration (RISK: MEDIUM)
-- [ ] **TASK-17**: Approved MVP TTS Model Set Adapter Integration (RISK: HIGH)
-- [ ] **TASK-18**: Official Online Voice Provider Adapter Integration (RISK: MEDIUM)
+- [ ] **TASK-16**: faster-whisper Production Engine Adapter Integration (Media decode via FFmpeg, depends on TASK-13) (RISK: MEDIUM)
+- [ ] **TASK-17**: Approved MVP TTS Model Set Adapter Integration (Requires TASK-07 + CHECKPOINT 1 APPROVED) (RISK: HIGH)
+- [ ] **TASK-18**: Official Online Voice Provider Adapter Integration (Requires TASK-09 + CHECKPOINT 2 APPROVED) (RISK: MEDIUM)
 
 ## Milestone 5: Core Media & Text Pipelines
 - [ ] **TASK-19**: Deterministic Text Normalization & Protected Spans Preservation (RISK: LOW)
@@ -42,7 +42,7 @@
 ## Milestone 6: Voice Profile & Voice Library Engine
 - [ ] **TASK-24**: Managed Reference Audio Assets Engine (RISK: LOW)
 - [ ] **TASK-25**: Voice Profile Repository & Stable Identity Management (RISK: LOW)
-- [ ] **TASK-26**: Voice Library Business Logic & Safe Delete Orchestration (RISK: MEDIUM)
+- [ ] **TASK-26**: Voice Library Business Logic & Safe Delete Orchestration (Requires TASK-25; TASK-18 conditional) (RISK: MEDIUM)
 
 ## Milestone 7: UI Architecture Pre-wiring & GATE D (Stitch UI/UX Gate)
 - [ ] **TASK-27**: Pre-UI IPC Contracts, Domain DTOs & Typed Interfaces (RISK: LOW)
@@ -66,8 +66,8 @@
 - [x] **GATE A**: Requirement Understanding (APPROVED)
 - [x] **GATE B**: Specification (APPROVED, `SPEC.md` v2.4.0)
 - [ ] **GATE C**: Implementation Plan (CURRENT GATE - PENDING USER APPROVAL)
-- [ ] **CHECKPOINT 1 (Sau TASK-07)**: Báo cáo Thẩm định TTS Candidate Models (Chốt Model Set MVP)
-- [ ] **CHECKPOINT 2 (Sau TASK-09)**: Báo cáo Thẩm định Online Voice Providers (Chốt tích hợp hoặc Defer)
+- [ ] **CHECKPOINT 1 (Sau TASK-07)**: Báo cáo Thẩm định TTS Candidate Models $\rightarrow$ Mở khóa TASK-17
+- [ ] **CHECKPOINT 2 (Sau TASK-09)**: Báo cáo Thẩm định Online Voice Providers $\rightarrow$ Mở khóa TASK-18 (hoặc Defer)
 - [ ] **GATE D (Sau TASK-27)**: UI / UX Design & Prototype Gate (Stitch MCP)
 - [ ] **GATE E**: High-Risk Change Gate (Nếu phát sinh)
 - [ ] **GATE F**: Final Release Gate (Sau TASK-35)
