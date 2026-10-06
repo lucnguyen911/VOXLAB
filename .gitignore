@@ -22,3 +22,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python sidecar (dev venv, caches, build output) — model weights never committed
+sidecar/.venv/
+sidecar/.venv-chatterbox/
+sidecar/.venv-qwen/
+__pycache__/
+*.pyc
+sidecar/build/
+sidecar/dist/
+*.safetensors

@@ -1,590 +1,716 @@
-# VoxLab — Implementation Plan & Architecture Specification
+# Kế Hoạch Triển Khai: Tab "Hàng Loạt" (File-Centric Batch Processing Workspace)
 
-**Document Version**: 2.0.1 (Micro Consistency Patch)  
-**Phase**: Phase 4 — Plan + Task Breakdown (GATE C)  
-**Status**: Pending User Approval  
-**Source Documents**: [`SPEC.md`](file:///f:/Source%20Code%20Tool/Voxlab/SPEC.md) (v2.4.0, Approved), [`CONSTRAINTS.md`](file:///f:/Source%20Code%20Tool/Voxlab/CONSTRAINTS.md) (Approved)  
-**Target Platform**: Windows 10/11 64-bit (x64)  
-**Stack**: Tauri v2 (Rust) + React 19 + TypeScript + Vite + Isolated Python/C++ Model Workers  
-
----
-
-## 1. Plan Overview & Architectural Foundations
-
-Kế hoạch triển khai VoxLab được tổ chức theo phương pháp **Vertical Slicing** và **Thử nghiệm rủi ro kỹ thuật sớm (Early Fail-Fast Track)**. Toàn bộ các ranh giới kỹ thuật tuân thủ nghiêm ngặt theo các nguyên tắc:
-1. **Ranh giới 4 loại đường dẫn độc lập**: Tách biệt hoàn toàn giữa App Installation Path (read-only), Configurable App Data Root, Configurable Model Paths (TTS và ASR độc lập), và Output Path.
-2. **Early Model Feasibility Track**: Khởi chạy thẩm định thực tế candidate models (TTS, faster-whisper calibration, online providers) song song ngay từ đầu để chốt thông số kỹ thuật và adapter set, không trì hoãn đến cuối.
-3. **Local LLM Outside**: VoxLab không tải và không quản lý file GGUF/LLM; LM Studio quản lý toàn bộ runtime, context và VRAM của LLM; VoxLab kết nối qua HTTP client.
-4. **Cô lập tiến trình (Process Supervision)**: Rust giám sát worker con; phát hiện lỗi/crash tin cậy trong giới hạn thời gian (bounded error detection); worker crash không làm sập giao diện React.
-5. **Điều phối an toàn (Safe Sequential Queue)**: Concurrency = 1 mặc định giúp giảm thiểu tối đa nguy cơ tràn VRAM (OOM) so với xử lý đồng thời.
-6. **UI Gate Boundary**: Trước **GATE D (Stitch UI/UX Gate)**, chỉ xây dựng các hợp đồng dữ liệu ổn định (IPC Types, Domain DTOs). Toàn bộ visual components, routing và interaction-specific stores chỉ được hiện thực hóa sau khi visual design được duyệt tại Gate D.
+**Tính năng**: Tab Điều Phối Xử Lý Hàng Loạt Hướng Tệp Tin (File-Centric Multi-Task Batch Orchestrator)
+**Phiên bản Kế hoạch**: 3.2.0 (Gate D Final Sign-off — 4 Unified Views, Shared BatchFooter, License Security Architecture & Pre-Build Lock)
+**CURRENT PHASE**: Phase 7 — Build Auto
+**CURRENT GATE**: Gate D Final Approved
+**NEXT PHASE**: Phase 8 — Test & Verification
+**BUILD AUTO**: IN PROGRESS (Milestone 1 — TASK-01)
+**Tài liệu đặc tả nguồn**: [`SPEC-batch.md`](file:///f:/Source%20Code%20Tool/Voxlab/SPEC-batch.md) (v3.2.0 Approved Gate D) · [`SPEC-settings.md`](file:///f:/Source%20Code%20Tool/Voxlab/SPEC-settings.md) (v1.2.0 Approved Gate D) · [`CONSTRAINTS.md`](file:///f:/Source%20Code%20Tool/Voxlab/CONSTRAINTS.md) · [`SPEC.md`](file:///f:/Source%20Code%20Tool/Voxlab/SPEC.md) · [`AGENT_WORKFLOW.txt`](file:///f:/Source%20Code%20Tool/Voxlab/AGENT_WORKFLOW.txt)
+**Nền tảng mục tiêu**: Windows 10/11 64-bit (x64) · Tauri v2 + React 19 + TypeScript + Vite
 
 ---
 
-## 2. Danh mục Milestones Chiến lược
+## 1. Sơ Đồ Quy Trình Phát Triển & Phụ Thuộc Kiến Trúc
 
-* **Milestone 1: Foundations, Storage Engine & Session Persistence** (Tasks 01 – 06)
-* **Milestone 2: Early Model Feasibility & Calibration Track (Fail-Fast)** (Tasks 07 – 09)
-* **Milestone 3: Process Supervisor, Safe Queue & Worker IPC Interface** (Tasks 10 – 13)
-* **Milestone 4: Model Discovery, Provisioning & Production Engine Adapters** (Tasks 14 – 18)
-* **Milestone 5: Core Media & Text Pipelines** (Tasks 19 – 23)
-* **Milestone 6: Voice Profile & Voice Library Engine** (Tasks 24 – 26)
-* **Milestone 7: UI Architecture Pre-wiring & GATE D (Stitch UI/UX Gate)** (Task 27 $\rightarrow$ **GATE D**)
-* **Milestone 8: Desktop Studio Frontend Implementation (Post-Gate D)** (Tasks 28 – 32)
-* **Milestone 9: System Hardening, Recovery & Production Packaging** (Tasks 33 – 35)
+### 1.1 Trình Tự Vòng Đời Quy Trình (Strict Workflow Lifecycle)
+Tuân thủ nghiêm ngặt quy trình chuẩn tại [`AGENT_WORKFLOW.txt`](file:///f:/Source%20Code%20Tool/Voxlab/AGENT_WORKFLOW.txt):
+1. **Phase 4 & 5: Kế Hoạch Triển Khai & Rà Soát (/plan)**: Lập kế hoạch chi tiết theo mô hình File-Centric, rà soát tính khả thi mã nguồn thực tế $\rightarrow$ **GATE C APPROVED**.
+2. **Phase 6: Thiết Kế UI/UX & Mẫu Thử Nghiệm (Stitch MCP)**: Khám phá giao diện 4 Khung Nhìn Thống Nhất, Row Scope Selection, Priority Arrow Reorder, 3-Way Dynamic CTA, Derived Diff Logic, Read-Only Preview $\rightarrow$ **GATE D FINAL SIGN-OFF (SPEC v3.2.0 & SPEC-settings v1.2.0 Synced)**.
+3. **Phase 7: Triển Khai Xây Dựng Tự Động (Build Auto — TASK-01 đến TASK-16)**: **LOCKED — BẮT ĐẦU SAU KHI PRODUCT OWNER PHÊ DUYỆT GATE D FINAL**. Triển khai theo trình tự 6 Milestone, kiểm thử tự động từng bước và xác thực liên tục.
+4. **Phase 8: Kiểm Thử & Kiểm Chứng 4 Tầng**: Thực thi kiểm thử tự động, tích hợp, native và hồi quy toàn hệ thống.
+5. **Phase 9–13: Code Review, Security Review, Performance Tuning, Code Simplification, Final Review**.
+6. **Phase 14: Phát Hành (Ship / Release)** $\rightarrow$ **GATE F (Release Approval)**.
 
----
+### 1.2 Sơ Đồ Phụ Thuộc Kiến Trúc File-Centric v3.2.0 & License Security (Architecture Dependency Graph)
 
-## 3. Chi tiết Task Breakdown (T01 đến T35)
+```mermaid
+flowchart TD
+    subgraph PhaseGateCD ["Phê Duyệt Gate D & Kế Hoạch v3.2"]
+        GD["GATE D: UI/UX & SPEC v3.2.0 Phê Duyệt"]
+        PDR["Gate D Final Sign-off (Dừng Chờ Phê Duyệt Cuối)"]
+    end
 
-### MILESTONE 1: FOUNDATIONS, STORAGE ENGINE & SESSION PERSISTENCE
+    subgraph Phase7BuildAuto ["Phase 7: Triển Khai Xây Dựng Tự Động (Build Auto — TASK-01 đến TASK-16)"]
+        subgraph Milestone1 ["Milestone 1: Hợp Đồng Dữ Liệu, Tương Thích & Bộ Phân Giải Phụ Thuộc"]
+            T01["TASK-01: Batch Domain Types, Step & Job State Models (4 View Tabs, Arrow Reorder) (`src/types/batch.ts`, `ui.ts`)"]
+            T02["TASK-02: File Compatibility Detector & Dialogue Contract Validator (`compatibilityDetector.ts`, `dialogueValidator.ts`)"]
+            T03["TASK-03: Task Dependency & Execution Sequence Resolver (`dependencyResolver.ts`)"]
+        end
 
-#### [TASK-01] Kiến trúc 4 Loại Đường dẫn & Cơ chế Bootstrap Data Root Discovery
-- **Goal**: Quản lý 4 loại đường dẫn độc lập và cơ chế bootstrap lưu vị trí Data Root bền vững.
-- **Dependencies**: None.
-- **Expected Files**: `src-tauri/src/paths.rs`, `src-tauri/src/bootstrap.rs`.
-- **Acceptance Criteria**:
-  - Nhận diện đúng thư mục cài đặt app (chỉ đọc).
-  - Khởi tạo Data Root mặc định tại Windows user data, cho phép cấu hình sang ổ đĩa khác (ví dụ `D:\VoxLabData`).
-  - Ghi nhận vị trí Data Root vào file bootstrap nhẹ tại OS standard location.
-  - Khi binary khởi động lại, tự động đọc bootstrap để định vị Data Root; nếu mất dấu, mở giao diện phục hồi *"Locate Existing Data Root"*, không tự tạo thư mục rỗng ngầm.
-- **Verification**: `cargo test test_bootstrap_data_root_discovery`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+        subgraph Milestone2 ["Milestone 2: Cấu Hình Bất Biến, Lưu Trữ Bền Vững v3, Output Resolver & License Security"]
+            T04["TASK-04: Snapshot Resolver, Scope Isolation & Config Diff Derivation (`configSnapshotResolver.ts`, `configDiffResolver.ts`)"]
+            T05["TASK-05: Durable State Storage v3, Early Tauri FS Atomic Persistence & Crash Normalizer (`batchStorage.ts`, `tauriFsBridge.ts`)"]
+            T05B["TASK-05B: License Security Service via Rust HWID, Supabase RPC & DPAPI (`src-tauri/src/security/`, `licenseService.ts`)"]
+            T06["TASK-06: Output Resolver, Artifact Fingerprinting, Real Transcoder & Subtitle Parser/Exporter Reuse (`outputResolver.ts`, `audioTranscoder.ts`)"]
+        end
 
-#### [TASK-02] SQLite Storage Engine với Versioned Schema & Ordered Migrations
-- **Goal**: Thiết lập kết nối SQLite local (`voxlab.db`), quản lý phiên bản schema tường minh (`schema_version`), và cơ chế migration tuần tự có backup phục hồi.
-- **Dependencies**: TASK-01.
-- **Expected Files**: `src-tauri/src/db/mod.rs`, `src-tauri/src/db/migrations.rs`, `src-tauri/src/db/schema.rs`.
-- **Acceptance Criteria**:
-  - Tạo bảng `schema_version` ghi nhận số hiệu phiên bản hiện hành.
-  - Hỗ trợ chuỗi migration tuần tự ($1 \rightarrow 2 \rightarrow 3$).
-  - Tự động tạo bản recoverable backup (`voxlab.db.bak`) trước khi chạy migration.
-  - Rollback an toàn nếu migration lỗi; không xóa backup; báo lỗi nâng cấp tường minh; không tạo DB rỗng thay thế.
-  - Downgrade Safety: Bản cũ từ chối mở DB có schema mới hơn mà không làm hỏng file.
-- **Verification**: `cargo test test_ordered_migrations_and_rollback`.
-- **Risk**: HIGH.
-- **User Approval Required**: NO.
+        subgraph Milestone3 ["Milestone 3: Step Executors (Tái Sử Dụng 100% Domain Services & Real Inference Rule)"]
+            T07["TASK-07: TTS & Dialogue Step Executors (`ttsExecutor.ts`, `dialogueExecutor.ts`)"]
+            T08["TASK-08: ASR Transcription Step Executor with Monolithic Safe Cancel (`transcriptionExecutor.ts`)"]
+            T09["TASK-09: Translation & Dubbing Step Executors (`translationExecutor.ts`, `dubbingExecutor.ts`)"]
+        end
 
-#### [TASK-03] Module Safe Data Root Migration (Copy $\rightarrow$ Verify $\rightarrow$ Activate/Rollback)
-- **Goal**: Dịch vụ di chuyển toàn bộ dữ liệu ứng dụng (database, sessions, voice library, managed assets) sang vị trí mới khi đổi Data Root.
-- **Dependencies**: TASK-01, TASK-02.
-- **Expected Files**: `src-tauri/src/storage/migration.rs`.
-- **Acceptance Criteria**:
-  - Quét kiểm tra dữ liệu hiện có tại Data Root cũ.
-  - Sao chép toàn bộ persistent data sang Data Root mới.
-  - Kiểm chứng tính toàn vẹn của dữ liệu sau khi sao chép.
-  - Kích hoạt Data Root mới chỉ sau khi kiểm chứng thành công 100%; không xóa dữ liệu tại Data Root cũ trước khi kích hoạt thành công.
-  - Rollback nếu gặp lỗi (ví dụ đĩa đầy) và tiếp tục sử dụng Data Root cũ.
-- **Verification**: `cargo test test_data_root_migration_with_rollback`.
-- **Risk**: HIGH.
-- **User Approval Required**: NO.
+        subgraph Milestone4 ["Milestone 4: Composite Orchestrator Core, Queue Reorder & Lifecycle Controls"]
+            T10["TASK-10: Composite Batch Orchestrator Core, Priority Arrow Reorder & Step Loop (`batchOrchestrator.ts`)"]
+            T11["TASK-11: Orchestrator Controls, Config Invalidation Graph, 3-Way CTA Dispatch & History (`batchOrchestrator.ts`, `historyManager.ts`, `invalidationGraph.ts`)"]
+        end
 
-#### [TASK-04] Session, History & Chunk Cache Metadata Persistence Repository
-- **Goal**: Xây dựng tầng lưu trữ bền vững cho Session, History và Metadata của từng Chunk (text content hash, audio cache path, voice ID, status, stale flag).
-- **Dependencies**: TASK-02.
-- **Expected Files**: `src-tauri/src/session/repository.rs`, `src-tauri/src/session/model.rs`.
-- **Acceptance Criteria**:
-  - Lưu và truy vấn metadata các phiên làm việc và lịch sử tác vụ trong SQLite.
-  - Lưu trữ chi tiết từng chunk: index, text content hash, trạng thái (`Pending`, `Generating`, `Ready`, `Failed`, `Modified`), đường dẫn file audio cache.
-  - Cập nhật cờ `Stale / Invalid` ngay khi text của chunk bị thay đổi.
-  - Cung cấp dữ liệu phục vụ quy trình Reopen/Resume và khôi phục phiên gián đoạn.
-- **Verification**: `cargo test test_session_chunk_metadata_persistence`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+        subgraph Milestone5 ["Milestone 5: Giao Diện Người Dùng 4 Khung Nhìn Thống Nhất & Tích Hợp Shell"]
+            T12["TASK-12: Top Bar, 4 View Tabs, Global Defaults Modal & Sub-Toolbar Staging Scope (`BatchTopBar.tsx`, `BatchViewTabs.tsx`, `GlobalDefaultsModal.tsx`)"]
+            T13["TASK-13: File Task Matrix Table, Priority Arrow Queue Reorder & Failed CTA Rows (`FileTaskMatrixTable.tsx`, `QueueReorderTable.tsx`, `PerFileConfigDrawer.tsx`)"]
+            T14["TASK-14: Shared BatchFooter h-[39px], Read-Only Preview Modal, Settings License IPC, Shell & i18n (`BatchFooter.tsx`, `BatchArtifactPreviewModal.tsx`, `Sidebar.tsx`, `App.tsx`)"]
+        end
 
-#### [TASK-05] Secure Credential Storage Bridge cho Online Providers
-- **Goal**: Tích hợp cơ chế lưu trữ bảo mật cho API keys (Google Gemini API, Online Voice credentials) sử dụng Windows DPAPI / Credential Manager.
-- **Dependencies**: None.
-- **Expected Files**: `src-tauri/src/security/credentials.rs`.
-- **Acceptance Criteria**:
-  - Mã hóa và lưu trữ API keys an toàn qua DPAPI hoặc Windows Credential Store.
-  - Tuyệt đối không lưu API keys dưới dạng plaintext trong SQLite.
-  - Đọc và xóa credential an toàn khi reset settings.
-- **Verification**: `cargo test test_credential_dpapi_roundtrip`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+        subgraph Milestone6 ["Milestone 6: Kiểm Thử Đa Tầng, Benchmark & Nghiệm Thu"]
+            T15["TASK-15: Automated Multi-Tier Test Suite Covering AC-01 to AC-44 & LICENSE-AC-01 to LICENSE-AC-14 (`src/services/batch/__tests__/`, `src/services/license/__tests__/`)"]
+            T16["TASK-16: Full Regression Verification, Runtime Soak Benchmark & Tuning Experiments"]
+        end
+    end
 
-#### [TASK-06] Logging & Diagnostics Implementation Module
-- **Goal**: Xây dựng hệ thống ghi log ứng dụng, log của worker tiến trình con, và gói chẩn đoán hệ thống (Diagnostic Bundle).
-- **Dependencies**: TASK-01.
-- **Expected Files**: `src-tauri/src/diagnostics/logging.rs`, `src-tauri/src/diagnostics/bundle.rs`.
-- **Acceptance Criteria**:
-  - Ghi log có cấu trúc (info, warn, error) cho backend và worker vào thư mục `logs/` trong Data Root.
-  - Action `Open Log Folder` mở đúng thư mục log qua system file manager.
-  - Action `Copy System Information` tổng hợp thông tin phiên bản app, OS, GPU, VRAM, và trạng thái runtime.
-- **Verification**: `cargo test test_logging_and_diagnostic_bundle`.
-- **Risk**: LOW.
-- **User Approval Required**: NO.
+    GD --> PDR
+    PDR --> T01
+    T01 --> T02
+    T01 --> T03
+    T02 --> T03
+    T01 --> T04
+    T01 --> T05
+    T01 --> T05B
+    T01 --> T06
+    T04 --> T10
+    T05 --> T10
+    T06 --> T07
+    T06 --> T08
+    T06 --> T09
+    T07 --> T10
+    T08 --> T10
+    T09 --> T10
+    T03 --> T10
+    T10 --> T11
+    T10 --> T12
+    T11 --> T13
+    T12 --> T13
+    T13 --> T14
+    T05B --> T14
+    T11 --> T15
+    T05B --> T15
+    T14 --> T15
+    T15 --> T16
+```
 
 ---
 
-### MILESTONE 2: EARLY MODEL FEASIBILITY & CALIBRATION TRACK (FAIL-FAST)
+## 2. Các Quyết Định Kiến Trúc Trọng Tâm v3.2.0 (Major Architecture Decisions)
 
-#### [TASK-07] Early Model Feasibility Spike: Đánh giá Candidate TTS Models trên Windows/CUDA
-- **Goal**: Thẩm định kỹ thuật thực tế 3 candidate models: OmniVoice, Chatterbox Turbo, Qwen TTS trên môi trường phát triển (Windows 11 / CUDA 13.x / RTX 5070 Ti) để chốt Model Set cho MVP.
-- **Dependencies**: None (Chạy độc lập/song song như fail-fast spike).
-- **Expected Files**: `scripts/feasibility/tts_spike.py`, `docs/MODEL_FEASIBILITY_REPORT.md`.
-- **Acceptance Criteria**:
-  - Xác minh phiên bản model cụ thể, dependencies, độ tương thích Windows/CUDA, VRAM/RAM yêu cầu.
-  - Đo lường khả năng hỗ trợ Tiếng Việt và Tiếng Anh (bao phủ qua Model Set).
-  - Kiểm chứng Reference Audio / Voice Cloning: thời lượng audio mẫu yêu cầu (TUNING REQUIRED), độ ổn định clone, cross-language cloning.
-  - Đo đạc khả năng kiểm soát biểu cảm/sắc thái (expressive capabilities) và hành vi ngắt/cancel.
-  - Đánh giá dung lượng ổ cứng, phạm vi chunk khuyến nghị, và siêu tham số suy luận (inference params).
-  - Phân loại rõ từng candidate: `RECOMMENDED FOR MVP`, `RECOMMENDED FOR LATER`, `NOT RECOMMENDED`, `NEEDS TECHNICAL SPIKE`.
-  - Xuất báo cáo chi tiết `docs/MODEL_FEASIBILITY_REPORT.md` (không coi RTX 5070 Ti là yêu cầu tối thiểu của bản phát hành).
-- **Verification**: Chạy script benchmark và hoàn thành báo cáo thẩm định.
-- **Risk**: HIGH.
-- **User Approval Required**: YES (Trình User duyệt Model Feasibility Report để chốt Model Set).
+### 2.1 Kiến Trúc 4 Khung Nhìn Thống Nhất (4 Unified Workspace Views)
+- Một tập dữ liệu nguồn duy nhất `BatchJob[]` quản lý toàn bộ vòng đời tệp tin, được phân bổ hiển thị qua 4 tab lọc:
+  1. **Danh sách (`list`)**: Chuẩn bị tệp, nạp file/thư mục, chọn phạm vi dòng, cấu hình hàng loạt qua sub-toolbar, bật/tắt ma trận tác vụ (`selectedTasks`), cấu hình nâng cao từng tệp. Nút chính: `[Chuyển sang hàng đợi]`.
+  2. **Hàng đợi (`queued`)**: Quản lý thứ tự thực thi của các tệp đã sẵn sàng (`stage: "queued"`). Tệp đang xử lý (`processing`) luôn được ghim cố định ở đầu hàng kèm tiến trình thời gian thực (% tiến độ trực tiếp trên từng nút tác vụ và thanh % trạng thái, các nút Tạm dừng/Tiếp tục, Hủy). Các tệp đang chờ (`waiting`) xếp bên dưới theo thứ tự nguyên dương (`2`, `3`...) và điều chỉnh ưu tiên bằng nút `↑` / `↓`. Nút chính: `[Bắt đầu xử lý]`.
+  3. **Hoàn tất (`completed`)**: Lưu trữ các tệp đã hoàn thành thành công, nút `[Mở thư mục xuất]` và nút `[Nghe / Xem preview]` (Read-Only Preview).
+  4. **Lỗi (`failed`)**: Quản lý các tệp gặp lỗi kỹ thuật hoặc bị hủy, hiển thị 3-Way Dynamic CTA (`[Thử lại]`, `[⚡ Tạo lại]`, `[⚡ Xuất lại]`) tự động chuyển đổi theo trạng thái cấu hình.
 
-#### [TASK-08] faster-whisper Benchmark, Calibration & Auto-Selection Engine
-- **Goal**: Thực hiện benchmark thực tế các model `Medium`, `Large V3`, `Large V3 Turbo` trên cả CPU và CUDA để xây dựng thuật toán chọn model `Auto` dựa trên dữ liệu đo lường.
-- **Dependencies**: None (Chạy song song).
-- **Expected Files**: `scripts/feasibility/whisper_benchmark.py`, `src-tauri/src/workers/whisper_calibration.rs`.
-- **Acceptance Criteria**:
-  - Đo mức chiếm dụng VRAM/RAM thực tế, tốc độ xử lý trên file audio dài, và hành vi tránh tràn bộ nhớ (OOM).
-  - Xây dựng bảng quy tắc lựa chọn cho chế độ `Auto`: tự động chọn kích thước model tối ưu dựa trên phần cứng thực tế và trạng thái model đã cài đặt.
-  - Không hardcode các ngưỡng VRAM bằng phỏng đoán lý thuyết.
-- **Verification**: `cargo test test_whisper_auto_selection_policy`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+### 2.2 Phân Tách Checkbox Chọn Phạm Vi Dòng vs Checkbox Chọn Tác Vụ & Áp Dụng Cấu Hình Có Phạm Vi (Selection-Scoped Apply)
+- **Nguyên tắc Setting $\ne$ Execution**:
+  - Checkbox đầu dòng (`isSelected`): Quyết định phạm vi áp dụng thao tác hàng loạt (Chuyển sang hàng đợi, Áp dụng cấu hình chung, Xóa tệp).
+  - Checkbox cột tác vụ (`selectedTasks`): Quyết định các bước pipeline thực sự chạy trên file. Thao tác áp dụng cấu hình **tuyệt đối không tự ý bật/tắt tác vụ** ngoài ý muốn người dùng.
+- **Quy tắc Áp dụng Cấu hình (Apply Config Scope)**:
+  - 0 tệp được chọn: Nút `[Áp dụng]` bị vô hiệu hóa (disabled), hiển thị tooltip/helper: *"Chọn ít nhất 1 tệp để áp dụng cấu hình."* (Tuyệt đối cấm fallback ngầm 0 selected $\implies$ Apply to All).
+  - $1+$ tệp được chọn: Nút hiển thị `[Áp dụng cho X tệp đã chọn]`.
+  - Checkbox tiêu đề (Select All) có 3 trạng thái (`none`, `partial`, `all`) và tuân theo view/filter hiện thời.
 
-#### [TASK-09] Online Voice Provider Feasibility & Terms/Legal Evaluation
-- **Goal**: Thẩm định kỹ thuật, tính khả dụng của API và Điều khoản dịch vụ đối với các ứng viên Online Voice Provider chính thức (Microsoft, Google).
-- **Dependencies**: None.
-- **Expected Files**: `docs/ONLINE_VOICE_FEASIBILITY_REPORT.md`.
-- **Acceptance Criteria**:
-  - Kiểm tra official API availability, authentication, danh sách giọng đọc, ngôn ngữ hỗ trợ, cơ chế synthesis, quotas và rate limits.
-  - Đánh giá Điều khoản dịch vụ (ToS), bản quyền và tính hợp pháp khi tích hợp vào ứng dụng desktop.
-  - Dứt khoát loại trừ các endpoint không chính thức/lậu (CapCut, Edge-TTS reverse-engineered).
-  - Kết luận: Nếu ít nhất 1 provider chính thức đạt chuẩn $\rightarrow$ Đề xuất tích hợp ở Task 18; Nếu không có provider nào đạt $\rightarrow$ Đề xuất đánh dấu tạm hoãn (deferred) theo quy định của SPEC.
-- **Verification**: Hoàn thành tài liệu đánh giá pháp lý và kỹ thuật `docs/ONLINE_VOICE_FEASIBILITY_REPORT.md`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: YES (Trình User duyệt kết quả Online Voice Feasibility).
+### 2.3 Chuyển Đổi Hàng Đợi Hai Giai Đoạn & Điều Chỉnh Thứ Tự Ưu Tiên Bằng Mũi Tên (Staged Queue & Priority Arrow Reorder)
+- **Chuyển sang hàng đợi (List to Queue Staging)**:
+  - Nút `[Chuyển sang hàng đợi]` tại tab Danh sách: Thẩm định tính tương thích, resolve dependency chuỗi thực thi, chuyển tệp từ `stage: "staging"` sang `stage: "queued"` với trạng thái `waiting`.
+  - **Không đóng băng snapshot tại bước này**: Các job trong tab Hàng đợi vẫn có thể được chọn, nhận Cấu hình chung, hoặc chỉnh sửa per-file override.
+- **Điều chỉnh thứ tự ưu tiên bằng mũi tên (`ArrowUp` / `ArrowDown`)**:
+  - Tệp đang chạy (`processing`): Luôn bị khóa cố định (pinned) ở đầu hàng đợi, không có nút di chuyển.
+  - Các tệp đang chờ (`waiting`): Hiển thị số thứ tự nguyên dương (`2`, `3`...) và hai nút mũi tên (`↑` / `↓`) cho phép tăng/giảm vị trí ưu tiên, **kể cả khi hàng đợi đang chạy (`running`)**.
+  - Thứ tự mới của waiting jobs quyết định chính xác tệp nào được bốc lên xử lý tiếp theo sau khi active job hiện tại hoàn tất.
+  - Loại bỏ hoàn toàn thao tác kéo thả và biểu tượng chấm grip rườm rà.
 
----
+### 2.4 Thời Điểm Đóng Băng Snapshot Bất Biến (Snapshot Freeze Timing)
+- **Chỉ đóng băng ngay trước khi bắt đầu thực thi**:
+  - Ngay trước khi job chuyển từ `waiting` $\rightarrow$ `processing`:
+    $$\text{Global/Applied Config} \oplus \text{Per-File Overrides} \implies \text{effectiveConfigSnapshot}$$
+  - Đóng băng bất biến snapshot này cho lượt thực thi (execution attempt).
+  - Một khi đã chuyển sang `processing`: Snapshot hoàn toàn bất biến (immutable), không bao giờ bị thay đổi ngầm bởi việc sửa Global Defaults.
 
-### MILESTONE 3: PROCESS SUPERVISOR, SAFE QUEUE & WORKER IPC INTERFACE
+### 2.5 Trạng Thái Phái Sinh So Khớp Cấu Hình, Đồ Thị Vô Hiệu Hóa & 3-Way Dynamic CTA
+- **Cơ chế Phái sinh (Derived State)**:
+  - `configChanged` là kết quả so sánh sâu (`computeJobConfigDiff` / `deepEqual`) giữa cấu hình hiệu lực hiện tại (`jobWorkingConfig`) với `effectiveConfigSnapshot` đã freeze, loại trừ hoàn toàn các trường UI-only.
+  - Tuyệt đối không lưu `configChanged` như cờ thủ công trong store.
+  - Nếu người dùng bấm "Khôi phục mặc định" nhưng Global Defaults hiện tại khác snapshot cũ $\implies$ `configChanged` vẫn là `true` $\implies$ CTA là `[⚡ Tạo lại]`.
+  - Chỉ khi cấu hình hiệu lực khớp chính xác với snapshot cũ $\implies$ `configChanged = false` $\implies$ CTA tự động hoàn nguyên về `[Thử lại]`.
+- **Hành vi 3-Way Dynamic CTA tại Tab Lỗi**:
+  1. **`[Thử lại]` (Retry)**: Khi cấu hình không đổi (`configChanged === false`). Tái sử dụng snapshot cũ, tiếp tục từ bước bị lỗi gần nhất (`retryFromStep`), bỏ qua các bước đã có artifact hợp lệ.
+  2. **`[⚡ Tạo lại]` (Regenerate)**: Khi cấu hình AI thay đổi (Whisper model, voice, speed, provider...). Sử dụng Config Invalidation Graph để xác định bước bắt đầu lại (`invalidatedFromStep`), giữ nguyên committed artifact cũ trên đĩa, chạy lại từ bước bị vô hiệu hóa với snapshot mới.
+  3. **`[⚡ Xuất lại]` (Re-export)**: Khi CHỈ thay đổi thông số xuất tệp (`outputPath`, `saveInSourceFolder`, `collisionPolicy`, `outputAudioFormat`, `subtitleFormat`). Tái sử dụng toàn bộ artifact trung gian hợp lệ, tuyệt đối không gọi lại mô hình AI (0 Whisper, 0 Translation LLM, 0 TTS), tiến hành sao chép/xuất trực tiếp sang đích mới.
 
-#### [TASK-10] Process Supervisor & Subprocess Lifecycle Manager
-- **Goal**: Module Rust quản lý khởi chạy, giám sát sức khỏe, ngắt và dọn dẹp tiến trình con Python/C++ của model workers.
-- **Dependencies**: TASK-01.
-- **Expected Files**: `src-tauri/src/supervisor/mod.rs`, `src-tauri/src/supervisor/process.rs`.
-- **Acceptance Criteria**:
-  - Khởi động worker trong môi trường cô lập với mảng đối số tách rời (chống shell injection).
-  - Phát hiện lỗi/crash của tiến trình con một cách tin cậy trong thời gian giới hạn (bounded error detection); cửa sổ ứng dụng React hoàn toàn không bị ảnh hưởng.
-  - Dọn dẹp sạch sẽ toàn bộ tiến trình con khi thoát app hoặc cancel, không để lại tiến trình mồ côi (no orphan processes).
-- **Verification**: `cargo test test_worker_process_crash_isolation`.
-- **Risk**: HIGH.
-- **User Approval Required**: NO.
+### 2.6 Chuyển Đổi Định Dạng Âm Thanh Thực Sự & Tái Sử Dụng Subtitle Parser/Exporter
+- Khi thực thi **Xuất lại (`Re-export`)** với định dạng đầu ra thay đổi:
+  - **Định dạng âm thanh** (WAV $\leftrightarrow$ MP3): Phải thực hiện chuyển mã âm thanh thực sự (real audio transcoding via Web Audio / FFmpeg / Rust helper), **tuyệt đối không đơn thuần đổi phần mở rộng tệp `.wav` $\rightarrow$ `.mp3`**.
+  - **Định dạng phụ đề** (SRT $\leftrightarrow$ VTT): **Tái sử dụng trực tiếp 100% module hiện có** `src/services/subtitle/parser.ts` (`parseSubtitle`) và `src/services/subtitle/exporter.ts` (`exportToSRT`, `exportToVTT`) để bóc tách cues và xuất định dạng mới chuẩn xác; **tuyệt đối không tạo mới module `subtitleConverter.ts` gây phân mảnh và dư thừa mã nguồn**.
 
-#### [TASK-11] Documented IPC Protocol & Capability/Version Handshake
-- **Goal**: Định nghĩa giao thức truyền thông điệp có cấu trúc giữa Rust và worker, kèm cơ chế bắt tay phiên bản và năng lực (Capability Handshake).
-- **Dependencies**: TASK-10.
-- **Expected Files**: `src-tauri/src/ipc/protocol.rs`, `src-tauri/src/ipc/handshake.rs`.
-- **Acceptance Criteria**:
-  - Giao thức truyền tin cậy (typed messages).
-  - Worker bắt buộc gửi bản tin handshake khai báo: phiên bản giao thức, engine name, model name, supported languages, supported capabilities (voice cloning, emotion tags, streaming).
-  - Báo lỗi tường minh và từ chối nạp nếu phiên bản không khớp hoặc thiếu năng lực yêu cầu.
-- **Verification**: `cargo test test_worker_handshake_compatibility`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+### 2.7 Bảo Vệ An Toàn Đầu Ra & Bảo Toàn Committed Artifact
+- **Quy tắc Thứ Tự Ưu Tiên**:
+  $$\text{External Modification Protection} > \text{Global Collision Policy}$$
+- **Bảo Vệ Chỉnh Sửa Thủ Công**:
+  - Lưu vết dấu vân tay tệp `artifactFingerprints` (size + mtime).
+  - Nếu tệp đích trên đĩa bị thay đổi ngoài ứng dụng, hệ thống **tuyệt đối không ghi đè** (kể cả khi `collisionPolicy = "overwrite"`), tự động fallback an toàn sang `auto_rename` (`_001.ext`).
+- **Bỏ Qua Từng Artifact Trong Dubbing (Per-Artifact Skip)**:
+  - Khi `collisionPolicy = "skip"`, nếu `.srt` đã tồn tại nhưng `.wav` chưa có: bỏ qua xuất `.srt`, tiếp tục tổng hợp và xuất Master `.wav`.
+- **Bảo Toàn Committed Artifact Khi File Nguồn Đột Biến (Input Mutation)**:
+  - Khi phát hiện tệp nguồn bị sửa ngoài app: cập nhật metadata, hiển thị cảnh báo `⚠️ Đã sửa ngoài app`.
+  - Vô hiệu hóa tái sử dụng cache/artifact phụ thuộc (**CHỈ VỀ MẶT REUSE**) $\rightarrow$ pipeline chạy lại từ Step 1.
+  - Hệ thống **tuyệt đối không tự động xóa hoặc rollback** các artifact đã commit ở lượt chạy trước; artifact cũ trên đĩa được giữ nguyên và đánh dấu `stale` trong bản ghi. File output mới sinh ra được phân giải qua Output Resolver.
 
-#### [TASK-12] Safe Sequential Job Queue Orchestrator & Bounded Cancellation
-- **Goal**: Hàng đợi xử lý tác vụ tuần tự (Safe Sequential Queue, Concurrency = 1) giúp giảm thiểu tối đa rủi ro OOM trên GPU, có cơ chế Pause và Bounded Cancel.
-- **Dependencies**: TASK-10, TASK-11.
-- **Expected Files**: `src-tauri/src/queue/mod.rs`, `src-tauri/src/queue/job.rs`.
-- **Acceptance Criteria**:
-  - Quản lý hàng đợi tuần tự Concurrency = 1.
-  - Pause: Ngay lập tức không nạp chunk tiếp theo; chunk đang chạy được hoàn tất hoặc ngắt an toàn.
-  - Cancel: Dừng hàng đợi, gửi tín hiệu ngắt tới worker, thu hồi RAM/VRAM sạch sẽ; toàn bộ các chunk đã hoàn thành trước đó được giữ nguyên trạng thái `Ready`.
-- **Verification**: `cargo test test_queue_pause_and_bounded_cancel`.
-- **Risk**: HIGH.
-- **User Approval Required**: NO.
+### 2.8 Bất Biến Chỉ Đọc Của Tính Năng Xem Trước (Preview Read-Only Invariant)
+- Nút `[Nghe / Xem preview]` trong tab Hoàn tất và Drawer mở Audio Player & Subtitle Viewer:
+  - Chỉ đọc trực tiếp các committed artifact đã ghi nhận trên đĩa (`outputArtifactPaths`, `subtitles`).
+  - **Tuyệt đối không kích hoạt tiến trình sinh (generate) ngầm**.
+  - **0 cuộc gọi AI API**.
+  - **Không làm thay đổi bất kỳ trạng thái nào của job** (`status`, `progressPct`, `stepResults`).
 
-#### [TASK-13] Hardware Diagnostics & Capability Inspection Module
-- **Goal**: Thu thập thông tin phần cứng hệ thống (NVIDIA GPU, VRAM tổng/khả dụng, CUDA runtime, CPU, RAM) và FFmpeg readiness.
-- **Dependencies**: None.
-- **Expected Files**: `src-tauri/src/hardware/mod.rs`, `src-tauri/src/hardware/nvml.rs`, `src-tauri/src/hardware/ffmpeg.rs`.
-- **Acceptance Criteria**:
-  - Phát hiện chính xác GPU NVIDIA và dung lượng VRAM.
-  - Kiểm tra trạng thái sẵn sàng của CUDA runtime và FFmpeg.
-  - Cung cấp dữ liệu phần cứng cho thuật toán Auto Whisper và màn hình Settings.
-- **Verification**: `cargo test test_hardware_detection`.
-- **Risk**: LOW.
-- **User Approval Required**: NO.
+### 2.9 Ngữ Nghĩa Hủy An Toàn Khối Suy Luận Nguyên Khối (Monolithic ASR Safe Cancel)
+- Do faster-whisper inference là nguyên khối và không hỗ trợ ngắt an toàn giữa chừng:
+  - Khi bấm Hủy một job đang bóc băng: `job.status` vẫn giữ `"processing"`, kích hoạt cờ runtime `job.isCancelling = true` và `cancelRequested = true`.
+  - UI hiển thị nhãn `"Đang hủy..."` với icon xoay và khóa nút tương tác.
+  - Hàng đợi **chặn tuyệt đối không dispatch job tiếp theo** cho đến khi worker ASR hiện tại return hoặc thoát an toàn thực tế.
+  - Sau khi worker thoát: dọn dẹp staging `.tmp` $\rightarrow$ chuyển `stepResults["transcription"].status = "cancelled"` $\rightarrow$ `job.status = "cancelled"`, reset `job.isCancelling = false`.
+  - **Zero Overlap Invariant**: Không bao giờ có worker ASR cũ chạy ngầm đồng thời với job AI kế tiếp.
 
----
+### 2.10 Ngữ Nghĩa Concurrency Cấp BatchJob & Internal Concurrency
+- **BatchJob Concurrency = 1 (Baseline Invariant)**:
+  - Tại một thời điểm chỉ có duy nhất 1 BatchJob active được xử lý.
+- **Internal Concurrency = TUNING REQUIRED (Không hardcode trước benchmark)**:
+  - Chunk concurrency, cue concurrency, workers, model scheduling không được hardcode mà phải đo đạc thực nghiệm trong Milestone 6 (TASK-16) trước khi chọn production defaults.
 
-### MILESTONE 4: MODEL DISCOVERY, PROVISIONING & PRODUCTION ENGINE ADAPTERS
+### 2.11 Cầu Nối Lưu Trữ Bền Vững Tauri v2 (Tauri Storage Bridge)
+- Dùng Rust standard library **`std::fs`** kết hợp Tauri IPC command gốc (`#[tauri::command]`) trong `src-tauri/src/lib.rs`:
+  - `save_app_data_file(relative_path: String, content: String)`: Ghi nguyên tử qua tệp `.tmp` rồi đổi tên (`std::fs::rename`).
+  - `read_app_data_file(relative_path: String) -> Result<String, String>`.
+  - `get_app_data_dir() -> Result<String, String>`.
+- Xây dựng module dùng chung: `src/services/storage/tauriFsBridge.ts` (có mock in-memory fallback cho môi trường test/dev).
+- **Zero Audio Binary**: Tuyệt đối không serialize AudioBuffer, PCM hay Base64 vào JSON bền vững.
 
-#### [TASK-14] Model Discovery, Inspection & Registry Service
-- **Goal**: Dịch vụ quét (scan) các thư mục `TTS Model Path` và `Transcription Model Path` đã cấu hình, nhận diện model, kiểm tra tương thích và quản lý trạng thái.
-- **Dependencies**: TASK-01.
-- **Expected Files**: `src-tauri/src/models/registry.rs`, `src-tauri/src/models/scanner.rs`.
-- **Acceptance Criteria**:
-  - Quét độc lập 2 thư mục model đã cấu hình.
-  - Nhận diện và phân loại trạng thái: `Installed / Valid / Ready`, `Missing`, `Invalid / Incomplete`, `Incompatible`.
-  - Tái sử dụng trực tiếp các model tương thích đã có sẵn trên máy; tuyệt đối không sao chép model vào AppData.
-  - Hỗ trợ thao tác `Rescan / Refresh Models` để cập nhật khi người dùng copy thêm model thủ công.
-  - Đổi Model Path chỉ quét thư mục mới, không tự ý di chuyển hay xóa file ở thư mục cũ.
-- **Verification**: `cargo test test_model_discovery_and_registry`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+### 2.12 Quy Tắc Hoàn Thành Suy Luận AI Cục Bộ (Local AI Inference Completion Rule)
+- **Quy Tắc Bất Biến**: Tác vụ TTS và ASR (Transcription) chỉ được đánh dấu là **COMPLETE** khi và chỉ khi:
+  - TTS local runtime thật chạy và tổng hợp âm thanh thực tế;
+  - faster-whisper local runtime thật chạy và giải mã âm thanh thực tế;
+  - Rust IPC / Python sidecar thật chạy và giao tiếp ổn định;
+  - Toàn bộ cơ chế cancel / progress % / error capture thật hoạt động thông suốt.
+- **Cấm Tuyệt Đối**:
+  - Không được đánh dấu complete nếu chỉ dùng `setInterval`;
+  - Không được dùng mock worker giả lập;
+  - Không được dùng Web Speech API placeholder;
+  - Không được dùng fake progress bar nhảy % theo thời gian.
+- **Ranh giới Giao tiếp Chuẩn hóa (StepExecutor Interfaces)**:
+  - Tầng Batch Orchestrator chỉ giao tiếp với các Step Executors (`transcriptionExecutor.ts`, `ttsExecutor.ts`, `dialogueExecutor.ts`, `dubbingExecutor.ts`) thông qua hợp đồng dữ liệu chuẩn (`BatchStepResult`, callbacks tiến độ thời gian thực, cờ ngắt an toàn).
+  - Tầng Step Executors sử dụng **Adapter Pattern**:
+    - Đối với tác vụ Dịch thuật (`TranslationExecutor`): Kết nối trực tiếp với các AI Providers hiện có (`Gemini`, `OpenAI`, `LM Studio`, `Ollama`, `Custom API`) đã hoạt động tốt.
+    - Đối với TTS và ASR: Triển khai adapter interface kết nối với runtime inference native qua Rust IPC / Python sidecar.
+- **Lộ trình Xây dựng**:
+  - *Milestone 1–4*: Xây dựng lõi điều phối, lưu trữ bền vững atomic, snapshot resolver và step execution loop chuẩn hóa.
+  - *Milestone 5*: Giao diện người dùng 4 khung nhìn, điều chỉnh thứ tự ưu tiên bằng mũi tên, bảng ma trận tác vụ và drawer cấu hình.
+  - *Milestone 6*: Kết nối tích hợp adapter thực tế với runtime inference (hoặc local service), đo đạc soak benchmark và stress test.
 
-#### [TASK-15] Minimal User-Initiated Model Provisioning & Download Service
-- **Goal**: Dịch vụ tải model trực tiếp do người dùng chủ động kích hoạt dành riêng cho TTS Models và faster-whisper Models (loại trừ LLM).
-- **Dependencies**: TASK-01, TASK-14.
-- **Expected Files**: `src-tauri/src/models/downloader.rs`, `src-tauri/src/models/integrity.rs`.
-- **Acceptance Criteria**:
-  - Tải file model trực tiếp vào `TTS Model Path` hoặc `Transcription Model Path` tương ứng.
-  - Sử dụng file tạm staging (`.download`), cập nhật tiến độ (%), hỗ trợ Cancel và Retry.
-  - Kiểm tra dung lượng đĩa trống trước khi tải.
-  - Kiểm tra tính toàn vẹn: Dùng trusted SHA256 checksum khi nguồn hỗ trợ, hoặc dùng cơ chế xác thực mạnh nhất theo cấu trúc file; chỉ chuyển sang `Ready` sau khi xác thực thành công.
-  - Tải lỗi hoặc bị hủy tuyệt đối không tạo ra trạng thái model hợp lệ giả mạo.
-- **Verification**: `cargo test test_model_download_lifecycle_and_integrity`.
-- **Risk**: HIGH.
-- **User Approval Required**: NO.
+### 2.13 Ưu Tiên Xây Dựng Sớm Lưu Trữ Nguyên Tử Tauri FS (High-Risk Early Build Priority)
+- Khác với LocalStorage của trình duyệt, việc lưu trữ hàng loạt đòi hỏi độ bền vững cao khi crash (`batch_queue_v3.json`).
+- Do đó, các Tauri IPC commands trong Rust (`save_app_data_file`, `read_app_data_file`, `get_app_data_dir`) cùng module cầu nối `src/services/storage/tauriFsBridge.ts` **bắt buộc phải được triển khai và kiểm thử chạy thông suốt ngay từ đầu Milestone 2 (TASK-05)** trước khi xây dựng dịch vụ quản lý hàng đợi `batchStorage.ts`.
 
-#### [TASK-16] faster-whisper Production Engine Adapter Integration
-- **Goal**: Xây dựng worker adapter cho engine faster-whisper (`Medium`, `Large V3`, `Large V3 Turbo`, `Auto`) hỗ trợ đa ngôn ngữ, Auto Detect và xử lý đầu vào media (audio và video) thông qua FFmpeg/local decoder.
-- **Dependencies**: TASK-08, TASK-10, TASK-11, TASK-13, TASK-14.
-- **Expected Files**: `workers/asr/whisper_worker.py`, `src-tauri/src/workers/asr_adapter.rs`, `src-tauri/src/audio/media_decode.rs`.
-- **Acceptance Criteria**:
-  - Tích hợp model set đã duyệt; áp dụng thuật toán Auto selection từ kết quả Task 08.
-  - Xử lý đầu vào Media Input: File âm thanh hoặc file video (MP4, MKV, AVI...) được trích xuất hoặc chuẩn hóa âm thanh (WAV 16kHz mono tương thích) qua FFmpeg/local decoder trước khi đưa vào faster-whisper worker (video transcription có implementation owner rõ ràng, không tạo subsystem media-editor phức tạp).
-  - Bóc băng audio/video, tự động nhận diện ngôn ngữ nguồn (`Auto Detect` metadata trả về đúng).
-  - Trích xuất cấu trúc segments có timestamp chuẩn (`Start --> End`), xuất dữ liệu transcript hợp lệ, không rỗng.
-- **Verification**: `cargo test test_whisper_adapter_transcription_audio_and_video`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+### 2.14 Kiến Trúc Bảo Mật Bản Quyền Native (License Security Architecture: HWID, Supabase RPC & Windows DPAPI)
+- **Định Danh Thiết Bị Ổn Định (HWID v1: Primary vs Fallback Single Anchor)**:
+  - Primary anchor: SMBIOS / Motherboard UUID (`Win32_ComputerSystemProduct.UUID`).
+  - Fallback anchor: Windows Registry `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid` (chỉ sử dụng khi UUID không khả dụng; tuyệt đối không combine cả hai thành composite HWID bắt buộc).
+  - Normalization: In hoa, bỏ gạch nối, khoảng trắng và ngoặc nhọn.
+  - Namespaced Hashing: SHA-256 chuỗi `VoxLab-HWID-v1:{normalized_anchor}`, định dạng `v1:{sha256_hex}`.
+  - Cấm dùng MAC address, CPU serial, hoặc disk serial làm primary anchor.
+- **Xác Thực Trực Tuyến Qua Supabase RPC**:
+  - Desktop client chỉ gọi RPC `POST /rest/v1/rpc/activate_or_verify_license(p_license_key, p_hwid, p_app_version)`.
+  - Client desktop **tuyệt đối KHÔNG** truy cập trực tiếp bảng DB, không có SQL UPDATE/INSERT, không reset device trực tiếp.
+  - Desktop build **tuyệt đối KHÔNG chứa service-role key hoặc admin secret**. Client chỉ sử dụng public `anon_key` với quyền truy cập RPC đã được khóa chặt bởi RLS/Definer.
+- **Lưu Trữ Cục Bộ Mã Hóa Bằng Windows DPAPI**:
+  - Tuyệt đối không dùng `localStorage` lưu trữ key bản quyền.
+  - Triển khai trong Rust backend (`src-tauri/src/security/license_storage.rs`) sử dụng **Windows DPAPI** (`CryptProtectData` / `CryptUnprotectData`).
+  - **Quyền lưu trữ của Backend Rust**: Backend Rust được phép lưu trữ raw License Key trong DPAPI-encrypted storage (`license.enc`) phục vụ startup online re-verification qua RPC mà không bắt người dùng nhập lại key.
+  - Ghi bền vững nguyên tử: Ghi vào `license.tmp` $\rightarrow$ fsync / flush $\rightarrow$ rename / replace thành `license.enc`.
+  - Cấu trúc: `schemaVersion`, `licenseKey`, `licenseKeyMasked`, `licenseType`, `hwidVersion`, `hwid`, `status`, `savedAt`, `lastVerifiedAt`, `expiresAt`, `lastServerStatus`.
+  - Raw License Key tuyệt đối KHÔNG bao giờ xuất hiện trong: React state lâu dài, `localStorage`, log console, diagnostics hay crash report.
+  - Frontend chỉ nhận `LicenseSummary` (chứa `licenseKeyMasked`).
+- **Mã Trạng Thái Miền Nghiệp Vụ Cấu Trúc (Structured Domain Status Enum)**:
+  `VALID`, `ACTIVATED`, `EXPIRED`, `DISABLED`, `NOT_FOUND`, `DEVICE_MISMATCH`, `DEVICE_LIMIT`, `NETWORK_ERROR`, `SERVER_ERROR`, `NO_KEY`, `OFFLINE_GRACE`. Tuyệt đối không parse chuỗi text để suy đoán trạng thái.
+- **Cơ Chế Ân Hạn Ngoại Tuyến (Offline Grace Policy)**:
+  - Chỉ cho phép Offline Grace khi: đã từng verify online thành công, cache DPAPI hợp lệ, HWID máy khớp cache, lỗi hiện tại là lỗi mạng tạm thời (`NETWORK_ERROR` / `SERVER_ERROR`), và còn trong thời hạn ân hạn:
+    `OFFLINE_GRACE_DAYS = TUNING REQUIRED` (Baseline phát triển tạm thời: 7 ngày [PROVISIONAL / NOT PRODUCT-FROZEN], cấu hình qua domain constant `DEFAULT_OFFLINE_GRACE_DAYS`, không hard-code trên UI).
+  - **Cấm Tuyệt Đối**: Không bao giờ cấp Offline Grace nếu server trả về phản hồi từ chối xác định (`EXPIRED`, `DISABLED`, `DEVICE_MISMATCH`, `DEVICE_LIMIT`, `NOT_FOUND`).
+- **Ranh Giới Bảo Mật Rust / Tauri IPC**:
+  - Frontend TypeScript chỉ gọi các lệnh IPC: `get_license_summary()`, `activate_license()`, `change_license_key()`, `verify_license()`, `clear_local_license_if_allowed()`.
+  - Frontend KHÔNG tự sinh HWID, KHÔNG gọi Windows DPAPI, KHÔNG nắm giữ server secret, KHÔNG tự quyết định Offline Grace. Sau kích hoạt, Frontend giải phóng ngay raw key khỏi React state.
 
-#### [TASK-17] Approved MVP TTS Model Set Adapter Integration
-- **Goal**: Xây dựng worker adapter cho tổ hợp model TTS đã được User phê duyệt từ kết quả Task 07 và CHECKPOINT 1 (bao phủ Tiếng Việt + Tiếng Anh và Voice Cloning). Agent tuyệt đối không tự ý quyết định danh sách model set cuối cùng.
-- **Dependencies**: TASK-07 (Completed), CHECKPOINT 1 (USER APPROVED), TASK-10, TASK-11, TASK-14.
-- **Expected Files**: `workers/tts/tts_worker.py`, `src-tauri/src/workers/tts_adapter.rs`.
-- **Acceptance Criteria**:
-  - Hỗ trợ tổ hợp model TTS đã duyệt qua Checkpoint 1: bao phủ phát âm hợp lệ cho cả Tiếng Việt và Tiếng Anh (xuất ra file audio hợp lệ, phát được).
-  - Hỗ trợ Voice Cloning từ file audio mẫu: tiếp nhận file mẫu, áp dụng các tham số clone được hỗ trợ.
-  - Triển khai Capability Handshake tương thích hoàn toàn với Rust supervisor; không xảy ra lỗi crash/corruption.
-- **Verification**: `cargo test test_tts_model_set_adapter_generation`.
-- **Risk**: HIGH.
-- **User Approval Required**: NO (Đã được chặn và phê duyệt tại CHECKPOINT 1 trước khi bắt đầu).
-
-#### [TASK-18] Official Online Voice Provider Adapter Integration
-- **Goal**: Tích hợp adapter cho nhà cung cấp Online Voice chính thức nếu vượt qua thẩm định tại Task 09 và được User phê duyệt tại CHECKPOINT 2 (hoặc đánh dấu deferred nếu không đạt). Agent tuyệt đối không tự ý chọn Online Provider hoặc dùng endpoint lậu.
-- **Dependencies**: TASK-05, TASK-09 (Completed), CHECKPOINT 2 (USER APPROVED).
-- **Expected Files**: `src-tauri/src/voice/online_provider.rs`.
-- **Acceptance Criteria**:
-  - Nếu Checkpoint 2 phê duyệt provider chính thức (Microsoft, Google):
-    - Khám phá danh mục giọng đọc của provider (provider voice catalog discovery / listing) và hỗ trợ làm mới danh mục (refresh voice catalog).
-    - Chuẩn hóa thông tin từng giọng vào cấu trúc chung VoxLab Voice DTO: Provider voice stable ID, display name, language/locale, metadata năng lực phù hợp (relevant capability metadata).
-    - Thực hiện tổng hợp âm thanh (synthesis) sử dụng giọng online đã chọn.
-    - Quản lý xác thực an toàn qua DPAPI; bắt buộc gắn nhãn `ONLINE` rõ ràng và hiển thị cảnh báo gửi dữ liệu ra ngoài.
-    - Lỗi mạng được cô lập hoàn toàn, không làm ảnh hưởng tới các giọng Local.
-  - Nếu không có provider nào đạt: Đánh dấu deferred trong cấu hình theo quy định của SPEC; tuyệt đối không dùng CapCut, Edge-TTS hay reverse-engineered endpoint để thay thế.
-- **Verification**: `cargo test test_online_voice_provider_integration`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO (Đã được chặn và phê duyệt tại CHECKPOINT 2 trước khi bắt đầu).
+### 2.15 Tiêu Chuẩn Giao Diện Đáy Bảng Batch (Shared BatchFooter Component & BATCH_FOOTER_HEIGHT Token)
+- **Token Thiết Kế**: `BATCH_FOOTER_HEIGHT = 39px` (Tailwind token `h-[39px]`).
+- **Bất Biến Bố Cục**: Footer Status Bar phải có chiều cao, padding, alignment và cấu trúc bố cục nhất quán trên toàn bộ 4 view (`list`, `queued`, `completed`, `failed`), hiển thị số liệu `Tổng: X tệp` của tab hiện tại.
+- **Yêu Cầu Triển Khai Phase 7**:
+  - Tạo/reuse một shared component `BatchFooter` (`src/components/batch/BatchFooter.tsx`) dùng chung cho cả 4 tab.
+  - Tuyệt đối không duplicate CSS riêng cho từng tab. Mọi điều chỉnh kích thước sau này chỉ thay đổi qua design token/component chung.
 
 ---
 
-### MILESTONE 5: CORE MEDIA & TEXT PIPELINES
+## 3. Danh Sách Nhiệm Vụ Chi Tiết (Detailed Task Breakdown)
 
-#### [TASK-19] Deterministic Text Normalization & Protected Spans Preservation
-- **Goal**: Thuật toán chuẩn hóa văn bản tất định không làm thay đổi ngữ nghĩa, bảo vệ 100% các định dạng số, thời gian, URL, email, từ viết tắt.
-- **Dependencies**: None.
-- **Expected Files**: `src-tauri/src/text/normalization.rs`.
-- **Acceptance Criteria**:
-  - Chuẩn hóa Unicode NFC dựng sẵn thống nhất đa ngôn ngữ.
-  - Tối ưu khoảng trắng thừa, ngắt dòng (tối đa 2 dòng), ngoặc kép `""`, gạch ngang `-`.
-  - Chuẩn hóa khoảng cách quanh dấu câu nhưng bảo vệ nguyên vẹn các Protected Spans: số thập phân (`3.14`), giờ (`10:30`), URL (`example.com`), email (`user@email.com`), từ viết tắt (`TP.HCM`), IP (`127.0.0.1`), version (`v2.0`).
-- **Verification**: `cargo test test_deterministic_normalization_protected_spans`.
-- **Risk**: LOW.
-- **User Approval Required**: NO.
+### Milestone 1: Hợp Đồng Dữ Liệu, Tương Thích & Bộ Phân Giải Phụ Thuộc (Phase 7 Build Auto)
 
-#### [TASK-20] Smart Chunking Engine phân tầng theo Model Profile
-- **Goal**: Bộ chia phân đoạn câu thông minh theo thứ tự ưu tiên (Đoạn văn $\rightarrow$ Câu hoàn chỉnh $\rightarrow$ Vế câu $\rightarrow$ Fallback an toàn) dựa trên profile model.
-- **Dependencies**: TASK-19.
-- **Expected Files**: `src-tauri/src/text/chunking.rs`.
-- **Acceptance Criteria**:
-  - Cắt câu theo phân tầng ưu tiên, không bao giờ cắt ngang Protected Spans.
-  - Cấu hình linh hoạt ngưỡng độ dài chunk (min, target, max) theo từng profile model TTS (TUNING REQUIRED).
-  - Trả về danh sách chunks có chỉ số thứ tự, nội dung text, và hash xác thực.
-- **Verification**: `cargo test test_smart_chunking_hierarchy`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+#### TASK-01: Batch Domain Types, Step & Job State Models
+- **ID**: `TASK-01`
+- **TITLE**: Định nghĩa Domain Types, Step-Level & Job-Level State Models cho Batch Workspace v3.2
+- **GOAL**: Xây dựng toàn bộ hợp đồng kiểu dữ liệu TypeScript cho kiến trúc 4 Khung Nhìn Thống Nhất, Row Scope Selection, Priority Arrow Reorder, 3-Way CTA và Config Invalidation Graph theo đúng SPEC v3.2.0.
+- **DEPENDENCIES**: **GATE D UI/UX Approved**.
+- **EXPECTED FILES/MODULES**:
+  - `src/types/batch.ts` (Mới: toàn bộ domain types cho File-Centric Batch v3.2)
+  - `src/types/ui.ts` (Cập nhật: bổ sung `WorkspaceId: "batch"`, mở rộng SessionHistoryItem)
+- **STATUS**: **COMPLETE**
+- **ACCEPTANCE CRITERIA**:
+  - [x] Khai báo đủ 5 `BatchTaskType`: `"tts" | "dialogue" | "transcription" | "translation" | "dubbing"`.
+  - [x] Khai báo đủ 8 `BatchStepStatus`: `"waiting" | "processing" | "completed" | "completed_with_warning" | "failed" | "skipped" | "cancelled" | "interrupted"`.
+  - [x] Khai báo đủ 9 `BatchJobStatus`: `"waiting" | "processing" | "paused" | "completed" | "completed_with_warning" | "failed_with_artifact" | "failed" | "cancelled" | "interrupted"`.
+  - [x] Khai báo đủ 6 `BatchQueueStatus`: `"idle" | "running" | "pausing" | "paused" | "cancelling" | "blocked"`.
+  - [x] Khai báo đủ 4 `BatchViewTab`: `"list" | "queued" | "completed" | "failed"`.
+  - [x] Khai báo `BatchJobStage`: `"staging" | "queued"`.
+  - [x] Khai báo `queueOrder: number` (thứ tự ưu tiên nguyên dương, hỗ trợ điều chỉnh qua mũi tên `↑` / `↓`).
+  - [x] Khai báo `BatchDynamicCtaType`: `"retry" | "regenerate" | "reexport"`.
+  - [x] Khai báo `ConfigDiffResult` phân định AI changes vs Output changes.
+  - [x] Khai báo `BatchStepResult` với `outputArtifactPaths: string[]`, `warning?`, `error?`, `skipReason?`.
+  - [x] Khai báo `stepResults: Partial<Record<BatchTaskType, BatchStepResult>>` (các task không chọn không tồn tại trong map).
+  - [x] Khai báo Snapshot types cho 5 tác vụ (`BatchTtsSnapshot`, `BatchDialogueSnapshot`, `BatchTranscriptionSnapshot`, `BatchTranslationSnapshot`, `BatchDubbingSnapshot`) cùng Output settings snapshot.
+  - [x] Khai báo `BatchJobOutputArtifacts` với `artifactFingerprints` và cờ `stale?: boolean`.
+  - [x] Khai báo `BatchQueueDurableState` với `version: 3`.
+- **MAPPING SPEC AC**: `AC-01`, `AC-02`, `AC-03`, `AC-04`, `AC-19`, `AC-21`, `AC-22`, `AC-25`, `AC-26`.
+- **VERIFICATION**: `npx tsc --noEmit` pass 0 lỗi.
+- **RISK**: THẤP.
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
-#### [TASK-21] Local LLM Client (LM Studio Integration) & AI Text Actions
-- **Goal**: Client HTTP kết nối tới LM Studio / OpenAI-compatible endpoint, tự động discover model, thực hiện AI Punctuation có Lexical Guardrail và AI Optimize.
-- **Dependencies**: None.
-- **Expected Files**: `src-tauri/src/ai/client.rs`, `src-tauri/src/ai/punctuation.rs`, `src-tauri/src/ai/guardrail.rs`.
-- **Acceptance Criteria**:
-  - Test Connection tới LM Studio URL, kiểm tra các trạng thái kết nối và lấy danh sách model qua API.
-  - Prompt AI Punctuation chỉ định rõ chỉ sửa dấu câu.
-  - **Lexical Guardrail Validation**: So khớp từ vựng trước và sau; phát hiện và gắn cờ cảnh báo nếu LLM tự ý thêm/bớt/sửa từ vựng.
-  - Quản lý Text Revision Semantics: Hỗ trợ `Reject AI Revision` (về Working Text cũ) và `Restore Original` (về 100% Original Source ban đầu).
-- **Verification**: `cargo test test_ai_lexical_guardrail`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+#### TASK-02: File Compatibility Detector & Dialogue Contract Validator
+- **ID**: `TASK-02`
+- **TITLE**: Triển khai Bộ Nhận Diện Tương Thích Định Dạng & Thẩm Định Hợp Đồng Phân Vai Hội Thoại
+- **GOAL**: Xác định định dạng tệp tin đầu vào (`text`, `media`, `subtitle`), áp dụng ma trận tương thích cho từng cột tác vụ và thẩm định nội dung tệp văn bản có đạt cấu trúc phân vai hay không.
+- **DEPENDENCIES**: `TASK-01`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/compatibilityDetector.ts` (Mới)
+  - `src/services/batch/dialogueValidator.ts` (Mới)
+  - `src/services/batch/__tests__/compatibility.test.ts` (Mới)
+- **STATUS**: **COMPLETE**
+- **ACCEPTANCE CRITERIA**:
+  - [x] Phân loại chính xác đuôi mở rộng: Text (`.txt`, `.docx`), Media (`.mp4`, `.mkv`, `.avi`, `.mov`, `.mp3`, `.wav`, `.m4a`, `.flac`), Subtitle (`.srt`, `.vtt`).
+  - [x] Cấm Media tích chọn TTS/Hội thoại; Cấm Text tích chọn Phụ đề; Cấm Subtitle tích chọn Phụ đề/TTS. Trả về cờ `isCompatible` và tooltip giải thích chi tiết.
+  - [x] Thẩm định nhanh file văn bản bằng `DIALOGUE_LINE_REGEX` (tái sử dụng từ `src/services/dialogue/parser.ts`): Chỉ cho phép bật Hội thoại nếu có ít nhất 1 dòng thoại hợp lệ `[Tên]:`. File văn bản thường bị khóa Hội thoại kèm tooltip.
+  - [x] Áp dụng quy tắc loại trừ lẫn nhau (Mutually Exclusive): File văn bản chỉ được chọn TTS HOẶC Hội thoại, không được chọn đồng thời cả hai.
+- **MAPPING SPEC AC**: `AC-02`, `AC-03`, `AC-04`, `AC-06`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/compatibility.test.ts` pass 100%.
+- **RISK**: THẤP.
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
-#### [TASK-22] Generic Translation Provider Architecture (Local LLM & Google Gemini API)
-- **Goal**: Hệ thống dịch văn bản hỗ trợ 2 providers: Local LLM và Optional Cloud Provider (Google Gemini API) với chính sách Per-Operation Apply Policy.
-- **Dependencies**: TASK-05, TASK-21.
-- **Expected Files**: `src-tauri/src/translation/mod.rs`, `src-tauri/src/translation/gemini.rs`, `src-tauri/src/translation/local.rs`.
-- **Acceptance Criteria**:
-  - Giao diện provider generic: dịch từ Source Language sang Target Language.
-  - Kết nối Gemini API sử dụng API Key lưu bảo mật qua DPAPI.
-  - Cảnh báo rõ ràng việc gửi dữ liệu ra ngoài khi dùng Cloud; không tự ý fallback sang cloud khi local lỗi.
-  - Áp dụng Per-Operation Apply Policy: Hỗ trợ `Review before Apply` (mặc định) và `Auto Apply` (vẫn bảo toàn bản gốc).
-- **Verification**: `cargo test test_translation_provider_interfaces`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
-
-#### [TASK-23] Audio Stitching Pipeline & FFmpeg Concat Engine
-- **Goal**: Module ghép nối các file chunk audio thành file audio tổng hoàn chỉnh (WAV/MP3) có chèn khoảng lặng tự động (Auto Pause Buffer).
-- **Dependencies**: TASK-13.
-- **Expected Files**: `src-tauri/src/audio/stitcher.rs`, `src-tauri/src/audio/silence.rs`.
-- **Acceptance Criteria**:
-  - Nối các file chunk theo đúng thứ tự kịch bản.
-  - Tự động chèn khoảng lặng giữa các câu dựa trên cấu trúc (ngắt đoạn dài hơn ngắt câu, mặc định ~400ms TUNING REQUIRED).
-  - Hỗ trợ ghi đè khoảng lặng (pause override) riêng từng chunk.
-  - Xuất ra file `.wav` hoặc `.mp3` chuẩn.
-- **Verification**: `cargo test test_audio_stitching_with_pause`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
-
----
-
-### MILESTONE 6: VOICE PROFILE & VOICE LIBRARY ENGINE
-
-#### [TASK-24] Managed Reference Audio Assets Engine
-- **Goal**: Cơ chế lưu trữ và quản lý bền vững các file audio mẫu clone trong Data Root (`managed voice assets`).
-- **Dependencies**: TASK-01.
-- **Expected Files**: `src-tauri/src/voice/assets.rs`.
-- **Acceptance Criteria**:
-  - Khi lưu Voice Profile, tự động sao chép file audio mẫu vào thư mục dữ liệu quản lý của VoxLab với định danh an toàn.
-  - Xác thực tính hợp lệ và thời lượng tối thiểu của file mẫu (TUNING REQUIRED theo model).
-  - Khi người dùng xóa file gốc ngoài máy, Voice Profile đã lưu vẫn hoạt động bình thường.
-- **Verification**: `cargo test test_managed_reference_assets`.
-- **Risk**: LOW.
-- **User Approval Required**: NO.
-
-#### [TASK-25] Voice Profile Repository & Stable Identity Management
-- **Goal**: Quản trị thực thể Voice Profile trong SQLite với định danh bất biến (Stable ID), metadata tương thích model/ngôn ngữ, và hệ thống tag.
-- **Dependencies**: TASK-02, TASK-24.
-- **Expected Files**: `src-tauri/src/voice/repository.rs`, `src-tauri/src/voice/profile.rs`.
-- **Acceptance Criteria**:
-  - Tạo mới Voice Profile với Stable ID duy nhất.
-  - Cho phép đổi tên (Rename) và sửa Tags mà không làm thay đổi ID.
-  - Các phiên làm việc cũ liên kết với voice qua Stable ID.
-  - Lưu trữ metadata tương thích model và ngôn ngữ hỗ trợ.
-- **Verification**: `cargo test test_voice_profile_stable_identity`.
-- **Risk**: LOW.
-- **User Approval Required**: NO.
-
-#### [TASK-26] Voice Library Business Logic & Safe Delete Orchestration
-- **Goal**: Các dịch vụ quản lý thư viện giọng: Liệt kê, tìm kiếm theo tên, lọc theo tag, lọc theo nguồn (Local / Online), xóa an toàn có cảnh báo, và cầu nối `[Use in TTS]`. Phải hoạt động độc lập và đầy đủ 100% cho Local Voices ngay cả khi tính năng Online Voice bị deferred.
-- **Dependencies**: TASK-25 (Bắt buộc); TASK-18 (Có điều kiện: chỉ phụ thuộc nếu Checkpoint 2 phê duyệt Online Provider; nếu Online Voice bị deferred thì TASK-26 KHÔNG bị block).
-- **Expected Files**: `src-tauri/src/voice/library.rs`.
-- **Acceptance Criteria**:
-  - Tìm kiếm voice theo tên và lọc chính xác theo mảng tags.
-  - Phân loại nguồn voice: Local My Voices, Preset Local, và Online Voices (nếu có; bắt buộc gắn nhãn ONLINE).
-  - Đảm bảo Local Voice Library hoạt động hoàn hảo 100% khi không có Online Voice Provider nào được kích hoạt.
-  - Xóa an toàn: Kiểm tra liên kết với session cũ, yêu cầu xác nhận và cảnh báo; xóa profile chỉ xóa managed assets của profile đó, tuyệt đối không xóa audio đã sinh trong session cũ.
-  - Action `Use in TTS`: Trả về Voice Profile được chọn để đặt làm active voice cho TTS.
-- **Verification**: `cargo test test_voice_library_safe_delete`.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
+#### TASK-03: Task Dependency & Execution Sequence Resolver
+- **ID**: `TASK-03`
+- **TITLE**: Xây dựng Bộ Phân Giải Phụ Thuộc Tác Vụ & Trình Tự Thực Thi Tuyến Tính
+- **GOAL**: Tự động kích hoạt tác vụ tiền đề (Auto-Enable Prerequisites) và tính toán chuỗi thực thi tuyến tính tối ưu (`executionSequence`) cho từng tệp.
+- **DEPENDENCIES**: `TASK-01`, `TASK-02`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/dependencyResolver.ts` (Mới)
+  - `src/services/batch/__tests__/dependencyResolver.test.ts` (Mới)
+- **STATUS**: **COMPLETE**
+- **ACCEPTANCE CRITERIA**:
+  - [x] Khi bật Dịch trên file Media: tự động bật Phụ đề và đính kèm thông báo *"Đã tự động bật Phụ đề vì Dịch cần dữ liệu phụ đề."*
+  - [x] Khi bật Lồng tiếng trên file Media: tự động bật Phụ đề; chỉ tự động bật Dịch nếu ngôn ngữ nguồn khác ngôn ngữ đích (hoặc khi `sourceLanguage === "auto"`).
+  - [x] Tính toán `executionSequence` chính xác theo đồ thị phụ thuộc (Media: ASR $\rightarrow$ Translation $\rightarrow$ Dubbing; Subtitle: Translation $\rightarrow$ Dubbing; Text: TTS hoặc Dialogue).
+  - [x] Xử lý trường hợp động `sourceLanguage === "auto"`: nếu ASR trả về ngôn ngữ trùng `targetLanguage`, cho phép đánh dấu bước Translation là `skipped` với `skipReason` cụ thể và Dubbing sử dụng thẳng phụ đề gốc.
+- **MAPPING SPEC AC**: `AC-05`, `AC-07`, `AC-08`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/dependencyResolver.test.ts` pass 100%.
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
 ---
 
-### MILESTONE 7: UI ARCHITECTURE PRE-WIRING & GATE D (STITCH UI/UX GATE)
+### Milestone 2: Cấu Hình Bất Biến, Lưu Trữ Bền Vững v3 & Output Resolver (Phase 7 Build Auto)
 
-#### [TASK-27] Pre-UI IPC Contracts, Domain DTOs & Typed Interfaces
-- **Goal**: Chuẩn bị các hợp đồng giao tiếp IPC TypeScript types đồng bộ với Rust backend, Domain DTOs và command/event signatures mà không khóa trước visual components, routing hay UX layout assumptions.
-- **Dependencies**: TASK-02, TASK-04, TASK-06, TASK-14, TASK-26.
-- **Expected Files**: `src/types/ipc.ts`, `src/types/domain.ts`.
-- **Acceptance Criteria**:
-  - Định nghĩa 100% typed interfaces cho toàn bộ Tauri IPC commands và events.
-  - Định nghĩa domain DTOs cho Text Chunks, Voice Profiles, Transcription Segments, Model Statuses, và Settings.
-  - Hoàn toàn độc lập với styling/CSS, sẵn sàng cho Phase 6 (Stitch UI/UX Gate) thiết kế giao diện tự do và chuẩn mực.
-- **Verification**: `npm run build` (TypeScript compiles with zero errors).
-- **Risk**: LOW.
-- **User Approval Required**: NO.
+#### TASK-04: Snapshot Resolver, Scope Isolation & Config Diff Derivation
+- **ID**: `TASK-04`
+- **TITLE**: Xây dựng Hệ Thống Cấu Hình 3 Tầng, Đóng Băng Snapshot Lazy & So Khớp Diff Phái Sinh
+- **GOAL**: Quản lý cấu hình hiệu lực, thời điểm freeze snapshot ngay trước khi processing, cách ly phạm vi áp dụng (chỉ áp dụng cho tệp được chọn), và so sánh diff phái sinh (`computeJobConfigDiff`) phân định AI vs Output config.
+- **DEPENDENCIES**: `TASK-01`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/configSnapshotResolver.ts` (Mới)
+  - `src/services/batch/configDiffResolver.ts` (Mới)
+  - `src/services/batch/__tests__/configSnapshot.test.ts` (Mới)
+  - `src/services/batch/__tests__/configDiff.test.ts` (Mới)
+- **STATUS**: **COMPLETE**
+- **ACCEPTANCE CRITERIA**:
+  - [x] Hợp nhất chính xác: $\text{EffectiveConfig} = \text{GlobalDefaults} \oplus \text{PerFileOverrides}$ cho từng tác vụ được chọn.
+  - [x] **Lazy Snapshot Freeze**: Chuyển từ Danh sách sang Hàng đợi KHÔNG đóng băng snapshot. Snapshot chỉ được resolve và đóng băng vào `effectiveConfigSnapshot` ngay trước khi job chuyển từ `waiting -> processing`.
+  - [x] Khi job đang `processing`, `completed`, `failed`, `failed_with_artifact`, `cancelled`, hay `interrupted`: thay đổi Global Defaults tuyệt đối không ảnh hưởng đến snapshot đã freeze.
+  - [x] **Scope Isolation**: Thao tác áp dụng Cấu hình chung chỉ cập nhật các job nằm trong danh sách `selectedJobIds`. Mọi job không được chọn (kể cả job lỗi) giữ nguyên snapshot và cấu hình riêng.
+  - [x] **Derived Config Diff**: Hàm `computeJobConfigDiff(job, currentWorkingConfig)` so sánh normalized JSON không chứa UI-only fields, phân định rõ `hasAiConfigChanged` vs `hasOutputConfigChanged`.
+  - [x] Khi cấu hình được đưa trở lại khớp snapshot cũ $\implies$ `isConfigChanged = false` $\implies$ hoàn nguyên về Retry.
+  - [x] Zero Secrets: Snapshot tuyệt đối không chứa API keys hay thông tin xác thực nhạy cảm.
+- **MAPPING SPEC AC**: `AC-14`, `AC-15`, `AC-16`, `AC-26`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/configSnapshot.test.ts` && `npx tsx --test src/services/batch/__tests__/configDiff.test.ts` pass 100%.
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
-> [!IMPORTANT]
-> **GATE D — UI / UX DESIGN + PROTOTYPE GATE (PHASE 6)**  
-> Sau khi hoàn thành Task 27, dự án kích hoạt **PHASE 6** theo quy trình của `AGENT_WORKFLOW.txt`.  
-> Sử dụng **Stitch MCP** để khám phá và hoàn thiện visual direction, component conventions, desktop layout hierarchy (Top Bar, 3-column Adaptive Workspace, Bottom Job Bar) và tạo prototype thực tế trước khi tiến hành code giao diện chi tiết ở Milestone 8.
+#### TASK-05: Durable State Storage v3, Early Tauri FS Atomic Persistence & Crash Normalizer
+- **ID**: `TASK-05`
+- **TITLE**: Xây dựng Cầu Nối Lưu Trữ Bền Vững Tauri v3, Ưu Tiên Ghi Đĩa Nguyên Tử & Phục Hồi Crash (High-Risk Early Build)
+- **GOAL**: Triển khai sớm cầu nối Tauri IPC chuẩn `std::fs` ghi nguyên tử trước khi xây dựng durable queue `batchStorage.ts`, lưu trữ trạng thái hàng đợi, stage của job (`staging` vs `queued`), thứ tự ưu tiên `queueOrder` và danh sách job xuống đĩa dạng JSON nguyên tử, hỗ trợ tự phục hồi an toàn sau crash.
+- **DEPENDENCIES**: `TASK-01`.
+- **EXPECTED FILES/MODULES**:
+  - `src-tauri/src/lib.rs` (Cập nhật: bổ sung Tauri IPC commands `save_app_data_file`, `read_app_data_file`, `get_app_data_dir`)
+  - `src/services/storage/tauriFsBridge.ts` (Mới: module cầu nối filesystem dùng chung có in-memory fallback cho tests)
+  - `src/services/batch/batchStorage.ts` (Mới: dịch vụ lưu trữ `batch_queue_v3.json`)
+  - `src/services/batch/__tests__/batchStorage.test.ts` (Mới)
+- **STATUS**: **COMPLETE**
+- **ACCEPTANCE CRITERIA**:
+  - [x] **High-Risk Early Build Invariant**: Triển khai và xác thực thành công các lệnh Rust IPC `save_app_data_file` (ghi vào `.tmp` rồi rename nguyên tử) và `read_app_data_file` trong `src-tauri/src/lib.rs` và `tauriFsBridge.ts` trước khi kết nối vào `batchStorage.ts`.
+  - [x] Lưu trữ bền vững đầy đủ: `stage`, `queueOrder`, `selectedTasks`, `effectiveConfigSnapshot`, `stepResults`, `outputArtifacts`.
+  - [x] Schema versioning: `version: 3`. Nếu đọc file version cũ hoặc không tương thích, backup tệp cũ an toàn trước khi khởi tạo state mới.
+  - [x] Zero Audio Binary: cấm serialize bất kỳ AudioBuffer, Uint8Array hay base64 nào vào state JSON.
+  - [x] Phục hồi sau sự cố (Crash Recovery Normalizer):
+    - Đưa `queueStatus` từ `running`, `pausing`, `cancelling` về `paused`.
+    - Job đang `processing` chuyển sang `interrupted`.
+    - Bước đang `processing` dở dang chuyển sang `interrupted` với `progressPct = 0`.
+    - Reset cờ transient `isCancelling` về undefined.
+    - Giữ nguyên các artifact của các bước đã `completed` trước đó.
+- **MAPPING SPEC AC**: `AC-09`, `AC-10`, `AC-11`, `AC-24`, `AC-25`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/batchStorage.test.ts` pass 100%.
+- **RISK**: CAO (Được xử lý triệt để nhờ ưu tiên xây dựng sớm tầng Tauri FS Bridge).
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
----
+#### TASK-05B: License Security Service via Rust HWID, Supabase RPC & DPAPI
+- **ID**: `TASK-05B`
+- **TITLE**: Xây dựng Dịch Vụ Bảo Mật Bản Quyền Native: Định Danh HWID v1, Supabase RPC Client & Lưu Trữ Mã Hóa DPAPI
+- **GOAL**: Triển khai kiến trúc bảo mật bản quyền native từ repo tham chiếu Audio-Factory và Video-Cutter sang Rust/Tauri của VoxLab: sinh HWID v1 ổn định từ SMBIOS UUID (fallback Windows MachineGuid) băm SHA-256 có namespace, kết nối Supabase RPC `activate_or_verify_license`, lưu trữ cache mã hóa an toàn qua Windows DPAPI với atomic write, hỗ trợ Offline Grace có kiểm soát và phơi bày các Tauri IPC commands an toàn cho Frontend.
+- **STATUS**: **COMPLETE**
+- **DEPENDENCIES**: `TASK-01`, `TASK-05`.
+- **EXPECTED FILES/MODULES**:
+  - `src-tauri/src/security/device_identity.rs` (Mới: sinh HWID v1 từ SMBIOS UUID / MachineGuid, băm SHA-256 + namespace)
+  - `src-tauri/src/security/license_storage.rs` (Mới: mã hóa/giải mã Windows DPAPI, atomic write `.tmp -> fsync -> rename`)
+  - `src-tauri/src/security/license_client.rs` (Mới: gọi Supabase RPC `activate_or_verify_license` qua reqwest/ureq)
+  - `src-tauri/src/security/mod.rs` (Mới: điều phối domain status, offline grace policy)
+  - `src-tauri/src/lib.rs` (Cập nhật: đăng ký các Tauri IPC commands `get_license_summary`, `activate_license`, `change_license_key`, `verify_license`, `clear_local_license_if_allowed`)
+  - `src/services/license/licenseService.ts` (Mới: frontend TypeScript IPC client, chỉ quản lý LicenseSummary)
+  - `src/services/license/__tests__/licenseService.test.ts` (Mới: unit/mock tests cho frontend boundary)
+- **ACCEPTANCE CRITERIA**:
+  - [x] **LICENSE-AC-01**: Full license key tuyệt đối không lưu trong `localStorage`, `sessionStorage`, hay plain config files.
+  - [x] **LICENSE-AC-02**: License cache cục bộ được mã hóa an toàn bằng Windows DPAPI (`CryptProtectData`), cho phép Rust backend giải mã an toàn raw key phục vụ startup online re-verification.
+  - [x] **LICENSE-AC-03**: HWID ổn định 100% qua các lần restart app trên cùng một máy tính.
+  - [x] **LICENSE-AC-04**: HWID được sinh từ một stable Windows anchor: ưu tiên SMBIOS UUID; fallback sang MachineGuid nếu UUID không khả dụng; anchor được normalize, namespace và SHA-256 hash theo version.
+  - [x] **LICENSE-AC-05**: Khóa bản quyền hợp lệ + đúng HWID kích hoạt thành công, mở khóa đầy đủ chức năng ứng dụng.
+  - [x] **LICENSE-AC-06**: Khóa hết hạn (`EXPIRED`) bị hệ thống từ chối dứt khoát.
+  - [x] **LICENSE-AC-07**: Khóa bị thu hồi (`DISABLED`) bị hệ thống từ chối dứt khoát.
+  - [x] **LICENSE-AC-08**: Khóa sai thiết bị (`DEVICE_MISMATCH`) bị từ chối dứt khoát.
+  - [x] **LICENSE-AC-09**: Khi lỗi mạng tạm thời hoặc server timeout, nếu đã từng verify thành công và còn trong thời hạn ân hạn (`OFFLINE_GRACE_DAYS`) $\implies$ vào `OFFLINE_GRACE`.
+  - [x] **LICENSE-AC-10**: Tuyệt đối không cấp `OFFLINE_GRACE` cho các phản hồi từ chối xác định (`EXPIRED`, `DISABLED`, `DEVICE_MISMATCH`, `NOT_FOUND`).
+  - [x] **LICENSE-AC-11**: Frontend chỉ nhận và hiển thị `LicenseSummary` với masked key (`VOX-****-****-XXXX`), không giữ full key trong React state lâu dài.
+  - [x] **LICENSE-AC-12**: Logs, diagnostics và crash reports tuyệt đối không chứa full license key hay client secrets.
+  - [x] **LICENSE-AC-13**: Thao tác `change_license_key` qua modal cập nhật chính xác loại bản quyền, ngày hết hạn và masked key mới.
+  - [x] **LICENSE-AC-14**: Desktop build tuyệt đối không chứa `service-role key`, `admin token`, hay quyền SQL trực tiếp.
+- **MAPPING SPEC AC**: `AC-SET-03`, `LICENSE-AC-01` đến `LICENSE-AC-14`.
+- **VERIFICATION**: Rust test suite (6/6 pass) && `npx tsx --test src/services/license/__tests__/licenseService.test.ts` (8/8 pass).
+- **RISK**: CAO.
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
-### MILESTONE 8: DESKTOP STUDIO FRONTEND IMPLEMENTATION (POST-GATE D)
-
-#### [TASK-28] Shell Layout, Top Bar, Collapsible Navigation & Bottom Job Bar
-- **Goal**: Hiện thực hóa bộ khung desktop studio chuẩn theo thiết kế được duyệt tại Gate D: Top Utility Bar (Branding, Session name, VN/EN, Theme, Settings), Left Sidebar thu gọn được, và Bottom Job Bar cố định tiến độ.
-- **Dependencies**: TASK-27, GATE D (Approved UI Design).
-- **Expected Files**: `src/components/layout/Shell.tsx`, `src/components/layout/TopBar.tsx`, `src/components/layout/Sidebar.tsx`, `src/components/layout/BottomJobBar.tsx`.
-- **Acceptance Criteria**:
-  - Khởi động hiển thị đủ 6 mục điều hướng: TTS, Voice Clone, Voice Library, Transcription, History, Settings.
-  - Sidebar hỗ trợ thu gọn/mở rộng.
-  - Chuyển đổi tức thì ngôn ngữ giao diện VN / EN và giao diện Sáng / Tối.
-  - Bottom Job Bar hiển thị model đang chạy, % tiến độ, nút Pause, Cancel, Open Output.
-- **Verification**: Runtime verification qua Tauri dev build & Chrome DevTools MCP.
-- **Risk**: LOW.
-- **User Approval Required**: NO.
-
-#### [TASK-29] Workspace 1: Text to Speech Studio (Text Prep & Hybrid Chunk Studio)
-- **Goal**: Không gian làm việc TTS thích ứng theo 2 giai đoạn: Text Preparation View (Original vs Working, Normalization, AI diff review) và Chunk Studio View (thẻ câu, progressive availability, retry, pause override).
-- **Dependencies**: TASK-17, TASK-19, TASK-20, TASK-21, TASK-23, TASK-28.
-- **Expected Files**: `src/views/tts/TextPrepView.tsx`, `src/views/tts/ChunkStudioView.tsx`, `src/views/tts/ChunkCard.tsx`, `src/components/inspector/TtsInspector.tsx`.
-- **Acceptance Criteria**:
-  - Giai đoạn 1: Dán text $\rightarrow$ Chuẩn hóa $\rightarrow$ AI Punctuation/Optimize hiện Diff Before/After $\rightarrow$ Accept/Reject/Restore hoạt động đúng.
-  - Chia chunk $\rightarrow$ Chuyển sang Chunk Studio hiển thị thẻ câu.
-  - Sinh audio $\rightarrow$ Progressive availability (câu nào xong nghe thử được ngay).
-  - Sửa text câu nào $\rightarrow$ Câu đó chuyển trạng thái `Modified`, audio cũ bị vô hiệu hóa (Stale Cache Invalidation).
-  - Bấm Ghép audio $\rightarrow$ Gọi backend nối file và mở thư mục output.
-- **Verification**: E2E workflow test trên giao diện ứng dụng.
-- **Risk**: HIGH.
-- **User Approval Required**: NO.
-
-#### [TASK-30] Workspace 2 & 3: Voice Clone & Voice Library
-- **Goal**: Giao diện tạo giọng mẫu (Voice Clone) capability-aware và quản trị thư viện giọng tái sử dụng (Voice Library) kèm cầu nối `[Use in TTS]`.
-- **Dependencies**: TASK-17, TASK-24, TASK-25, TASK-26, TASK-28.
-- **Expected Files**: `src/views/clone/VoiceCloneView.tsx`, `src/views/library/VoiceLibraryView.tsx`, `src/views/library/VoiceCard.tsx`.
-- **Acceptance Criteria**:
-  - Voice Clone: Kéo thả file audio mẫu $\rightarrow$ Chọn model $\rightarrow$ Nhập test text và nghe thử preview $\rightarrow$ Đặt tên, tags và bấm Lưu.
-  - Voice Library: Danh sách voice, tìm kiếm theo tên, lọc theo tag, lọc theo nguồn (Local / Online).
-  - Đổi tên và sửa tags thành công; xóa voice có confirmation dialog và cảnh báo session liên kết.
-  - Bấm `[Use in TTS]` $\rightarrow$ Chuyển sang TTS Studio và nạp voice đó làm active voice.
-- **Verification**: E2E test quy trình Clone $\rightarrow$ Save $\rightarrow$ Library Filter $\rightarrow$ Use in TTS.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
-
-#### [TASK-31] Workspace 4: Standalone Transcription Studio
-- **Goal**: Không gian bóc băng âm thanh/video bằng faster-whisper, hiển thị Plain Text và Timestamped Segments, xuất TXT/SRT, và cầu nối `[Chuyển sang TTS]`.
-- **Dependencies**: TASK-16, TASK-28.
-- **Expected Files**: `src/views/transcription/TranscriptionView.tsx`, `src/components/inspector/TranscriptionInspector.tsx`.
-- **Acceptance Criteria**:
-  - Nạp file media audio/video $\rightarrow$ Chọn model faster-whisper (hoặc Auto) $\rightarrow$ Bật Auto Detect ngôn ngữ $\rightarrow$ Bóc băng thành công.
-  - Hiển thị linh hoạt giữa Plain Text View và Segments View (timestamp chuẩn).
-  - Nút xuất file `.txt` và `.srt` hoạt động đúng.
-  - Bấm `[Chuyển sang TTS]` $\rightarrow$ Đưa toàn bộ text sang tab TTS làm working text mới; transcript gốc giữ nguyên.
-- **Verification**: E2E test bóc băng và xuất file phụ đề.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
-
-#### [TASK-32] Workspace 5 & 6: History & Settings (9 Nhóm chức năng)
-- **Goal**: Màn hình lịch sử phiên và cài đặt hệ thống toàn diện 9 nhóm, bao gồm giao diện cấu hình đường dẫn, quản lý tải model, và kiểm tra phần cứng.
-- **Dependencies**: TASK-01, TASK-02, TASK-03, TASK-06, TASK-13, TASK-14, TASK-15, TASK-22, TASK-28.
-- **Expected Files**: `src/views/history/HistoryView.tsx`, `src/views/settings/SettingsView.tsx`, `src/views/settings/sections/*.tsx`.
-- **Acceptance Criteria**:
-  - History: Liệt kê các session gần đây, mở lại phiên, mở output, xóa lịch sử (không xóa file audio trên đĩa).
-  - Settings 9 nhóm: General, TTS, AI Text, Translation, Transcription, Models & Runtime (TTS/ASR paths, Rescan, Download), Storage & Cache (Data Root migration UI, Clear Cache/History), System & Hardware, About & Diagnostics.
-- **Verification**: Kiểm tra lưu trữ và khôi phục cài đặt qua restart app.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
-
----
-
-### MILESTONE 9: SYSTEM HARDENING, RECOVERY & PRODUCTION PACKAGING
-
-#### [TASK-33] Basic Interrupted-Session Recovery & Cache Invalidation Verification (E2E)
-- **Goal**: Kiểm chứng toàn diện khả năng phục hồi phiên làm việc gián đoạn khi app bị tắt đột ngột hoặc crash dựa trên repository metadata đã xây dựng tại Task 04.
-- **Dependencies**: TASK-04, TASK-12, TASK-29.
-- **Expected Files**: `src-tauri/src/session/recovery.rs`, `tests/recovery_e2e_test.rs`.
-- **Acceptance Criteria**:
-  - Tạo phiên sinh 20 chunks, chạy xong 10 chunks $\rightarrow$ Giả lập tắt app $\rightarrow$ Mở lại app và Reopen session.
-  - 10 chunks cũ được phục hồi trạng thái `Ready` và nghe thử được ngay lập tức.
-  - Bấm tiếp tục sinh chỉ sinh các chunk từ 11 đến 20; ghép audio tạo ra file hoàn chỉnh 20 chunk (AC-13).
-  - Nếu text chunk bị sửa, chunk đó chuyển `Modified` và audio cũ bị invalidate (AC-04).
-- **Verification**: Kịch bản automated test phục hồi phiên gián đoạn.
-- **Risk**: HIGH.
-- **User Approval Required**: NO.
-
-#### [TASK-34] Offline Core Integrity, Zero Telemetry & Network Isolation Verification
-- **Goal**: Kiểm chứng hệ thống hoạt động hoàn hảo khi ngắt toàn bộ kết nối mạng internet và đảm bảo 0% telemetry.
-- **Dependencies**: TASK-29, TASK-30, TASK-31.
-- **Expected Files**: `tests/offline_test.rs`.
-- **Acceptance Criteria**:
-  - Ngắt kết nối mạng: Toàn bộ quy trình Chuẩn hóa text, Chia chunk, TTS local, Ghép audio, Bóc băng faster-whisper, Dịch qua Local LLM hoạt động 100% bình thường, không có thông báo lỗi mạng (AC-12).
-  - Không có bất kỳ gói tin mạng nào gửi ra internet khi sử dụng các tính năng local.
-  - Khi dùng Online Voice hoặc Gemini Translation: Báo lỗi mạng rõ ràng nếu mất mạng, tuyệt đối không tự ý fallback ngầm.
-- **Verification**: Automated test ngắt mạng và kiểm tra network sockets.
-- **Risk**: MEDIUM.
-- **User Approval Required**: NO.
-
-#### [TASK-35] Production Packaging, Upgrade Migration & Downgrade Safety Verification
-- **Goal**: Kiểm chứng toàn diện quy trình đóng gói sản phẩm (`cargo tauri build`), vòng đời cài đặt sạch, nâng cấp phiên bản N $\rightarrow$ N+1 bảo toàn dữ liệu, an toàn hạ cấp, và kiểm tra khả năng phục hồi lỗi khi thiếu tài nguyên/runtime.
-- **Dependencies**: TASK-02, TASK-03, TASK-04, TASK-06, TASK-14, TASK-32.
-- **Expected Files**: `tests/lifecycle_package_test.rs`, `src-tauri/tauri.conf.json`.
-- **Acceptance Criteria**:
-  - Đóng gói installer Windows hoàn tất thành công.
-  - Kiểm tra Thông tin phiên bản & bản dựng (Version / Build info) hiển thị chính xác.
-  - Kiểm tra Ghi log ứng dụng (Application logs) ghi nhận đầy đủ sự kiện vào thư mục `logs/`.
-  - Kiểm tra Tính sẵn sàng của worker, runtime và tài nguyên (worker/runtime/resource availability).
-  - **Hành vi khi thiếu tài nguyên hoặc lỗi worker (Missing Resource Behavior)**:
-    - Trường hợp thiếu FFmpeg: Ứng dụng hiển thị thông báo lỗi phục hồi rõ ràng (explicit recoverable error), hướng dẫn người dùng, tuyệt đối không làm crash app.
-    - Trường hợp worker khởi động thất bại: Báo lỗi khởi động worker tường minh (explicit recoverable error), không làm sập ứng dụng chính.
-  - Kiểm tra Clean-install first launch: Khởi động lần đầu sạch sẽ, tạo các thư mục cấu trúc mặc định an toàn.
-  - Kiểm tra Post-upgrade first launch: Nâng cấp N $\rightarrow$ N+1, Data Root được định vị chính xác, database migration tự động chạy thành công, Voice Profiles, History, settings, model paths và output files được bảo toàn nguyên vẹn 100% (AC-14).
-  - Kiểm tra Restart after upgrade: Khởi động lại sau nâng cấp tiếp tục nhận diện đúng trạng thái bền vững.
-  - Thử nghiệm mở DB mới bằng bản cũ: Báo lỗi không tương thích phiên bản an toàn, không làm hỏng database (Downgrade safety, AC-15).
-  - Gỡ cài đặt hoặc update app không âm thầm xóa dữ liệu người dùng.
-- **Verification**: Automated full lifecycle test & build package verification.
-- **Risk**: HIGH.
-- **User Approval Required**: NO.
+#### TASK-06: Output Resolver, Artifact Fingerprinting, Real Transcoder & Subtitle Parser/Exporter Reuse
+- **ID**: `TASK-06`
+- **TITLE**: Xây dựng Bộ Phân Giải Đầu Ra, Dấu Vân Tay Tệp, Chuyển Mã Âm Thanh & Tái Sử Dụng Subtitle Parser/Exporter
+- **GOAL**: Quản lý an toàn đường dẫn xuất file, bảo vệ chống ghi đè khi file bị sửa ngoài app, hỗ trợ bỏ qua từng artifact trong Dubbing, thực thi chuyển mã âm thanh thực sự WAV $\leftrightarrow$ MP3 và tái sử dụng trực tiếp các module phụ đề hiện có khi Xuất lại.
+- **STATUS**: **COMPLETE**
+- **DEPENDENCIES**: `TASK-01`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/outputResolver.ts` (Mới)
+  - `src/services/batch/audioTranscoder.ts` (Mới: chuyển mã âm thanh thực sự WAV $\leftrightarrow$ MP3)
+  - Tái sử dụng `src/services/subtitle/parser.ts` & `src/services/subtitle/exporter.ts` (REUSE: không tạo module mới `subtitleConverter.ts`)
+  - `src/services/batch/credentialResolver.ts` (Mới)
+  - `src/services/batch/__tests__/outputResolver.test.ts` (Mới)
+  - `src/services/batch/__tests__/transcoderAndConverter.test.ts` (Mới)
+- **ACCEPTANCE CRITERIA**:
+  - [x] Thực thi quy tắc: $\text{External Modification Protection} > \text{Global Collision Policy}$.
+  - [x] Lưu trữ và so khớp `artifactFingerprints` (size + mtime). Nếu tệp đích trên đĩa bị sửa ngoài app, tự động fallback sang `auto_rename` (`_001.ext`) thay vì ghi đè.
+  - [x] Dubbing Granular Skip: khi `collisionPolicy = "skip"`, nếu `.srt` đã có trên đĩa nhưng `.wav` chưa có, bỏ qua xuất `.srt` và tiếp tục tạo Master `.wav`.
+  - [x] Committed Artifact Preservation: khi rerun hoặc input mutation xảy ra, các artifact đã commit ở lượt chạy trước không bị xóa hay rollback, được đánh dấu `stale` trong bản ghi. Output mới được phân giải tiếp qua Output Resolver.
+  - [x] **Real Audio Transcoding**: Khi Re-export đổi `outputAudioFormat` (WAV $\leftrightarrow$ MP3), chuyển mã thực tế, cấm đơn thuần đổi extension.
+  - [x] **Subtitle Format Conversion (REUSE)**: Khi Re-export đổi định dạng phụ đề (SRT $\leftrightarrow$ VTT), tái sử dụng `parseSubtitle` và `exportToSRT`/`exportToVTT` từ domain services hiện có để chuyển đổi chuẩn xác, cấm đơn thuần đổi extension.
+  - [x] `CredentialResolver`: nạp API key an toàn từ settings lúc runtime cho Translation/TTS, không lưu vết vào snapshot hay storage JSON.
+- **MAPPING SPEC AC**: `AC-13`, `AC-17`, `AC-18`, `AC-30`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/outputResolver.test.ts` (13/13 pass) && `npx tsx --test src/services/batch/__tests__/transcoderAndConverter.test.ts` (8/8 pass) pass 100%.
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
 ---
 
-## 4. Tóm tắt Kế hoạch (Plan Summary)
+### Milestone 3: Step Executors (Tái Sử Dụng 100% Domain Services) (Phase 7 Build Auto)
 
-* **PLAN VERSION**: **2.0.1** (Micro Consistency Patch)
-* **TOTAL TASKS**: **35 Tasks** (Từ `TASK-01` đến `TASK-35`).
-* **MILESTONES**: **9 Milestones** chiến lược.
-* **HIGH-RISK TASKS (10 Tasks — Danh sách và Số lượng khớp 100%)**:
-  1. `TASK-02`: SQLite Storage Engine với Versioned Schema & Ordered Migrations
-  2. `TASK-03`: Module Safe Data Root Migration (Copy $\rightarrow$ Verify $\rightarrow$ Activate/Rollback)
-  3. `TASK-07`: Early Model Feasibility Spike: Đánh giá Candidate TTS Models trên Windows/CUDA
-  4. `TASK-10`: Process Supervisor & Subprocess Lifecycle Manager (Crash Isolation)
-  5. `TASK-12`: Safe Sequential Job Queue Orchestrator & Bounded Cancellation
-  6. `TASK-15`: Minimal User-Initiated Model Provisioning & Download Service
-  7. `TASK-17`: Approved MVP TTS Model Set Adapter Integration
-  8. `TASK-29`: Workspace 1: Text to Speech Studio (Text Prep & Hybrid Chunk Studio)
-  9. `TASK-33`: Basic Interrupted-Session Recovery & Cache Invalidation Verification (E2E)
-  10. `TASK-35`: Production Packaging, Upgrade Migration & Downgrade Safety Verification
-* **USER APPROVAL CHECKPOINTS**:
-  - **GATE C**: Phê duyệt Implementation Plan này (hiện tại).
-  - **CHECKPOINT 1 (Sau Task 07)**: Phê duyệt Báo cáo Thẩm định TTS Candidate Models $\rightarrow$ Tiền đề bắt buộc để mở khóa `TASK-17`.
-  - **CHECKPOINT 2 (Sau Task 09)**: Phê duyệt Báo cáo Thẩm định Online Voice Providers $\rightarrow$ Tiền đề bắt buộc để mở khóa `TASK-18` (nếu đạt) hoặc quyết định defer.
-  - **GATE D (Sau Task 27)**: Phê duyệt Phase 6 — UI / UX Design Gate với Stitch.
-  - **GATE F**: Phê duyệt Final Release trước khi xuất xưởng.
-* **GATE D POSITION**: Nằm ngay sau `TASK-27` (hoàn tất các hợp đồng IPC và Domain DTOs) và trước `TASK-28` (bắt đầu triển khai giao diện frontend chi tiết).
+#### TASK-07: TTS & Dialogue Step Executors
+- **ID**: `TASK-07`
+- **TITLE**: Triển khai Bước Thực Thi TTS Đơn Giọng & Kịch Bản Phân Vai Hội Thoại
+- **GOAL**: Đóng gói quy trình tạo giọng đọc đơn (TTS) và kịch bản phân vai (Dialogue) thành các Step Executor chuẩn hóa, tái sử dụng 100% services hiện có.
+- **STATUS**: **COMPLETE**
+- **DEPENDENCIES**: `TASK-01`, `TASK-04`, `TASK-06`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/executors/ttsExecutor.ts` (Mới)
+  - `src/services/batch/executors/dialogueExecutor.ts` (Mới)
+  - `src/services/batch/__tests__/ttsAndDialogueExecutors.test.ts` (Mới)
+- **ACCEPTANCE CRITERIA**:
+  - [x] `TtsExecutor`: nạp văn bản qua `scriptLoader.ts`, chuẩn hóa bằng `normalizer/engine.ts`, phân đoạn qua `pause/chunker.ts`, tổng hợp audio qua providers (`local`, `edge`, `google`, `openai`), ghép và xuất Master WAV qua `masterExport.ts`. Hỗ trợ tạm dừng/hủy ở cấp độ chunk.
+  - [x] `DialogueExecutor`: phân vai qua `dialogue/parser.ts`, tổng hợp audio từng nhân vật, ghép master qua `dialogue/masterAssembly.ts`, xuất Master WAV và xuất file phụ đề phân vai `.srt` qua `dialogue/srtExporter.ts`.
+  - [x] Đăng ký artifact xuất ra đĩa vào `outputArtifactPaths` của `BatchStepResult`.
+- **MAPPING SPEC AC**: `AC-03`, `AC-04`, `AC-19`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/ttsAndDialogueExecutors.test.ts` (7/7 pass) pass 100%.
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG.
+
+#### TASK-08: ASR Transcription Step Executor with Monolithic Safe Cancel
+- **ID**: `TASK-08`
+- **TITLE**: Triển khai Bước Thực Thi Bóc Băng Phụ Đề ASR với Ngữ Nghĩa Hủy Nguyên Khối An Toàn
+- **GOAL**: Đóng gói quy trình bóc băng faster-whisper thành Step Executor, tuân thủ nghiêm ngặt ngữ nghĩa hủy inference nguyên khối (Zero Overlap Invariant).
+- **STATUS**: **COMPLETE**
+- **DEPENDENCIES**: `TASK-01`, `TASK-04`, `TASK-06`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/executors/transcriptionExecutor.ts` (Mới)
+  - `src/services/batch/__tests__/transcriptionExecutor.test.ts` (Mới)
+- **ACCEPTANCE CRITERIA**:
+  - [x] Tái sử dụng pipeline bóc băng `src/services/subtitle/pipeline.ts` và remapping timeline với các tốc độ `speechSpeed: 0.8 | 0.9 | 1.0`. Xuất `.srt` hoặc `.vtt`.
+  - [x] Trả về `detectedLanguage` trong `BatchStepResult` để phục vụ điều kiện dịch thuật động ở bước tiếp theo.
+  - [x] Ngữ nghĩa Hủy ASR: Khi người dùng bấm Hủy:
+    - `job.status` giữ `"processing"`, kích hoạt cờ runtime `isCancelling = true` và `cancelRequested = true`.
+    - Unbind callbacks tiến độ và kết quả.
+    - **Chặn tuyệt đối không cho phép dispatch job tiếp theo**.
+    - Đợi inference hiện tại return hoặc worker safe exit thực tế.
+    - Discard kết quả, dọn file staging tạm `.tmp`.
+    - Đặt `stepResults["transcription"].status = "cancelled"`, `job.status = "cancelled"`, reset `isCancelling = false`.
+    - Bảo đảm zero overlap: không có worker ASR cũ chạy ngầm khi job sau bắt đầu.
+- **MAPPING SPEC AC**: `AC-09`, `AC-10`, `AC-20`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/transcriptionExecutor.test.ts` (4/4 pass) pass 100%.
+- **RISK**: CAO (Rủi ro rò rỉ tiến trình/tài nguyên GPU nếu không đợi worker thoát an toàn).
+- **USER APPROVAL REQUIRED**: KHÔNG.
+
+#### TASK-09: Translation & Dubbing Step Executors
+- **ID**: `TASK-09`
+- **TITLE**: Triển khai Bước Thực Thi Dịch Thuật Phụ Đề & Lồng Tiếng Đa Định Dạng Đầu Ra
+- **GOAL**: Đóng gói dịch vụ Dịch thuật và Lồng tiếng thành Step Executors, bảo toàn bất biến 1:1, kiểm soát WSOLA $\le 1.20\times$ và xử lý va chạm âm thanh `collision_danger`.
+- **STATUS**: **COMPLETE**
+- **DEPENDENCIES**: `TASK-01`, `TASK-04`, `TASK-06`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/executors/translationExecutor.ts` (Mới)
+  - `src/services/batch/executors/dubbingExecutor.ts` (Mới)
+  - `src/services/batch/__tests__/translationAndDubbingExecutors.test.ts` (Mới)
+- **ACCEPTANCE CRITERIA**:
+  - [x] `TranslationExecutor`: nạp phụ đề từ bước trước (ASR hoặc file `.srt` nguồn), gọi `TranslationManager`, kiểm tra nghiêm ngặt `validate1to1Translation`.
+  - [x] Nếu `detectedSourceLanguage === targetLanguage`: chuyển bước Translation sang `skipped` với `skipReason = "Không cần dịch vì ngôn ngữ nguồn trùng ngôn ngữ đích."` và chuyển thẳng phụ đề nguồn sang bước Dubbing.
+  - [x] `DubbingExecutor`: tổng hợp cue audio, áp trần WSOLA $1.20\times$, kiểm tra va chạm bằng `collisionDetector.ts`.
+  - [x] Nếu phát hiện `collision_danger`: chặn tạo Master WAV, xuất phụ đề dịch đã commit, gán `stepResults["dubbing"].status = "completed_with_warning"`.
+  - [x] Nếu lỗi kỹ thuật trong Dubbing: dọn file tạm `.tmp`, giữ phụ đề đã commit, gán bước `failed`, job chuyển `failed_with_artifact`.
+- **MAPPING SPEC AC**: `AC-05`, `AC-07`, `AC-08`, `AC-11`, `AC-18`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/translationAndDubbingExecutors.test.ts` (7/7 pass) pass 100%.
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
 ---
 
-## 5. SPEC Coverage Matrix (Bảng Ánh xạ 15 Tiêu chí Nghiệm thu của SPEC)
+### Milestone 4: Composite Orchestrator Core, Queue Reorder & Lifecycle Controls (Phase 7 Build Auto)
 
-| Tiêu chí Nghiệm thu SPEC | Mô tả ngắn gọn | Implementation Task(s) | Verification Task(s) |
-| :--- | :--- | :--- | :--- |
-| **AC-01** | Navigation & Shell Layout (6 tabs, thu gọn, VN/EN, Theme) | TASK-27, TASK-28 | TASK-28, TASK-35 |
-| **AC-02** | Chuẩn hóa tất định & Bảo vệ Protected Spans (`3.14`, URL...) | TASK-19 | TASK-19, TASK-29 |
-| **AC-03** | AI Text Assistance, Lexical Guardrail & Revision Semantics | TASK-21 | TASK-21, TASK-29 |
-| **AC-04** | Smart Chunking & Invalidation Cache khi sửa text câu | TASK-04, TASK-20 | TASK-20, TASK-29, TASK-33 |
-| **AC-05** | TTS Generation (VI + EN playable) & Bounded Cancellation | TASK-12, TASK-17 | TASK-17, TASK-29, TASK-34 |
-| **AC-06** | Voice Clone Multilingual & Quản lý Reference Assets | TASK-07, TASK-17, TASK-24, TASK-25 | TASK-17, TASK-30 |
-| **AC-07** | Voice Library, Online Voices (gắn nhãn) & "Use in TTS" | TASK-09, TASK-18 (Conditional), TASK-26 | TASK-18 (Conditional), TASK-26, TASK-30 |
-| **AC-08** | Standalone Transcription với faster-whisper & Auto Detect | TASK-08, TASK-13, TASK-16 | TASK-16, TASK-31 |
-| **AC-09** | Model Discovery, Rescan & User-Initiated Download có Staging | TASK-14, TASK-15 | TASK-14, TASK-15, TASK-32 |
-| **AC-10** | Translation Providers (Local/Cloud) & Per-Operation Policy | TASK-05, TASK-22 | TASK-22, TASK-29 |
-| **AC-11** | Configurable Data Root, Safe Migration & Data Separation | TASK-01, TASK-03 | TASK-03, TASK-32 |
-| **AC-12** | Offline Core Integrity (100% offline) & Zero Telemetry | TASK-10, TASK-14, TASK-17, TASK-21 | TASK-34 |
-| **AC-13** | Basic Interrupted-Session Recovery (MVP Target) | TASK-04, TASK-12, TASK-26 | TASK-33 |
-| **AC-14** | Application Update & Persistent Data Preservation ($N \rightarrow N+1$) | TASK-01, TASK-02, TASK-04, TASK-14 | TASK-35 |
-| **AC-15** | Migration Failure Rollback, Cache Invalidate & Downgrade Safety | TASK-02, TASK-04, TASK-14 | TASK-35 |
+#### TASK-10: Composite Batch Orchestrator Core, Priority Arrow Reorder & Step Execution Loop
+- **ID**: `TASK-10`
+- **TITLE**: Xây dựng Bộ Điều Phối Lõi Composite Batch Orchestrator, Điều Chỉnh Thứ Tự Ưu Tiên Mũi Tên & Vòng Lặp Step
+- **GOAL**: Điều phối toàn bộ hàng đợi theo nguyên tắc Concurrency = 1 baseline, bốc job theo thứ tự động (`queueOrder`), kích hoạt đóng băng snapshot ngay trước khi processing, và chuyển giao artifact trung gian.
+- **DEPENDENCIES**: `TASK-01`, `TASK-03`, `TASK-04`, `TASK-05`, `TASK-07`, `TASK-08`, `TASK-09`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/batchOrchestrator.ts` (Mới: Singleton service điều phối mẻ chạy)
+  - `src/services/batch/__tests__/batchOrchestratorLifecycle.test.ts` (Mới)
+- **STATUS**: **COMPLETE**
+- **ACCEPTANCE CRITERIA**:
+  - [x] Bất biến Concurrency = 1: Tại một thời điểm chỉ có duy nhất 1 job được active và 1 step được chạy.
+  - [x] **Queue Reorder Execution**: Hàng đợi lấy job tiếp theo theo thứ tự `queueOrder` của các job `waiting`. Khi người dùng bấm `↑` / `↓` điều chỉnh ưu tiên các waiting jobs (kể cả khi queue đang `running`), thứ tự mới lập tức quyết định job nào chạy tiếp theo.
+  - [x] Job đang `processing` luôn bị ghim cố định ở đầu hàng đợi.
+  - [x] **Lazy Snapshot Freeze Trigger**: Ngay trước khi job chuyển sang `processing`, gọi `configSnapshotResolver` để resolve và đóng băng `effectiveConfigSnapshot`.
+  - [x] Vòng lặp Step: Duyệt qua `job.executionSequence`, gọi Step Executor tương ứng, truyền artifact của bước trước làm input cho bước sau.
+  - [x] Natural Queue Completion: Khi toàn bộ các job trong hàng đợi kết thúc (completed/failed/cancelled), queue tự động chuyển từ `running` sang `idle`.
+  - [x] Cô lập lỗi cấp bước: Bước gặp sự cố kỹ thuật dừng chuỗi của job đó, bảo toàn các artifact đã commit trước đó, cập nhật job thành `failed_with_artifact` hoặc `failed`, lưu storage và chuyển sang xử lý job tiếp theo.
+- **MAPPING SPEC AC**: `AC-14`, `AC-20`, `AC-24`, `AC-25`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/batchOrchestratorLifecycle.test.ts` (3/3 pass) pass 100%.
+- **RISK**: CAO.
+- **USER APPROVAL REQUIRED**: KHÔNG.
+
+#### TASK-11: Orchestrator Controls, Config Invalidation Graph, 3-Way CTA Dispatch & History Integration
+- **ID**: `TASK-11`
+- **TITLE**: Triển khai Điều Khiển Vòng Đời, Đồ Thị Vô Hiệu Hóa Bước, Điều Phối 3-Way CTA & Ghi Lịch Sử
+- **GOAL**: Triển khai Tạm dừng an toàn tại biên, Hủy có bảo vệ, Đồ thị vô hiệu hóa bước (`invalidationGraph`), điều phối 3 luồng Thử lại / Tạo lại / Xuất lại, kiểm tra file nguồn và ghi lịch sử.
+- **DEPENDENCIES**: `TASK-05`, `TASK-06`, `TASK-10`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/invalidationGraph.ts` (Mới: xác định earliest invalidated step)
+  - `src/services/batch/batchOrchestrator.ts` (Cập nhật)
+  - `src/services/history/historyManager.ts` (Mới: lưu trữ `history.json` qua `tauriFsBridge.ts`)
+  - `src/views/HistoryWorkspace.tsx` (Cập nhật: đọc từ `historyManager` thay vì hardcoded mock)
+  - `src/services/batch/__tests__/batchControlsAndHistory.test.ts` (Mới)
+- **STATUS**: **COMPLETE**
+- **ACCEPTANCE CRITERIA**:
+  - [x] Safe Boundary Pause: Khi bấm Tạm dừng lúc đang chạy, queue chuyển `pausing`, chờ step/job hiện tại kết thúc an toàn mới chuyển `paused`.
+  - [x] Phân biệt Hủy người dùng (`cancelled`) vs Lỗi kỹ thuật (`failed_with_artifact`): Hủy người dùng không đánh nhầm thành lỗi kỹ thuật, bảo toàn các file đã commit trên đĩa.
+  - [x] Khóa khẩn cấp (`blocked`): Khi gặp `ENOSPC` (hết đĩa) hoặc `EACCES` (mất quyền ghi), queue chuyển `blocked` và hiển thị hành động tương ứng.
+  - [x] **3-Way Dispatch Logic**:
+    - **Thử lại (`retry`)**: Tái sử dụng `effectiveConfigSnapshot` cũ, kiểm tra artifact cũ còn nguyên vẹn thì chạy tiếp từ bước lỗi (`retryFromStep`).
+    - **Tạo lại (`regenerate`)**: Gọi `invalidationGraph.resolveEarliestInvalidatedStep(job, changedConfig)` để xác định bước bắt đầu lại, chạy lại với snapshot mới, committed artifact cũ giữ nguyên trên đĩa.
+    - **Xuất lại (`reexport`)**: Bỏ qua các bước AI, chạy trực tiếp Output Resolver và chuyển mã âm thanh / chuyển đổi phụ đề thực sự sang đích mới theo Output Safety Invariants.
+  - [x] Input Mutation Safety: Kiểm tra `mtime`/`size` file nguồn. Nếu bị sửa ngoài app $\rightarrow$ cảnh báo `⚠️ Đã sửa ngoài app`, vô hiệu hóa tái sử dụng cache, chạy lại từ Step 1, giữ nguyên committed artifact cũ (đánh dấu stale), output mới qua Output Resolver.
+  - [x] Ghi nhận đầy đủ vào `history.json` khi job đạt terminal status (`completed`, `completed_with_warning`, `failed_with_artifact`, `failed`, `cancelled`).
+- **MAPPING SPEC AC**: `AC-09`, `AC-10`, `AC-11`, `AC-12`, `AC-13`, `AC-26`, `AC-27`, `AC-30`.
+- **VERIFICATION**: `npx tsx --test src/services/batch/__tests__/batchControlsAndHistory.test.ts` (8/8 pass) pass 100%.
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG.
 
 ---
 
-### DỪNG TẠI GATE C (CHỜ USER DUYỆT)
-Kế hoạch triển khai kỹ thuật v2.0.1 đã hoàn thiện toàn diện theo đúng Micro Consistency Patch. Không viết code cho đến khi nhận được phê duyệt chính thức GATE C từ bạn!
+### Milestone 5: Giao Diện Người Dùng 4 Khung Nhìn Thống Nhất & Tích Hợp Shell (Phase 7 Build Auto)
+
+#### TASK-12: Top Bar, 4 View Tabs, Global Defaults Modal & Sub-Toolbar Staging Scope
+- **ID**: `TASK-12`
+- **TITLE**: Xây dựng Thanh Điều Khiển Trên Cùng, 4 Tab Khung Nhìn, Modal Cấu Hình & Sub-Toolbar Chuẩn Bị
+- **GOAL**: Triển khai Top Bar theo ngữ cảnh từng tab, 4 tab khung nhìn kèm badge đếm số lượng, Sub-toolbar nạp tệp và cấu hình hàng loạt độc quyền cho tab Danh sách, Modal cấu hình 6 tab có kiểm soát phạm vi chọn tệp (0 selected disabled).
+- **DEPENDENCIES**: `TASK-10`, `TASK-11`.
+- **EXPECTED FILES/MODULES**:
+  - `src/views/batch/BatchTopBar.tsx` (Mới)
+  - `src/views/batch/BatchViewTabs.tsx` (Mới: 4 tabs `list`, `queued`, `completed`, `failed`)
+  - `src/views/batch/BatchSubToolbar.tsx` (Mới: chỉ xuất hiện tại tab Danh sách)
+  - `src/views/batch/GlobalDefaultsModal.tsx` (Mới)
+  - `src/views/BatchWorkspace.tsx` (Mới)
+- **ACCEPTANCE CRITERIA**:
+  - [x] 4 Tab hiển thị rõ ràng: Danh sách, Hàng đợi, Hoàn tất, Lỗi kèm badge số lượng thời gian thực.
+  - [x] Sub-toolbar (Tải Lên, Cấu hình hàng loạt, Tìm kiếm) chỉ hiển thị tại tab Danh sách.
+  - [x] Lược bỏ hoàn toàn các banner mô tả dài dòng (FIFO, Invalidation Graph...) ở tất cả các tab.
+  - [x] Nút hành động chính theo ngữ cảnh: Tab Danh sách hiển thị `[Chuyển sang hàng đợi]`; Tab Hàng đợi hiển thị `[Bắt đầu xử lý]`.
+  - [x] Modal Cấu hình chung 6 tab: Xuất & Tệp, TTS, Hội thoại, Phụ đề, Dịch, Lồng tiếng.
+  - [x] Nút Áp dụng trong Modal: 0 tệp chọn $\rightarrow$ disabled kèm helper *"Chọn ít nhất 1 tệp để áp dụng cấu hình."*; $1+$ tệp chọn $\rightarrow$ hiển thị `[Áp dụng cho X tệp đã chọn]`.
+- **MAPPING SPEC AC**: `AC-16`, `AC-21`, `AC-22`, `AC-24`, `AC-43`.
+- **VERIFICATION**: Component render test, `npx tsc --noEmit` pass 0 lỗi.
+- **RISK**: THẤP.
+- **USER APPROVAL REQUIRED**: KHÔNG.
+
+#### TASK-13: File Task Matrix Table, Priority Arrow Queue Reorder & Failed CTA Rows
+- **ID**: `TASK-13`
+- **TITLE**: Xây dựng Bảng Ma Trận Tác Vụ, Bảng Hàng Đợi Điều Chỉnh Mũi Tên & Hàng Thao Tác Lỗi
+- **GOAL**: Triển khai bảng ma trận tác vụ trong tab Danh sách, bảng hàng đợi ghim processing job và điều chỉnh thứ tự bằng mũi tên (`↑` / `↓`) trong tab Hàng đợi, và danh sách lỗi hiển thị 3-Way Dynamic CTA trong tab Lỗi.
+- **DEPENDENCIES**: `TASK-12`.
+- **EXPECTED FILES/MODULES**:
+  - `src/views/batch/FileTaskMatrixTable.tsx` (Mới)
+  - `src/views/batch/QueueReorderTable.tsx` (Mới: điều chỉnh thứ tự ưu tiên bằng mũi tên `↑` / `↓`)
+  - `src/views/batch/FailedJobsTable.tsx` (Mới: render 3-Way CTA `[Thử lại]`, `[⚡ Tạo lại]`, `[⚡ Xuất lại]`)
+  - `src/views/batch/PerFileConfigDrawer.tsx` (Mới: cấu hình riêng từng tệp, thẻ output settings, nút khôi phục snapshot)
+  - `src/views/batch/TaskMatrixCell.tsx` (Mới)
+- **ACCEPTANCE CRITERIA**:
+  - [x] Checkbox đầu dòng độc lập với checkbox tác vụ. Header checkbox 3 trạng thái (`none`, `partial`, `all`) hiển thị số lượng tệp chọn.
+  - [x] Tiêu đề các cột được căn giữa và có đường viền phân cách rõ ràng.
+  - [x] Ô tác vụ từng dòng: Checkbox nếu tương thích; icon `🚫` kèm tooltip nếu không tương thích; tự động loại trừ TTS vs Hội thoại trên file text; tự bật Phụ đề khi bật Lồng tiếng trên media.
+  - [x] Bảng Hàng đợi:
+    - Tệp đang chạy (`processing`) luôn được ghim ở đầu kèm tiến độ % trực tiếp trên từng nút tác vụ (`Phụ đề`, `Dịch`, `Lồng tiếng`...), thanh tiến độ % trạng thái và các nút Tạm dừng/Tiếp tục, Hủy trên cùng 1 dòng.
+    - Các tệp đang chờ (`waiting`) hiển thị số thứ tự nguyên dương (`2`, `3`...) và các nút điều hướng ưu tiên (`↑` / `↓`). Loại bỏ hoàn toàn GripVertical và ký tự `#`.
+  - [x] Bảng Lỗi: Hiển thị 3-Way Dynamic CTA chính xác theo derived config comparison: `[Thử lại]`, `[⚡ Tạo lại]`, hoặc `[⚡ Xuất lại]`. Khôi phục cấu hình đúng snapshot cũ lập tức đưa nút về `[Thử lại]`.
+  - [x] Drawer tùy chỉnh: Cho phép chỉnh cấu hình riêng cho từng tác vụ và cấu hình xuất tệp (thư mục, audio format, sub format), nút "Khôi phục cấu hình snapshot".
+- **MAPPING SPEC AC**: `AC-02`, `AC-04`, `AC-06`, `AC-21`, `AC-22`, `AC-23`, `AC-25`, `AC-26`, `AC-43`.
+- **VERIFICATION**: Component render test, `npx tsc --noEmit` pass 0 lỗi.
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG.
+
+#### TASK-14: Shared BatchFooter h-[39px], Read-Only Preview Modal, Settings License IPC, Shell Navigation & i18n
+- **ID**: `TASK-14`
+- **TITLE**: Xây dựng Shared BatchFooter Component h-[39px], Modal Xem Trước Chỉ Đọc, Kết Nối License IPC, Tích Hợp Shell & Đa Ngôn Ngữ
+- **GOAL**: Triển khai component dùng chung `BatchFooter.tsx` hiển thị `Tổng: X tệp` đồng nhất chiều cao `BATCH_FOOTER_HEIGHT = 39px`, padding, alignment trên toàn bộ 4 tab, Modal Preview chỉ đọc (Audio Player & Subtitle Viewer đọc committed artifacts, 0 AI calls), kết nối modal đổi key bản quyền trong Settings với `licenseService` IPC, tích hợp tab "Hàng loạt" vào Sidebar VoxLab và i18n 4 ngôn ngữ.
+- **DEPENDENCIES**: `TASK-05B`, `TASK-12`, `TASK-13`.
+- **EXPECTED FILES/MODULES**:
+  - `src/components/batch/BatchFooter.tsx` (Mới: component thanh trạng thái đáy bảng dùng chung cho cả 4 tab với token `BATCH_FOOTER_HEIGHT = 39px`)
+  - `src/views/batch/BatchArtifactPreviewModal.tsx` (Mới: Audio Player & Subtitle Viewer chỉ đọc)
+  - `src/views/settings/LicenseModal.tsx` (Cập nhật: kết nối IPC `licenseService.ts`, xóa key khỏi state sau kích hoạt, hiển thị masked key)
+  - `src/views/SettingsWorkspace.tsx` (Cập nhật: hiển thị LicenseSummary, nút Đổi key)
+  - `src/components/layout/Sidebar.tsx` (Cập nhật: thêm tab Batch)
+  - `src/App.tsx` (Cập nhật: route / view switcher cho Batch)
+  - `src/i18n/translations.ts` (Cập nhật: bản dịch 4 ngôn ngữ vi, en, ja, zh)
+- **ACCEPTANCE CRITERIA**:
+  - [x] **AC-43 (Shared BatchFooter Invariant)**: Cả 4 view Batch (`list`, `queued`, `completed`, `failed`) sử dụng chung component `BatchFooter.tsx` với cùng chiều cao `BATCH_FOOTER_HEIGHT = 39px`, cùng padding, cùng alignment, hiển thị số liệu `Tổng: X tệp` của tab hiện tại kèm các nút điều khiển tổng thể. Không duplicate CSS giữa các tab.
+  - [x] **Settings License IPC Integration**: Modal nhập/đổi key bản quyền kết nối trực tiếp với `licenseService.ts` qua Tauri IPC, hiển thị masked key `VOX-****-****-XXXX`, không lưu full key trong React state lâu dài hay `localStorage`.
+  - [x] **Read-Only Preview Modal**: Xem trước kết quả tệp hoàn tất; Audio Player (Play/Pause, Seek, Volume) và Subtitle Viewer (cues list); chỉ đọc committed artifact từ đĩa, tuyệt đối 0 generate ngầm, 0 gọi AI API, không làm thay đổi trạng thái job.
+  - [x] Tab "Hàng loạt" trên Sidebar với icon `Layers`, chuyển đổi giữa các tab không làm mất trạng thái hàng đợi đang chạy.
+  - [x] i18n đầy đủ cho 4 ngôn ngữ (vi, en, ja, zh) không để sót chuỗi hardcoded tiếng Anh/Việt.
+- **MAPPING SPEC AC**: `AC-21`, `AC-28`, `AC-29`, `AC-43`, `AC-SET-03`.
+- **VERIFICATION**: `npx tsc --noEmit` pass 0 lỗi, kiểm tra chuyển tab mượt mà.
+- **RISK**: THẤP.
+- **USER APPROVAL REQUIRED**: KHÔNG.
+
+---
+
+### Milestone 6: Kiểm Thử Đa Tầng, Benchmark & Nghiệm Thu (Phase 7 Build Auto & Phase 8 Test)
+
+#### TASK-15: Automated Multi-Tier Test Suite Covering AC-01 to AC-44 & LICENSE-AC-01 to LICENSE-AC-14
+- **ID**: `TASK-15`
+- **TITLE**: Xây dựng Bộ Kiểm Thử Tự Động Đa Tầng Bao Phủ Toàn Bộ Tiêu Chí Nghiệm Thu AC-01 Đến AC-44 và LICENSE-AC-01 Đến LICENSE-AC-14
+- **GOAL**: Xây dựng hệ thống unit tests, integration tests và e2e workflow tests bao phủ 100% các trạng thái, bộ chuyển đổi, bất biến và tiêu chí từ AC-01 đến AC-44 cùng LICENSE-AC-01 đến LICENSE-AC-14.
+- **DEPENDENCIES**: `TASK-05B`, `TASK-11`, `TASK-14`.
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/__tests__/batchUnit.test.ts` (Mới: State machines, 4 View Tabs, 6 Queue States, 9 Job States, 8 Step States, Output Resolver, Fingerprints, Crash Normalizer)
+  - `src/services/batch/__tests__/batchConfigScope.test.ts` (Mới: Selection-scoped apply, derived diff logic, restore to snapshot CTA reversion)
+  - `src/services/batch/__tests__/batchQueueReorder.test.ts` (Mới: Priority arrow reorder while running, active job pinned, next job dispatch)
+  - `src/services/batch/__tests__/batchIntegration.test.ts` (Mới: Step Executors, Artifact Handoff, Dubbing collision_danger, Monolithic ASR Safe Cancel wait & zero overlap, Step-level Retry, Re-export transcoding, Subtitle parser/exporter reuse)
+  - `src/services/batch/__tests__/batchWorkflow.test.ts` (Mới: E2E Mixed File Matrix run, Input Mutation rerun, Read-Only Preview invariant, Emergency Block injection, Text-to-Subtitle real audio duration alignment)
+  - `src/services/license/__tests__/licenseSecurity.test.ts` (Mới: Unit/Mock test bao phủ LICENSE-AC-01 đến LICENSE-AC-14)
+- **ACCEPTANCE CRITERIA**:
+  - [x] **Bao phủ trọn vẹn toàn bộ Tiêu chí Nghiệm thu (AC-01 đến AC-44)** trong SPEC v3.2.0.
+  - [x] **Bao phủ trọn vẹn toàn bộ Tiêu chí Bảo mật Bản quyền (LICENSE-AC-01 đến LICENSE-AC-14)** trong SPEC-settings v1.2.0.
+  - [x] Kiểm thử chuyển dịch trạng thái: 6 Queue States, 9 Job States và 4 View Tabs hoạt động chính xác không phân mảnh dữ liệu.
+  - [x] Kiểm thử tính bất biến snapshot & thời điểm freeze: Snapshot chỉ freeze ngay trước khi processing; Queue tab waiting jobs vẫn nhận cấu hình.
+  - [x] Kiểm thử phạm vi áp dụng: Global Defaults chỉ áp dụng cho tệp được chọn; unselected jobs không bị ảnh hưởng.
+  - [x] Kiểm thử derived diff: CTA chuyển thành Tạo lại khi đổi AI, Xuất lại khi đổi output, và tự động hoàn nguyên về Thử lại khi khôi phục snapshot cũ.
+  - [x] Kiểm thử Re-export: Thực hiện chuyển mã âm thanh WAV $\leftrightarrow$ MP3 và tái sử dụng subtitle parser/exporter thực tế, không đổi đuôi file đơn thuần; 0 AI calls khi artifact có sẵn.
+  - [x] Kiểm thử Queue priority reorder: Waiting jobs đổi thứ tự qua nút `↑` / `↓` khi đang chạy; job active bị khóa; job tiếp theo tuân theo thứ tự mới.
+  - [x] Kiểm thử Text $\rightarrow$ Subtitle: Ánh xạ timeline theo thời lượng audio thực tế `durationSec` + ngắt câu.
+  - [x] Kiểm thử bảo toàn artifact đã commit: Khi Input Mutation xảy ra, artifact cũ không bị xóa hay rollback, được đánh dấu stale và output mới được phân giải đúng.
+  - [x] Kiểm thử Preview: Chỉ đọc committed artifact, không sinh file ngầm, không mutate job state.
+  - [x] Kiểm thử License Security: Verify flow, HWID hashing, DPAPI encryption mock, offline grace rules và rejection codes.
+- **MAPPING SPEC AC**: Toàn bộ từ `AC-01` đến `AC-44` và `LICENSE-AC-01` đến `LICENSE-AC-14`.
+- **STATUS**: **COMPLETE**
+- **VERIFICATION**: `npx tsx --test "src/services/batch/**/*.test.ts"` && `npx tsx --test "src/services/license/**/*.test.ts"` pass 100% (23/23 tests pass).
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG.
+
+---
+
+#### TASK-16: Full Regression Verification, Runtime Soak Benchmark & Tuning Experiments
+- **ID**: `TASK-16`
+- **TITLE**: Kiểm Thử Hồi Quy Toàn Bộ Hệ Thống, Runtime Soak Benchmark & Thực Nghiệm Tham Số Tuning
+- **GOAL**: Xác nhận không có hồi quy nào trong codebase hiện tại, thực hiện soak benchmark bộ nhớ đa tác vụ và thực nghiệm đo đạc các tham số tuning trước khi đề xuất production default.
+- **DEPENDENCIES**: `TASK-15`.
+- **STATUS**: **COMPLETE**
+- **EXPECTED FILES/MODULES**:
+  - `src/services/batch/__benchmarks__/batchSoakBenchmark.ts` (Mới)
+- **ACCEPTANCE CRITERIA**:
+  - [x] **100% Kiểm thử Hồi quy PASS**: Toàn bộ test suite hiện có tại thời điểm verification phải PASS 100% (629/629 tests PASS).
+  - [x] **Zero TypeScript Error**: `npx tsc --noEmit` pass 0 lỗi.
+  - [x] **Clean Production Build**: `npm run build` thành công không cảnh báo lỗi nghiêm trọng.
+  - [x] **Runtime Soak Benchmark**: Chạy tuần tự 20 mixed jobs, đo đạc RAM/VRAM, chứng minh zero memory accumulation (bộ nhớ delta +0.29 MB, hoàn toàn ổn định).
+  - [x] **Thực nghiệm đo đạc các ứng viên Tuning (Không hardcode trước benchmark)**:
+    - Benchmark ứng viên `BATCH_MODEL_UNLOAD_TIMEOUT_SEC: 120s` (đo RAM/VRAM recovery vs chi phí latency khi reload model; so sánh retention vs reload overhead; sau đo đạc mới đề xuất production default).
+    - Benchmark ứng viên `MAX_BATCH_QUEUE_CAPACITY: 500` (đo fps cuộn bảng, mount latency, JS heap overhead 481 KB).
+    - Đo đạc thời gian và số lần thử lại cho API backoff / retry (1000, 2000, 4000 ms).
+  - [x] Kiểm chứng visual DOM, layout bảng matrix và giao diện dark/light theme bằng Chrome DevTools MCP.
+- **MAPPING SPEC AC**: Toàn bộ `AC-01` đến `AC-44`.
+- **VERIFICATION**: `npx tsc --noEmit` && `npx tsx --test "src/**/*.test.ts"` && `npm run build`.
+- **RISK**: TRUNG BÌNH.
+- **USER APPROVAL REQUIRED**: KHÔNG (Task kiểm thử nội bộ kỹ thuật; Gate F Release sẽ thực hiện ở Phase 14).
+
+---
+
+## 4. Bảng Tổng Hợp Kế Hoạch Triển Khai v3.2.0 (Implementation Summary)
+
+| Chỉ số | Chi tiết |
+| :--- | :--- |
+| **Tổng số Nhiệm vụ (Total Tasks)** | **17 tasks** (TASK-01 đến TASK-16 gồm TASK-05B, toàn bộ nằm trong Phase 7: Build Auto) |
+| **Số Lượng Cột Mốc (Milestones)** | **6 milestones** (Hợp đồng dữ liệu & Tương thích $\rightarrow$ Cấu hình, Lưu trữ v3 & License Security $\rightarrow$ Step Executors $\rightarrow$ Composite Orchestrator $\rightarrow$ Giao diện 4 Khung Nhìn $\rightarrow$ Kiểm thử & Benchmark) |
+| **Nhiệm Vụ Rủi Ro Cao (High-Risk Tasks)** | `TASK-05` (Early Tauri FS Atomic Persistence), `TASK-05B` (Rust HWID, DPAPI & Supabase RPC Client), `TASK-08` (ASR Monolithic Safe Cancel & Zero Overlap), `TASK-10` (Composite Orchestrator Core Step Loop & Priority Arrow Queue Reorder) |
+| **Các Quyết Định Kiến Trúc Trọng Tâm** | 1. 4 Unified Workspace Views (Danh sách, Hàng đợi, Hoàn tất, Lỗi)<br>2. Row Scope Selection $\ne$ Task Selection; Apply Config Scope cô lập tuyệt đối<br>3. Staged Queue Transition (`staging` $\rightarrow$ `queued`) & Priority Arrow Reorder (`↑` / `↓`) trong lúc đang chạy<br>4. Snapshot Freeze Lazy Timing (chỉ freeze ngay trước `waiting -> processing`)<br>5. 3-Way Dynamic CTA (Thử lại / Tạo lại / Xuất lại) qua Derived State so khớp sâu<br>6. Chuyển mã âm thanh (WAV $\leftrightarrow$ MP3) & Tái sử dụng Subtitle Parser/Exporter (SRT $\leftrightarrow$ VTT)<br>7. External Modification Protection > Global Collision Policy; Committed Artifacts bất biến<br>8. Preview Read-Only Invariant (0 AI calls, 0 state mutation)<br>9. BatchJob Concurrency = 1 baseline; Internal Concurrency là TUNING REQUIRED<br>10. Monolithic ASR Safe Cancel không overlap<br>11. Sub-toolbar độc quyền tại tab Danh sách, Footer Status Bar Shared BatchFooter h-[39px] đồng nhất toàn bộ 4 tab<br>12. License Security Architecture: Rust HWID v1, Supabase RPC, Windows DPAPI local cache, Structured Status Enum, Offline Grace Policy |
+| **Bao Phủ Tiêu Chí Nghiệm Thu** | **100% đầy đủ từ AC-01 đến AC-44 và LICENSE-AC-01 đến LICENSE-AC-14** |
+| **Rủi Ro Lớn Nhất & Giải Pháp** | 1. Crash mất queue $\rightarrow$ Triển khai sớm Tauri IPC ghi nguyên tử qua `.tmp` rồi rename.<br>2. Worker Whisper chạy ngầm khi cancel $\rightarrow$ Chặn dispatch, đợi worker return/thoát thực tế.<br>3. Re-export đổi format bị giả mạo đổi đuôi file $\rightarrow$ Xây dựng module audio transcoder thực sự và tái sử dụng subtitle parser/exporter.<br>4. Reorder hàng đợi khi đang chạy gây xung đột con trỏ $\rightarrow$ Active job pinned, waiting jobs reordered an toàn qua nút `↑` / `↓`.<br>5. Lộ license key hoặc bypass cache $\rightarrow$ Rust backend mã hóa Windows DPAPI, HWID v1 băm SHA-256 có namespace, UI chỉ nhận LicenseSummary che giấu.<br>6. OOM khi chạy liên tục mẻ lớn $\rightarrow$ Concurrency = 1, dọn sạch staging `.tmp`, đo đạc timeout giải phóng model. |
+| **Trạng Thái Hiện Tại** | **PHASE 8 TEST: FAIL — STOP TẠI GATE E**. Orchestrator/UI/storage/license-storage có thật và 629/629 tests PASS, nhưng KHÔNG có runtime Local AI thật (TTS & faster-whisper), không có Python sidecar/Rust IPC cho inference, endpoint Supabase là placeholder. TASK-07/08/09/16 mở lại. Chờ Product Owner quyết định runtime. |

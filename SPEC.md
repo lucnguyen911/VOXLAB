@@ -1,8 +1,8 @@
 # VoxLab — Product & Technical Specification (SPEC.md)
 
-**Document Version**: 2.4.0 (Application Update & Persistent Data Compatibility)  
-**Phase**: Phase 3 — Specification (GATE B)  
-**Status**: APPROVED (GATE B CLOSED)  
+**Document Version**: 2.5.3 (Approved Specification: Final ASR Speed Remap, Memory Model, Configurable Performance Architecture)
+**Phase**: Phase 4 — Implementation Plan (/plan)
+**Status**: APPROVED AT GATE B — PLANNING IN PROGRESS
 **Target Platform**: Windows 10/11 64-bit (x64)  
 **Core Stack**: Tauri v2 (Rust) + React 19 + TypeScript + Vite  
 
@@ -126,15 +126,16 @@ Hệ thống phân định rạch ròi 4 loại đường dẫn, không gộp ch
 ## 4. Navigation & Workspace Specifications
 
 ### 4.1 Cấu trúc Navigation bên trái (Left Sidebar)
-Sidebar hỗ trợ thu gọn (collapsible) với 6 không gian làm việc:
+Sidebar hỗ trợ thu gọn (collapsible) với 7 không gian làm việc phân tầng rành mạch:
 * **PRIMARY WORKSPACES**:
   1. `Text to Speech` (Không gian TTS kịch bản dài)
   2. `Voice Clone` (Không gian tạo giọng mẫu mới)
   3. `Voice Library` (Không gian quản lý và tái sử dụng giọng)
-  4. `Transcription` (Không gian bóc băng âm thanh/video)
+  4. `Phụ đề` (Không gian bóc băng ASR & tối ưu phụ đề chuyên biệt — Single Responsibility)
+  5. `Dịch & Lồng tiếng` (Không gian dịch nội dung & sản xuất audio lồng tiếng — Dedicated Dubbing Workspace)
 * **UTILITY**:
-  5. `History` (Lịch sử các phiên xử lý gần đây)
-  6. `Settings` (Cài đặt hệ thống toàn diện)
+  6. `History` (Lịch sử các phiên xử lý gần đây)
+  7. `Settings` (Cài đặt hạ tầng & provider tập trung — Infrastructure Only)
 
 > **Ranh giới dứt khoát**: Không có `Project Management` trong MVP. Mô hình làm việc là **Task/Session-based + History + Cache/Recovery**.
 
@@ -181,7 +182,6 @@ Sidebar hỗ trợ thu gọn (collapsible) với 6 không gian làm việc:
   - `Local / My Voices` (Các giọng clone do người dùng tạo)
   - `Preset Local Voices` (Các giọng mẫu có sẵn của model local)
   - `Online Provider Voices` (Giọng trực tuyến: Microsoft, Google...). Giọng online bắt buộc phải gắn nhãn rõ ràng là **ONLINE**, không hiển thị mập mờ như giọng local.
-  - *(Ghi chú: CapCut / Edge-TTS hoặc các endpoint không chính thức thuộc diện `FEASIBILITY / LEGAL / TERMS VALIDATION REQUIRED`, tuyệt đối không đưa vào làm dependency sản xuất nếu chưa được thẩm định).*
 - **Chức năng quản trị**:
   - Danh sách giọng kèm metadata: Tên, Tags, Model, Ngôn ngữ, Loại giọng.
   - Tìm kiếm theo tên (Search by Name) và Lọc theo Tag (Filter by Tag).
@@ -189,22 +189,54 @@ Sidebar hỗ trợ thu gọn (collapsible) với 6 không gian làm việc:
   - **Xóa an toàn (Delete Voice Safety)**: Yêu cầu xác nhận (confirmation dialog); nếu giọng đang được tham chiếu bởi các session cũ thì phải cảnh báo trước; xóa voice profile **tuyệt đối không tự động xóa** các file audio chunk hoặc WAV/MP3 đã sinh trước đó.
   - **Cầu nối `[Use in TTS]`**: Bấm một chạm để chuyển sang tab Text to Speech và đặt profile này làm active voice.
 
-#### 4.2.4 Workspace 4: Transcription (Standalone Workspace)
-- **Engine cố định cho MVP**: **`faster-whisper`**.
-- **Model Set cố định**:
-  - `Medium`
-  - `Large V3`
-  - `Large V3 Turbo`
-  - `Auto` (Tự động phát hiện cấu hình phần cứng CPU/RAM/VRAM và trạng thái model đã cài để chọn model tương thích, an toàn nhất; ngưỡng phần cứng cụ thể là `TUNING REQUIRED`).
-- **Ngôn ngữ (Language)**: Hỗ trợ `Auto Detect` (Tự động nhận diện - **MUST HAVE**) và danh sách toàn bộ các ngôn ngữ được runtime faster-whisper hỗ trợ.
-- **Xem & Xuất**: Xem dạng `Plain Text` hoặc `Segments View` (có timestamp). Xuất file `.txt` và `.srt`.
-- **Cầu nối `[Chuyển sang TTS]`**: Đưa toàn bộ text bóc băng sang TTS Studio làm kịch bản mới, giữ nguyên transcript gốc.
+#### 4.2.4 Workspace 4: Phụ đề (Single Responsibility Subtitle Workspace)
+*Nguyên tắc: Phụ đề = SPEECH TO SUBTITLE ONLY*.
+- **Mục tiêu duy nhất**: Nhận diện âm thanh/video $\rightarrow$ Phân tích protected spans $\rightarrow$ Bóc băng ASR (faster-whisper) $\rightarrow$ Tối ưu hóa cue subtitle $\rightarrow$ Chỉnh sửa văn bản cue $\rightarrow$ Xuất SRT/TXT.
+- **Loại bỏ hoàn toàn**: Không chứa bất kỳ cấu hình dịch thuật nào (không có Ngôn ngữ dịch, Model dịch, Gemini, DeepSeek, LM Studio translation, API keys).
+- **Right Panel cố định: "CÀI ĐẶT PHỤ ĐỀ"**:
+  - Gồm 2 nhóm rõ rệt:
+    1. **Nhóm Nhận diện**:
+       - Ngôn ngữ âm thanh (`audioLanguage`): Tự động nhận diện (auto) hoặc chọn ngôn ngữ cụ thể.
+       - Mô hình Whisper (`whisperModel`): large-v3-turbo, large-v3, medium.
+       - Tốc độ giọng nói (`speechSpeed`): 1.0x (Bình thường), 0.9x (Giọng nhanh), 0.8x (Giọng rất nhanh).
+       - Tốc độ xử lý (`processingSpeed`): auto, 1x, 2x, 4x, 8x.
+       - *Quy tắc Invalidation*: Khi thay đổi bất kỳ setting nào trong nhóm này sau khi đã có kết quả $\rightarrow$ Invalidate kết quả ASR cũ, chuyển sang trạng thái yêu cầu nhận diện lại.
+    2. **Nhóm Hiển thị**:
+       - Tỷ lệ khung hình (`aspectRatio`): 16:9 (Ngang), 9:16 (Dọc), 1:1 (Vuông).
+       - Số dòng phụ đề (`maxLines`): 1 dòng, 2 dòng.
+       - *Quy tắc Invalidation*: Khi thay đổi tỷ lệ khung hình hoặc số dòng $\rightarrow$ Tái tối ưu lại cue từ mảng word timestamps có sẵn trong bộ nhớ. **Tuyệt đối không chạy lại Whisper ASR**.
+- **Cầu nối Handoff**:
+  - Nút hành động tại Top Header: **`[Chuyển sang Dịch & Lồng tiếng ➔]`** (thay thế nút "Chuyển sang TTS" cũ).
+  - Xuất ra một **Immutable Handoff Snapshot** chứa toàn bộ cues gốc kèm timestamps và metadata media sang tab `dubbing`.
 
-#### 4.2.5 Workspace 5: History (Utility)
+#### 4.2.5 Workspace 5: Dịch & Lồng tiếng (Dedicated Dubbing Workspace)
+*Nguyên tắc: Dịch & Lồng tiếng = TRANSLATE & DUB SUBTITLE TIMELINE*.
+- **Đầu vào (Input)**:
+  - Handoff snapshot trực tiếp từ tab Phụ đề.
+  - Hoặc nhập file phụ đề có sẵn (.SRT / .VTT) từ máy tính.
+- **Tiêu thụ Provider (Consumer Pattern)**:
+  - Chọn Provider đã cấu hình trong Settings (Google, LM Studio, Gemini, DeepSeek, Custom).
+  - Chọn Ngôn ngữ đích.
+  - Nếu Provider chưa cấu hình API Key hoặc Local server offline: Hiển thị badge trạng thái kèm nút `[Cấu hình trong Settings]` (deep-link). Không nhập API Key trực tiếp tại đây.
+- **Quy trình Review/Edit bắt buộc (Side-by-Side Review Grid)**:
+  - Cột trái: Cue gốc (Original Cue) — Read-only, kèm timestamps và thời lượng khả dụng.
+  - Cột phải: Cue dịch (Translated Cue) — Inline editable, hiển thị trạng thái sinh audio, thời lượng audio đã tạo, và badge cảnh báo overflow/collision nếu có.
+- **Lồng tiếng (Dubbing Execution)**:
+  - Chọn 1 giọng đọc chung (Single Voice) từ Voice Library / Voice Clone.
+  - Hàng đợi sinh audio từng câu qua `BatchConcurrencyQueue` (hỗ trợ Concurrency, Pause, Resume, Cancel).
+  - Áp dụng WSOLA time-stretch co giãn nhẹ tối đa 15–20% ($1.20\times$) nếu audio dài hơn cue gốc mà không làm méo cao độ giọng.
+  - Tách bạch Source Subtitle Timeline (bất biến) và Dubbing Audio Timeline (neo tại start time, tính toán overflow metadata, **không ripple-shift các cue phía sau**).
+- **Đầu ra (Output)**:
+  - Xuất file Audio lồng tiếng hoàn chỉnh (`.wav`) ghép nối chuẩn xác theo timeline.
+  - Xuất file Phụ đề đã dịch (`.srt`) kế thừa 100% timestamps của source subtitle.
+
+#### 4.2.6 Workspace 6: History (Utility)
 - Danh sách các phiên xử lý (sessions) gần đây kèm thời gian, tác vụ, trạng thái.
 - Hành động: `[Reopen/Resume]`, `[Mở thư mục output]`, `[Xóa lịch sử]` (chỉ xóa bản ghi metadata, không xóa file thành phẩm trên đĩa).
 
-#### 4.2.6 Workspace 6: Settings (Utility — 9 Nhóm chức năng chi tiết tại Mục 8)
+#### 4.2.7 Workspace 7: Settings (Utility — Cấu hình hạ tầng tập trung)
+- Quản lý hạ tầng: Endpoint LM Studio, Gemini API Key, DeepSeek credentials, connection state.
+- Loại bỏ hoàn toàn trang `Settings > Phụ đề` trùng lặp; tự động migrate settings cũ sang schema mới an toàn.
 
 ### 4.3 Bottom Job Bar
 - Cố định dưới chân app: Model đang chạy, tiến độ chunk (ví dụ `Chunk 23/84 - 27%`), thanh tiến độ, nút `[Tạm dừng (Pause)]`, `[Hủy bỏ (Cancel)]`, `[Mở thư mục output]`.
@@ -535,11 +567,434 @@ Bắt buộc phải qua benchmark thực tế trong bước Model Feasibility m�
 
 ---
 
-### KẾT LUẬN & DỪNG GATE B
+## 16. Phân định Trách nhiệm: Subtitle Single-Responsibility, Dedicated Dubbing Workspace & Settings Separation
 
-Tài liệu `SPEC.md` v2.4.0 đã bổ sung hoàn chỉnh yêu cầu **Application Update & Persistent Data Compatibility**, bảo đảm vòng đời cập nhật ứng dụng luôn an toàn, không bao giờ xóa dữ liệu người dùng, quản lý schema migration tuần tự và có cơ chế rollback tin cậy.
+### 16.1 Domain & Data Models
 
-Không còn bất kỳ điểm mơ hồ nào cản trở việc chuyển sang Phase 4 (Plan).
+Hệ thống định nghĩa các kiểu dữ liệu lõi với ranh giới trách nhiệm và tính bất biến nghiêm ngặt:
 
-# **READY FOR GATE B USER REVIEW**
-*(Đang dừng tại GATE B theo AGENT_WORKFLOW.txt. Xin mời bạn xem xét và đưa ra quyết định phê duyệt chính thức).*
+#### 16.1.1 `OriginalCue` (Source Subtitle Unit)
+```typescript
+export interface OriginalCue {
+  index: number;         // 1-based sequential cue index
+  startSec: number;      // Start timestamp on source timeline (seconds, 3 decimal precision)
+  endSec: number;        // End timestamp on source timeline (seconds, 3 decimal precision)
+  text: string;          // Source transcript text (read-only in Dubbing workspace)
+}
+```
+
+#### 16.1.2 `TranslatedCue` (Review & Edit Unit)
+```typescript
+export interface TranslatedCue {
+  index: number;         // Identical to OriginalCue.index
+  startSec: number;      // STRICTLY EQUAL to OriginalCue.startSec (Source Subtitle Timeline)
+  endSec: number;        // STRICTLY EQUAL to OriginalCue.endSec (Source Subtitle Timeline)
+  originalText: string;  // Reference to source text for side-by-side display
+  text: string;          // Editable translated text (user can revise inline)
+  isEdited?: boolean;    // Flag indicating manual user edit after AI translation
+}
+```
+
+#### 16.1.3 `DubAudioSegment` (Audio Synthesis & Fitting Unit)
+```typescript
+export interface DubAudioSegment {
+  cueIndex: number;          // Mapped cue index
+  audioUrl?: string;         // Blob URL or cached WAV path of raw TTS audio
+  rawDurationSec: number;    // Raw TTS audio duration
+  targetDurationSec: number; // Available duration on source timeline (endSec - startSec)
+  fittedAudioUrl?: string;   // Processed audio after WSOLA time-stretch (if stretched)
+  fittedDurationSec: number; // Final duration after WSOLA (or raw if no stretch)
+  speedFactor: number;       // WSOLA speed ratio applied (e.g. 1.0 to 1.20)
+  audioStartSec: number;     // Absolute audio start on dub timeline (= OriginalCue.startSec)
+  audioEndSec: number;       // Absolute audio end on dub timeline (= audioStartSec + fittedDurationSec)
+  status: "idle" | "generating" | "ready" | "failed" | "modified";
+  errorMessage?: string;
+}
+```
+
+#### 16.1.4 `TimingOverflowMetadata` (Collision & Overflow Detection)
+```typescript
+export interface TimingOverflowMetadata {
+  cueIndex: number;
+  hasOverflow: boolean;          // true if audioEndSec > OriginalCue.endSec
+  overflowSec: number;           // audioEndSec - OriginalCue.endSec (positive = overflow)
+  hasCollision: boolean;         // true if audioEndSec > nextOriginalCue.startSec
+  collisionWithIndex?: number;   // index of subsequent cue that overlaps
+  collisionSec: number;          // overlap amount in seconds
+  warningLevel: "none" | "overflow_only" | "collision_danger";
+}
+```
+
+#### 16.1.5 `DubbingProjectSession` (State Management & Persistence)
+```typescript
+export interface DubbingProjectSession {
+  id: string;
+  sourceMediaName?: string;
+  sourceDurationSec?: number;
+  originalCues: OriginalCue[];
+  translatedCues: TranslatedCue[];
+  audioSegments: Record<number, DubAudioSegment>;
+  overflowAnalysis: Record<number, TimingOverflowMetadata>;
+  sourceLang: string;
+  targetLang: string;
+  selectedProviderId: string;
+  selectedVoiceId: string;
+  overallStatus: "draft" | "translated" | "dubbing" | "completed";
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+### 16.2 Hai Trục Thời Gian, Ngữ Nghĩa Co Giãn Tốc Độ (WSOLA Semantics) & Chính Sách Xuất Audio
+
+Hệ thống phân định rạch ròi giữa 2 trục thời gian độc lập:
+
+1. **Source Subtitle Timeline (Trục thời gian Phụ đề Gốc)**:
+   - **Tính chất**: Bất biến (`IMMUTABLE`).
+   - `startSec` và `endSec` của mọi `OriginalCue` và `TranslatedCue` đại diện cho timeline của video/audio gốc.
+   - **Quy tắc Xuất SRT**: Khi xuất file phụ đề đã dịch (`.srt`), hệ thống **BẮT BUỘC** sử dụng `TranslatedCue.startSec` và `TranslatedCue.endSec`. Tuyệt đối không xê dịch mốc thời gian của phụ đề theo thời lượng audio lồng tiếng.
+2. **Dubbing Audio Timeline (Trục thời gian Âm thanh Lồng tiếng)**:
+   - **Tính chất**: Neo tại điểm bắt đầu (`audioStartSec = OriginalCue.startSec`).
+   - Thời lượng khả dụng của cue trên timeline gốc: `availableDuration = OriginalCue.endSec - OriginalCue.startSec`.
+3. **Ngữ Nghĩa Hệ Số Tăng Tốc WSOLA (WSOLA Speedup Factor Semantics)**:
+   - Thuật toán WSOLA áp dụng hàm `timeStretchAudioBuffer(inputBuffer, speedFactor)` trong [`src/services/subtitle/timing.ts`](file:///f:/Source%20Code%20Tool/Voxlab/src/services/subtitle/timing.ts):
+     - `speedFactor` là hệ số tăng tốc (speedup factor).
+     - Giới hạn trần tối đa bảo toàn tự nhiên giọng nói: `MAX_DUB_SPEEDUP = 1.20` (tăng tốc tối đa 20%, tương đương thời lượng giảm xuống còn $\frac{\text{rawDuration}}{1.20} \approx 83.33\%$).
+     - Thời lượng tối thiểu sau khi ép tốc độ: `minimumFittedDuration = rawDuration / 1.20`.
+   - **Quy tắc xác định `speedFactor` và `fittedDurationSec`**:
+     - Nếu $\text{rawDuration} \le \text{availableDuration}$:
+       $$\text{speedFactor} = 1.0 \quad \text{(Không co giãn âm thanh, giữ nguyên 100% tự nhiên)}$$
+       $$\text{fittedDurationSec} = \text{rawDuration}$$
+     - Nếu $\text{rawDuration} > \text{availableDuration}$:
+       $$\text{speedFactor} = \min\left(\frac{\text{rawDuration}}{\text{availableDuration}}, 1.20\right)$$
+       $$\text{fittedDurationSec} = \frac{\text{rawDuration}}{\text{speedFactor}}$$
+     - Nếu $\frac{\text{rawDuration}}{1.20} > \text{availableDuration}$: Audio sau khi tăng tốc tối đa $1.20\times$ vẫn dài hơn cue gốc $\rightarrow$ chuyển sang đánh giá va chạm trên timeline.
+4. **Phân loại Trạng thái Thời lượng & Chính sách Xuất Audio**:
+   - Mốc kết thúc âm thanh trên dubbing timeline: `audioEndSec = OriginalCue.startSec + fittedDurationSec`.
+   - **Trường hợp A — `overflow_only` (Tràn thời lượng nhưng không va chạm)**:
+     - Điều kiện: `audioEndSec > OriginalCue.endSec` VÀ `audioEndSec <= nextOriginalCue.startSec`.
+     - Hành vi: Cho phép giữ audio dài hơn cue gốc (lấn an toàn vào khoảng im lặng tự nhiên giữa 2 câu thoại); không mutate source timestamps; không ripple-shift.
+     - **Quy định Xuất Master WAV**: **HỢP LỆ ĐỂ XUẤT (ALLOWED TO EXPORT)**. Hiển thị nhãn cảnh báo nhẹ (vàng) trên UI để người dùng nắm thông tin.
+   - **Trường hợp B — `collision_danger` (Va chạm âm thanh với câu kế tiếp)**:
+     - Điều kiện: `audioEndSec > nextOriginalCue.startSec`.
+     - Hành vi bắt buộc:
+       1. Đánh dấu trạng thái `collision_danger` với badge màu đỏ nổi bật trên UI.
+       2. **TUYỆT ĐỐI KHÔNG mix/chồng đè** 2 đoạn âm thanh lời thoại lên nhau.
+       3. **TUYỆT ĐỐI KHÔNG tự ý cắt bớt (truncate)** âm thanh của câu thoại.
+       4. **TUYỆT ĐỐI KHÔNG delay / ripple-shift** câu hiện tại hoặc các câu phía sau.
+       5. **TUYỆT ĐỐI KHÔNG tự sửa** timeline phụ đề.
+       6. **CHẶN XUẤT MASTER WAV (BLOCK EXPORT)**: Vô hiệu hóa nút xuất Master WAV hoặc chặn xuất với thông báo lỗi rõ ràng cho tới khi người dùng giải quyết xong va chạm.
+       7. **Hướng dẫn người dùng khắc phục trên UI**: Chỉ rõ câu bị va chạm, hướng dẫn người dùng rút ngắn câu dịch, chỉnh sửa text và bấm tạo lại audio riêng câu đó.
+       8. **MVP không có tùy chọn "Force export overlapping speech"**.
+   - **Tính độc lập của Phụ đề Dịch**: File phụ đề đã dịch (`_translated.srt`) **VẪN ĐƯỢC PHÉP XUẤT BÌNH THƯỜNG** ngay cả khi có `collision_danger` vì phụ đề hoàn toàn độc lập với âm thanh lồng tiếng và sử dụng source timestamps gốc.
+
+### 16.3 Ràng Buộc Dịch Thuật Bất Biến 1:1 (Translation Cue Invariant & Validator)
+
+1. **Hard Invariant**: Thao tác Dịch thuật (Translation) **CHỈ ĐƯỢC PHÉP THAY ĐỔI TEXT**.
+2. **Quy tắc Bảo toàn Tuyệt đối 1:1**:
+   - `cue count`: Số lượng câu dịch bắt buộc bằng chính xác số lượng câu gốc (`translatedCues.length === originalCues.length`).
+   - `cue index`: Chỉ số thứ tự từng câu phải khớp 100% (`translatedCues[i].index === originalCues[i].index`).
+   - `cue order`: Thứ tự xuất hiện tuần tự nghiêm ngặt (1, 2, ..., N).
+   - `timestamps`: `startSec` và `endSec` phải giống hệt bản gốc.
+   - `mapping`: Ánh xạ 1:1 duy nhất giữa `originalCue.index` $\rightarrow$ `translatedCue.index`.
+3. **Cấm Tuyệt đối Các Hành Vi Sau từ Provider / LLM**:
+   - Gộp nhiều câu thành một câu (Merge cues).
+   - Tách một câu thành nhiều câu (Split cues).
+   - Đảo lộn thứ tự các câu (Reorder cues).
+   - Bỏ sót câu (Drop cues).
+   - Chèn thêm câu không có trong bản gốc (Insert extra cues).
+4. **Hàm Xác thực Nghiêm ngặt (Strict Response Validator)**:
+   - Trước khi kết quả dịch từ Provider được commit vào state của dự án, hệ thống bắt buộc chạy hàm xác thực `validateTranslationResponse1to1(originalCues, translatedCues)`.
+   - Nếu kết quả trả về từ Provider không đáp ứng đầy đủ điều kiện 1:1 (thiếu câu, thừa câu, sai mốc thời gian, text rỗng do lỗi API):
+     - **TUYỆT ĐỐI KHÔNG commit** dữ liệu sai vào state dự án.
+     - **TUYỆT ĐỐI KHÔNG tự ý đoán định** vị trí mapping.
+     - Gắn cờ lỗi tường minh và thông báo cho người dùng chọn thử lại (Retry) hoặc chuyển sang Provider khác.
+5. **Thao tác Chỉnh sửa Thủ công (Manual Edit)**: Người dùng chỉ được phép chỉnh sửa nội dung văn bản `text` của câu dịch, không thể sửa đổi `index` hoặc `timestamps`.
+
+### 16.4 Định Dạng Âm Thanh Chuẩn Hóa Cố Định (Canonical Dub Audio Format)
+
+Để bảo đảm tính tất định và tương thích tuyệt đối khi ghép nối âm thanh, hệ thống áp dụng một chuẩn định dạng âm thanh duy nhất:
+
+- **Target Sample Rate**: Cố định chính xác **`44,100 Hz`** (44.1 kHz).
+- **Channels**: **`Mono` (1 channel)**.
+- **Bit Depth / Encoding**: **`16-bit Signed Linear PCM`** (AudioFormat = 1).
+- **Container**: **`RIFF WAVE (.wav)`**.
+- **Chính sách Xử lý Chênh lệch Kênh & Tần số mẫu (Resampling & Downmixing Policy)**:
+  - Nếu âm thanh từ TTS Provider là Stereo (2 kênh): Tự động chuyển thành Mono bằng công thức trung bình cộng hai kênh:
+    $$\text{monoSample}[i] = \frac{\text{channelData}[0][i] + \text{channelData}[1][i]}{2}$$
+  - Nếu âm thanh từ TTS Provider có tần số lấy mẫu khác 44.1kHz (ví dụ 24kHz từ Edge-TTS hoặc 48kHz từ Local TTS): Hệ thống tự động thực hiện Resampling về chuẩn 44,100 Hz thông qua Web Audio API OfflineAudioContext trước khi đưa vào hàng đợi lắp ráp.
+  - Toàn bộ các đoạn `DubAudioSegment` trước khi đưa vào hàm lắp ráp Master WAV bắt buộc phải ở đúng định dạng Canonical này.
+
+### 16.5 Chính Sách Lưu Trữ Dữ Liệu & Vòng Đời Phiên Làm Việc (Session Storage & Lifecycle Policy)
+
+Phân định rạch ròi giữa dữ liệu được lưu bền vững (Persistent) và dữ liệu theo phiên làm việc (Session-only):
+
+1. **Dữ liệu Lưu trữ Bền vững qua Lần Khởi động lại Ứng dụng (Persisted Across Restarts in `localStorage`)**:
+   - `voxlab_translation_settings`: `{ targetLanguage, translationProviderId, customModels }`.
+   - `voxlab_dubbing_preferences`: `{ selectedVoiceId }` (giọng đọc dự án được chọn gần nhất).
+   - `voxlab_active_workspace`: Workspace đang hoạt động (ví dụ `"dubbing"`).
+   - `voxlab_subtitle_settings`: Toàn bộ cài đặt ASR & hiển thị phụ đề trong Right Panel của Tab Phụ đề.
+2. **Dữ liệu Theo Phiên Làm việc (Session State & In-Memory Storage Boundary)**:
+   - **QUY TẮC CẤM NHỊ PHÂN VÀO WEB STORAGE**:
+     - Web Storage (`sessionStorage`) có hạn ngạch khắt khe (~5 MB) và không thể tuần tự hóa đối tượng nhị phân (`AudioBuffer`, `Blob`, `ArrayBuffer`, PCM payload).
+     - **TUYỆT ĐỐI KHÔNG ĐƯỢC LƯU** `AudioBuffer`, `Blob`, file binary hoặc audio payload lớn vào `sessionStorage`.
+   - **`sessionStorage` CHỈ CHỨA TRẠNG THÁI LIGHTWEIGHT JSON-SERIALIZABLE**:
+     - `OriginalCue[]`
+     - `TranslatedCue[]` (bao gồm các chỉnh sửa thủ công của người dùng `text`, `isEdited: true`)
+     - Metadata nguồn: `sourceMediaName`, `sourceDurationSec`, `sourceLang`, `targetLang`
+     - Cấu hình phiên: `selectedProviderId`, `selectedVoiceId`
+     - Metadata va chạm: `overflowAnalysis: Record<number, TimingOverflowMetadata>`
+     - Trạng thái tiến độ audio gọn nhẹ: `Record<number, { cueIndex: number, status: "idle" | "needs_generation", rawDurationSec?: number, fittedDurationSec?: number, speedFactor?: number }>` (không lưu Blob URL hay mảng sample nhị phân).
+3. **Hành Vi Xác Định Khi Tải Lại WebView (Deterministic WebView Reload Behavior)**:
+   - Trong VoxLab, các đoạn audio do TTS tổng hợp chỉ tồn tại tạm thời dưới dạng `Blob` trong RAM của tiến trình WebView2 (`URL.createObjectURL(blob)`).
+   - Khi WebView bị reload (F5 hoặc refresh cửa sổ): Toàn bộ `Blob` trong RAM bị thu hồi và các URL `blob:...` trở nên không hợp lệ (stale/revoked).
+   - **Hành vi xử lý tất định khi phục hồi từ `sessionStorage`**:
+     1. Khôi phục 100% kịch bản dịch: Danh sách `OriginalCue[]`, `TranslatedCue[]` cùng mọi chỉnh sửa thủ công của người dùng được giữ nguyên vẹn.
+     2. Khôi phục cấu hình giọng đọc, provider, ngôn ngữ đích.
+     3. Toàn bộ các câu đã từng sinh audio được chuyển trạng thái tất định về **`status: "needs_generation"`** (cần tạo lại âm thanh).
+     4. Hiển thị thông báo trên thanh trạng thái UI: *"Đã khôi phục kịch bản dịch từ phiên trước. Vui lòng bấm 'Tạo âm thanh' để tổng hợp lại file thoại."*
+     5. Người dùng có thể bấm `[Tạo âm thanh tất cả]` hoặc bấm `[Tạo]` riêng từng câu khi sẵn sàng.
+4. **Ranh giới Ngoài Phạm vi (OUT OF SCOPE for MVP)**:
+   - Việc phục hồi toàn bộ dự án kèm các file audio blob nhị phân sau khi tắt hoàn toàn ứng dụng (Full Application Restart Project Restoration) **NẰM NGOÀI PHẠM VI MVP** (tuân thủ nguyên tắc Task/Session-based workflow của VoxLab). Khi khởi động lại ứng dụng, workspace mở ra ở trạng thái sạch sẽ với các cấu hình preference (giọng đọc, provider, ngôn ngữ) được giữ nguyên vẹn.
+
+### 16.6 Chính Sách Phân Tích Cú Pháp Phụ Đề & Chuẩn Hóa Speaker WebVTT (.SRT / .VTT Parser)
+
+1. **Chuẩn hóa Ký tự Xuống dòng**: Tự động chuyển đổi `\r\n` (CRLF) và `\r` (CR) về `\n` (LF) thống nhất.
+2. **Bóc tách Timestamps Chính xác**:
+   - SubRip (`.srt`): `00:01:23,456 --> 00:01:25,789`.
+   - WebVTT (`.vtt`): `00:01:23.456 --> 00:01:25.789` hoặc `01:23.456 --> 01:25.789`.
+   - Quy đổi sang số thực giây với độ chính xác 3 chữ số thập phân (`toFixed(3)`).
+3. **Quy tắc Chuẩn Hóa Nhãn Người Nói WebVTT (WebVTT Speaker Normalization Semantics)**:
+   - Cú pháp WebVTT hỗ trợ thẻ gán giọng thoại dạng `<v SpeakerName>Nội dung câu nói` hoặc `<v SpeakerName>Nội dung</v>`.
+   - **Quy tắc Chuẩn hóa Bắt buộc**:
+     - Hệ thống **CHUẨN HÓA THÀNH DẠNG TEXT**: `"SpeakerName: Nội dung câu nói"`.
+     - **Mục đích**: Bảo toàn 100% ngữ nghĩa thông tin người nói (ai đang nói câu gì) ngay trong chuỗi văn bản kịch bản mà **KHÔNG CẦN THÊM TRƯỜNG `speaker` VÀO SCHEMA `OriginalCue`** (giữ schema tối giản, ổn định và bất biến).
+     - **Ngữ nghĩa Lồng tiếng MVP**: Trong phạm vi MVP, dự án lồng tiếng sử dụng Single Project Voice (1 giọng đọc duy nhất cho toàn dự án). Nhãn người nói sau khi chuẩn hóa vào text sẽ được phát âm như một phần của kịch bản, trừ khi người dùng chủ động xóa hoặc chỉnh sửa trong cột Dịch (Translated text).
+4. **Quy tắc Bảo toàn Ngữ Nghĩa & Lọc Bỏ Thẻ Trình Diễn (Markup Stripping)**:
+   - **BẢO TOÀN 100% NỘI DUNG NGỮ NGHĨA (SEMANTIC TEXT)**:
+     - Nhãn người nói dạng văn bản (ví dụ `Người dẫn chuyện:`, `[Alice]:`, `Speaker 1:`) được giữ nguyên vẹn.
+     - Các dấu câu, dấu ngoặc, dấu gạch ngang phân đoạn thoại trong câu được giữ nguyên vẹn.
+   - **CHỈ LỌC BỎ CÁC THẺ TRÌNH DIỄN (PRESENTATION MARKUP TAGS)**:
+     - Thẻ HTML/XML: `<b>`, `</b>`, `<i>`, `</i>`, `<u>`, `</u>`, `<font ...>`, `</font>`, `<color ...>`, `</color>`, `<c.class>`, `</c>`, `<ruby>`, `<rt>`.
+     - Thẻ mốc thời gian nội tuyến WebVTT: `<00:00:00.000>`.
+5. **Xử lý Lỗi Tường minh (Actionable Error Handling)**:
+   - Nếu file rỗng, không chứa mốc thời gian hợp lệ, hoặc sai cấu trúc $\rightarrow$ Hệ thống hiển thị hộp thoại lỗi thân thiện: *"Không thể đọc file phụ đề: Định dạng thời gian không hợp lệ hoặc file không có nội dung. Vui lòng kiểm tra lại file .SRT hoặc .VTT."*
+
+### 16.7 Mô Hình Bộ Nhớ Làm Việc Dự Án Dài & Kiểm Soát Bộ Nhớ Thực Tế (Working Buffer Memory Model)
+
+1. **Mô Hình Bộ Nhớ Làm Việc Thực Tế khi Xuất Master WAV (Realistic Working Buffer Model)**:
+   - Định dạng Master WAV Canonical: 44,100 Hz, 16-bit Signed Linear PCM, Mono.
+   - **Dung lượng file âm thanh đích (Output Int16 Buffer)**:
+     $$\text{Dung lượng (1 giờ)} = 3600 \text{ s} \times 44100 \times 2 \approx 317.5 \text{ MB}$$
+     $$\text{Dung lượng (2 giờ)} = 7200 \text{ s} \times 44100 \times 2 \approx 635.0 \text{ MB}$$
+   - **Phân tích Đỉnh Chiếm Dụng RAM (Peak RAM Usage Breakdown)**:
+     Trong quá trình lắp ráp (assembly) và xuất Master WAV, bộ nhớ làm việc của tiến trình WebView2 (Chromium) không chỉ chứa file đích, mà bao gồm đồng thời 4 thành phần:
+     1. **Mảng Float32 AudioBuffer nguồn**: Các đoạn thoại đã sinh và co giãn WSOLA được lưu trong bộ nhớ dưới dạng `AudioBuffer` (chuẩn Web Audio sử dụng Float32, tức 4 bytes/mẫu). Đối với dự án 120 phút, nếu tổng thời lượng phát âm thực tế chiếm khoảng 50% - 80% timeline, mảng Float32 này chiếm khoảng:
+        $$\text{Float32 Segments} \approx (7200 \times 0.7) \times 44100 \times 4 \approx 889 \text{ MB RAM}$$
+     2. **Mảng Master Buffer Đích (Int16Array)**: Buffer liên tục chứa toàn bộ timeline 120 phút ở 44.1kHz 16-bit:
+        $$\text{Master Int16} = 7200 \times 44100 \times 2 \approx 635 \text{ MB RAM}$$
+     3. **Buffer Tạm Cho Quá Trình Xử Lý Âm Thanh (Temporary Processing Buffers)**: Buffer tạm thời phục vụ thuật toán WSOLA, downmix Stereo $\rightarrow$ Mono, và OfflineAudioContext resampling: chiếm thêm khoảng **100 MB – 250 MB RAM**.
+     4. **Đối tượng Blob & Object URL khi Đóng Gói File**: Khi gọi `new Blob([int16MasterBuffer.buffer], { type: "audio/wav" })`, trình duyệt Chromium có thể giữ một bản sao bộ nhớ của payload cho tới khi hoàn tất tải file về đĩa và thu hồi URL: chiếm thêm khoảng **635 MB RAM**.
+   - **Tổng Đỉnh RAM Tiêu Thụ Thực Tế (Estimated Peak RAM)**:
+     $$\text{Peak RAM (120 phút)} \approx 889 \text{ MB} + 635 \text{ MB} + 200 \text{ MB} + 635 \text{ MB} \approx \mathbf{2.36 \text{ GB RAM}}$$
+     Trong môi trường Windows 64-bit với WebView2, mức tiêu thụ 2.0GB - 2.5GB RAM là cận trên chấp nhận được nhưng tiềm ẩn nguy cơ cao nếu máy tính của người dùng bị giới hạn RAM hoặc chạy đa nhiệm nặng.
+2. **Trần Hỗ Trợ Dự Kiến Cho MVP (Provisional Cap for MVP)**:
+   - Ngưỡng hỗ trợ danh định tối đa cho một phiên xuất Master WAV là **`120 phút` (2 giờ)**.
+3. **Cơ Chế Kiểm Tra Dung Lượng Trước Khi Cấp Phát (Pre-flight Memory Check Policy)**:
+   - Trước khi bắt đầu tiến trình cấp phát bộ nhớ lắp ráp Master WAV, hàm kiểm tra an toàn `preflightMemoryCheck(totalDurationSec)` được kích hoạt:
+     - **Mức Cảnh Báo ($> 60$ phút và $\le 120$ phút)**:
+       Hiển thị thông báo lưu ý người dùng: *"Dự án dài (> 60 phút) sẽ tiêu tốn khoảng 1.0GB - 2.0GB RAM trong lúc ghép nối âm thanh. Hãy đảm bảo máy tính còn đủ bộ nhớ trống."*
+     - **Mức Từ Chối Tuyệt Đối ($> 120$ phút hoặc Dung Lượng Master $> 635$ MB)**:
+       Hệ thống lập tức **TỪ CHỐI TIẾN TRÌNH XUẤT** và hiển thị hộp thoại cảnh báo an toàn:
+       *"Dự án vượt quá giới hạn thời lượng 120 phút cho một lần xuất âm thanh. Vui lòng chia nhỏ dự án để đảm bảo an toàn bộ nhớ và hiệu năng hệ thống."*
+       Tuyệt đối không để ứng dụng bị crash im lặng (silent crash) hay sập WebView do tràn bộ nhớ (OOM).
+4. **Yêu Cầu Đo Đạc Thực Nghiệm (Empirical Benchmark Requirement)**:
+   - Trong giai đoạn triển khai và kiểm thử, nhóm kỹ thuật **BẮT BUỘC** thực hiện benchmark đo đạc mức tiêu thụ RAM thực tế và thời gian xử lý trên môi trường Windows WebView2 ở 3 mốc thời lượng:
+     1. Mốc ngắn: **`30 phút`** (Kỳ vọng: Peak RAM < 700 MB, hoạt động cực kỳ mượt mà).
+     2. Mốc trung bình: **`60 phút`** (Kỳ vọng: Peak RAM < 1.3 GB, ổn định trên mọi máy cấu hình tiêu chuẩn).
+     3. Mốc trần: **`120 phút`** (Đo đạc chính xác đỉnh RAM, GC latency và tính ổn định trước khi xác nhận ngưỡng 120 phút là an toàn tuyệt đối).
+
+### 16.8 Lắp Ráp Master Audio WAV & Điều Kiện Xuất Hợp Lệ (Master Assembly Gate)
+
+1. **Quy trình Kiểm tra Điều kiện Xuất (Export Pre-flight Check)**:
+   - Bước 1: Kiểm tra 100% các câu dịch phải có trạng thái audio là `Ready`. Nếu có câu `Failed`, `Pending`, `Generating`, `Modified` hoặc `needs_generation` $\rightarrow$ Chặn xuất và chỉ rõ danh sách câu chưa hoàn tất.
+   - Bước 2: Kiểm tra va chạm âm thanh (`collision_danger`):
+     - Nếu phát hiện **BẤT KỲ CÂU NÀO** có `hasCollision === true` $\rightarrow$ **CHẶN XUẤT MASTER WAV**, hiển thị thông báo:
+       *"Không thể xuất âm thanh tổng: Phát hiện va chạm âm thanh tại câu #{index}. Vui lòng rút gọn câu dịch hoặc tạo lại âm thanh trước khi xuất."*
+   - Bước 3: Kiểm tra giới hạn bộ nhớ qua `preflightMemoryCheck`: Dự án phải $\le 120$ phút.
+2. **Quy trình Lắp ráp**:
+   - Khi vượt qua toàn bộ 3 bước kiểm tra trên, hệ thống khởi tạo buffer 44.1kHz 16-bit PCM Mono.
+   - Lần lượt ghi từng đoạn `fittedAudio` vào đúng vị trí mẫu `sampleOffset = Math.round(cue.startSec * 44100)`.
+   - Các khoảng cách giữa các câu tự động là khoảng lặng âm thanh hoàn hảo (giá trị 0).
+   - Đóng gói container RIFF WAVE và xuất file `.wav` hoàn chỉnh.
+
+### 16.9 Cấu trúc Cài đặt Tập trung & Migration Dữ liệu Bền vững
+
+1. **Tách biệt Storage Keys**:
+   - `voxlab_subtitle_settings`: Chỉ chứa cài đặt ASR và hiển thị phụ đề (`audioLanguage`, `whisperModel`, `speechSpeed`, `processingSpeed`, `aspectRatio`, `maxLines`).
+   - `voxlab_translation_settings`: Chứa cài đặt dịch thuật (`targetLanguage`, `translationProviderId`, `customModels`, `autoTranslate`).
+2. **Quy trình Tự động Migration khi Khởi động**:
+   - Hàm `migrateSubtitleAndTranslationSettings()` kiểm tra `voxlab_subtitle_settings`:
+     - Tự động di chuyển `customModels`, `translationProviderId`, `targetLanguage` sang `voxlab_translation_settings`.
+     - Dọn sạch các trường dịch thuật ra khỏi `voxlab_subtitle_settings`.
+     - Đảm bảo toàn bộ custom model và provider user đã cấu hình trước đây không bị mất.
+3. **Loại bỏ Trang Trùng lặp**:
+   - Xóa bỏ mục `"transcription"` trong danh sách `SettingsGroup` của [SettingsWorkspace.tsx](file:///f:/Source%20Code%20Tool/Voxlab/src/views/SettingsWorkspace.tsx).
+   - Nếu user đang lưu `activeGroup === "transcription"`, tự động fallback sang `"translation"`.
+   - Loại bỏ mục cấu hình Tỷ lệ khung hình thừa tại `Settings > General`.
+
+### 16.10 Xử lý Lỗi, Hủy bỏ & Phục hồi Phiên làm việc
+
+1. **Cô lập Lỗi (Failure Isolation)**:
+   - Khi dịch một cue thất bại: Gắn cờ lỗi `status: "failed"`, hiển thị thông báo lỗi riêng, không làm dừng toàn bộ mảng cue khác.
+   - Khi sinh audio một cue bị lỗi: Hàng đợi cho phép người dùng chọn **`[Thử lại]`** riêng câu đó hoặc bỏ qua.
+2. **Kiểm soát Hàng đợi**: Hỗ trợ đầy đủ Pause, Resume, Cancel trong suốt quá trình sinh âm thanh lồng tiếng.
+
+### 16.11 Quy Tắc Làm Chậm ASR & Ánh Xạ Ngược Mốc Thời Gian (ASR Slow-Down & Strict Reverse Timestamp Mapping)
+
+1. **Phạm vi Áp dụng Duy nhất của "Tốc độ giọng nói"**:
+   - Setting *"Tốc độ giọng nói"* (`speechSpeed`: `1.0x` Bình thường, `0.9x` Giọng nhanh, `0.8x` Giọng rất nhanh) trong Right Panel Phụ đề **CHỈ ĐƯỢC ÁP DỤNG CHO PIPELINE ASR** nhằm hỗ trợ Whisper nhận diện tốt hơn các đoạn audio có tốc độ nói quá nhanh.
+   - Không được áp dụng setting này vào pipeline Dubbing hoặc TTS.
+2. **Quy trình Xử lý & Ánh xạ Ngược Bắt buộc (Strict Reverse Remapping Pipeline)**:
+   - **Bước 1**: Khi `speechSpeed < 1.0` (ví dụ `0.9x` hoặc `0.8x`), audio đầu vào được time-stretch/resample chậm lại trước khi nạp vào faster-whisper.
+   - **Bước 2**: faster-whisper tạo ra các phân đoạn (`segments`) và mốc thời gian từ (`words`) trên timeline âm thanh đã bị kéo chậm.
+   - **Bước 3 (BẮT BUỘC)**: Toàn bộ mốc thời gian (`startSec`, `endSec`, `word.startSec`, `word.endSec`) **BẮT BUỘC PHẢI ĐƯỢC QUY ĐỔI NGƯỢC VỀ TIMELINE CỦA MEDIA GỐC** trước khi chuyển sang bước tiếp theo:
+     $$\text{original\_time} = \text{processed\_time} \times \text{speed\_factor}$$
+     - Sử dụng hàm tất định [`remapWhisperOutputToOriginalTimeline(segments, speedFactor)`](file:///f:/Source%20Code%20Tool/Voxlab/src/services/subtitle/timing.ts#L22).
+   - **Bước 4**: Subtitle Optimizer (chia dòng, gộp ngắt, tỷ lệ khung hình) **BẮT BUỘC** chỉ nhận dữ liệu `word timestamps` và `speech units` đã nằm trên timeline gốc.
+3. **Các Điều Kiện Ràng Buộc Bất Biến (Hard Invariants)**:
+   - **Đồng nhất với Media Gốc**: Mọi mốc thời gian `startSec` và `endSec` hiển thị trên UI, xuất ra file `.srt`, `.vtt` hoặc handoff sang Dịch & Lồng tiếng **PHẢI LUÔN KHỚP 100% VỚI VIDEO/AUDIO GỐC**.
+   - **Tuyệt đối không để rò rỉ (No Leaked Timestamps)**: Tuyệt đối không để bất kỳ timestamp nào của audio đã slow-down lọt vào kết quả cuối cùng của subtitle.
+   - **Identity Mapping tại 1.0x**: Khi `speechSpeed === 1.0`, hàm ánh xạ trả về nguyên vẹn mốc thời gian mà không làm tròn hay suy hao (`Math.abs(speedFactor - 1.0) < 0.0001 -> return processedSec`).
+4. **Bảng Đối Chiếu Số Học Kiểm Thử (Verification Test Vectors)**:
+   - *Trường hợp 1.0x (Identity)*: Audio gốc $10.000\text{s} \rightarrow 15.000\text{s}$; ASR $10.000\text{s} \rightarrow 15.000\text{s}$; Output: $10.000\text{s} \rightarrow 15.000\text{s}$.
+   - *Trường hợp 0.9x (Giọng nhanh)*: Audio gốc $10.000\text{s} \rightarrow 15.000\text{s}$; Audio chạy Whisper $11.111\text{s} \rightarrow 16.667\text{s}$; Ánh xạ ngược: $11.111 \times 0.9 = 10.000\text{s}$, $16.667 \times 0.9 = 15.000\text{s}$. Output: $10.000\text{s} \rightarrow 15.000\text{s}$.
+   - *Trường hợp 0.8x (Giọng rất nhanh)*: Audio gốc $10.000\text{s} \rightarrow 15.000\text{s}$; Audio chạy Whisper $12.500\text{s} \rightarrow 18.750\text{s}$; Ánh xạ ngược: $12.500 \times 0.8 = 10.000\text{s}$, $18.750 \times 0.8 = 15.000\text{s}$. Output: $10.000\text{s} \rightarrow 15.000\text{s}$. **Cấm tuyệt đối xuất $12.500\text{s} \rightarrow 18.750\text{s}$**.
+
+### 16.12 Kiến Trúc Tùy Biến Tham Số Hiệu Năng (Configurable Performance & Tuning Architecture)
+
+Nhằm tuân thủ nguyên tắc không tối ưu hóa sớm (Avoid Premature Optimization), hệ thống thiết kế kiến trúc cấu hình mở cho các tham số thực thi:
+
+1. **Không Hard-code Cố định**: Không gán chết các thông số nhạy cảm về phần cứng trong mã nguồn nghiệp vụ.
+2. **Cấu hình Động & Khả Năng Benchmark (Tunable Execution Parameters)**:
+   - `ttsBatchSize`: Số câu xử lý trong một đợt (Default: 10, cấu hình được từ 1 đến 50).
+   - `ttsConcurrency`: Số luồng request song song (Default: 1 để an toàn, mở rộng được theo provider).
+   - `workerCount`: Số tiến trình worker backend (tự động phát hiện theo số luồng CPU/GPU).
+   - `queueParallelism`: Số tác vụ hàng đợi chạy song song (Default: 1).
+   - `chunkSize`: Độ dài khối văn bản phân đoạn (Default: 200 ký tự, cấu hình được).
+   - `modelUnloadTimeoutSec`: Thời gian chờ trước khi giải phóng model khỏi VRAM/RAM (Default: 300s).
+3. **Mục đích**: Toàn bộ các thông số này có thể dễ dàng đo đạc, benchmark trong giai đoạn kiểm thử hiệu năng và điều chỉnh linh hoạt theo từng cấu hình máy tính mà không phải can thiệp sâu vào code logic.
+
+---
+
+## 17. Acceptance Criteria (Bổ sung cho Đợt Tái cấu trúc v2.5.3)
+
+### AC-16: Main Sidebar & Workspace Navigation
+- [ ] Main Sidebar hiển thị đầy đủ 7 mục theo đúng thứ tự: *Text to Speech, Voice Clone, Voice Library, Phụ đề, Dịch & Lồng tiếng, Lịch sử, Cài đặt*.
+- [ ] Bấm chọn `Dịch & Lồng tiếng` $\rightarrow$ Ứng dụng chuyển sang workspace `dubbing` mượt mà, lưu trạng thái vào `voxlab_active_workspace`.
+- [ ] Tắt và mở lại ứng dụng $\rightarrow$ Workspace đang mở được khôi phục chính xác.
+
+### AC-17: Tab Phụ đề — Single Responsibility & Cài đặt Phụ đề
+- [ ] Tab Phụ đề không còn bất kỳ ô nhập, dropdown hay nút bấm nào liên quan đến dịch thuật.
+- [ ] Right Panel được đổi tên thành **"CÀI ĐẶT PHỤ ĐỀ"**, chứa đủ 2 nhóm: *Nhận diện* (đổi setting $\rightarrow$ invalidate ASR) và *Hiển thị* (đổi Tỷ lệ khung hình/Số dòng $\rightarrow$ re-run optimizer từ word timestamps, không chạy lại Whisper).
+- [ ] Tại màn hình Kết quả, nút cũ "Chuyển sang TTS" được thay bằng **`[Chuyển sang Dịch & Lồng tiếng ➔]`**.
+
+### AC-18: Handoff Bất biến từ Phụ đề sang Dịch & Lồng tiếng
+- [ ] Bóc băng xong ở tab Phụ đề $\rightarrow$ Bấm `[Chuyển sang Dịch & Lồng tiếng ➔]` $\rightarrow$ Ứng dụng tự động chuyển sang tab Dịch & Lồng tiếng với toàn bộ danh sách cues gốc và timestamps được nạp đầy đủ.
+- [ ] Tại tab Dịch & Lồng tiếng, chỉnh sửa nội dung câu dịch hoặc sinh audio $\rightarrow$ Quay lại tab Phụ đề: Toàn bộ danh sách cue gốc của tab Phụ đề vẫn giữ nguyên 100%, không bị mutate.
+
+### AC-19: Nhập File Phụ đề Cục bộ (.SRT / .VTT)
+- [ ] Tại tab Dịch & Lồng tiếng, bấm `[Nhập file phụ đề]` và chọn file `.srt` chuẩn $\rightarrow$ Parser đọc chính xác số thứ tự, mốc thời gian và text, nạp thành công vào bảng Cues.
+- [ ] Chọn file `.vtt` chuẩn $\rightarrow$ Parser xử lý đúng dấu chấm mili-giây, bỏ qua header `WEBVTT` và nạp cues chính xác.
+
+### AC-20: Cấu hình Provider Tập trung & Deep-link Actionable
+- [ ] Tab Dịch & Lồng tiếng tuyệt đối không hiển thị ô nhập API Key hay server endpoint.
+- [ ] Chọn Provider là Gemini nhưng chưa có API Key trong Settings $\rightarrow$ Hiển thị badge cảnh báo kèm nút `[Cấu hình trong Settings]`.
+- [ ] Bấm nút `[Cấu hình trong Settings]` $\rightarrow$ Ứng dụng chuyển ngay sang `Settings > Translation`. Sau khi nhập key và quay lại tab Dịch, Provider tự động cập nhật sang trạng thái sẵn sàng.
+
+### AC-21: Bố cục Review / Edit 2 Cột Song song
+- [ ] Giao diện Review hiển thị rõ ràng 2 cột: Cột trái là Cue gốc (Read-only); Cột phải là Cue dịch (Inline editable).
+- [ ] Người dùng sửa text câu dịch $\rightarrow$ Text mới được lưu, cue được đánh dấu `isEdited: true`. Nếu câu đó đã có audio từ trước, audio chuyển sang trạng thái cần tạo lại (`Modified`).
+
+### AC-22: Timing Fit — WSOLA Speedup Semantics, Overflow vs Collision Danger & Export Blocking
+- [ ] **Quy tắc Co giãn Tốc độ WSOLA**: Khi thời lượng âm thanh thô `rawDuration` vượt quá thời lượng khả dụng của cue `availableDuration`:
+  - Hệ thống tính toán hệ số tăng tốc: `speedFactor = Math.min(rawDuration / availableDuration, 1.20)`.
+  - Áp dụng `timeStretchAudioBuffer` tăng tốc tối đa $1.20\times$ (giảm thời lượng xuống tối đa $\frac{\text{rawDuration}}{1.20}$).
+- [ ] **Trường hợp Overflow không Va chạm (`overflow_only`)**: Sau khi co giãn WSOLA (hoặc không cần co giãn), câu dịch phát âm dài hơn thời lượng cue gốc nhưng kết thúc trước hoặc đúng thời điểm bắt đầu của câu kế tiếp (`audioEndSec <= nextCue.startSec`) $\rightarrow$ Hiển thị nhãn cảnh báo vàng trên UI; nút **`[Xuất Audio Lồng tiếng (.WAV)]` VẪN KHẢ DỤNG** và cho phép xuất bình thường.
+- [ ] **Trường hợp Va chạm Âm thanh (`collision_danger`)**: Câu dịch phát âm dài hơn thời điểm bắt đầu của câu kế tiếp (`audioEndSec > nextCue.startSec`) $\rightarrow$ Hiển thị nhãn cảnh báo đỏ; nút **`[Xuất Audio Lồng tiếng (.WAV)]` BỊ KHÓA HOÀN TOÀN**; khi bấm vào hiển thị hướng dẫn người dùng rút ngắn câu dịch hoặc tạo lại audio.
+- [ ] Tuyệt đối không tự ý mix chồng 2 giọng nói, không tự ý cắt ngắn audio, và không tự ý dời (ripple-shift) timestamp của các cue tiếp theo.
+- [ ] Dù có `collision_danger`, nút **`[Xuất Phụ đề Đã dịch (.SRT)]` VẪN HOẠT ĐỘNG BÌNH THƯỜNG** và xuất file SRT sử dụng mốc thời gian gốc.
+
+### AC-23: Lắp ráp Master Audio WAV & Xuất SRT Chuẩn Timestamps Gốc
+- [ ] Khi không còn câu nào bị va chạm (`collision_danger`), bấm `[Xuất Audio Lồng tiếng (.WAV)]` $\rightarrow$ Hệ thống lắp ráp các đoạn audio đã fit vào đúng vị trí `startSec` trên timeline, chèn khoảng lặng tự nhiên giữa các câu, tạo file WAV hoàn chỉnh nghe khớp với video gốc.
+- [ ] Bấm `[Xuất Phụ đề Đã dịch (.SRT)]` $\rightarrow$ File SRT được tạo ra chứa nội dung câu dịch với **chính xác các mốc thời gian `startSec` và `endSec` của subtitle gốc**.
+
+### AC-24: Loại bỏ Trùng lặp Settings & Migration An toàn
+- [ ] Mục `Settings > Phụ đề` biến mất hoàn toàn khỏi danh sách cài đặt; không còn hiện tượng trùng lặp cấu hình.
+- [ ] Cấu hình phụ đề user đã lưu từ các phiên bản trước được bảo toàn trọn vẹn tại Right Panel của Tab Phụ đề.
+- [ ] Các model dịch custom và API keys đã lưu trước đây không bị mất mát trong quá trình chuyển đổi.
+
+### AC-25: Kiểm soát Hàng đợi TTS (Pause, Resume, Cancel)
+- [ ] Đang trong tiến trình lồng tiếng $\rightarrow$ Bấm `[Tạm dừng]` $\rightarrow$ Hàng đợi dừng an toàn.
+- [ ] Bấm `[Tiếp tục]` $\rightarrow$ Hàng đợi chạy tiếp từ câu tiếp theo.
+- [ ] Bấm `[Hủy bỏ]` $\rightarrow$ Hàng đợi dừng hoàn toàn, các câu đã sinh xong trước đó vẫn giữ nguyên trạng thái `Ready` và nghe thử được bình thường.
+
+### AC-26: Translation Cue Invariant 1:1 & Response Validation
+- [ ] Mọi job dịch thuật bắt buộc phải bảo toàn 100%: số lượng câu, chỉ số index, thứ tự câu, và mốc thời gian `startSec`/`endSec`.
+- [ ] Giả lập Provider trả về thiếu câu, thừa câu, đảo lộn thứ tự hoặc text rỗng $\rightarrow$ Hàm `validateTranslationResponse1to1` lập tức phát hiện và từ chối commit vào state dự án, hiển thị thông báo lỗi tường minh, không làm hỏng dữ liệu phụ đề gốc.
+
+### AC-27: Canonical Dub Audio Format Enforcement
+- [ ] Toàn bộ các đoạn `DubAudioSegment` và file Master WAV xuất ra đều tuân thủ chính xác định dạng Canonical: 44,100 Hz, 16-bit Linear PCM, 1 kênh Mono.
+- [ ] Nếu âm thanh đầu vào là Stereo $\rightarrow$ Tự động chuyển đổi thành Mono bằng trung bình cộng 2 kênh.
+- [ ] Nếu âm thanh đầu vào có sample rate khác 44.1kHz (ví dụ 24kHz hoặc 48kHz) $\rightarrow$ Tự động resample về 44.1kHz trước khi ghép master.
+
+### AC-28: Lightweight Session Persistence & Deterministic Reload Behavior
+- [ ] Người dùng chọn giọng đọc dự án, provider và ngôn ngữ đích $\rightarrow$ Thoát ứng dụng và mở lại: Các tùy chọn preference này được khôi phục chính xác 100% từ `localStorage`.
+- [ ] `sessionStorage` **tuyệt đối không chứa `AudioBuffer`, `Blob`, hay dữ liệu nhị phân**; chỉ chứa dữ liệu JSON gọn nhẹ (`OriginalCue[]`, `TranslatedCue[]` kèm chỉnh sửa `isEdited: true`, metadata va chạm và trạng thái tiến độ).
+- [ ] Người dùng reload webview (F5) $\rightarrow$ Toàn bộ kịch bản và câu dịch được phục hồi 100%; các câu đã sinh audio được chuyển trạng thái tất định về **`needs_generation`**; hiển thị thông báo nhắc người dùng bấm nút tạo lại âm thanh khi sẵn sàng.
+- [ ] Thoát hẳn ứng dụng (Restart app) $\rightarrow$ Workspace Dịch & Lồng tiếng mở ra ở trạng thái sẵn sàng sạch sẽ, không gây lỗi treo hay cố gắng load lại các audio blob đã hết hạn.
+
+### AC-29: SRT/VTT WebVTT Speaker Normalization & Markup Stripping
+- [ ] Cú pháp WebVTT có thẻ người nói `<v SpeakerName>Nội dung câu nói` $\rightarrow$ Tự động chuẩn hóa thành chuỗi text `"SpeakerName: Nội dung câu nói"` trong `OriginalCue.text`, bảo toàn thông tin người nói mà không thêm trường schema thừa; phát âm bằng Single Project Voice của MVP.
+- [ ] Nhập file `.srt` hoặc `.vtt` có nhãn người nói dạng text thông thường (ví dụ `Speaker 1: Xin chào`, `[Alice]: Hello`) $\rightarrow$ Nội dung nhãn người nói được giữ nguyên vẹn 100% trong `OriginalCue.text`.
+- [ ] Nhập file có thẻ định dạng HTML/VTT (ví dụ `<b>đậm</b>`, `<font color="red">chữ đỏ</font>`) $\rightarrow$ Hệ thống lọc sạch các thẻ trình diễn, giữ lại nội dung văn bản thuần túy.
+- [ ] Nhập file rỗng hoặc sai cú pháp thời gian $\rightarrow$ Hệ thống báo lỗi thân thiện, không làm sập ứng dụng.
+
+### AC-30: Long Project Memory Pre-flight Guardrail & Empirical Benchmarks
+- [ ] Dự án dài $> 60$ phút và $\le 120$ phút: Hiển thị thông báo lưu ý người dùng về mức chiếm dụng RAM dự kiến (1.0GB - 2.0GB).
+- [ ] Dự án có tổng thời lượng $\le 120$ phút $\rightarrow$ Quá trình xuất Master WAV diễn ra bình thường, tạo file WAV hợp lệ.
+- [ ] Dự án có tổng thời lượng vượt quá 120 phút (hoặc master buffer $> 635$ MB) $\rightarrow$ Hàm `preflightMemoryCheck` lập tức từ chối cấp phát bộ nhớ, hiển thị thông báo lỗi an toàn yêu cầu chia nhỏ dự án, ngăn chặn hoàn toàn nguy cơ sập WebView do Out-Of-Memory.
+- [ ] **Empirical Benchmark Requirement**: Nhóm phát triển phải thực hiện đo đạc thực nghiệm mức chiếm dụng RAM và hiệu năng thực tế tại các mốc 30 phút, 60 phút, và 120 phút trên môi trường Windows WebView2 trong giai đoạn Verification.
+
+### AC-31: ASR Speed Slow-Down & Strict Reverse Timestamp Mapping (1.0x / 0.9x / 0.8x)
+- [ ] Cài đặt "Tốc độ giọng nói" trong Cài đặt Phụ đề chỉ áp dụng cho pipeline ASR (làm chậm audio để Whisper nhận diện tốt hơn), không ảnh hưởng đến pipeline Dubbing.
+- [ ] Khi chọn `1.0x` (Bình thường) $\rightarrow$ Hàm `remapWhisperOutputToOriginalTimeline` thực hiện Identity Mapping, giữ nguyên 100% timestamps thô từ Whisper.
+- [ ] Khi chọn `0.9x` hoặc `0.8x` $\rightarrow$ Audio được time-stretch/resample chậm trước khi chạy Whisper. Timestamps trả về từ Whisper được quy đổi ngược về timeline gốc theo công thức $\text{original\_time} = \text{processed\_time} \times \text{speedFactor}$.
+- [ ] Kiểm thử trường hợp cụ thể: Audio 0.8x có segment từ $12.500\text{s} \rightarrow 18.750\text{s}$ được quy đổi chính xác thành $10.000\text{s} \rightarrow 15.000\text{s}$. Tuyệt đối không để timestamp của audio slow-down rò rỉ vào kết quả subtitle.
+- [ ] Cues hiển thị, Subtitle Optimizer và file SRT/VTT xuất ra luôn luôn đồng bộ chính xác với video/audio gốc.
+
+### AC-32: Configurable Performance Tuning Architecture
+- [ ] Các thông số thực thi như `batchSize`, `concurrency`, `workerCount`, `queueParallelism`, `chunkSize`, và `modelUnloadTimeoutSec` được đóng gói trong cấu hình có thể tùy biến, không bị hard-code cố định trong code nghiệp vụ.
+- [ ] Hệ thống cho phép đo đạc, benchmark độc lập và điều chỉnh linh hoạt theo từng cấu hình phần cứng.
+
+---
+
+## 18. Bảng Đánh Giá Rủi Ro Kỹ Thuật (Technical Risks & Evidence-Based Mitigations)
+
+| # | Rủi ro Kỹ thuật | Mức độ | Bằng chứng Hiện trạng & Biện pháp Giảm thiểu (Mitigation Strategy) |
+|---|---|---|---|
+| 1 | **Va chạm Âm thanh (Audio Collision) khi Ghép Master WAV** | Cao | Đã chốt chính sách cứng tại Mục 16.2: `collision_danger` lập tức khóa nút xuất Master WAV cho tới khi người dùng rút ngắn câu dịch. Không bao giờ mix chồng 2 giọng nói hoặc tự ý dời timeline. |
+| 2 | **Provider trả về Kết quả Dịch Sai Lệch / Mất Cue** | Cao | Thêm tầng kiểm duyệt bắt buộc `validateTranslationResponse1to1` tại Mục 16.3: Nếu số lượng câu, chỉ số index hoặc thứ tự không khớp 1:1, hệ thống từ chối commit dữ liệu sai vào state. |
+| 3 | **Lệch Định dạng Âm thanh (Tần số mẫu / Số kênh)** | Trung bình | Đã chuẩn hóa tại Mục 16.4: Bắt buộc định dạng Canonical 44.1kHz 16-bit Mono. Tự động downmix stereo thành mono và resample về 44.1kHz trước khi ghép master. |
+| 4 | **Tràn Bộ nhớ (OOM) khi Xuất Master WAV Dự án Dài** | Trung bình | Đã mô hình hóa toàn diện tại Mục 16.7 (Peak RAM gồm Float32 segments + Int16 master + temp WSOLA + Blob $\approx 2.36$ GB cho 120 phút): Hàm `preflightMemoryCheck` cảnh báo ở mốc > 60 phút và từ chối an toàn ở mốc > 120 phút; bắt buộc chạy empirical benchmark ở 30/60/120 phút. |
+| 5 | **Tràn Quota SessionStorage (5MB) / Lỗi Stale Audio Blob khi Reload** | Trung bình | Đã giải quyết triệt để tại Mục 16.5: Cấm hoàn toàn lưu AudioBuffer/Blob vào `sessionStorage`; chỉ lưu lightweight JSON; khi reload webview, audio state chuyển tất định sang `needs_generation` để user tạo lại. |
+| 6 | **Mất Nhãn Người Nói khi Import WebVTT** | Thấp | Đã chuẩn hóa tại Mục 16.6: Chuyển đổi `<v Speaker>Text` thành `"Speaker: Text"`, bảo toàn ngữ nghĩa thoại mà không phá vỡ schema `OriginalCue`. |
+| 7 | **Mất mát cấu hình Custom Models & API Keys khi Migrate** | Cao | Xây dựng hàm `migrateSubtitleAndTranslationSettings()` chạy tại bootstrap app, sao chép an toàn dữ liệu sang `voxlab_translation_settings` trước khi dọn sạch key cũ. |
+| 8 | **Lệch Timestamps khi ASR Chạy Chế Độ Giọng Nhanh (0.8x / 0.9x)** | Cao | Đã quy định bắt buộc tại Mục 16.11: Áp dụng hàm toán học quy đổi ngược tất định `original_time = processed_time * speed_factor` trước khi nạp vào Subtitle Optimizer; cam kết 100% khớp timeline media gốc. |
+
+---
+
+### KẾT LUẬN & PHÊ DUYỆT GATE B
+
+Tài liệu `SPEC.md` v2.5.3 đã hoàn thiện trọn vẹn toàn bộ các yêu cầu kỹ thuật và đã được **CHÍNH THỨC PHÊ DUYỆT TẠI GATE B**.
+Hệ thống chính thức chuyển tiếp sang **Phase 4: `/plan`** (Lập kế hoạch triển khai chi tiết và task breakdown).

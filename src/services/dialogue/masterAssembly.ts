@@ -1,0 +1,172 @@
+import { DialogueSegment, DialogueGlobalSettings } from "../../types/dialogue";
+
+export interface DialogueTimelineEntry {
+  segmentId: string;
+  index: number;
+  characterName: string;
+  characterId: string;
+  text: string;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  pauseAfterSec: number;
+}
+
+export interface DialogueAssemblyPlan {
+  timeline: DialogueTimelineEntry[];
+  totalDurationSec: number;
+}
+
+/**
+ * Computes exact start and end timestamps for every dialogue segment
+ * applying natural turn-taking pauses when switching speakers.
+ */
+export function calculateDialogueTimeline(
+  segments: DialogueSegment[],
+  settings: DialogueGlobalSettings
+): DialogueAssemblyPlan {
+  const timeline: DialogueTimelineEntry[] = [];
+  let currentCursorSec = 0;
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    // Default estimated duration if audio not yet synthesized (approx 4 words per second)
+    const segmentDuration =
+      typeof seg.durationSec === "number" && seg.durationSec > 0
+        ? seg.durationSec
+        : Math.max(1.0, (seg.cleanText.split(/\s+/).length || 1) / 3.8);
+
+    const startSec = currentCursorSec;
+    const endSec = startSec + segmentDuration;
+
+    // Determine pause after this segment
+    let pauseAfterSec = 0;
+    const isLast = i === segments.length - 1;
+
+    if (!isLast) {
+      const nextSeg = segments[i + 1];
+      if (nextSeg.characterId !== seg.characterId) {
+        // Speaker change turn-taking pause
+        pauseAfterSec = Math.max(0, settings.turnPauseSec);
+      } else {
+        // Same speaker consecutive turn pause
+        pauseAfterSec = Math.max(0, settings.sameSpeakerPauseSec);
+      }
+    }
+
+    timeline.push({
+      segmentId: seg.id,
+      index: i + 1,
+      characterName: seg.characterName,
+      characterId: seg.characterId,
+      text: seg.cleanText,
+      startSec,
+      endSec,
+      durationSec: segmentDuration,
+      pauseAfterSec,
+    });
+
+    currentCursorSec = endSec + pauseAfterSec;
+  }
+
+  return {
+    timeline,
+    totalDurationSec: currentCursorSec,
+  };
+}
+
+/**
+ * Synthesizes a valid standard 16-bit PCM WAV File Blob from AudioBuffers
+ * or synthetic sample buffers for dialogue export.
+ */
+export function encodePcmWav(
+  channelData: Float32Array,
+  sampleRate = 44100,
+  volume = 1.0
+): Blob {
+  const numChannels = 1;
+  const bytesPerSample = 2; // 16-bit
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const sampleCount = channelData.length;
+  const dataSize = sampleCount * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // Helper writing ascii
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  // RIFF Chunk
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+
+  // fmt Subchunk
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true); // BitsPerSample
+
+  // data Subchunk
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  // Write 16-bit signed PCM samples with master volume scaling & soft clipping
+  let offset = 44;
+  for (let i = 0; i < sampleCount; i++) {
+    let s = channelData[i] * volume;
+    // Soft clip limiter
+    if (s > 1.0) s = 1.0;
+    else if (s < -1.0) s = -1.0;
+
+    const sample16 = s < 0 ? Math.floor(s * 0x8000) : Math.floor(s * 0x7fff);
+    view.setInt16(offset, sample16, true);
+    offset += 2;
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+/**
+ * Assembles master audio buffer from segments channel data
+ */
+export function assembleMasterAudioBuffer(
+  segments: DialogueSegment[],
+  settings: DialogueGlobalSettings,
+  sampleRate = 44100
+): { blob: Blob; timeline: DialogueTimelineEntry[]; totalDurationSec: number } {
+  const plan = calculateDialogueTimeline(segments, settings);
+  const totalSamples = Math.max(1, Math.floor(plan.totalDurationSec * sampleRate));
+  const masterSamples = new Float32Array(totalSamples);
+
+  for (let i = 0; i < plan.timeline.length; i++) {
+    const entry = plan.timeline[i];
+    const seg = segments[i];
+
+    const startSample = Math.floor(entry.startSec * sampleRate);
+
+    if (seg.audioBuffer) {
+      const channelData = seg.audioBuffer.getChannelData(0);
+      const copyLen = Math.min(channelData.length, totalSamples - startSample);
+      for (let s = 0; s < copyLen; s++) {
+        masterSamples[startSample + s] = channelData[s];
+      }
+    }
+  }
+
+  const blob = encodePcmWav(masterSamples, sampleRate, settings.masterVolume);
+
+  return {
+    blob,
+    timeline: plan.timeline,
+    totalDurationSec: plan.totalDurationSec,
+  };
+}
