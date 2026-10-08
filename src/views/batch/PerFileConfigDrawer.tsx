@@ -17,6 +17,7 @@ import {
   BatchCollisionPolicy,
   BatchDialogueSnapshot,
 } from "../../types/batch";
+import { useI18n } from "../../i18n/context";
 
 export interface PerFileConfigDrawerProps {
   job: BatchJob;
@@ -38,6 +39,8 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
   onRestoreSnapshot,
 }) => {
   if (!isOpen) return null;
+
+  const { t } = useI18n();
 
   const [activeTab, setActiveTab] = useState<
     "output" | "tts" | "dialogue" | "transcription" | "translation" | "dubbing"
@@ -356,17 +359,14 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
             return (
               <div className="space-y-4">
                 <div className="p-3.5 rounded-xl bg-surface2/60 border border-borderDefault/70 space-y-3">
-                  <div className="flex items-center justify-between text-xs font-semibold text-textPrimary">
-                    <span>Thời gian nghỉ khi đổi nhân vật</span>
-                    <span className="font-mono text-accent text-xs">
-                      {minSec.toFixed(2)}s – {maxSec.toFixed(2)}s
-                    </span>
+                  <div className="text-xs font-semibold text-textPrimary">
+                    {t.inspector.segmentPauseTitle}
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <label className="block text-[11px] font-medium text-textSecondary">
-                        Tối thiểu (Min)
+                        {t.inspector.min}
                       </label>
                       <div className="flex items-center gap-1.5">
                         <input
@@ -378,13 +378,13 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                           onChange={(e) => handleMinChange(parseFloat(e.target.value))}
                           className="w-full bg-surface1 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary text-center focus:border-accent focus:outline-none"
                         />
-                        <span className="text-textMuted text-xs shrink-0">giây</span>
+                        <span className="text-textMuted text-xs shrink-0">{t.inspector.sec}</span>
                       </div>
                     </div>
 
                     <div className="space-y-1">
                       <label className="block text-[11px] font-medium text-textSecondary">
-                        Tối đa (Max)
+                        {t.inspector.max}
                       </label>
                       <div className="flex items-center gap-1.5">
                         <input
@@ -396,14 +396,10 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                           onChange={(e) => handleMaxChange(parseFloat(e.target.value))}
                           className="w-full bg-surface1 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary text-center focus:border-accent focus:outline-none"
                         />
-                        <span className="text-textMuted text-xs shrink-0">giây</span>
+                        <span className="text-textMuted text-xs shrink-0">{t.inspector.sec}</span>
                       </div>
                     </div>
                   </div>
-
-                  <p className="text-[11px] text-textMuted leading-relaxed italic">
-                    Thời gian nghỉ giữa hai nhân vật khác nhau khi đổi lượt nói (khuyên dùng: 0.50–0.60s)
-                  </p>
                 </div>
               </div>
             );

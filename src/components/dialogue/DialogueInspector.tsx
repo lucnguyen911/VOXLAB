@@ -244,63 +244,60 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
             {isPausesOpen && (
               <div className="space-y-3 pt-2">
                 {/* Min-Max Turn Pause Section */}
-                <div className="p-2.5 rounded-lg bg-surface2/60 border border-borderDefault/70 space-y-2">
-                  <div className="flex items-center justify-between text-[11px] font-semibold text-textPrimary">
-                    <span>Thời gian nghỉ khi đổi nhân vật</span>
-                    <span className="text-[10px] font-mono text-accent">
-                      {turnPauseMinSec.toFixed(2)}s – {turnPauseMaxSec.toFixed(2)}s
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {/* Tối thiểu (Min) */}
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-medium text-textSecondary block truncate">
-                        Tối thiểu (Min)
-                      </span>
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          min="0.00"
-                          max="2.00"
-                          step="0.05"
-                          value={turnPauseMinSec}
-                          onChange={(e) =>
-                            handleTurnPauseMinChange(parseFloat(e.target.value))
-                          }
-                          className="w-full h-7 bg-surface1 border border-borderDefault rounded-md px-1 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
-                        />
-                        <span className="text-textMuted text-[10px] shrink-0">s</span>
-                      </div>
-                    </div>
+                <div className="text-[10px] font-semibold text-textMuted uppercase tracking-wider px-0.5 pt-1">
+                  {t.inspector.segmentPauseTitle}
+                </div>
 
-                    {/* Tối đa (Max) */}
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-medium text-textSecondary block truncate">
-                        Tối đa (Max)
+                <div className="grid grid-cols-2 gap-2.5">
+                  {/* Min Pause */}
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-medium text-textSecondary block truncate">
+                      {t.inspector.min}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0.00"
+                        max="2.00"
+                        step="0.05"
+                        value={turnPauseMinSec}
+                        onChange={(e) =>
+                          handleTurnPauseMinChange(parseFloat(e.target.value))
+                        }
+                        className="w-full h-7 bg-surface2 border border-borderDefault rounded-md px-1.5 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
+                      />
+                      <span className="text-textMuted text-[10px] shrink-0">
+                        {t.inspector.sec}
                       </span>
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          min="0.00"
-                          max="2.00"
-                          step="0.05"
-                          value={turnPauseMaxSec}
-                          onChange={(e) =>
-                            handleTurnPauseMaxChange(parseFloat(e.target.value))
-                          }
-                          className="w-full h-7 bg-surface1 border border-borderDefault rounded-md px-1 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
-                        />
-                        <span className="text-textMuted text-[10px] shrink-0">s</span>
-                      </div>
                     </div>
                   </div>
-                  <p className="text-[10px] text-textMuted leading-tight italic">
-                    Thời gian nghỉ giữa hai nhân vật khác nhau khi đổi lượt nói (khuyên dùng: 0.50–0.60s)
-                  </p>
+
+                  {/* Max Pause */}
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-medium text-textSecondary block truncate">
+                      {t.inspector.max}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0.00"
+                        max="2.00"
+                        step="0.05"
+                        value={turnPauseMaxSec}
+                        onChange={(e) =>
+                          handleTurnPauseMaxChange(parseFloat(e.target.value))
+                        }
+                        className="w-full h-7 bg-surface2 border border-borderDefault rounded-md px-1.5 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
+                      />
+                      <span className="text-textMuted text-[10px] shrink-0">
+                        {t.inspector.sec}
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="text-[10px] font-semibold text-textMuted uppercase tracking-wider px-0.5 pt-1">
-                  Nghỉ theo dấu câu
+                  {t.inspector.punctuationPausesTitle}
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5">

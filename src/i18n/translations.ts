@@ -112,6 +112,10 @@ export interface Translations {
     emotionEnergetic: string;
     emotionNotSupported: string;
     pausesTitle: string;
+    segmentPauseTitle: string;
+    min: string;
+    max: string;
+    punctuationPausesTitle: string;
     comma: string;
     period: string;
     questionExclamation: string;
@@ -510,6 +514,10 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       emotionEnergetic: "Sôi nổi",
       emotionNotSupported: "Model {model} sử dụng ngữ điệu chuẩn, không hỗ trợ đổi cảm xúc.",
       pausesTitle: "Ngắt nghỉ",
+      segmentPauseTitle: "Thời gian nghỉ giữa các đoạn",
+      min: "Tối thiểu",
+      max: "Tối đa",
+      punctuationPausesTitle: "Nghỉ theo dấu câu",
       comma: "Dấu phẩy ( , )",
       period: "Dấu chấm ( . )",
       questionExclamation: "Hỏi / Than ( ? ! )",
@@ -907,6 +915,10 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       emotionEnergetic: "Energetic",
       emotionNotSupported: "Model {model} uses standard tone, emotion adjustment not supported.",
       pausesTitle: "Pauses",
+      segmentPauseTitle: "Pause between segments",
+      min: "Min",
+      max: "Max",
+      punctuationPausesTitle: "Punctuation pauses",
       comma: "Comma ( , )",
       period: "Period ( . )",
       questionExclamation: "Question / Exclamation ( ? ! )",
@@ -1304,6 +1316,10 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       emotionEnergetic: "明るい・元気",
       emotionNotSupported: "選択中のモデルは感情トーン変更に対応していません。",
       pausesTitle: "ポーズ設定",
+      segmentPauseTitle: "セグメント間の間隔",
+      min: "最小",
+      max: "最大",
+      punctuationPausesTitle: "句読点によるポーズ",
       comma: "読点 ( 、/ , )",
       period: "句点 ( 。/ . )",
       questionExclamation: "感嘆符 ( ? ! )",
@@ -1701,6 +1717,10 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       emotionEnergetic: "欢快活力",
       emotionNotSupported: "当前模型不支持调整情绪风格。",
       pausesTitle: "停顿设置",
+      segmentPauseTitle: "段落间停顿时间",
+      min: "最小",
+      max: "最大",
+      punctuationPausesTitle: "标点符号停顿",
       comma: "逗号 ( , )",
       period: "句号 ( . )",
       questionExclamation: "问号 / 感叹号 ( ? ! )",
