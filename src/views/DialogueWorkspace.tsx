@@ -74,10 +74,23 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         const model = parsed.model === "Lingual Speech V2" ? "Omni Voice" : (parsed.model || "Omni Voice");
+        const hasExplicitMinMax =
+          typeof parsed.turnPauseMinSec === "number" && typeof parsed.turnPauseMaxSec === "number";
+        const legacyTurnPause =
+          typeof parsed.turnPauseSec === "number" ? parsed.turnPauseSec : undefined;
+        const turnPauseMinSec = hasExplicitMinMax
+          ? parsed.turnPauseMinSec
+          : (legacyTurnPause !== undefined ? legacyTurnPause : DEFAULT_DIALOGUE_SETTINGS.turnPauseMinSec);
+        const turnPauseMaxSec = hasExplicitMinMax
+          ? parsed.turnPauseMaxSec
+          : (legacyTurnPause !== undefined ? legacyTurnPause : DEFAULT_DIALOGUE_SETTINGS.turnPauseMaxSec);
+
         return {
           ...DEFAULT_DIALOGUE_SETTINGS,
           ...parsed,
           model,
+          turnPauseMinSec,
+          turnPauseMaxSec,
           pauses: {
             ...DEFAULT_DIALOGUE_SETTINGS.pauses,
             ...(parsed.pauses || {}),
@@ -370,6 +383,50 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       setMasterSrtContent(null);
     }
   };
+
+  // Re-assemble master audio & sync SRT when pause or volume settings change without re-running TTS
+  const prevSettingsRef = useRef({
+    turnPauseMinSec: settings.turnPauseMinSec,
+    turnPauseMaxSec: settings.turnPauseMaxSec,
+    sameSpeakerPauseSec: settings.sameSpeakerPauseSec,
+    masterVolume: settings.masterVolume,
+    exportSrt: settings.exportSrt,
+  });
+
+  useEffect(() => {
+    const prev = prevSettingsRef.current;
+    const hasPauseOrVolumeChanged =
+      prev.turnPauseMinSec !== settings.turnPauseMinSec ||
+      prev.turnPauseMaxSec !== settings.turnPauseMaxSec ||
+      prev.sameSpeakerPauseSec !== settings.sameSpeakerPauseSec ||
+      prev.masterVolume !== settings.masterVolume ||
+      prev.exportSrt !== settings.exportSrt;
+
+    if (hasPauseOrVolumeChanged) {
+      prevSettingsRef.current = {
+        turnPauseMinSec: settings.turnPauseMinSec,
+        turnPauseMaxSec: settings.turnPauseMaxSec,
+        sameSpeakerPauseSec: settings.sameSpeakerPauseSec,
+        masterVolume: settings.masterVolume,
+        exportSrt: settings.exportSrt,
+      };
+
+      const readySegs = segments.filter(
+        (s) => s.status === "ready" && (!!s.audioFilePath || !!s.audioBuffer)
+      );
+      if (readySegs.length > 0 && !isConverting) {
+        updateMasterAssembly(segments);
+      }
+    }
+  }, [
+    settings.turnPauseMinSec,
+    settings.turnPauseMaxSec,
+    settings.sameSpeakerPauseSec,
+    settings.masterVolume,
+    settings.exportSrt,
+    segments,
+    isConverting,
+  ]);
 
   // Play/Pause single segment audio
   const handlePlaySegment = async (seg: DialogueSegment) => {

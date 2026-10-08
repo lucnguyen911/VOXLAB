@@ -113,6 +113,8 @@ export interface DialogueSegment {
   audioBlobUrl?: string;
   audioFilePath?: string;
   durationSec?: number;
+  leadingSilenceSec?: number;
+  trailingSilenceSec?: number;
   errorMessage?: string;
 }
 
@@ -122,8 +124,10 @@ export interface DialogueGlobalSettings {
   model: string;            // TTS model (default: "Omni Voice")
   masterVolume: number;     // Overall volume multiplier (0.0 to 2.0, default: 1.0)
   exportSrt: boolean;       // Whether to export SRT alongside audio (default: true)
-  turnPauseSec: number;     // Turn-taking pause between different speakers (default: 0.3s)
-  sameSpeakerPauseSec: number; // Pause between consecutive turns of same speaker (default: 0.2s)
+  turnPauseMinSec: number;  // Turn-taking pause min between different speakers (default: 0.40s)
+  turnPauseMaxSec: number;  // Turn-taking pause max between different speakers (default: 0.70s)
+  turnPauseSec?: number;    // Legacy fallback compatibility
+  sameSpeakerPauseSec: number; // Pause between consecutive turns of same speaker (default: 0s)
   pauses: PunctuationPauses; // Punctuation pauses (comma, period, questionExclamation, colonSemicolon)
   concurrency: number;      // Processing speed (1 to 4)
 }
@@ -132,7 +136,8 @@ export const DEFAULT_DIALOGUE_SETTINGS: DialogueGlobalSettings = {
   model: "Omni Voice",
   masterVolume: 1.0,
   exportSrt: true,
-  turnPauseSec: 0,
+  turnPauseMinSec: 0.40,
+  turnPauseMaxSec: 0.70,
   sameSpeakerPauseSec: 0,
   pauses: {
     comma: 0.3,

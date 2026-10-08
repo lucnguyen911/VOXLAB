@@ -126,7 +126,9 @@ export interface BatchTtsSnapshot {
 export interface BatchDialogueSnapshot {
   model: string;
   defaultVoiceId: string;
-  turnPauseSec: number;
+  turnPauseSec?: number;
+  turnPauseMinSec?: number;
+  turnPauseMaxSec?: number;
   sameSpeakerPauseSec: number;
   exportSrt: boolean;
   characterVoices?: Record<string, string>; // Mapping: Tên nhân vật -> voiceId

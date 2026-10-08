@@ -162,3 +162,42 @@ export function detectTrailingSilenceMs(
 
   return Math.round((silentSamples / sampleRate) * 1000);
 }
+
+/**
+ * Analyzes audio samples to detect existing leading silence in milliseconds.
+ * Scans forward from the beginning in 10ms windows using RMS energy.
+ */
+export function detectLeadingSilenceMs(
+  samples: Int16Array | Float32Array | number[],
+  sampleRate = 44100,
+  silenceThresholdRms = 0.006 // ~ -44.4 dB
+): number {
+  if (!samples || samples.length === 0) return 0;
+
+  const windowSize = Math.max(1, Math.floor(sampleRate * 0.01)); // 10ms
+  let silentSamples = 0;
+
+  for (let i = 0; i < samples.length; i += windowSize) {
+    const end = Math.min(samples.length, i + windowSize);
+    let sumSquares = 0;
+    const count = end - i;
+
+    for (let j = i; j < end; j++) {
+      let val = samples[j];
+      if (samples instanceof Int16Array) {
+        val = val / 32768;
+      }
+      sumSquares += val * val;
+    }
+
+    const rms = Math.sqrt(sumSquares / count);
+    if (rms < silenceThresholdRms) {
+      silentSamples += count;
+    } else {
+      break;
+    }
+  }
+
+  return Math.round((silentSamples / sampleRate) * 1000);
+}
+

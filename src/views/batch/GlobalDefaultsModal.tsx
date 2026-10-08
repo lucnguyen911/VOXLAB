@@ -216,31 +216,103 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
           )}
 
           {/* TAB 3: DIALOGUE */}
-          {activeTab === "dialogue" && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
-                  Khoảng nghỉ chuyển lượt thoại (Turn Pause)
-                </label>
-                <input
-                  type="number"
-                  min="0.1"
-                  max="3.0"
-                  step="0.1"
-                  value={localDefaults.dialogue?.turnPauseSec ?? 0.5}
-                  onChange={(e) => {
-                    const turnPauseSec = parseFloat(e.target.value) || 0.5;
-                    setLocalDefaults((prev) => ({
-                      ...prev,
-                      dialogue: { ...(prev.dialogue || ({} as any)), turnPauseSec },
-                    }));
-                  }}
-                  className="w-32 bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary"
-                />
-                <span className="ml-2 text-textMuted">giây</span>
+          {activeTab === "dialogue" && (() => {
+            const minSec =
+              typeof localDefaults.dialogue?.turnPauseMinSec === "number"
+                ? localDefaults.dialogue.turnPauseMinSec
+                : 0.40;
+            const maxSec =
+              typeof localDefaults.dialogue?.turnPauseMaxSec === "number"
+                ? localDefaults.dialogue.turnPauseMaxSec
+                : 0.70;
+
+            const handleMinChange = (raw: number) => {
+              const val = isNaN(raw) ? 0 : Math.max(0, Math.min(2.0, Math.round(raw * 100) / 100));
+              let newMax = maxSec;
+              if (val > newMax) {
+                newMax = val;
+              }
+              setLocalDefaults((prev) => ({
+                ...prev,
+                dialogue: {
+                  ...(prev.dialogue || ({} as any)),
+                  turnPauseMinSec: val,
+                  turnPauseMaxSec: newMax,
+                },
+              }));
+            };
+
+            const handleMaxChange = (raw: number) => {
+              const val = isNaN(raw) ? 0 : Math.max(0, Math.min(2.0, Math.round(raw * 100) / 100));
+              let newMin = minSec;
+              if (val < newMin) {
+                newMin = val;
+              }
+              setLocalDefaults((prev) => ({
+                ...prev,
+                dialogue: {
+                  ...(prev.dialogue || ({} as any)),
+                  turnPauseMinSec: newMin,
+                  turnPauseMaxSec: val,
+                },
+              }));
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="p-3.5 rounded-xl bg-surface2/60 border border-borderDefault/70 space-y-3">
+                  <div className="flex items-center justify-between text-xs font-semibold text-textPrimary">
+                    <span>Khoảng nghỉ chuyển lượt thoại</span>
+                    <span className="font-mono text-accent text-xs">
+                      {minSec.toFixed(2)}s – {maxSec.toFixed(2)}s
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-medium text-textSecondary">
+                        Nghỉ đổi lượt (Min)
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min="0.00"
+                          max="2.00"
+                          step="0.05"
+                          value={minSec}
+                          onChange={(e) => handleMinChange(parseFloat(e.target.value))}
+                          className="w-full bg-surface1 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary text-center focus:border-accent focus:outline-none"
+                        />
+                        <span className="text-textMuted text-xs shrink-0">giây</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-medium text-textSecondary">
+                        Nghỉ đổi lượt (Max)
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min="0.00"
+                          max="2.00"
+                          step="0.05"
+                          value={maxSec}
+                          onChange={(e) => handleMaxChange(parseFloat(e.target.value))}
+                          className="w-full bg-surface1 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary text-center focus:border-accent focus:outline-none"
+                        />
+                        <span className="text-textMuted text-xs shrink-0">giây</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-textMuted leading-relaxed italic">
+                    Thời gian nghỉ giữa hai nhân vật khác nhau khi đổi lượt nói (khuyên dùng: 0.50–0.60s)
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB 4: TRANSCRIPTION */}
           {activeTab === "transcription" && (

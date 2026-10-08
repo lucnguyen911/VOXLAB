@@ -1,4 +1,8 @@
 import { DialogueSegment, DialogueGlobalSettings } from "../../types/dialogue";
+import {
+  detectTrailingSilenceMs,
+  detectLeadingSilenceMs,
+} from "../pause/punctuationPause";
 
 export interface DialogueTimelineEntry {
   segmentId: string;
@@ -17,6 +21,125 @@ export interface DialogueAssemblyPlan {
   totalDurationSec: number;
 }
 
+export interface TurnPauseRange {
+  minSec: number;
+  maxSec: number;
+}
+
+/**
+ * Resolves Turn Pause Min & Max range from global settings, batch snapshot, or legacy config.
+ * Precedence:
+ * 1. turnPauseMinSec & turnPauseMaxSec (explicit range)
+ * 2. Legacy turnPauseSec (fixed gap: min = max = turnPauseSec, including 0)
+ * 3. Default fallback: min = 0.40, max = 0.70
+ */
+export function resolveTurnPauseRange(settings?: {
+  turnPauseMinSec?: number;
+  turnPauseMaxSec?: number;
+  turnPauseSec?: number;
+}): TurnPauseRange {
+  if (!settings) {
+    return { minSec: 0.40, maxSec: 0.70 };
+  }
+
+  const hasMin = typeof settings.turnPauseMinSec === "number" && !isNaN(settings.turnPauseMinSec);
+  const hasMax = typeof settings.turnPauseMaxSec === "number" && !isNaN(settings.turnPauseMaxSec);
+  const hasLegacy = typeof settings.turnPauseSec === "number" && !isNaN(settings.turnPauseSec);
+
+  // If caller explicitly provided legacy turnPauseSec and min/max are either missing or untouched defaults
+  if (hasLegacy && (!hasMin || !hasMax || (settings.turnPauseMinSec === 0.40 && settings.turnPauseMaxSec === 0.70))) {
+    const legacy = Math.max(0, Math.min(2.0, settings.turnPauseSec!));
+    return { minSec: legacy, maxSec: legacy };
+  }
+
+  if (hasMin && hasMax) {
+    let min = Math.max(0, Math.min(2.0, settings.turnPauseMinSec!));
+    let max = Math.max(0, Math.min(2.0, settings.turnPauseMaxSec!));
+    if (min > max) {
+      max = min;
+    }
+    return { minSec: min, maxSec: max };
+  }
+
+  if (hasMin) {
+    const min = Math.max(0, Math.min(2.0, settings.turnPauseMinSec!));
+    return { minSec: min, maxSec: Math.max(min, 0.70) };
+  }
+
+  if (hasMax) {
+    const max = Math.max(0, Math.min(2.0, settings.turnPauseMaxSec!));
+    return { minSec: Math.min(max, 0.40), maxSec: max };
+  }
+
+  if (hasLegacy) {
+    const legacy = Math.max(0, Math.min(2.0, settings.turnPauseSec!));
+    return { minSec: legacy, maxSec: legacy };
+  }
+
+  return { minSec: 0.40, maxSec: 0.70 };
+}
+
+/**
+ * Quick agreement / acknowledgment phrases in Vietnamese and English
+ * that typically elicit faster turn transitions.
+ */
+const QUICK_RESPONSE_PATTERN =
+  /^(vâng|dạ|dạ vâng|ừ|ừm|đúng|đúng vậy|chính xác|rõ rồi|đồng ý|không|thôi|được|ok|okay|yes|yeah|sure|right|exactly|no|nope)[.!?,…\s]*$/i;
+
+/**
+ * Calculates a natural turn-taking pause between two conversational utterances
+ * based on punctuation, sentence length, and conversational context.
+ *
+ * Guaranteed Invariants:
+ * 1. 100% deterministic (NO Math.random()). Same script + config = identical output.
+ * 2. minSec <= targetGap <= maxSec.
+ * 3. When minSec === maxSec, returns minSec directly.
+ */
+export function calculateSmartTurnPauseSec(
+  prevText: string,
+  nextText: string,
+  minSec: number,
+  maxSec: number
+): number {
+  if (minSec >= maxSec) {
+    return minSec;
+  }
+
+  const pText = (prevText || "").trim();
+  const nText = (nextText || "").trim();
+
+  // Words count
+  const pWords = pText.length > 0 ? pText.split(/\s+/).length : 0;
+  const nWords = nText.length > 0 ? nText.split(/\s+/).length : 0;
+
+  let ratio = 0.50; // Neutral default in middle of min–max (0.50–0.60s baseline)
+
+  // Check end punctuation of previous turn
+  const hasEllipsis = /\.\.\.|…/u.test(pText.slice(-4));
+  const hasQuestion = /[?？]/u.test(pText.slice(-3));
+  const hasExclamation = /[!！]/u.test(pText.slice(-3));
+
+  if (hasEllipsis || pWords >= 16) {
+    // Trailing thought, pause for reflection
+    ratio = 0.90;
+  } else if (QUICK_RESPONSE_PATTERN.test(nText) || nWords <= 2) {
+    // Quick reply or fast acknowledgement (e.g., "Vâng", "Đúng rồi", "Ok")
+    ratio = 0.15;
+  } else if (hasQuestion || hasExclamation) {
+    // Interrogative or expressive statement, allowing response formulation
+    ratio = 0.72;
+  } else if (pWords <= 4) {
+    // Short crisp transition
+    ratio = 0.35;
+  } else {
+    // Standard turn-taking transition
+    ratio = 0.50;
+  }
+
+  const target = minSec + ratio * (maxSec - minSec);
+  return Number(Math.max(minSec, Math.min(maxSec, target)).toFixed(3));
+}
+
 /**
  * Computes exact start and end timestamps for every dialogue segment
  * applying natural turn-taking pauses when switching speakers.
@@ -27,6 +150,8 @@ export function calculateDialogueTimeline(
 ): DialogueAssemblyPlan {
   const timeline: DialogueTimelineEntry[] = [];
   let currentCursorSec = 0;
+
+  const { minSec, maxSec } = resolveTurnPauseRange(settings);
 
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
@@ -46,11 +171,47 @@ export function calculateDialogueTimeline(
     if (!isLast) {
       const nextSeg = segments[i + 1];
       if (nextSeg.characterId !== seg.characterId) {
-        // Speaker change turn-taking pause
-        pauseAfterSec = Math.max(0, settings.turnPauseSec);
+        // Speaker change turn-taking pause with Min-Max
+        const targetGap = calculateSmartTurnPauseSec(
+          seg.cleanText || seg.rawText || "",
+          nextSeg.cleanText || nextSeg.rawText || "",
+          minSec,
+          maxSec
+        );
+
+        // Detect existing natural silence in segments
+        let trailingSilenceSec = seg.trailingSilenceSec ?? 0;
+        if (trailingSilenceSec === 0 && seg.audioBuffer) {
+          try {
+            trailingSilenceSec =
+              detectTrailingSilenceMs(
+                seg.audioBuffer.getChannelData(0),
+                seg.audioBuffer.sampleRate
+              ) / 1000;
+          } catch {
+            // fallback
+          }
+        }
+
+        let leadingSilenceSec = nextSeg.leadingSilenceSec ?? 0;
+        if (leadingSilenceSec === 0 && nextSeg.audioBuffer) {
+          try {
+            leadingSilenceSec =
+              detectLeadingSilenceMs(
+                nextSeg.audioBuffer.getChannelData(0),
+                nextSeg.audioBuffer.sampleRate
+              ) / 1000;
+          } catch {
+            // fallback
+          }
+        }
+
+        const existingGap = trailingSilenceSec + leadingSilenceSec;
+        // Never clip speech: if existingGap >= targetGap, insert 0 additional gap
+        pauseAfterSec = Math.max(0, Number((targetGap - existingGap).toFixed(3)));
       } else {
         // Same speaker consecutive turn pause
-        pauseAfterSec = Math.max(0, settings.sameSpeakerPauseSec);
+        pauseAfterSec = Math.max(0, settings.sameSpeakerPauseSec ?? 0);
       }
     }
 

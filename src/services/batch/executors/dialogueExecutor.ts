@@ -18,7 +18,10 @@ import {
   DEFAULT_DIALOGUE_SETTINGS,
 } from "../../../types/dialogue";
 import { parseDialogueScript } from "../../dialogue/parser";
-import { calculateDialogueTimeline } from "../../dialogue/masterAssembly";
+import {
+  calculateDialogueTimeline,
+  resolveTurnPauseRange,
+} from "../../dialogue/masterAssembly";
 import { generateDialogueSrt } from "../../dialogue/srtExporter";
 import {
   resolveJobOutputDirectory,
@@ -185,12 +188,14 @@ export class DialogueExecutor {
     }
 
     // 5. Timeline from real durations + turn-taking pauses
+    const pauseRange = resolveTurnPauseRange(dialogueSnapshot);
     const globalSettings: DialogueGlobalSettings = {
       ...DEFAULT_DIALOGUE_SETTINGS,
       model: model || DEFAULT_DIALOGUE_SETTINGS.model,
       masterVolume: 1.0,
-      turnPauseSec: dialogueSnapshot?.turnPauseSec ?? 0.8,
-      sameSpeakerPauseSec: dialogueSnapshot?.sameSpeakerPauseSec ?? 0.4,
+      turnPauseMinSec: pauseRange.minSec,
+      turnPauseMaxSec: pauseRange.maxSec,
+      sameSpeakerPauseSec: dialogueSnapshot?.sameSpeakerPauseSec ?? 0.3,
       exportSrt: dialogueSnapshot?.exportSrt ?? true,
     };
     const assembly = calculateDialogueTimeline(segments, globalSettings);

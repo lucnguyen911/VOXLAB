@@ -28,6 +28,8 @@ export function getDefaultTaskConfigMap(): BatchTaskConfigMap {
     dialogue: {
       model: "omnivoice",
       defaultVoiceId: "omnivoice-auto",
+      turnPauseMinSec: 0.40,
+      turnPauseMaxSec: 0.70,
       turnPauseSec: 0.5,
       sameSpeakerPauseSec: 0.3,
       exportSrt: true,

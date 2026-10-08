@@ -75,6 +75,37 @@ test("TASK-04: Config Snapshot & Scope Isolation Suite", async (t) => {
     assert.equal(effective.tasks.dialogue?.defaultVoiceId, "file-override-voice");
   });
 
+  await t.test("Dialogue Min-Max turn pause resolution and 3-Tier Precedence", () => {
+    const baseDefaults = getDefaultTaskConfigMap();
+    assert.equal(baseDefaults.dialogue?.turnPauseMinSec, 0.40);
+    assert.equal(baseDefaults.dialogue?.turnPauseMaxSec, 0.70);
+
+    // Global defaults override
+    const globalDefaults = getDefaultTaskConfigMap();
+    globalDefaults.dialogue = {
+      ...globalDefaults.dialogue!,
+      turnPauseMinSec: 0.35,
+      turnPauseMaxSec: 0.65,
+    };
+
+    // File level override
+    const jobOverrides = {
+      dialogue: {
+        model: "omnivoice",
+        defaultVoiceId: "custom-voice",
+        turnPauseMinSec: 0.25,
+        turnPauseMaxSec: 0.55,
+        sameSpeakerPauseSec: 0.15,
+        exportSrt: true,
+      },
+    };
+
+    const effective = resolveEffectiveConfig(globalDefaults, jobOverrides);
+    assert.equal(effective.tasks.dialogue?.turnPauseMinSec, 0.25);
+    assert.equal(effective.tasks.dialogue?.turnPauseMaxSec, 0.55);
+    assert.equal(effective.tasks.dialogue?.sameSpeakerPauseSec, 0.15);
+  });
+
   await t.test("Zero Secrets Invariant: Strips API keys and tokens from snapshot", () => {
     const dangerousConfig = {
       tts: {

@@ -96,6 +96,38 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
   };
 
   const pauses = settings.pauses || DEFAULT_DIALOGUE_SETTINGS.pauses;
+  const turnPauseMinSec =
+    typeof settings.turnPauseMinSec === "number"
+      ? settings.turnPauseMinSec
+      : DEFAULT_DIALOGUE_SETTINGS.turnPauseMinSec;
+  const turnPauseMaxSec =
+    typeof settings.turnPauseMaxSec === "number"
+      ? settings.turnPauseMaxSec
+      : DEFAULT_DIALOGUE_SETTINGS.turnPauseMaxSec;
+
+  const handleTurnPauseMinChange = (rawVal: number) => {
+    const val = isNaN(rawVal) ? 0 : Math.max(0, Math.min(2.0, Math.round(rawVal * 100) / 100));
+    let newMax = turnPauseMaxSec;
+    if (val > newMax) {
+      newMax = val;
+    }
+    onUpdateSettings({
+      turnPauseMinSec: val,
+      turnPauseMaxSec: newMax,
+    });
+  };
+
+  const handleTurnPauseMaxChange = (rawVal: number) => {
+    const val = isNaN(rawVal) ? 0 : Math.max(0, Math.min(2.0, Math.round(rawVal * 100) / 100));
+    let newMin = turnPauseMinSec;
+    if (val < newMin) {
+      newMin = val;
+    }
+    onUpdateSettings({
+      turnPauseMinSec: newMin,
+      turnPauseMaxSec: val,
+    });
+  };
 
   const handlePauseChange = (key: keyof PunctuationPauses, val: number) => {
     onUpdateSettings({
@@ -109,6 +141,9 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
   const handleResetSettings = () => {
     onUpdateSettings({
       masterVolume: DEFAULT_DIALOGUE_SETTINGS.masterVolume,
+      turnPauseMinSec: DEFAULT_DIALOGUE_SETTINGS.turnPauseMinSec,
+      turnPauseMaxSec: DEFAULT_DIALOGUE_SETTINGS.turnPauseMaxSec,
+      sameSpeakerPauseSec: DEFAULT_DIALOGUE_SETTINGS.sameSpeakerPauseSec,
       pauses: { ...DEFAULT_DIALOGUE_SETTINGS.pauses },
       concurrency: DEFAULT_DIALOGUE_SETTINGS.concurrency,
       exportSrt: DEFAULT_DIALOGUE_SETTINGS.exportSrt,
@@ -206,7 +241,67 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
             </button>
 
             {isPausesOpen && (
-              <div className="space-y-2.5 pt-2">
+              <div className="space-y-3 pt-2">
+                {/* Min-Max Turn Pause Section */}
+                <div className="p-2.5 rounded-lg bg-surface2/60 border border-borderDefault/70 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-textPrimary">
+                    <span>Nghỉ đổi lượt thoại</span>
+                    <span className="text-[10px] font-mono text-accent">
+                      {turnPauseMinSec.toFixed(2)}s – {turnPauseMaxSec.toFixed(2)}s
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* Nghỉ đổi lượt (Min) */}
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-medium text-textSecondary block truncate">
+                        Nghỉ đổi lượt (Min)
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="0.00"
+                          max="2.00"
+                          step="0.05"
+                          value={turnPauseMinSec}
+                          onChange={(e) =>
+                            handleTurnPauseMinChange(parseFloat(e.target.value))
+                          }
+                          className="w-full h-7 bg-surface1 border border-borderDefault rounded-md px-1 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
+                        />
+                        <span className="text-textMuted text-[10px] shrink-0">s</span>
+                      </div>
+                    </div>
+
+                    {/* Nghỉ đổi lượt (Max) */}
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-medium text-textSecondary block truncate">
+                        Nghỉ đổi lượt (Max)
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="0.00"
+                          max="2.00"
+                          step="0.05"
+                          value={turnPauseMaxSec}
+                          onChange={(e) =>
+                            handleTurnPauseMaxChange(parseFloat(e.target.value))
+                          }
+                          className="w-full h-7 bg-surface1 border border-borderDefault rounded-md px-1 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
+                        />
+                        <span className="text-textMuted text-[10px] shrink-0">s</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-textMuted leading-tight italic">
+                    Thời gian nghỉ giữa hai nhân vật khác nhau khi đổi lượt nói (khuyên dùng: 0.50–0.60s)
+                  </p>
+                </div>
+
+                <div className="text-[10px] font-semibold text-textMuted uppercase tracking-wider px-0.5 pt-1">
+                  Nghỉ theo dấu câu
+                </div>
+
                 <div className="grid grid-cols-2 gap-2.5">
                   {/* Comma Pause */}
                   <div className="space-y-1">

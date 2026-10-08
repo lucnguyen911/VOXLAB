@@ -5,6 +5,7 @@ import {
   Check,
   FolderOpen,
   Mic,
+  MessageSquare,
   Subtitles,
   Languages,
   Film,
@@ -14,6 +15,7 @@ import {
   BatchTaskConfigMap,
   BatchJobOutputSnapshot,
   BatchCollisionPolicy,
+  BatchDialogueSnapshot,
 } from "../../types/batch";
 
 export interface PerFileConfigDrawerProps {
@@ -37,7 +39,9 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const [activeTab, setActiveTab] = useState<"output" | "tts" | "transcription" | "translation" | "dubbing">("output");
+  const [activeTab, setActiveTab] = useState<
+    "output" | "tts" | "dialogue" | "transcription" | "translation" | "dubbing"
+  >("output");
   const [outputSnapshot, setOutputSnapshot] = useState<BatchJobOutputSnapshot>({
     ...job.outputSnapshot,
   });
@@ -105,6 +109,23 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
               <span className="flex items-center gap-1.5">
                 <Mic className="w-3.5 h-3.5" />
                 <span>TTS</span>
+              </span>
+            </button>
+          )}
+
+          {job.selectedTasks.includes("dialogue") && (
+            <button
+              type="button"
+              onClick={() => setActiveTab("dialogue")}
+              className={`px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer ${
+                activeTab === "dialogue"
+                  ? "bg-accent/15 text-accent"
+                  : "text-textMuted hover:text-textPrimary"
+              }`}
+            >
+              <span className="flex items-center gap-1.5">
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>Hội thoại</span>
               </span>
             </button>
           )}
@@ -274,6 +295,106 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
               </div>
             </div>
           )}
+
+          {/* TAB: DIALOGUE OVERRIDES */}
+          {activeTab === "dialogue" && (() => {
+            const currentDialogue: Partial<BatchDialogueSnapshot> = configOverrides.dialogue || {};
+            const minSec =
+              typeof currentDialogue.turnPauseMinSec === "number"
+                ? currentDialogue.turnPauseMinSec
+                : (typeof currentDialogue.turnPauseSec === "number" ? currentDialogue.turnPauseSec : 0.40);
+            const maxSec =
+              typeof currentDialogue.turnPauseMaxSec === "number"
+                ? currentDialogue.turnPauseMaxSec
+                : (typeof currentDialogue.turnPauseSec === "number" ? currentDialogue.turnPauseSec : 0.70);
+
+            const handleMinChange = (raw: number) => {
+              const val = isNaN(raw) ? 0 : Math.max(0, Math.min(2.0, Math.round(raw * 100) / 100));
+              let newMax = maxSec;
+              if (val > newMax) {
+                newMax = val;
+              }
+              setConfigOverrides((prev) => ({
+                ...prev,
+                dialogue: {
+                  ...(prev.dialogue || ({} as any)),
+                  turnPauseMinSec: val,
+                  turnPauseMaxSec: newMax,
+                },
+              }));
+            };
+
+            const handleMaxChange = (raw: number) => {
+              const val = isNaN(raw) ? 0 : Math.max(0, Math.min(2.0, Math.round(raw * 100) / 100));
+              let newMin = minSec;
+              if (val < newMin) {
+                newMin = val;
+              }
+              setConfigOverrides((prev) => ({
+                ...prev,
+                dialogue: {
+                  ...(prev.dialogue || ({} as any)),
+                  turnPauseMinSec: newMin,
+                  turnPauseMaxSec: val,
+                },
+              }));
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="p-3.5 rounded-xl bg-surface2/60 border border-borderDefault/70 space-y-3">
+                  <div className="flex items-center justify-between text-xs font-semibold text-textPrimary">
+                    <span>Khoảng nghỉ chuyển lượt thoại</span>
+                    <span className="font-mono text-accent text-xs">
+                      {minSec.toFixed(2)}s – {maxSec.toFixed(2)}s
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-medium text-textSecondary">
+                        Nghỉ đổi lượt (Min)
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min="0.00"
+                          max="2.00"
+                          step="0.05"
+                          value={minSec}
+                          onChange={(e) => handleMinChange(parseFloat(e.target.value))}
+                          className="w-full bg-surface1 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary text-center focus:border-accent focus:outline-none"
+                        />
+                        <span className="text-textMuted text-xs shrink-0">giây</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-medium text-textSecondary">
+                        Nghỉ đổi lượt (Max)
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min="0.00"
+                          max="2.00"
+                          step="0.05"
+                          value={maxSec}
+                          onChange={(e) => handleMaxChange(parseFloat(e.target.value))}
+                          className="w-full bg-surface1 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary text-center focus:border-accent focus:outline-none"
+                        />
+                        <span className="text-textMuted text-xs shrink-0">giây</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-textMuted leading-relaxed italic">
+                    Thời gian nghỉ giữa hai nhân vật khác nhau khi đổi lượt nói (khuyên dùng: 0.50–0.60s)
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* TAB 3: TRANSLATION OVERRIDES */}
           {activeTab === "translation" && (
