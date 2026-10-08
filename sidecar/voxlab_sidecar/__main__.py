@@ -100,9 +100,26 @@ def main(argv: list[str] | None = None) -> int:
         server.register_heavy("asr.transcribe", asr.transcribe)
         server.register_heavy("asr.unload", asr.unload)
         from . import audio_ops
+        from . import audio_quality
+
+        def validate_quality_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
+            ctx.progress(10.0, "validating_audio")
+            audio_path = params.get("audioPath") or ""
+            text = params.get("text") or ""
+            language = params.get("language")
+            models_dir = params.get("modelsDir")
+            res = audio_quality.validate_audio_quality(
+                audio_path=audio_path,
+                text=text,
+                language=language,
+                models_dir=models_dir,
+            )
+            ctx.progress(100.0, "validated")
+            return res
 
         server.register_heavy("audio.assemble", audio_ops.assemble)
         server.register_light("audio.probe", audio_ops.probe)
+        server.register_heavy("audio.validate_quality", validate_quality_handler)
     server.register_light("system.info", lambda _p: system_info(args.runtime, asr, tts))
     server.register_light("tts.engines", tts.engines)
     server.register_heavy("tts.load", tts.load)

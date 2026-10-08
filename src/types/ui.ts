@@ -28,6 +28,25 @@ export interface EffectiveVoiceSnapshot {
   refText?: string;
 }
 
+export type AudioQualityStatus = "pass" | "warning" | "error" | "unverified";
+
+export interface AudioQualityIssue {
+  severity: "error" | "warning";
+  code: string;
+  message: string;
+  timeRange?: [number, number];
+  words?: [string, string];
+}
+
+export interface AudioQualityReview {
+  status: AudioQualityStatus;
+  issues: AudioQualityIssue[];
+  summary: string;
+  checkedAt: number;
+  audioPath?: string;
+  text?: string;
+}
+
 export interface ChunkItem {
   id: string;
   index: number;
@@ -42,6 +61,7 @@ export interface ChunkItem {
   errorMessage?: string;
   trailingSilenceMs?: number;
   effectiveVoiceSnapshot?: EffectiveVoiceSnapshot;
+  qualityReview?: AudioQualityReview;
 }
 
 export type VoiceSource = "edge" | "google" | "local" | "local_clone" | "preset_local" | "online";

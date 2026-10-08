@@ -86,6 +86,22 @@ export interface AssembleResult {
   segments: { index: number; startSec: number; endSec: number; durationSec: number }[];
 }
 
+export interface AudioQualityValidationResult {
+  status: "pass" | "warning" | "error" | "unverified";
+  issues: {
+    severity: "error" | "warning";
+    code: string;
+    message: string;
+    timeRange?: [number, number];
+    words?: [string, string];
+  }[];
+  summary: string;
+  durationSec: number;
+  sampleRate: number;
+  checkedAt: number;
+  audioPath: string;
+}
+
 const VI_DIACRITICS = /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i;
 
 /** Minimal guard so an English-only engine is never fed Vietnamese text silently. */
@@ -263,6 +279,26 @@ export class LocalAiServices {
       sampleRate: 44100,
       ...params,
     }, onProgress);
+  }
+
+  async validateAudioQuality(
+    audioPath: string,
+    text: string,
+    language?: string,
+    onProgress?: (pct: number, stage: string) => void
+  ): Promise<AudioQualityValidationResult> {
+    const s = this.settings();
+    return this.call<AudioQualityValidationResult>(
+      "core",
+      "audio.validate_quality",
+      {
+        audioPath,
+        text,
+        language: language || "auto",
+        modelsDir: s.modelsDir,
+      },
+      onProgress
+    );
   }
 
   /** Soft cancel first; if the engine is inside one blocking call, hard-cancel (kill) after graceMs. */

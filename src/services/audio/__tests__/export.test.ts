@@ -141,6 +141,61 @@ describe("Master Audio Export Tests (M1 - M15)", () => {
     assert.equal(validation.invalidChunks.length, 0);
   });
 
+  // M9b: chunk with quality warning review DOES NOT block export
+  it("M9b: chunk with quality warning review DOES NOT block export", () => {
+    const chunks = [
+      createMockChunk(1, "ready", 3.0),
+      {
+        ...createMockChunk(2, "ready", 4.0),
+        qualityReview: {
+          status: "warning" as const,
+          issues: [
+            {
+              severity: "warning" as const,
+              code: "ABNORMAL_PAUSE",
+              message: "Phát hiện khoảng ngắt có thể bất thường giữa 'diesel' và 'fuel' (0.58s)",
+              words: ["diesel", "fuel"] as [string, string],
+              timeRange: [2.1, 2.68] as [number, number],
+            },
+          ],
+          summary: "Cảnh báo ngắt nghỉ",
+          checkedAt: Date.now(),
+        },
+      },
+      createMockChunk(3, "ready", 5.0),
+    ];
+    const validation = validateChunksForExport(chunks);
+    assert.equal(validation.canExport, true);
+    assert.equal(validation.invalidChunks.length, 0);
+  });
+
+  // M9c: chunk with quality error review blocks export
+  it("M9c: chunk with quality error review blocks export", () => {
+    const chunks = [
+      createMockChunk(1, "ready", 3.0),
+      {
+        ...createMockChunk(2, "ready", 4.0),
+        qualityReview: {
+          status: "error" as const,
+          issues: [
+            {
+              severity: "error" as const,
+              code: "AUDIO_SILENT",
+              message: "Tệp âm thanh hoàn toàn im lặng",
+            },
+          ],
+          summary: "Tệp âm thanh hoàn toàn im lặng",
+          checkedAt: Date.now(),
+        },
+      },
+      createMockChunk(3, "ready", 5.0),
+    ];
+    const validation = validateChunksForExport(chunks);
+    assert.equal(validation.canExport, false);
+    assert.equal(validation.invalidChunks.length, 1);
+    assert.equal(validation.invalidChunks[0].index, 2);
+  });
+
   // M10: master export không gọi TTS worker/model
   it("M10: master export does not invoke TTS model or network", () => {
     let ttsInvocationCount = 0;

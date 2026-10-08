@@ -74,6 +74,32 @@ def find_whisper_model_dir(preferred_parent: str | None = None) -> str | None:
     return None
 
 
+def get_shared_whisper_model(models_dir: str | None = None):
+    """Returns or initializes the shared WhisperModel instance, running on CUDA if available."""
+    global _shared_whisper_instance
+    model_dir = find_whisper_model_dir(models_dir)
+    if not model_dir:
+        return None
+    _register_cuda_dlls()
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return None
+
+    if _shared_whisper_instance is None:
+        has_cuda = _cuda_device_count() > 0
+        device = "cuda" if has_cuda else "cpu"
+        compute_type = "float16" if has_cuda else "int8"
+        try:
+            _shared_whisper_instance = WhisperModel(
+                model_dir, device=device, compute_type=compute_type, local_files_only=True
+            )
+        except Exception as e:
+            log(f"[asr_engine] Failed to initialize shared WhisperModel: {e}")
+            return None
+    return _shared_whisper_instance
+
+
 def auto_transcribe_sample(
     audio_path: str,
     language: str | None = None,
@@ -81,7 +107,7 @@ def auto_transcribe_sample(
 ) -> str:
     """Quickly transcribe a reference audio sample using faster-whisper.
     Cached in-memory so repeated chunks reuse the exact transcript with zero overhead."""
-    global _shared_whisper_instance, _transcript_cache
+    global _transcript_cache
 
     if not audio_path or not os.path.isfile(audio_path):
         return ""
@@ -90,29 +116,14 @@ def auto_transcribe_sample(
     if cache_key in _transcript_cache:
         return _transcript_cache[cache_key]
 
-    model_dir = find_whisper_model_dir(models_dir)
-    if not model_dir:
-        log("[auto_transcribe] No local faster-whisper model found, skipping auto-transcribe")
-        return ""
-
-    _register_cuda_dlls()
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        log("[auto_transcribe] faster-whisper package not installed")
+    whisper_instance = get_shared_whisper_model(models_dir)
+    if whisper_instance is None:
+        log("[auto_transcribe] Shared whisper model unavailable, skipping auto-transcribe")
         return ""
 
     try:
-        if _shared_whisper_instance is None:
-            has_cuda = _cuda_device_count() > 0
-            device = "cuda" if has_cuda else "cpu"
-            compute_type = "float16" if has_cuda else "int8"
-            _shared_whisper_instance = WhisperModel(
-                model_dir, device=device, compute_type=compute_type, local_files_only=True
-            )
-
         lang_code = None if not language or language == "auto" else language
-        segments_iter, info = _shared_whisper_instance.transcribe(
+        segments_iter, info = whisper_instance.transcribe(
             audio_path,
             language=lang_code,
             beam_size=5,

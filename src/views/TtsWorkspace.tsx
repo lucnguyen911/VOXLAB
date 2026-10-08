@@ -8,6 +8,7 @@ import {
   RefreshCw,
   FileAudio,
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
   Layers,
   Languages,
@@ -43,6 +44,12 @@ import {
 } from "../services/batch/batchRuntime";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
+import {
+  countChunkQualityIssues,
+  isChunkError,
+  isChunkWarning,
+  validateChunkAudioQuality,
+} from "../services/audio/qualityValidator";
 
 
 interface TtsWorkspaceProps {
@@ -287,11 +294,11 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     setStage("studio");
   };
 
-  // Inline chunk text editing (triggers Modified / Stale status)
+  // Inline chunk text editing (triggers Modified / Stale status and clears old quality review)
   const handleChunkTextChange = (id: string, newText: string) => {
     setChunks((prev) =>
       prev.map((c) =>
-        c.id === id ? { ...c, text: newText, status: "modified" } : c
+        c.id === id ? { ...c, text: newText, status: "modified", qualityReview: undefined } : c
       )
     );
   };
@@ -361,14 +368,23 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     onTriggerJob();
     try {
       const res = await synthesizeChunkCore(target, snapshotToUse, (s) => setProgressStage(s), singleAdvancedSettings);
-      const readyChunk: ChunkItem = {
+      let readyChunk: ChunkItem = {
         ...target,
         status: "ready",
         durationSec: res.durationSec,
         audioUrl: res.blobUrl,
         audioFilePath: res.outputPath,
         effectiveVoiceSnapshot: snapshotToUse,
+        qualityReview: undefined,
       };
+
+      try {
+        const review = await validateChunkAudioQuality(readyChunk, snapshotToUse.language);
+        readyChunk = { ...readyChunk, qualityReview: review };
+      } catch (qErr) {
+        console.warn("Quality validation error:", qErr);
+      }
+
       setChunks((prev) =>
         prev.map((c) => (c.id === id ? readyChunk : c))
       );
@@ -384,6 +400,11 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       onJobComplete?.();
     }
   };
+
+  // Audio quality and validation state
+  const qualityStats = countChunkQualityIssues(chunks);
+  const errorChunks = qualityStats.errorChunks;
+  const warningChunks = qualityStats.warningChunks;
 
   // Filter chunks that need regeneration / block master export
   const validation = validateChunksForExport(chunks);
@@ -467,14 +488,21 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               )
             );
             const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-            const readyChunk: ChunkItem = {
+            let readyChunk: ChunkItem = {
               ...target,
               status: "ready",
               durationSec: res.durationSec,
               audioUrl: res.blobUrl,
               audioFilePath: res.outputPath,
               effectiveVoiceSnapshot: batchVoiceSnapshot,
+              qualityReview: undefined,
             };
+            try {
+              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language);
+              readyChunk = { ...readyChunk, qualityReview: review };
+            } catch (qErr) {
+              console.warn("Quality validation error:", qErr);
+            }
             setChunks((prev) =>
               prev.map((c) => (c.id === chunkId ? readyChunk : c))
             );
@@ -506,6 +534,104 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       );
     } catch (batchErr) {
       console.error("Selective regeneration error:", batchErr);
+    } finally {
+      setProgressStage("");
+      onJobComplete?.();
+    }
+  };
+
+  // Regenerate strictly red error chunks (Mandatory requirement: never auto-regenerates yellow warning chunks)
+  const handleRegenerateErrorChunks = async () => {
+    if (errorChunks.length === 0 || isGenerating) return;
+    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const storedSettings = loadStoredTtsSettings();
+
+    const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
+      activeModel,
+      speed: storedSettings.speed,
+      pitch: storedSettings.pitch,
+      volume: storedSettings.volume,
+    });
+    const batchEngineOrModel = batchVoiceSnapshot.modelId || batchVoiceSnapshot.engine || activeModel;
+    const batchAdvancedSettings = getEngineAdvancedSettings(batchEngineOrModel);
+
+    setCompletedCount(0);
+    setSkippedCount(0);
+    setIsCompletedState(false);
+    setGenerationError(null);
+    batchQueueExecutor.reset();
+    onTriggerJob();
+
+    const targetIds = errorChunks.map((c) => c.id);
+    setBatchTotal(targetIds.length);
+    setPendingItems(targetIds.length);
+
+    let firstFinishedChunk: ChunkItem | null = null;
+    try {
+      await batchQueueExecutor.runBatch(
+        targetIds,
+        {
+          concurrency,
+          onWorkerChange: (_active, pending) => {
+            setPendingItems(pending ?? 0);
+          },
+          processItem: async (chunkId) => {
+            const target = chunks.find((c) => c.id === chunkId);
+            if (!target) return;
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.id === chunkId
+                  ? { ...c, status: "generating", errorMessage: undefined }
+                  : c
+              )
+            );
+            const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
+            let readyChunk: ChunkItem = {
+              ...target,
+              status: "ready",
+              durationSec: res.durationSec,
+              audioUrl: res.blobUrl,
+              audioFilePath: res.outputPath,
+              effectiveVoiceSnapshot: batchVoiceSnapshot,
+              qualityReview: undefined,
+            };
+            try {
+              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language);
+              readyChunk = { ...readyChunk, qualityReview: review };
+            } catch (qErr) {
+              console.warn("Quality validation error:", qErr);
+            }
+            setChunks((prev) =>
+              prev.map((c) => (c.id === chunkId ? readyChunk : c))
+            );
+            if (!firstFinishedChunk) {
+              firstFinishedChunk = readyChunk;
+              onPlayChunk?.(readyChunk);
+            }
+          },
+          onItemCompleted: (_item, _idx, completed, total) => {
+            setCompletedCount(completed);
+            onChunkProgress?.(completed, total);
+          },
+          onItemFailed: async (chunkId, index, err) => {
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.id === chunkId
+                  ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
+                  : c
+              )
+            );
+            setGenerationError({
+              chunkId,
+              chunkIndex: index,
+              error: err,
+            });
+            return "skip" as const;
+          },
+        }
+      );
+    } catch (batchErr) {
+      console.error("Error chunks regeneration error:", batchErr);
     } finally {
       setProgressStage("");
       onJobComplete?.();
@@ -566,14 +692,21 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             )
           );
           const res = await synthesizeChunkCore(target, generationVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-          const readyChunk: ChunkItem = {
+          let readyChunk: ChunkItem = {
             ...target,
             status: "ready",
             durationSec: res.durationSec,
             audioUrl: res.blobUrl,
             audioFilePath: res.outputPath,
             effectiveVoiceSnapshot: generationVoiceSnapshot,
+            qualityReview: undefined,
           };
+          try {
+            const review = await validateChunkAudioQuality(readyChunk, generationVoiceSnapshot.language);
+            readyChunk = { ...readyChunk, qualityReview: review };
+          } catch (qErr) {
+            console.warn("Quality validation error:", qErr);
+          }
           setChunks((prev) =>
             prev.map((c) => (c.id === chunkId ? readyChunk : c))
           );
@@ -614,6 +747,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   React.useEffect(() => {
     if (typeof window !== "undefined") {
       (window as any).__VOXLAB_REGENERATE_INVALID__ = handleRegenerateInvalidChunks;
+      (window as any).__VOXLAB_REGENERATE_ERRORS__ = handleRegenerateErrorChunks;
       (window as any).__VOXLAB_GENERATE_ALL__ = handleGenerateAllAudio;
       (window as any).__VOXLAB_EXPORT_AUDIO__ = handleExportAudio;
       (window as any).__VOXLAB_MERGE_MASTER__ = () =>
@@ -1148,29 +1282,50 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 </span>
               </div>
               <div className="flex items-center gap-2 text-xs">
-                {chunks.filter((c) => c.status === "failed").length > 0 && (
-                  <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-danger/15 border border-danger/30 text-danger font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-danger" />
-                    <span>{t.tts.errorsCount.replace("{count}", String(chunks.filter((c) => c.status === "failed").length))}</span>
+                {errorChunks.length > 0 && (
+                  <>
+                    <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-danger/15 border border-danger/30 text-danger font-semibold">
+                      <span className="w-1.5 h-1.5 rounded-full bg-danger" />
+                      <span>{errorChunks.length} lỗi</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleRegenerateErrorChunks}
+                      disabled={isGenerating}
+                      className="flex items-center gap-1.5 px-2.5 py-1 bg-danger hover:bg-danger/90 text-white shadow-xs rounded-md text-xs font-semibold transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+                      title="Chỉ tạo lại các đoạn bị lỗi đỏ"
+                    >
+                      <RefreshCw className="w-3 h-3 text-white" />
+                      <span>Tạo lại {errorChunks.length} lỗi</span>
+                    </button>
+                  </>
+                )}
+
+                {warningChunks.length > 0 && (
+                  <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-500 font-semibold" title="Các đoạn có dấu hiệu ngắt nghỉ hoặc bất thường cần nghe lại">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                    <span>{warningChunks.length} cảnh báo</span>
                   </span>
                 )}
+
                 {chunks.filter((c) => c.status === "modified").length > 0 && (
                   <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-warning/15 border border-warning/30 text-warning font-semibold">
                     <span className="w-1.5 h-1.5 rounded-full bg-warning" />
                     <span>{t.tts.needsRegenCount.replace("{count}", String(chunks.filter((c) => c.status === "modified").length))}</span>
                   </span>
                 )}
-                {/* Selective Regeneration Button directly beside status badges */}
-                {invalidChunks.length > 0 && (
+
+                {/* Selective Regeneration Button for modified chunks if no error button shown */}
+                {errorChunks.length === 0 && chunks.filter((c) => c.status === "modified").length > 0 && (
                   <button
                     type="button"
                     onClick={handleRegenerateInvalidChunks}
                     disabled={isGenerating}
                     className="flex items-center gap-1.5 px-2.5 py-1 bg-accent hover:bg-accentHover text-white shadow-xs rounded-md text-xs font-semibold transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ml-1 active:scale-95"
-                    title="Chỉ tạo lại các đoạn đã chỉnh sửa hoặc bị lỗi"
+                    title="Chỉ tạo lại các đoạn đã chỉnh sửa nội dung"
                   >
                     <RefreshCw className="w-3 h-3 text-white" />
-                    <span>{t.tts.regenInvalid.replace("{count}", String(invalidChunks.length))}</span>
+                    <span>{t.tts.regenInvalid.replace("{count}", String(chunks.filter((c) => c.status === "modified").length))}</span>
                   </button>
                 )}
               </div>
@@ -1183,6 +1338,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 const isPlaying = activePlayingChunkId
                   ? activePlayingChunkId === chunk.id && isPlayingAudio
                   : playingChunkId === chunk.id;
+                const chunkIsError = isChunkError(chunk);
+                const chunkIsWarning = isChunkWarning(chunk);
 
                 return (
                   <div
@@ -1232,12 +1389,22 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                           </span>
                         )}
 
-                        {chunk.status === "failed" && (
-                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-danger/15 text-danger border border-danger/30 flex items-center gap-1.5 shrink-0">
+                        {chunkIsError && chunk.status !== "generating" && (
+                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-danger/15 text-danger border border-danger/30 flex items-center gap-1.5 shrink-0" title={chunk.errorMessage || chunk.qualityReview?.summary}>
                             <AlertCircle className="w-3.5 h-3.5" />
                             <span>{t.tts.failed}</span>
-                            {chunk.errorMessage && (
-                              <span className="font-normal opacity-90">· {chunk.errorMessage}</span>
+                            {(chunk.errorMessage || chunk.qualityReview?.summary) && (
+                              <span className="font-normal opacity-90 max-w-[280px] truncate">· {chunk.errorMessage || chunk.qualityReview?.summary}</span>
+                            )}
+                          </span>
+                        )}
+
+                        {chunkIsWarning && chunk.status !== "generating" && (
+                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 border border-amber-500/30 flex items-center gap-1.5 shrink-0" title={chunk.qualityReview?.summary}>
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span>Cảnh báo</span>
+                            {chunk.qualityReview?.summary && (
+                              <span className="font-normal opacity-90 max-w-[280px] truncate">· {chunk.qualityReview.summary}</span>
                             )}
                           </span>
                         )}
@@ -1285,17 +1452,29 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                           </button>
                         )}
 
-                        {chunk.status === "failed" && (
+                        {chunkIsError && (
                           <button
                             onClick={() => handleRegenerateChunk(chunk.id)}
-                            className="flex items-center gap-1.5 px-2.5 py-1 bg-danger/15 hover:bg-danger/25 text-danger rounded-md text-xs border border-danger/30 transition-colors font-semibold"
+                            className="flex items-center gap-1.5 px-2.5 py-1 bg-danger/15 hover:bg-danger/25 text-danger rounded-md text-xs border border-danger/30 transition-colors font-semibold cursor-pointer"
+                            title="Thử lại đoạn bị lỗi"
                           >
                             <RefreshCw className="w-3.5 h-3.5" />
                             <span>{t.tts.retry}</span>
                           </button>
                         )}
 
-                        {chunk.status === "ready" && (
+                        {chunkIsWarning && (
+                          <button
+                            onClick={() => handleRegenerateChunk(chunk.id)}
+                            className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 rounded-md text-xs border border-amber-500/30 transition-colors font-semibold cursor-pointer"
+                            title="Tạo lại đoạn có cảnh báo"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Tạo lại đoạn</span>
+                          </button>
+                        )}
+
+                        {chunk.status === "ready" && !chunkIsError && !chunkIsWarning && (
                           <button
                             onClick={() => handleRegenerateChunk(chunk.id)}
                             className="flex items-center gap-1 px-2 py-1 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-md text-xs border border-borderDefault transition-colors"

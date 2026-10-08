@@ -68,6 +68,8 @@ export function validateChunksForExport(chunks: ChunkItem[]): ValidationResult {
       reason = "Chưa sẵn sàng";
     } else if (typeof chunk.durationSec !== "number" || chunk.durationSec <= 0) {
       reason = "Thiếu dữ liệu thời lượng âm thanh";
+    } else if (chunk.qualityReview?.status === "error") {
+      reason = chunk.qualityReview.summary || "Lỗi tệp âm thanh";
     }
 
     if (reason) {
