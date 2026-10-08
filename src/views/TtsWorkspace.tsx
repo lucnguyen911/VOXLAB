@@ -42,6 +42,7 @@ import {
   getSharedAiServices,
 } from "../services/batch/batchRuntime";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
+import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
 
 
 interface TtsWorkspaceProps {
@@ -303,7 +304,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   const synthesizeChunkCore = async (
     targetChunk: ChunkItem,
     snapshot: EffectiveVoiceSnapshot,
-    onStage?: (stage: string) => void
+    onStage?: (stage: string) => void,
+    advancedSettings?: Record<string, unknown>
   ) => {
     // 1. TRACE VOICE SOURCE (Requirement 1: development-only trace log per chunk)
     if (import.meta.env.DEV) {
@@ -315,12 +317,14 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         engine: snapshot.engine,
         model: snapshot.modelId,
         referenceAudioPath: snapshot.refAudioPath,
+        advancedSettings,
       });
     }
 
     return await synthesizeSpeechCore(targetChunk.text, snapshot, {
       scope: "tts",
       id: targetChunk.id,
+      advancedSettings,
       onProgress: (pct, stage) => {
         onStage?.(`${stage} (${pct}%)`);
         setProgressStage(`${stage} (${pct}%)`);
@@ -346,6 +350,9 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           volume: storedSettings.volume,
         });
 
+    const targetEngineOrModel = snapshotToUse.modelId || snapshotToUse.engine || activeModel;
+    const singleAdvancedSettings = getEngineAdvancedSettings(targetEngineOrModel);
+
     setChunks((prev) =>
       prev.map((c) =>
         c.id === id ? { ...c, status: "generating", errorMessage: undefined } : c
@@ -353,7 +360,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     );
     onTriggerJob();
     try {
-      const res = await synthesizeChunkCore(target, snapshotToUse, (s) => setProgressStage(s));
+      const res = await synthesizeChunkCore(target, snapshotToUse, (s) => setProgressStage(s), singleAdvancedSettings);
       const readyChunk: ChunkItem = {
         ...target,
         status: "ready",
@@ -426,6 +433,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       pitch: storedSettings.pitch,
       volume: storedSettings.volume,
     });
+    const batchEngineOrModel = batchVoiceSnapshot.modelId || batchVoiceSnapshot.engine || activeModel;
+    const batchAdvancedSettings = getEngineAdvancedSettings(batchEngineOrModel);
 
     setCompletedCount(0);
     setSkippedCount(0);
@@ -457,7 +466,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                   : c
               )
             );
-            const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s));
+            const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
             const readyChunk: ChunkItem = {
               ...target,
               status: "ready",
@@ -520,6 +529,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       pitch: storedSettings.pitch,
       volume: storedSettings.volume,
     });
+    const batchEngineOrModel = generationVoiceSnapshot.modelId || generationVoiceSnapshot.engine || activeModel;
+    const batchAdvancedSettings = getEngineAdvancedSettings(batchEngineOrModel);
 
     if (validCustom) {
       setChunks(validCustom);
@@ -554,7 +565,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 : c
             )
           );
-          const res = await synthesizeChunkCore(target, generationVoiceSnapshot, (s) => setProgressStage(s));
+          const res = await synthesizeChunkCore(target, generationVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
           const readyChunk: ChunkItem = {
             ...target,
             status: "ready",

@@ -111,9 +111,11 @@ export interface EngineRequest {
   language?: string; // ISO 639-1, e.g. "vi"
   hasReferenceAudio?: boolean;
   hasReferenceText?: boolean;
+  canAutoTranscribe?: boolean;
   speed?: number;
   device?: DevicePreference;
   cudaAvailable?: boolean;
+  xVectorOnlyMode?: boolean;
 }
 
 export interface SupportCheck {
@@ -142,7 +144,9 @@ export function checkEngineSupport(caps: TtsEngineCapabilities, req: EngineReque
   if (req.hasReferenceAudio && !caps.supportsVoiceClone) {
     return { ok: false, reason: `${caps.displayName} không hỗ trợ nhân bản giọng.` };
   }
-  if (req.hasReferenceAudio && caps.referenceTextRequired && !req.hasReferenceText) {
+  const isXVectorOnly = Boolean(caps.engine === "qwen" && req.xVectorOnlyMode);
+  const refTextRequired = caps.referenceTextRequired && !isXVectorOnly;
+  if (req.hasReferenceAudio && refTextRequired && !req.hasReferenceText && !req.canAutoTranscribe) {
     return { ok: false, reason: `${caps.displayName} cần lời thoại (transcript) của audio tham chiếu.` };
   }
   if (req.speed !== undefined && Math.abs(req.speed - 1) > 1e-6 && !caps.supportsSpeed) {

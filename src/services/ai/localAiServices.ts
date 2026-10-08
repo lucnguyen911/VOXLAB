@@ -111,7 +111,14 @@ export class LocalAiServices {
   ) {}
 
   /** Throws AiError("UNSUPPORTED") with a user-facing reason — never falls back to another engine. */
-  resolveEngine(model: string, voiceId: string, text: string, language?: string, speed?: number): {
+  resolveEngine(
+    model: string,
+    voiceId: string | undefined,
+    text: string,
+    language?: string,
+    speed?: number,
+    advancedSettings?: Record<string, unknown>
+  ): {
     caps: TtsEngineCapabilities;
     ref: VoiceReference | null;
     language?: string;
@@ -120,7 +127,9 @@ export class LocalAiServices {
     if (!caps) {
       throw new AiError("UNSUPPORTED", `Model "${model}" không phải engine local (OmniVoice / Chatterbox Turbo / Qwen TTS).`);
     }
-    const ref = this.resolveVoice(voiceId);
+    const advanced = advancedSettings || getEngineAdvancedSettings(caps.engine);
+    const xVectorOnly = Boolean(advanced?.x_vector_only_mode ?? advanced?.xVectorOnlyMode);
+    const ref = this.resolveVoice(voiceId || "");
     const lang = language || ref?.language || detectTextLanguage(text);
     const check = checkEngineSupport(caps, {
       language: lang,
@@ -128,6 +137,8 @@ export class LocalAiServices {
       hasReferenceText: Boolean(ref?.refText?.trim()),
       speed,
       device: this.settings().device,
+      xVectorOnlyMode: xVectorOnly,
+      canAutoTranscribe: true,
     });
     if (!check.ok) throw new AiError("UNSUPPORTED", check.reason || "Engine không hỗ trợ yêu cầu này.");
     return { caps, ref, language: lang };
@@ -169,7 +180,14 @@ export class LocalAiServices {
   }
 
   async synthesize(req: SynthesizeRequest): Promise<SynthesizeResult> {
-    const { caps, ref, language } = this.resolveEngine(req.model, req.voiceId, req.text, req.language, req.speed);
+    const { caps, ref, language } = this.resolveEngine(
+      req.model,
+      req.voiceId,
+      req.text,
+      req.language,
+      req.speed,
+      req.advancedSettings
+    );
     const params: Record<string, unknown> = {
       engine: caps.engine,
       text: req.text,

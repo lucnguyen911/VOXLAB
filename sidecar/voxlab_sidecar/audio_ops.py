@@ -151,6 +151,7 @@ def prepare_clone_reference(
     language: str | None = None,
     models_dir: str | None = None,
     max_duration: float = 10.0,
+    skip_transcribe: bool = False,
 ) -> tuple[str, str]:
     """Ensures reference audio passed to zero-shot voice cloning engines (OmniVoice, Chatterbox, Qwen)
     is within optimal duration (3.0s - 8.5s) and has an exact matching transcript.
@@ -159,7 +160,7 @@ def prepare_clone_reference(
     models suffer severe attention drift, word dropping, and hallucination. This function automatically:
       1. Finds the optimal silence/breath boundary between 4.5s and 8.5s.
       2. Saves the trimmed slice into a persistent cache.
-      3. Transcribes the slice using faster-whisper to guarantee 100% audio-text synchronization.
+      3. Transcribes the slice using faster-whisper to guarantee 100% audio-text synchronization (unless skip_transcribe is True).
     """
     import hashlib
     import tempfile
@@ -179,7 +180,7 @@ def prepare_clone_reference(
     # If within optimal duration (<= 10.0s), keep original audio file
     if duration <= max_duration:
         user_txt = (ref_text or "").strip()
-        if not user_txt:
+        if not user_txt and not skip_transcribe:
             from .asr_engine import auto_transcribe_sample
             user_txt = auto_transcribe_sample(ref_audio_path, language=language, models_dir=models_dir)
         return ref_audio_path, user_txt
@@ -223,7 +224,9 @@ def prepare_clone_reference(
         write_audio_atomic(cached_wav, trimmed, sr=sr, fmt="wav")
         log(f"[prepare_clone_reference] Extracted {best_idx / sr:.2f}s slice to {cached_wav}")
 
-    from .asr_engine import auto_transcribe_sample
-    transcript = auto_transcribe_sample(cached_wav, language=language, models_dir=models_dir)
-    return cached_wav, transcript
+    user_txt = (ref_text or "").strip()
+    if not user_txt and not skip_transcribe:
+        from .asr_engine import auto_transcribe_sample
+        user_txt = auto_transcribe_sample(cached_wav, language=language, models_dir=models_dir)
+    return cached_wav, user_txt
 

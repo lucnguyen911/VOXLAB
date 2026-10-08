@@ -96,20 +96,6 @@ class TtsService:
         language = params.get("language") or None
         if language and "*" not in caps.supported_languages and language not in caps.supported_languages:
             raise SidecarError("INVALID_REQUEST", f"{caps.display_name} does not support language '{language}'")
-        ref_audio = params.get("refAudioPath") or None
-        ref_text = params.get("refText") or None
-        if ref_audio:
-            if not caps.supports_voice_clone:
-                raise SidecarError("INVALID_REQUEST", f"{caps.display_name} does not support voice cloning")
-            if not os.path.isfile(ref_audio):
-                raise SidecarError("INPUT_NOT_FOUND", "refAudioPath does not exist")
-            from ..audio_ops import prepare_clone_reference
-            models_dir = os.path.dirname(getattr(self, "_active_model_dir", "")) if getattr(self, "_active_model_dir", None) else None
-            ref_audio, ref_text = prepare_clone_reference(ref_audio, ref_text, language=language, models_dir=models_dir)
-            if caps.reference_text_required and not (isinstance(ref_text, str) and ref_text.strip()):
-                raise SidecarError("INVALID_REQUEST", f"{caps.display_name} voice cloning requires refText")
-        elif caps.reference_audio_required:
-            raise SidecarError("INVALID_REQUEST", f"{caps.display_name} requires a reference audio (refAudioPath)")
         speed = params.get("speed")
         if speed is not None and float(speed) != 1.0 and not caps.supports_speed:
             raise SidecarError("INVALID_REQUEST", f"{caps.display_name} does not support speed control")
@@ -127,6 +113,33 @@ class TtsService:
         for k in allowed_direct_keys:
             if k in params and params[k] is not None:
                 extra[k] = params[k]
+
+        x_vec_mode = bool(extra.get("x_vector_only_mode") or extra.get("xVectorOnlyMode"))
+
+        ref_audio = params.get("refAudioPath") or None
+        ref_text = params.get("refText") or None
+        if ref_audio:
+            if not caps.supports_voice_clone:
+                raise SidecarError("INVALID_REQUEST", f"{caps.display_name} does not support voice cloning")
+            if not os.path.isfile(ref_audio):
+                raise SidecarError("INPUT_NOT_FOUND", "refAudioPath does not exist")
+            from ..audio_ops import prepare_clone_reference
+            models_dir = os.path.dirname(getattr(self, "_active_model_dir", "")) if getattr(self, "_active_model_dir", None) else None
+            # Requirement 3: If Qwen is in x_vector_only_mode, skip Whisper transcription completely
+            skip_transcribe = (caps.engine == "qwen" and x_vec_mode)
+            ref_audio, ref_text = prepare_clone_reference(
+                ref_audio,
+                ref_text,
+                language=language,
+                models_dir=models_dir,
+                skip_transcribe=skip_transcribe,
+            )
+            # In x_vector_only_mode for Qwen, ref_text is NOT required
+            ref_text_required = caps.reference_text_required and not (caps.engine == "qwen" and x_vec_mode)
+            if ref_text_required and not (isinstance(ref_text, str) and ref_text.strip()):
+                raise SidecarError("INVALID_REQUEST", f"{caps.display_name} voice cloning requires refText")
+        elif caps.reference_audio_required:
+            raise SidecarError("INVALID_REQUEST", f"{caps.display_name} requires a reference audio (refAudioPath)")
 
         req = SynthesisRequest(text=text, language=language, ref_audio_path=ref_audio, ref_text=ref_text,
                                speed=float(speed) if speed is not None else None,

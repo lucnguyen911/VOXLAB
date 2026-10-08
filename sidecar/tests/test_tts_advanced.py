@@ -191,5 +191,148 @@ class TestQwenAdapterAdvancedSettings(unittest.TestCase):
         self.assertEqual(kwargs.get("x_vector_only_mode"), False)
 
 
+class TestQwenServiceAndOps(unittest.TestCase):
+    def _create_mock_qwen_service(self):
+        mock_adapter = MagicMock()
+        mock_adapter.capabilities = Capabilities(
+            engine="qwen",
+            display_name="Qwen3-TTS 1.7B Base",
+            model_id="qwen3-tts-1.7b-base",
+            supported_languages=("zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it"),
+            supports_vietnamese=False,
+            supports_voice_clone=True,
+            reference_audio_required=True,
+            reference_text_required=True,
+            supports_cuda=True,
+            supports_cpu=False,
+            supports_speed=False,
+            model_size_mb=4334,
+            sample_rate=24000,
+        )
+        mock_adapter.loaded = True
+        mock_adapter.synthesize.return_value = (np.zeros(24000, dtype=np.float32), 24000)
+
+        svc = TtsService([mock_adapter])
+        svc._active = mock_adapter
+        return svc, mock_adapter
+
+    def test_qwen_x_vector_only_mode_no_ref_text_success(self):
+        svc, mock_adapter = self._create_mock_qwen_service()
+        mock_ctx = MagicMock()
+        mock_ctx.cancelled = False
+
+        params = {
+            "engine": "qwen",
+            "text": "Hello world",
+            "outputPath": "test_output.wav",
+            "refAudioPath": "sample_ref.wav",
+            # refText is omitted
+            "advancedSettings": {
+                "x_vector_only_mode": True,
+            },
+        }
+
+        with patch("soundfile.write"), patch("os.replace"), patch("os.path.isdir", return_value=True), \
+             patch("os.path.isfile", return_value=True), \
+             patch("voxlab_sidecar.audio_ops.prepare_clone_reference", return_value=("sample_ref.wav", "")) as mock_prep:
+            svc.synthesize("tts.synthesize", params, mock_ctx)
+
+        # Verified: prepare_clone_reference was called with skip_transcribe=True
+        mock_prep.assert_called_once()
+        self.assertEqual(mock_prep.call_args[1].get("skip_transcribe"), True)
+
+        # Verified: adapter.synthesize received x_vector_only_mode=True
+        mock_adapter.synthesize.assert_called_once()
+        req: SynthesisRequest = mock_adapter.synthesize.call_args[0][0]
+        self.assertEqual(req.ref_audio_path, "sample_ref.wav")
+        self.assertTrue(req.extra.get("x_vector_only_mode"))
+
+    def test_qwen_icl_mode_with_ref_text_success(self):
+        svc, mock_adapter = self._create_mock_qwen_service()
+        mock_ctx = MagicMock()
+        mock_ctx.cancelled = False
+
+        params = {
+            "engine": "qwen",
+            "text": "Hello world",
+            "outputPath": "test_output.wav",
+            "refAudioPath": "sample_ref.wav",
+            "refText": "Matching reference text",
+            "advancedSettings": {
+                "x_vector_only_mode": False,
+            },
+        }
+
+        with patch("soundfile.write"), patch("os.replace"), patch("os.path.isdir", return_value=True), \
+             patch("os.path.isfile", return_value=True), \
+             patch("voxlab_sidecar.audio_ops.prepare_clone_reference", return_value=("sample_ref.wav", "Matching reference text")) as mock_prep:
+            svc.synthesize("tts.synthesize", params, mock_ctx)
+
+        mock_prep.assert_called_once()
+        self.assertEqual(mock_prep.call_args[1].get("skip_transcribe"), False)
+        mock_adapter.synthesize.assert_called_once()
+
+    def test_qwen_icl_mode_missing_ref_text_and_no_whisper_fails(self):
+        from voxlab_sidecar.protocol import SidecarError
+        svc, _ = self._create_mock_qwen_service()
+        mock_ctx = MagicMock()
+        mock_ctx.cancelled = False
+
+        params = {
+            "engine": "qwen",
+            "text": "Hello world",
+            "outputPath": "test_output.wav",
+            "refAudioPath": "sample_ref.wav",
+            # refText is omitted, and Whisper auto-transcribe returns empty ""
+            "advancedSettings": {
+                "x_vector_only_mode": False,
+            },
+        }
+
+        with patch("soundfile.write"), patch("os.replace"), patch("os.path.isdir", return_value=True), \
+             patch("os.path.isfile", return_value=True), \
+             patch("voxlab_sidecar.audio_ops.prepare_clone_reference", return_value=("sample_ref.wav", "")):
+            with self.assertRaises(SidecarError) as cm:
+                svc.synthesize("tts.synthesize", params, mock_ctx)
+            self.assertEqual(cm.exception.code, "INVALID_REQUEST")
+            self.assertIn("requires refText", cm.exception.message)
+
+    def test_qwen_missing_ref_audio_fails_in_both_modes(self):
+        from voxlab_sidecar.protocol import SidecarError
+        svc, _ = self._create_mock_qwen_service()
+        mock_ctx = MagicMock()
+        mock_ctx.cancelled = False
+
+        for x_vec in (True, False):
+            params = {
+                "engine": "qwen",
+                "text": "Hello world",
+                "outputPath": "test_output.wav",
+                "advancedSettings": {
+                    "x_vector_only_mode": x_vec,
+                },
+            }
+            with patch("os.path.isdir", return_value=True):
+                with self.assertRaises(SidecarError) as cm:
+                    svc.synthesize("tts.synthesize", params, mock_ctx)
+                self.assertEqual(cm.exception.code, "INVALID_REQUEST")
+                self.assertIn("requires a reference audio", cm.exception.message)
+
+    def test_prepare_clone_reference_skips_whisper_when_skip_transcribe_is_true(self):
+        from voxlab_sidecar.audio_ops import prepare_clone_reference
+
+        mock_info = MagicMock()
+        mock_info.duration = 6.0
+        mock_info.samplerate = 24000
+
+        with patch("os.path.isfile", return_value=True), \
+             patch("soundfile.info", return_value=mock_info), \
+             patch("voxlab_sidecar.asr_engine.auto_transcribe_sample") as mock_asr:
+            audio_path, txt = prepare_clone_reference("mock.wav", ref_text=None, skip_transcribe=True)
+            self.assertEqual(audio_path, "mock.wav")
+            self.assertEqual(txt, "")
+            mock_asr.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

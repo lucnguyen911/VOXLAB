@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Sliders,
   Sparkles,
@@ -8,6 +8,7 @@ import {
   Save,
   Check,
   Info,
+  AlertCircle,
 } from "lucide-react";
 import {
   TtsModelKey,
@@ -16,33 +17,60 @@ import {
   OmniVoiceAdvancedSettings,
   ChatterboxAdvancedSettings,
   QwenAdvancedSettings,
+  OMNIVOICE_DEFAULT_SETTINGS,
+  CHATTERBOX_DEFAULT_SETTINGS,
+  QWEN_DEFAULT_SETTINGS,
   OMNIVOICE_PRESETS,
   CHATTERBOX_PRESETS,
   QWEN_PRESETS,
   getTtsAdvancedSettingsSnapshot,
   loadTtsAdvancedSettings,
   saveTtsAdvancedSettings,
-  resetModelTtsAdvancedSettings,
 } from "../../services/ai/ttsAdvancedSettings";
 
 export const AdvancedTtsSettingsPanel: React.FC = () => {
   const [activeModel, setActiveModel] = useState<TtsModelKey>("omnivoice");
-  const [settings, setSettings] = useState<StoredTtsAdvancedSettings>(() => getTtsAdvancedSettingsSnapshot());
+
+  // Requirement 2: Strict separation between Persisted State and Draft State
+  const [persistedSettings, setPersistedSettings] = useState<StoredTtsAdvancedSettings>(() =>
+    getTtsAdvancedSettingsSnapshot()
+  );
+  const [draftSettings, setDraftSettings] = useState<StoredTtsAdvancedSettings>(() =>
+    getTtsAdvancedSettingsSnapshot()
+  );
+
+  // Track if user has modified draft before async load resolves to prevent overwriting user input
+  const hasUserEditedRef = useRef(false);
+
   const [isSaved, setIsSaved] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
     loadTtsAdvancedSettings().then((loaded) => {
-      if (mounted) setSettings(loaded);
+      if (!mounted) return;
+      setPersistedSettings(loaded);
+      // Only sync draft if user hasn't started editing
+      if (!hasUserEditedRef.current) {
+        setDraftSettings(loaded);
+      }
     });
     return () => {
       mounted = false;
     };
   }, []);
 
+  const hasUnsavedChanges = useMemo(
+    () => JSON.stringify(draftSettings) !== JSON.stringify(persistedSettings),
+    [draftSettings, persistedSettings]
+  );
+
   const handlePresetSelect = useCallback((modelKey: TtsModelKey, preset: ModelPresetId) => {
-    setSettings((prev) => {
+    hasUserEditedRef.current = true;
+    setIsSaved(false);
+    setSaveError(null);
+    setDraftSettings((prev) => {
       const next = JSON.parse(JSON.stringify(prev)) as StoredTtsAdvancedSettings;
       if (preset === "custom") {
         next[modelKey].preset = "custom";
@@ -61,69 +89,99 @@ export const AdvancedTtsSettingsPanel: React.FC = () => {
       }
       return next;
     });
-    setIsSaved(false);
   }, []);
 
   const handleUpdateOmniVoice = useCallback(
     <K extends keyof OmniVoiceAdvancedSettings>(key: K, val: OmniVoiceAdvancedSettings[K]) => {
-      setSettings((prev) => {
+      hasUserEditedRef.current = true;
+      setIsSaved(false);
+      setSaveError(null);
+      setDraftSettings((prev) => {
         const next = JSON.parse(JSON.stringify(prev)) as StoredTtsAdvancedSettings;
         next.omnivoice.preset = "custom";
         next.omnivoice.settings[key] = val;
         return next;
       });
-      setIsSaved(false);
     },
     []
   );
 
   const handleUpdateChatterbox = useCallback(
     <K extends keyof ChatterboxAdvancedSettings>(key: K, val: ChatterboxAdvancedSettings[K]) => {
-      setSettings((prev) => {
+      hasUserEditedRef.current = true;
+      setIsSaved(false);
+      setSaveError(null);
+      setDraftSettings((prev) => {
         const next = JSON.parse(JSON.stringify(prev)) as StoredTtsAdvancedSettings;
         next.chatterbox.preset = "custom";
         next.chatterbox.settings[key] = val;
         return next;
       });
-      setIsSaved(false);
     },
     []
   );
 
   const handleUpdateQwen = useCallback(
     <K extends keyof QwenAdvancedSettings>(key: K, val: QwenAdvancedSettings[K]) => {
-      setSettings((prev) => {
+      hasUserEditedRef.current = true;
+      setIsSaved(false);
+      setSaveError(null);
+      setDraftSettings((prev) => {
         const next = JSON.parse(JSON.stringify(prev)) as StoredTtsAdvancedSettings;
         next.qwen.preset = "custom";
         next.qwen.settings[key] = val;
         return next;
       });
-      setIsSaved(false);
     },
     []
   );
 
   const handleSave = async () => {
     setIsSaving(true);
+    setSaveError(null);
     try {
-      await saveTtsAdvancedSettings(settings);
+      await saveTtsAdvancedSettings(draftSettings);
+      setPersistedSettings(draftSettings);
       setIsSaved(true);
       setTimeout(() => setIsSaved(false), 3000);
+    } catch (err: any) {
+      setSaveError(String(err?.message || err));
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleResetCurrentModel = async () => {
-    const updated = await resetModelTtsAdvancedSettings(activeModel);
-    setSettings(updated);
-    setIsSaved(true);
-    setTimeout(() => setIsSaved(false), 3000);
-  };
+  // Requirement 2: Reset ONLY resets the draft of the active model in-memory.
+  // It NEVER modifies other models' draft changes and NEVER writes to App Data until "Lưu cài đặt" is pressed.
+  const handleResetCurrentModel = useCallback(() => {
+    hasUserEditedRef.current = true;
+    setIsSaved(false);
+    setSaveError(null);
+    setDraftSettings((prev) => {
+      const next = JSON.parse(JSON.stringify(prev)) as StoredTtsAdvancedSettings;
+      if (activeModel === "omnivoice") {
+        next.omnivoice = {
+          preset: "balanced",
+          settings: { ...OMNIVOICE_DEFAULT_SETTINGS },
+        };
+      } else if (activeModel === "chatterbox") {
+        next.chatterbox = {
+          preset: "balanced",
+          settings: { ...CHATTERBOX_DEFAULT_SETTINGS },
+        };
+      } else if (activeModel === "qwen") {
+        next.qwen = {
+          preset: "balanced",
+          settings: { ...QWEN_DEFAULT_SETTINGS },
+        };
+      }
+      return next;
+    });
+  }, [activeModel]);
 
-  const omniState = settings.omnivoice;
-  const chatterState = settings.chatterbox;
-  const qwenState = settings.qwen;
+  const omniState = draftSettings.omnivoice;
+  const chatterState = draftSettings.chatterbox;
+  const qwenState = draftSettings.qwen;
 
   return (
     <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-5">
@@ -142,13 +200,27 @@ export const AdvancedTtsSettingsPanel: React.FC = () => {
           </p>
         </div>
 
-        {/* Global Save feedback */}
-        {isSaved && (
-          <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-medium shrink-0 animate-fade-in">
-            <Check className="w-3.5 h-3.5" />
-            <span>Đã lưu cài đặt</span>
-          </div>
-        )}
+        {/* Global Save feedback & Unsaved status */}
+        <div className="flex items-center gap-2 shrink-0">
+          {hasUnsavedChanges && !isSaved && !saveError && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs font-medium animate-fade-in">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+              <span>Có thay đổi chưa lưu</span>
+            </div>
+          )}
+          {isSaved && (
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-medium shrink-0 animate-fade-in">
+              <Check className="w-3.5 h-3.5" />
+              <span>Đã lưu cài đặt</span>
+            </div>
+          )}
+          {saveError && (
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-medium shrink-0 animate-fade-in">
+              <AlertCircle className="w-3.5 h-3.5" />
+              <span>Lưu thất bại: {saveError}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Model Sub-Tabs */}
@@ -785,10 +857,14 @@ export const AdvancedTtsSettingsPanel: React.FC = () => {
           type="button"
           onClick={handleSave}
           disabled={isSaving}
-          className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-accent hover:bg-accentHover text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50 ${
+            hasUnsavedChanges
+              ? "bg-accent hover:bg-accentHover ring-2 ring-accent/40 font-bold"
+              : "bg-accent hover:bg-accentHover"
+          }`}
         >
           {isSaved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
-          <span>{isSaving ? "Đang lưu..." : isSaved ? "Đã lưu cài đặt" : "Lưu cài đặt TTS"}</span>
+          <span>{isSaving ? "Đang lưu..." : isSaved ? "Đã lưu cài đặt" : hasUnsavedChanges ? "Lưu thay đổi cài đặt" : "Lưu cài đặt TTS"}</span>
         </button>
       </div>
     </div>

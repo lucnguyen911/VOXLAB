@@ -174,4 +174,37 @@ describe("Global Advanced TTS Settings - Storage Persistence & Isolation", () =>
     assert.equal(afterReset.chatterbox.preset, "expressive");
     assert.equal(afterReset.chatterbox.settings.temperature, 0.95);
   });
+
+  it("preserves unsaved edits in other models when resetting active model draft in memory", async () => {
+    // 1. Initial saved state: all default
+    await saveTtsAdvancedSettings(getDefaultTtsAdvancedSettings());
+
+    // 2. User edits Chatterbox in draft (temperature = 0.7) without saving to disk
+    const draft: StoredTtsAdvancedSettings = JSON.parse(JSON.stringify(getDefaultTtsAdvancedSettings()));
+    draft.chatterbox.preset = "custom";
+    draft.chatterbox.settings.temperature = 0.7;
+
+    // 3. User switches to OmniVoice and modifies it to num_step = 64
+    draft.omnivoice.preset = "custom";
+    draft.omnivoice.settings.num_step = 64;
+
+    // 4. User hits "Khôi phục mặc định cho OmniVoice"
+    // UI logic: only reset OmniVoice in draftSettings in memory without touching chatterbox
+    draft.omnivoice = {
+      preset: "balanced",
+      settings: { ...OMNIVOICE_DEFAULT_SETTINGS },
+    };
+
+    // Verify Chatterbox draft is intact
+    assert.equal(draft.chatterbox.settings.temperature, 0.7, "Chatterbox draft edit must not be lost");
+    assert.equal(draft.omnivoice.settings.num_step, 32, "OmniVoice must be reset to balanced default");
+
+    // 5. User clicks "Lưu cài đặt TTS"
+    await saveTtsAdvancedSettings(draft);
+
+    // 6. Reload from disk to verify durable persistence of both
+    const reloaded = await loadTtsAdvancedSettings();
+    assert.equal(reloaded.chatterbox.settings.temperature, 0.7, "Chatterbox 0.7 must be persisted to disk");
+    assert.equal(reloaded.omnivoice.settings.num_step, 32, "OmniVoice 32 must be persisted to disk");
+  });
 });
