@@ -35,5 +35,6 @@ sidecar/dist/
 
 # Local scratch and temporary work files
 scratch/
+start_app.bat
 
 

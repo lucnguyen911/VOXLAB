@@ -69,14 +69,34 @@ describe("Global Advanced TTS Settings - Model Configuration & Sanitization", ()
       position_temperature: 999,
       class_temperature: -5,
       postprocess_output: true,
+      t_shift: 100.0,
+      layer_penalty_factor: -5.0,
+      duration: 500.0,
+      preprocess_prompt: false,
+      pad_duration: 10.0,
+      fade_duration: -2.0,
+      audio_chunk_duration: 120.0,
+      audio_chunk_threshold: 5.0,
     };
     const sanitized = sanitizeOmniVoiceSettings(outOfBounds);
     assert.equal(sanitized.num_step, 128);
     assert.equal(sanitized.guidance_scale, 1.0);
-    assert.equal(sanitized.denoise, true); // fallback
+    assert.equal(sanitized.denoise, true); // fallback for invalid non-boolean
     assert.equal(sanitized.position_temperature, 20.0);
     assert.equal(sanitized.class_temperature, 0.0);
     assert.equal(sanitized.postprocess_output, true);
+    assert.equal(sanitized.t_shift, 5.0);
+    assert.equal(sanitized.layer_penalty_factor, 0.0);
+    assert.equal(sanitized.duration, 300.0);
+    assert.equal(sanitized.preprocess_prompt, false);
+    assert.equal(sanitized.pad_duration, 2.0);
+    assert.equal(sanitized.fade_duration, 0.0);
+    assert.equal(sanitized.audio_chunk_duration, 60.0);
+    assert.equal(sanitized.audio_chunk_threshold, 10.0);
+
+    // Verify null duration remains null (Auto)
+    const autoDuration = sanitizeOmniVoiceSettings({ duration: null });
+    assert.equal(autoDuration.duration, null);
   });
 
   it("clamps and sanitizes Chatterbox Turbo parameters safely", () => {
@@ -85,12 +105,14 @@ describe("Global Advanced TTS Settings - Model Configuration & Sanitization", ()
       top_p: 0.0,
       top_k: 99999,
       repetition_penalty: 0.1,
+      norm_loudness: false,
     };
     const sanitized = sanitizeChatterboxSettings(outOfBounds);
     assert.equal(sanitized.temperature, 2.0);
     assert.equal(sanitized.top_p, 0.1);
     assert.equal(sanitized.top_k, 2000);
     assert.equal(sanitized.repetition_penalty, 1.0);
+    assert.equal(sanitized.norm_loudness, false);
   });
 
   it("clamps and sanitizes Qwen3-TTS Base parameters safely", () => {
@@ -101,6 +123,12 @@ describe("Global Advanced TTS Settings - Model Configuration & Sanitization", ()
       repetition_penalty: 10,
       do_sample: false,
       x_vector_only_mode: true,
+      subtalker_dosample: false,
+      subtalker_top_k: 9999,
+      subtalker_top_p: -1.0,
+      subtalker_temperature: 10.0,
+      max_new_tokens: 50,
+      non_streaming_mode: true,
     };
     const sanitized = sanitizeQwenSettings(outOfBounds);
     assert.equal(sanitized.temperature, 0.1);
@@ -109,6 +137,12 @@ describe("Global Advanced TTS Settings - Model Configuration & Sanitization", ()
     assert.equal(sanitized.repetition_penalty, 2.0);
     assert.equal(sanitized.do_sample, false);
     assert.equal(sanitized.x_vector_only_mode, true);
+    assert.equal(sanitized.subtalker_dosample, false);
+    assert.equal(sanitized.subtalker_top_k, 200);
+    assert.equal(sanitized.subtalker_top_p, 0.1);
+    assert.equal(sanitized.subtalker_temperature, 2.0);
+    assert.equal(sanitized.max_new_tokens, 256);
+    assert.equal(sanitized.non_streaming_mode, true);
   });
 
   it("gracefully restores defaults on corrupted or empty input", () => {

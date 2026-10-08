@@ -152,6 +152,43 @@ class OmniVoiceAdapter(TtsEngineAdapter):
         if postprocess is not None:
             kwargs["postprocess_output"] = bool(postprocess)
 
+        t_shift = extra.get("t_shift", extra.get("tShift"))
+        if t_shift is not None:
+            kwargs["t_shift"] = max(0.01, min(5.0, float(t_shift)))
+
+        lpf = extra.get("layer_penalty_factor", extra.get("layerPenaltyFactor"))
+        if lpf is not None:
+            kwargs["layer_penalty_factor"] = max(0.0, min(20.0, float(lpf)))
+
+        dur = extra.get("duration")
+        if dur is not None and str(dur).strip() != "" and str(dur).lower() != "auto":
+            try:
+                dur_val = float(dur)
+                if dur_val > 0:
+                    kwargs["duration"] = max(0.1, min(300.0, dur_val))
+            except (ValueError, TypeError):
+                pass
+
+        prep_prompt = extra.get("preprocess_prompt", extra.get("preprocessPrompt"))
+        if prep_prompt is not None:
+            kwargs["preprocess_prompt"] = bool(prep_prompt)
+
+        pad_dur = extra.get("pad_duration", extra.get("padDuration"))
+        if pad_dur is not None:
+            kwargs["pad_duration"] = max(0.0, min(2.0, float(pad_dur)))
+
+        fade_dur = extra.get("fade_duration", extra.get("fadeDuration"))
+        if fade_dur is not None:
+            kwargs["fade_duration"] = max(0.0, min(2.0, float(fade_dur)))
+
+        chunk_dur = extra.get("audio_chunk_duration", extra.get("audioChunkDuration"))
+        if chunk_dur is not None:
+            kwargs["audio_chunk_duration"] = max(5.0, min(60.0, float(chunk_dur)))
+
+        chunk_thresh = extra.get("audio_chunk_threshold", extra.get("audioChunkThreshold"))
+        if chunk_thresh is not None:
+            kwargs["audio_chunk_threshold"] = max(10.0, min(120.0, float(chunk_thresh)))
+
         audios = self._model.generate(**kwargs)
         return np.asarray(audios[0], dtype=np.float32), int(self._model.sampling_rate)
 

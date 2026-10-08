@@ -105,6 +105,30 @@ class QwenTtsAdapter(TtsEngineAdapter):
         if do_sample is not None:
             kwargs["do_sample"] = bool(do_sample)
 
+        sub_sample = extra.get("subtalker_dosample", extra.get("subtalkerDosample"))
+        if sub_sample is not None:
+            kwargs["subtalker_dosample"] = bool(sub_sample)
+
+        sub_top_k = extra.get("subtalker_top_k", extra.get("subtalkerTopK"))
+        if sub_top_k is not None:
+            kwargs["subtalker_top_k"] = max(1, min(200, int(sub_top_k)))
+
+        sub_top_p = extra.get("subtalker_top_p", extra.get("subtalkerTopP"))
+        if sub_top_p is not None:
+            kwargs["subtalker_top_p"] = max(0.1, min(1.0, float(sub_top_p)))
+
+        sub_temp = extra.get("subtalker_temperature", extra.get("subtalkerTemperature"))
+        if sub_temp is not None:
+            kwargs["subtalker_temperature"] = max(0.1, min(2.0, float(sub_temp)))
+
+        max_new_tokens = extra.get("max_new_tokens", extra.get("maxNewTokens"))
+        if max_new_tokens is not None:
+            kwargs["max_new_tokens"] = max(256, min(8192, int(max_new_tokens)))
+
+        non_streaming = extra.get("non_streaming_mode", extra.get("nonStreamingMode"))
+        if non_streaming is not None:
+            kwargs["non_streaming_mode"] = bool(non_streaming)
+
         x_vec = extra.get("x_vector_only_mode", extra.get("xVectorOnlyMode"))
         x_vector_only_mode = bool(x_vec) if x_vec is not None else False
 

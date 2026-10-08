@@ -108,7 +108,19 @@ class TtsService:
             "repetition_penalty", "repetitionPenalty", "guidance_scale", "guidanceScale",
             "denoise", "position_temperature", "positionTemperature", "class_temperature",
             "classTemperature", "postprocess_output", "postprocessOutput", "do_sample",
-            "doSample", "x_vector_only_mode", "xVectorOnlyMode", "instruct"
+            "doSample", "x_vector_only_mode", "xVectorOnlyMode", "instruct",
+            "t_shift", "tShift", "layer_penalty_factor", "layerPenaltyFactor",
+            "duration", "preprocess_prompt", "preprocessPrompt",
+            "pad_duration", "padDuration", "fade_duration", "fadeDuration",
+            "audio_chunk_duration", "audioChunkDuration",
+            "audio_chunk_threshold", "audioChunkThreshold",
+            "norm_loudness", "normLoudness",
+            "subtalker_dosample", "subtalkerDosample",
+            "subtalker_top_k", "subtalkerTopK",
+            "subtalker_top_p", "subtalkerTopP",
+            "subtalker_temperature", "subtalkerTemperature",
+            "max_new_tokens", "maxNewTokens",
+            "non_streaming_mode", "nonStreamingMode"
         )
         for k in allowed_direct_keys:
             if k in params and params[k] is not None:

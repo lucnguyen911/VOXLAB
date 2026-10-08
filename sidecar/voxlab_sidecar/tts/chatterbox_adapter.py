@@ -102,6 +102,11 @@ class ChatterboxAdapter(TtsEngineAdapter):
         rep_pen = extra.get("repetition_penalty", extra.get("repetitionPenalty"))
         if rep_pen is not None:
             kwargs["repetition_penalty"] = max(1.0, min(2.0, float(rep_pen)))
+
+        norm_loudness = extra.get("norm_loudness", extra.get("normLoudness"))
+        if norm_loudness is not None:
+            kwargs["norm_loudness"] = bool(norm_loudness)
+
         wav = self._model.generate(**kwargs)
         arr = wav.detach().cpu().numpy() if hasattr(wav, "detach") else np.asarray(wav)
         return np.asarray(arr, dtype=np.float32).reshape(-1), int(self._model.sr)

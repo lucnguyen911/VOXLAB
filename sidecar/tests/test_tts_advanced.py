@@ -81,6 +81,14 @@ class TestOmniVoiceAdapterAdvancedSettings(unittest.TestCase):
                 "position_temperature": 4.5,
                 "class_temperature": 0.1,
                 "postprocess_output": True,
+                "t_shift": 0.15,
+                "layer_penalty_factor": 6.5,
+                "duration": 8.5,
+                "preprocess_prompt": False,
+                "pad_duration": 0.2,
+                "fade_duration": 0.15,
+                "audio_chunk_duration": 20.0,
+                "audio_chunk_threshold": 40.0,
             },
         )
 
@@ -96,6 +104,14 @@ class TestOmniVoiceAdapterAdvancedSettings(unittest.TestCase):
         self.assertEqual(kwargs.get("position_temperature"), 4.5)
         self.assertEqual(kwargs.get("class_temperature"), 0.1)
         self.assertEqual(kwargs.get("postprocess_output"), True)
+        self.assertEqual(kwargs.get("t_shift"), 0.15)
+        self.assertEqual(kwargs.get("layer_penalty_factor"), 6.5)
+        self.assertEqual(kwargs.get("duration"), 8.5)
+        self.assertEqual(kwargs.get("preprocess_prompt"), False)
+        self.assertEqual(kwargs.get("pad_duration"), 0.2)
+        self.assertEqual(kwargs.get("fade_duration"), 0.15)
+        self.assertEqual(kwargs.get("audio_chunk_duration"), 20.0)
+        self.assertEqual(kwargs.get("audio_chunk_threshold"), 40.0)
 
     def test_omnivoice_clamping_out_of_bounds(self):
         adapter = OmniVoiceAdapter()
@@ -111,6 +127,13 @@ class TestOmniVoiceAdapterAdvancedSettings(unittest.TestCase):
                 "guidance_scale": 0.2,  # clamped to 1.0
                 "position_temperature": 99.0,  # clamped to 20.0
                 "class_temperature": -1.0,  # clamped to 0.0
+                "t_shift": 10.0,  # clamped to 5.0
+                "layer_penalty_factor": -5.0,  # clamped to 0.0
+                "duration": 500.0,  # clamped to 300.0
+                "pad_duration": 10.0,  # clamped to 2.0
+                "fade_duration": -1.0,  # clamped to 0.0
+                "audio_chunk_duration": 100.0,  # clamped to 60.0
+                "audio_chunk_threshold": 5.0,  # clamped to 10.0
             },
         )
 
@@ -122,6 +145,31 @@ class TestOmniVoiceAdapterAdvancedSettings(unittest.TestCase):
         self.assertEqual(kwargs.get("guidance_scale"), 1.0)
         self.assertEqual(kwargs.get("position_temperature"), 20.0)
         self.assertEqual(kwargs.get("class_temperature"), 0.0)
+        self.assertEqual(kwargs.get("t_shift"), 5.0)
+        self.assertEqual(kwargs.get("layer_penalty_factor"), 0.0)
+        self.assertEqual(kwargs.get("duration"), 300.0)
+        self.assertEqual(kwargs.get("pad_duration"), 2.0)
+        self.assertEqual(kwargs.get("fade_duration"), 0.0)
+        self.assertEqual(kwargs.get("audio_chunk_duration"), 60.0)
+        self.assertEqual(kwargs.get("audio_chunk_threshold"), 10.0)
+
+    def test_omnivoice_auto_duration_omitted_from_kwargs(self):
+        adapter = OmniVoiceAdapter()
+        mock_model = MagicMock()
+        mock_model.sampling_rate = 24000
+        mock_model.generate.return_value = [np.zeros(24000, dtype=np.float32)]
+        adapter._model = mock_model
+
+        # When duration is None or string "auto" or empty
+        req = SynthesisRequest(
+            text="Tự động tính độ dài",
+            extra={"duration": None},
+        )
+        with patch("os.path.isfile", return_value=False):
+            adapter.synthesize(req)
+
+        kwargs = mock_model.generate.call_args[1]
+        self.assertNotIn("duration", kwargs)
 
 
 class TestChatterboxAdapterAdvancedSettings(unittest.TestCase):
@@ -139,9 +187,11 @@ class TestChatterboxAdapterAdvancedSettings(unittest.TestCase):
                 "top_p": 0.92,
                 "top_k": 800,
                 "repetition_penalty": 1.25,
+                "norm_loudness": False,
                 # These unsupported keys must be ignored
                 "cfg_weight": 0.5,
                 "exaggeration": 0.8,
+                "speed": 1.2,
             },
         )
 
@@ -153,8 +203,10 @@ class TestChatterboxAdapterAdvancedSettings(unittest.TestCase):
         self.assertEqual(kwargs.get("top_p"), 0.92)
         self.assertEqual(kwargs.get("top_k"), 800)
         self.assertEqual(kwargs.get("repetition_penalty"), 1.25)
+        self.assertEqual(kwargs.get("norm_loudness"), False)
         self.assertNotIn("cfg_weight", kwargs)
         self.assertNotIn("exaggeration", kwargs)
+        self.assertNotIn("speed", kwargs)
 
 
 class TestQwenAdapterAdvancedSettings(unittest.TestCase):
@@ -176,6 +228,12 @@ class TestQwenAdapterAdvancedSettings(unittest.TestCase):
                 "repetition_penalty": 1.08,
                 "do_sample": True,
                 "x_vector_only_mode": False,
+                "subtalker_dosample": False,
+                "subtalker_top_k": 35,
+                "subtalker_top_p": 0.92,
+                "subtalker_temperature": 0.75,
+                "max_new_tokens": 4096,
+                "non_streaming_mode": True,
             },
         )
 
@@ -189,6 +247,35 @@ class TestQwenAdapterAdvancedSettings(unittest.TestCase):
         self.assertEqual(kwargs.get("repetition_penalty"), 1.08)
         self.assertEqual(kwargs.get("do_sample"), True)
         self.assertEqual(kwargs.get("x_vector_only_mode"), False)
+        self.assertEqual(kwargs.get("subtalker_dosample"), False)
+        self.assertEqual(kwargs.get("subtalker_top_k"), 35)
+        self.assertEqual(kwargs.get("subtalker_top_p"), 0.92)
+        self.assertEqual(kwargs.get("subtalker_temperature"), 0.75)
+        self.assertEqual(kwargs.get("max_new_tokens"), 4096)
+        self.assertEqual(kwargs.get("non_streaming_mode"), True)
+
+    def test_qwen_subtalker_and_tokens_clamping(self):
+        adapter = QwenTtsAdapter()
+        mock_model = MagicMock()
+        mock_model.generate_voice_clone.return_value = ([np.zeros(24000, dtype=np.float32)], 24000)
+        adapter._model = mock_model
+
+        req = SynthesisRequest(
+            text="Clamping check",
+            extra={
+                "subtalker_top_k": 9999,  # clamped to 200
+                "subtalker_top_p": 2.5,  # clamped to 1.0
+                "subtalker_temperature": 5.0,  # clamped to 2.0
+                "max_new_tokens": 10000,  # clamped to 8192
+            },
+        )
+
+        adapter.synthesize(req)
+        kwargs = mock_model.generate_voice_clone.call_args[1]
+        self.assertEqual(kwargs.get("subtalker_top_k"), 200)
+        self.assertEqual(kwargs.get("subtalker_top_p"), 1.0)
+        self.assertEqual(kwargs.get("subtalker_temperature"), 2.0)
+        self.assertEqual(kwargs.get("max_new_tokens"), 8192)
 
 
 class TestQwenServiceAndOps(unittest.TestCase):
