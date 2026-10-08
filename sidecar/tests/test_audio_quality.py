@@ -149,6 +149,114 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
         self.assertTrue(any(i["code"] == "REPEATED_WORDS" for i in issues))
 
+    def test_mandatory_diesel_fuel_natural_gap_is_not_flagged(self):
+        """Mandatory requirement: No abnormal pause flagged between 'diesel' and 'fuel' under normal flow."""
+        text = "It is the staggering cost of moving freight on diesel fuel, an economic burden baked into every physical product sold across the nation."
+        mock_words = [
+            {"word": "It", "startSec": 0.1, "endSec": 0.3, "probability": 0.98},
+            {"word": "is", "startSec": 0.32, "endSec": 0.45, "probability": 0.98},
+            {"word": "the", "startSec": 0.48, "endSec": 0.6, "probability": 0.98},
+            {"word": "staggering", "startSec": 0.62, "endSec": 1.2, "probability": 0.98},
+            {"word": "cost", "startSec": 1.25, "endSec": 1.55, "probability": 0.98},
+            {"word": "of", "startSec": 1.58, "endSec": 1.7, "probability": 0.98},
+            {"word": "moving", "startSec": 1.72, "endSec": 2.1, "probability": 0.98},
+            {"word": "freight", "startSec": 2.15, "endSec": 2.5, "probability": 0.98},
+            {"word": "on", "startSec": 2.55, "endSec": 2.7, "probability": 0.98},
+            # Normal conversational transition between diesel and fuel (0.08s gap):
+            {"word": "diesel", "startSec": 2.75, "endSec": 3.15, "probability": 0.98},
+            {"word": "fuel,", "startSec": 3.23, "endSec": 3.65, "probability": 0.98},
+            # Natural 0.60s pause after comma:
+            {"word": "an", "startSec": 4.25, "endSec": 4.4, "probability": 0.98},
+            {"word": "economic", "startSec": 4.45, "endSec": 4.9, "probability": 0.98},
+            {"word": "burden", "startSec": 4.95, "endSec": 5.35, "probability": 0.98},
+            {"word": "baked", "startSec": 5.4, "endSec": 5.75, "probability": 0.98},
+            {"word": "into", "startSec": 5.8, "endSec": 6.05, "probability": 0.98},
+            {"word": "every", "startSec": 6.1, "endSec": 6.4, "probability": 0.98},
+            {"word": "physical", "startSec": 6.45, "endSec": 6.85, "probability": 0.98},
+            {"word": "product", "startSec": 6.9, "endSec": 7.3, "probability": 0.98},
+            {"word": "sold", "startSec": 7.35, "endSec": 7.65, "probability": 0.98},
+            {"word": "across", "startSec": 7.7, "endSec": 8.05, "probability": 0.98},
+            {"word": "the", "startSec": 8.1, "endSec": 8.25, "probability": 0.98},
+            {"word": "nation.", "startSec": 8.3, "endSec": 8.75, "probability": 0.98},
+        ]
+        issues, metrics = audio_quality.analyze_word_alignment_issues(
+            text, mock_words, audio_duration_sec=9.0, return_metrics=True
+        )
+        self.assertEqual(len(issues), 0)
+        self.assertGreater(metrics["wpm"], 100)
+        self.assertLess(metrics["wpm"], 200)
+
+    def test_rapid_pace_warning_and_normalization(self):
+        # 16 words spoken in 2.5s -> 384 raw WPM
+        text = "This is a rapidly synthesized sentence that speaks far too fast for comfortable human listening."
+        mock_words = [
+            {"word": w, "startSec": i * 0.15, "endSec": (i * 0.15) + 0.12, "probability": 0.95}
+            for i, w in enumerate(text.split())
+        ]
+        # At speed=1.0 -> effective WPM is ~384 > 240 threshold -> flags RAPID_PACE
+        issues = audio_quality.analyze_word_alignment_issues(
+            text, mock_words, speed=1.0, language="en", audio_duration_sec=2.5
+        )
+        self.assertTrue(any(i["code"] == "RAPID_PACE" for i in issues))
+
+        # When user deliberately chose speed=1.5x -> normalized effective WPM is ~256 (still slightly fast)
+        # But if speed=2.0x -> effective WPM is 192 < 240 threshold -> no RAPID_PACE warning!
+        issues_fast = audio_quality.analyze_word_alignment_issues(
+            text, mock_words, speed=2.0, language="en", audio_duration_sec=2.5
+        )
+        self.assertFalse(any(i["code"] == "RAPID_PACE" for i in issues_fast))
+
+    def test_crowded_words_detection(self):
+        text = "We observe rapid crowded syllables in this sentence."
+        # "rapid", "crowded", "syllables" are 3 consecutive words with dur < 0.09 and gap <= 0.02
+        mock_words = [
+            {"word": "We", "startSec": 0.1, "endSec": 0.25, "probability": 0.95},
+            {"word": "observe", "startSec": 0.28, "endSec": 0.5, "probability": 0.95},
+            {"word": "rapid", "startSec": 0.52, "endSec": 0.59, "probability": 0.90},      # dur 0.07s
+            {"word": "crowded", "startSec": 0.60, "endSec": 0.67, "probability": 0.90},    # gap 0.01s, dur 0.07s
+            {"word": "syllables", "startSec": 0.68, "endSec": 0.75, "probability": 0.90},  # gap 0.01s, dur 0.07s
+            {"word": "in", "startSec": 0.85, "endSec": 0.95, "probability": 0.95},
+            {"word": "this", "startSec": 0.98, "endSec": 1.15, "probability": 0.95},
+            {"word": "sentence.", "startSec": 1.2, "endSec": 1.6, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        crowded_issues = [i for i in issues if i["code"] == "CROWDED_WORDS"]
+        self.assertEqual(len(crowded_issues), 1)
+        self.assertIn("rapid", crowded_issues[0]["message"])
+        self.assertIn("syllables", crowded_issues[0]["message"])
+
+    def test_possible_omission_detection(self):
+        text = "This algorithm delivers remarkable stability for speech."
+        # In ASR, "remarkable" (10 chars >= 4) is completely missing, and surrounding gap is 0.05s < 0.12s
+        mock_words = [
+            {"word": "This", "startSec": 0.1, "endSec": 0.35, "probability": 0.98},
+            {"word": "algorithm", "startSec": 0.4, "endSec": 0.85, "probability": 0.98},
+            {"word": "delivers", "startSec": 0.9, "endSec": 1.35, "probability": 0.95},
+            # "remarkable" was swallowed here! delivers ends at 1.35, stability starts at 1.40 (gap = 0.05s)
+            {"word": "stability", "startSec": 1.40, "endSec": 1.85, "probability": 0.95},
+            {"word": "for", "startSec": 1.9, "endSec": 2.05, "probability": 0.98},
+            {"word": "speech.", "startSec": 2.1, "endSec": 2.5, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        omission_issues = [i for i in issues if i["code"] == "POSSIBLE_OMISSION"]
+        self.assertEqual(len(omission_issues), 1)
+        self.assertEqual(omission_issues[0]["words"], ["remarkable"])
+        self.assertIn("remarkable", omission_issues[0]["message"])
+
+    def test_clarity_time_stretch(self):
+        from voxlab_sidecar.audio_ops import apply_clarity_time_stretch
+        # Create 1 second of 440Hz test sine tone
+        sr = 22050
+        t = np.linspace(0, 1.0, sr, endpoint=False, dtype=np.float32)
+        sine = np.sin(2 * np.pi * 440 * t)
+
+        stretched = apply_clarity_time_stretch(sine, sr=sr, rate=0.95)
+        # Should be stretched by ~5.26%
+        ratio = len(stretched) / len(sine)
+        self.assertGreater(ratio, 1.04)
+        self.assertLess(ratio, 1.07)
+        self.assertLessEqual(float(np.max(np.abs(stretched))), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -237,4 +237,65 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(review.status, "error");
     assert.equal(review.issues[0]?.code, "NO_AUDIO");
   });
+
+  it("V9: recognizes RAPID_PACE, CROWDED_WORDS, and POSSIBLE_OMISSION as yellow warnings and doesn't count as error", () => {
+    const chunks: ChunkItem[] = [
+      {
+        id: "chunk_pace",
+        index: 1,
+        text: "Too fast pace chunk",
+        originalText: "Too fast pace chunk",
+        status: "ready",
+        durationSec: 2.1,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "RAPID_PACE",
+              message: "Tốc độ đọc dồn dập",
+            },
+          ],
+          metrics: { wpm: 285.4, rawWpm: 285.4 },
+          summary: "Tốc độ đọc dồn dập",
+          checkedAt: Date.now(),
+        },
+      },
+      {
+        id: "chunk_crowded",
+        index: 2,
+        text: "Crowded words chunk",
+        originalText: "Crowded words chunk",
+        status: "ready",
+        durationSec: 3.0,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "CROWDED_WORDS",
+              message: "Dính chữ",
+            },
+            {
+              severity: "warning",
+              code: "POSSIBLE_OMISSION",
+              message: "Nuốt từ",
+            },
+          ],
+          summary: "Dính chữ",
+          checkedAt: Date.now(),
+        },
+      },
+    ];
+
+    const stats = countChunkQualityIssues(chunks);
+    assert.equal(stats.errorCount, 0);
+    assert.equal(stats.warningCount, 2);
+    assert.equal(isChunkError(chunks[0]), false);
+    assert.equal(isChunkWarning(chunks[0]), true);
+    assert.equal(isChunkError(chunks[1]), false);
+    assert.equal(isChunkWarning(chunks[1]), true);
+  });
 });

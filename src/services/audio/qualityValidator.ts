@@ -74,7 +74,8 @@ export function countChunkQualityIssues(chunks: ChunkItem[]): ChunkQualityStats 
 export async function validateChunkAudioQuality(
   chunk: ChunkItem,
   language?: string,
-  customAi?: LocalAiServices | null
+  customAi?: LocalAiServices | null,
+  speed?: number
 ): Promise<AudioQualityReview> {
   const now = Date.now();
 
@@ -99,10 +100,11 @@ export async function validateChunkAudioQuality(
     const ai = customAi !== undefined ? customAi : await getSharedAiServices();
 
     if (ai && chunk.audioFilePath) {
-      const res = await ai.validateAudioQuality(chunk.audioFilePath, chunk.text, language);
+      const res = await ai.validateAudioQuality(chunk.audioFilePath, chunk.text, language, speed);
       return {
         status: res.status,
         issues: res.issues || [],
+        metrics: res.metrics,
         summary: res.summary || (res.status === "pass" ? "Đạt" : "Đã kiểm tra"),
         checkedAt: now,
         audioPath: chunk.audioFilePath,

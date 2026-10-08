@@ -38,9 +38,18 @@ export interface AudioQualityIssue {
   words?: [string, string];
 }
 
+export interface AudioQualityMetrics {
+  wpm?: number;
+  rawWpm?: number;
+  paceVariance?: number;
+  detectedWordsCount?: number;
+  sourceWordsCount?: number;
+}
+
 export interface AudioQualityReview {
   status: AudioQualityStatus;
   issues: AudioQualityIssue[];
+  metrics?: AudioQualityMetrics;
   summary: string;
   checkedAt: number;
   audioPath?: string;

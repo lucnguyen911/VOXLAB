@@ -108,11 +108,13 @@ def main(argv: list[str] | None = None) -> int:
             text = params.get("text") or ""
             language = params.get("language")
             models_dir = params.get("modelsDir")
+            speed = float(params.get("speed") or 1.0)
             res = audio_quality.validate_audio_quality(
                 audio_path=audio_path,
                 text=text,
                 language=language,
                 models_dir=models_dir,
+                speed=speed,
             )
             ctx.progress(100.0, "validated")
             return res

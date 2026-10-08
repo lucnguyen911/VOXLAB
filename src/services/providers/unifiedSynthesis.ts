@@ -7,6 +7,7 @@ export interface SynthesisCoreOptions {
   scope?: string;
   id?: string;
   advancedSettings?: Record<string, unknown>;
+  optimizeClarity?: boolean;
   onProgress?: (pct: number, stage: string) => void;
 }
 
@@ -69,6 +70,15 @@ export async function synthesizeSpeechCore(
     if (!ai) {
       throw new Error("Local AI runtime chưa khởi tạo.");
     }
+    let optClarity = options.optimizeClarity;
+    if (optClarity === undefined) {
+      try {
+        const raw = typeof localStorage !== "undefined" ? localStorage.getItem("voxlab_tts_settings") : null;
+        if (raw) {
+          optClarity = JSON.parse(raw).optimizeClarity === true;
+        }
+      } catch {}
+    }
     const res = await ai.synthesize({
       model: snapshot.modelId || "omnivoice",
       voiceId: snapshot.voiceId,
@@ -76,6 +86,7 @@ export async function synthesizeSpeechCore(
       outputPath,
       speed: snapshot.speed,
       advancedSettings: options.advancedSettings,
+      optimizeClarity: optClarity,
       onProgress: options.onProgress,
     });
     durationSec = res.durationSec;

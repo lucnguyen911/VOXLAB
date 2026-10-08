@@ -22,6 +22,16 @@ from .protocol import log
 
 PUNCTUATION_CHARS = set(".,!?;:—–-…()[]\"'“”„«»¿¡")
 
+VI_MINOR_STOPWORDS = {
+    "và", "của", "là", "thì", "mà", "cho", "ở", "với", "nhưng", "đã", "đang", "sẽ",
+    "được", "bị", "các", "những", "một", "về", "trong", "có", "này", "đó", "ra", "vào"
+}
+EN_MINOR_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "by",
+    "is", "are", "was", "were", "it", "its", "that", "this", "be", "as"
+}
+IGNORED_OMISSION_WORDS = VI_MINOR_STOPWORDS | EN_MINOR_STOPWORDS
+
 
 def validate_audio_file(audio_path: str, expected_text: str | None = None) -> tuple[bool, list[dict[str, Any]], dict[str, Any]]:
     """Technical audio validation. Returns (is_valid, error_issues, audio_info)."""
@@ -154,11 +164,47 @@ def analyze_word_alignment_issues(
     text: str,
     asr_words: list[dict[str, Any]],
     min_abnormal_pause_sec: float = 0.50,
-) -> list[dict[str, Any]]:
-    """Analyzes ASR words with timestamps against source text to identify abnormal pauses and anomalies."""
+    speed: float = 1.0,
+    language: str | None = None,
+    audio_duration_sec: float = 0.0,
+    return_metrics: bool = False,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Analyzes ASR words with timestamps against source text to identify:
+    - Abnormal pauses between unpunctuated words (ABNORMAL_PAUSE)
+    - Consecutive rapid/merged words lacking acoustic transition (CROWDED_WORDS)
+    - Unusually rushed overall pace (RAPID_PACE)
+    - Missing meaningful words bounded by fast transitions (POSSIBLE_OMISSION)
+    - Severe word repetitions (REPEATED_WORDS)
+    """
     issues: list[dict[str, Any]] = []
+
+    source_words, delimiters = tokenize_text_with_delimiters(text)
+    n_src = len(source_words)
+    total_dur = float(audio_duration_sec)
+    if total_dur <= 0 and asr_words:
+        total_dur = float(asr_words[-1].get("endSec", 0.0))
+
+    raw_wpm = (n_src / total_dur * 60.0) if total_dur > 0 and n_src > 0 else 0.0
+    eff_speed = float(speed) if (speed and float(speed) > 0) else 1.0
+    effective_wpm = raw_wpm / eff_speed
+
+    durations = [
+        float(w.get("endSec", 0.0)) - float(w.get("startSec", 0.0))
+        for w in asr_words
+        if float(w.get("endSec", 0.0)) > float(w.get("startSec", 0.0))
+    ]
+    pace_variance = float(np.var(durations)) if len(durations) > 1 else 0.0
+
+    metrics: dict[str, Any] = {
+        "wpm": round(effective_wpm, 1),
+        "rawWpm": round(raw_wpm, 1),
+        "paceVariance": round(pace_variance, 4),
+        "detectedWordsCount": len(asr_words),
+        "sourceWordsCount": n_src,
+    }
+
     if not text.strip() or not asr_words:
-        return issues
+        return (issues, metrics) if return_metrics else issues
 
     # 1. Check for severe word repetition in ASR words (hallucination loop)
     consecutive_repeat_count = 1
@@ -181,22 +227,83 @@ def analyze_word_alignment_issues(
             consecutive_repeat_count = 1
             last_word_clean = w_clean
 
-    # 2. Tokenize source text
-    source_words, delimiters = tokenize_text_with_delimiters(text)
+    # 2. Check for overall rushing pace (RAPID_PACE)
+    is_vietnamese = (language == "vi") or bool(re.search(r"[\u00C0-\u1EF9]", text))
+    rapid_threshold = 290.0 if is_vietnamese else 240.0
+    if total_dur >= 2.0 and n_src >= 6 and effective_wpm > rapid_threshold:
+        issues.append({
+            "severity": "warning",
+            "code": "RAPID_PACE",
+            "message": (
+                f"Cảnh báo: Tốc độ đọc dồn dập bất thường ({int(round(effective_wpm))} từ/phút). "
+                f"Vui lòng nghe lại hoặc bật Tối ưu độ rõ giọng đọc."
+            ),
+            "wpm": round(effective_wpm, 1),
+            "timeRange": [0.0, round(total_dur, 3)],
+        })
+
+    # 3. Align source words and ASR words using SequenceMatcher
     source_words_clean = [clean_word(w) for w in source_words]
     asr_words_clean = [clean_word(w.get("word", "")) for w in asr_words]
 
-    # 3. Align source words and ASR words using SequenceMatcher
     matcher = difflib.SequenceMatcher(None, source_words_clean, asr_words_clean)
     matching_blocks = matcher.get_matching_blocks()
 
-    # Map each ASR word index to its matching source word index
     asr_to_source: dict[int, int] = {}
     for block in matching_blocks:
         for offset in range(block.size):
             asr_to_source[block.b + offset] = block.a + offset
 
-    # 4. Check for abnormal pauses between consecutive ASR words
+    # 4. Check for crowded/merged words (CROWDED_WORDS: 3+ consecutive words with gap <= 0.02s and dur < 0.09s)
+    crowded_group: list[int] = []
+
+    def _record_crowded(indices: list[int]) -> None:
+        if len(indices) < 3:
+            return
+        src_indices = [asr_to_source.get(k) for k in indices if asr_to_source.get(k) is not None]
+        for si in range(len(src_indices) - 1):
+            idx_a, idx_b = src_indices[si], src_indices[si + 1]
+            if idx_b > idx_a:
+                delims = "".join(delimiters[idx_a + 1 : idx_b + 1])
+                if "-" in delims or "—" in delims or "–" in delims:
+                    return
+
+        words_text = [asr_words[k].get("word", "").strip() for k in indices]
+        joined_words = " ".join(words_text)
+        t_start = float(asr_words[indices[0]].get("startSec", 0.0))
+        t_end = float(asr_words[indices[-1]].get("endSec", 0.0))
+        issues.append({
+            "severity": "warning",
+            "code": "CROWDED_WORDS",
+            "message": (
+                f"Cảnh báo: Phát hiện các từ bị dính vào nhau không có khoảng chuyển tiếp tự nhiên ('{joined_words}'). "
+                f"Vui lòng nghe lại hoặc bật Tối ưu độ rõ giọng đọc."
+            ),
+            "words": [clean_word(words_text[0]), clean_word(words_text[-1])],
+            "timeRange": [round(t_start, 3), round(t_end, 3)],
+        })
+
+    for idx, w in enumerate(asr_words):
+        w_dur = float(w.get("endSec", 0.0)) - float(w.get("startSec", 0.0))
+        w_prob = float(w.get("probability", 1.0))
+        if w_dur < 0.09 and w_prob >= 0.50:
+            if not crowded_group:
+                crowded_group.append(idx)
+            else:
+                prev_w = asr_words[crowded_group[-1]]
+                w_gap = float(w.get("startSec", 0.0)) - float(prev_w.get("endSec", 0.0))
+                if w_gap <= 0.02:
+                    crowded_group.append(idx)
+                else:
+                    _record_crowded(crowded_group)
+                    crowded_group = [idx]
+        else:
+            _record_crowded(crowded_group)
+            crowded_group = []
+
+    _record_crowded(crowded_group)
+
+    # 5. Check for abnormal pauses between consecutive ASR words
     for i in range(len(asr_words) - 1):
         w1 = asr_words[i]
         w2 = asr_words[i + 1]
@@ -227,14 +334,10 @@ def analyze_word_alignment_issues(
         is_natural_pause = False
 
         if src_idx1 is not None and src_idx2 is not None and src_idx2 > src_idx1:
-            # Check delimiters between src_idx1 and src_idx2 in source text
-            # delimiters[k] is before source_words[k], so delimiters between src_idx1 and src_idx2
-            # are delimiters[src_idx1 + 1] through delimiters[src_idx2]
             combined_delimiter = "".join(delimiters[k] for k in range(src_idx1 + 1, src_idx2 + 1))
             if has_punctuation_boundary(combined_delimiter):
                 is_natural_pause = True
         else:
-            # Fallback heuristic: check if w1 or w2 in raw ASR string has trailing/leading punctuation
             raw_w1 = w1.get("word", "")
             raw_w2 = w2.get("word", "")
             if any(c in PUNCTUATION_CHARS for c in raw_w1) or any(c in PUNCTUATION_CHARS for c in raw_w2):
@@ -252,7 +355,43 @@ def analyze_word_alignment_issues(
                 "timeRange": [round(end1, 3), round(start2, 3)],
             })
 
-    return issues
+    # 6. Check for possible omitted words (POSSIBLE_OMISSION)
+    for b_idx in range(len(matching_blocks) - 1):
+        block_curr = matching_blocks[b_idx]
+        block_next = matching_blocks[b_idx + 1]
+
+        end_src = block_curr.a + block_curr.size
+        start_src = block_next.a
+
+        if start_src > end_src:
+            if block_curr.size > 0 and block_next.b < len(asr_words):
+                idx_prev_asr = block_curr.b + block_curr.size - 1
+                idx_next_asr = block_next.b
+                w_prev = asr_words[idx_prev_asr]
+                w_next = asr_words[idx_next_asr]
+                p_prev = float(w_prev.get("probability", 1.0))
+                p_next = float(w_next.get("probability", 1.0))
+                t_end_prev = float(w_prev.get("endSec", 0.0))
+                t_start_next = float(w_next.get("startSec", 0.0))
+                gap_omission = t_start_next - t_end_prev
+
+                if p_prev >= 0.65 and p_next >= 0.65 and gap_omission < 0.12:
+                    for src_pos in range(end_src, start_src):
+                        missing_word = source_words[src_pos]
+                        m_clean = clean_word(missing_word)
+                        if len(m_clean) >= 4 and m_clean not in IGNORED_OMISSION_WORDS:
+                            issues.append({
+                                "severity": "warning",
+                                "code": "POSSIBLE_OMISSION",
+                                "message": (
+                                    f"Cảnh báo: Nghi vấn nuốt từ hoặc phát âm không đầy đủ tại '{m_clean}'. "
+                                    f"Vui lòng nghe lại đoạn này."
+                                ),
+                                "words": [m_clean],
+                                "timeRange": [round(t_end_prev, 3), round(t_start_next, 3)],
+                            })
+
+    return (issues, metrics) if return_metrics else issues
 
 
 def validate_audio_quality(
@@ -260,6 +399,7 @@ def validate_audio_quality(
     text: str,
     language: str | None = None,
     models_dir: str | None = None,
+    speed: float = 1.0,
     force_skip_whisper: bool = False,
 ) -> dict[str, Any]:
     """Complete audio quality validation pipeline.
@@ -267,6 +407,7 @@ def validate_audio_quality(
     {
         "status": "pass" | "warning" | "error" | "unverified",
         "issues": list[dict],
+        "metrics": dict,
         "summary": str,
         "durationSec": float,
         "sampleRate": int,
@@ -275,16 +416,31 @@ def validate_audio_quality(
     }
     """
     checked_at = time.time()
+    source_words, _ = tokenize_text_with_delimiters(text) if text else ([], [])
+    n_src = len(source_words)
+    eff_speed = float(speed) if (speed and float(speed) > 0) else 1.0
 
     # Step 1: Technical Audio Validation
     valid, tech_issues, info = validate_audio_file(audio_path, text)
+    dur = float(info.get("durationSec", 0.0))
+    raw_wpm = (n_src / dur * 60.0) if dur > 0 and n_src > 0 else 0.0
+
+    default_metrics = {
+        "wpm": round(raw_wpm / eff_speed, 1),
+        "rawWpm": round(raw_wpm, 1),
+        "paceVariance": 0.0,
+        "detectedWordsCount": 0,
+        "sourceWordsCount": n_src,
+    }
+
     if not valid:
         summary = tech_issues[0]["message"] if tech_issues else "Lỗi tệp âm thanh"
         return {
             "status": "error",
             "issues": tech_issues,
+            "metrics": default_metrics,
             "summary": summary,
-            "durationSec": info.get("durationSec", 0.0),
+            "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
@@ -295,8 +451,9 @@ def validate_audio_quality(
         return {
             "status": "unverified",
             "issues": [],
+            "metrics": default_metrics,
             "summary": "Chưa kiểm chứng (không sử dụng mô hình ASR cục bộ)",
-            "durationSec": info.get("durationSec", 0.0),
+            "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
@@ -309,8 +466,9 @@ def validate_audio_quality(
         return {
             "status": "unverified",
             "issues": [],
+            "metrics": default_metrics,
             "summary": "Chưa kiểm chứng (không tìm thấy mô hình faster-whisper cục bộ)",
-            "durationSec": info.get("durationSec", 0.0),
+            "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
@@ -329,8 +487,9 @@ def validate_audio_quality(
         return {
             "status": "unverified",
             "issues": [],
+            "metrics": default_metrics,
             "summary": "Chưa kiểm chứng (không thể khởi tạo mô hình ASR)",
-            "durationSec": info.get("durationSec", 0.0),
+            "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
@@ -357,14 +516,22 @@ def validate_audio_quality(
                         "probability": round(float(w.probability), 4),
                     })
 
-        alignment_issues = analyze_word_alignment_issues(text, detected_words)
+        alignment_issues, metrics = analyze_word_alignment_issues(
+            text,
+            detected_words,
+            speed=speed,
+            language=language,
+            audio_duration_sec=dur,
+            return_metrics=True,
+        )
 
         if alignment_issues:
             return {
                 "status": "warning",
                 "issues": alignment_issues,
+                "metrics": metrics,
                 "summary": alignment_issues[0]["message"],
-                "durationSec": info.get("durationSec", 0.0),
+                "durationSec": dur,
                 "sampleRate": info.get("sampleRate", 0),
                 "checkedAt": checked_at,
                 "audioPath": audio_path,
@@ -373,8 +540,9 @@ def validate_audio_quality(
         return {
             "status": "pass",
             "issues": [],
+            "metrics": metrics,
             "summary": "Đạt",
-            "durationSec": info.get("durationSec", 0.0),
+            "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
@@ -385,8 +553,9 @@ def validate_audio_quality(
         return {
             "status": "unverified",
             "issues": [],
+            "metrics": default_metrics,
             "summary": f"Chưa kiểm chứng (lỗi phân tích giọng nói: {e})",
-            "durationSec": info.get("durationSec", 0.0),
+            "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,

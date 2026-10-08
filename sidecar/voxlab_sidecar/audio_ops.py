@@ -41,6 +41,22 @@ def _resample(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
     return resample_poly(x, sr_to // g, sr_from // g).astype(np.float32)
 
 
+def apply_clarity_time_stretch(audio: np.ndarray, sr: int, rate: float = 0.95) -> np.ndarray:
+    """Applies pitch-preserving time stretch to expand micro-transitions between words and syllables.
+    Default rate 0.95x lengthens audio duration by ~5.26% without modifying pitch (F0) or speaker timbre.
+    """
+    if rate == 1.0 or audio.size == 0:
+        return audio
+    import librosa
+
+    mono = np.ascontiguousarray(audio, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+
+    stretched = librosa.effects.time_stretch(mono, rate=rate)
+    return np.clip(stretched, -1.0, 1.0).astype(np.float32)
+
+
 def write_audio_atomic(path: str, audio: np.ndarray, sr: int = CANONICAL_SAMPLE_RATE, fmt: str = "wav", mp3_kbps: int = DEFAULT_MP3_KBPS) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"

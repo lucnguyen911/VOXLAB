@@ -328,10 +328,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       });
     }
 
+    const storedSettings = loadStoredTtsSettings();
     return await synthesizeSpeechCore(targetChunk.text, snapshot, {
       scope: "tts",
       id: targetChunk.id,
       advancedSettings,
+      optimizeClarity: storedSettings.optimizeClarity,
       onProgress: (pct, stage) => {
         onStage?.(`${stage} (${pct}%)`);
         setProgressStage(`${stage} (${pct}%)`);
@@ -379,7 +381,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       };
 
       try {
-        const review = await validateChunkAudioQuality(readyChunk, snapshotToUse.language);
+        const review = await validateChunkAudioQuality(readyChunk, snapshotToUse.language, undefined, snapshotToUse.speed);
         readyChunk = { ...readyChunk, qualityReview: review };
       } catch (qErr) {
         console.warn("Quality validation error:", qErr);
@@ -498,7 +500,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               qualityReview: undefined,
             };
             try {
-              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language);
+              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language, undefined, batchVoiceSnapshot.speed);
               readyChunk = { ...readyChunk, qualityReview: review };
             } catch (qErr) {
               console.warn("Quality validation error:", qErr);
@@ -596,7 +598,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               qualityReview: undefined,
             };
             try {
-              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language);
+              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language, undefined, batchVoiceSnapshot.speed);
               readyChunk = { ...readyChunk, qualityReview: review };
             } catch (qErr) {
               console.warn("Quality validation error:", qErr);
@@ -694,7 +696,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               qualityReview: undefined,
             };
             try {
-              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language);
+              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language, undefined, batchVoiceSnapshot.speed);
               readyChunk = { ...readyChunk, qualityReview: review };
             } catch (qErr) {
               console.warn("Quality validation error:", qErr);
@@ -800,7 +802,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             qualityReview: undefined,
           };
           try {
-            const review = await validateChunkAudioQuality(readyChunk, generationVoiceSnapshot.language);
+            const review = await validateChunkAudioQuality(readyChunk, generationVoiceSnapshot.language, undefined, generationVoiceSnapshot.speed);
             readyChunk = { ...readyChunk, qualityReview: review };
           } catch (qErr) {
             console.warn("Quality validation error:", qErr);

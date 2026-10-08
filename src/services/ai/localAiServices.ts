@@ -46,6 +46,7 @@ export interface SynthesizeRequest {
   speed?: number;
   sampleRate?: number;
   advancedSettings?: Record<string, unknown>;
+  optimizeClarity?: boolean;
   onProgress?: (pct: number, stage: string) => void;
 }
 
@@ -94,7 +95,15 @@ export interface AudioQualityValidationResult {
     message: string;
     timeRange?: [number, number];
     words?: [string, string];
+    wpm?: number;
   }[];
+  metrics?: {
+    wpm?: number;
+    rawWpm?: number;
+    paceVariance?: number;
+    detectedWordsCount?: number;
+    sourceWordsCount?: number;
+  };
   summary: string;
   durationSec: number;
   sampleRate: number;
@@ -214,6 +223,7 @@ export class LocalAiServices {
     if (ref?.refText) params.refText = ref.refText;
     if (req.speed !== undefined && caps.supportsSpeed) params.speed = req.speed;
     if (req.sampleRate !== undefined) params.sampleRate = req.sampleRate;
+    if (req.optimizeClarity !== undefined) params.optimizeClarity = req.optimizeClarity;
 
     const advanced = req.advancedSettings || getEngineAdvancedSettings(caps.engine);
     if (advanced && Object.keys(advanced).length > 0) {
@@ -285,6 +295,7 @@ export class LocalAiServices {
     audioPath: string,
     text: string,
     language?: string,
+    speed?: number,
     onProgress?: (pct: number, stage: string) => void
   ): Promise<AudioQualityValidationResult> {
     const s = this.settings();
@@ -295,6 +306,7 @@ export class LocalAiServices {
         audioPath,
         text,
         language: language || "auto",
+        speed: typeof speed === "number" ? speed : 1.0,
         modelsDir: s.modelsDir,
       },
       onProgress

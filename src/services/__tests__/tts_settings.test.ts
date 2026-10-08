@@ -56,4 +56,19 @@ describe("TTS Settings Storage & Speed Range Suite", () => {
     const settings = loadStoredTtsSettings();
     assert.equal(settings.speed, 1.15);
   });
+
+  it("defaults optimizeClarity to false when storage is empty", () => {
+    const settings = loadStoredTtsSettings();
+    assert.equal(settings.optimizeClarity, false);
+  });
+
+  it("saves and reloads optimizeClarity setting correctly", () => {
+    saveStoredTtsSettings({ optimizeClarity: true });
+    const settings = loadStoredTtsSettings();
+    assert.equal(settings.optimizeClarity, true);
+
+    saveStoredTtsSettings({ optimizeClarity: false });
+    const settingsOff = loadStoredTtsSettings();
+    assert.equal(settingsOff.optimizeClarity, false);
+  });
 });
