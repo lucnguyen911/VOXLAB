@@ -32,6 +32,103 @@ EN_MINOR_STOPWORDS = {
 }
 IGNORED_OMISSION_WORDS = VI_MINOR_STOPWORDS | EN_MINOR_STOPWORDS
 
+NUMBER_WORDS = {
+    "0": {"zero", "o", "khong", "không"},
+    "1": {"one", "mot", "một", "mốt"},
+    "2": {"two", "hai"},
+    "3": {"three", "ba"},
+    "4": {"four", "bon", "bốn", "tư"},
+    "5": {"five", "nam", "năm", "lăm"},
+    "6": {"six", "sau", "sáu"},
+    "7": {"seven", "bay", "bảy"},
+    "8": {"eight", "tam", "tám"},
+    "9": {"nine", "chin", "chín"},
+    "10": {"ten", "muoi", "mười"},
+    "100": {"hundred", "tram", "trăm"},
+    "1000": {"thousand", "nghin", "nghìn", "ngàn"},
+    "1000000": {"million", "trieu", "triệu"},
+    "1000000000": {"billion", "ty", "tỷ"},
+}
+
+CONTRACTIONS = {
+    "cant": "cannot", "can't": "cannot",
+    "wont": "willnot", "won't": "willnot",
+    "dont": "donot", "don't": "donot",
+    "didnt": "didnot", "didn't": "didnot",
+    "isnt": "isnot", "isn't": "isnot",
+    "arent": "arenot", "aren't": "arenot",
+    "gonna": "goingto", "wanna": "wantto", "gotta": "gotto",
+    "cuz": "because", "cause": "because", "ok": "okay",
+    "theyre": "theyare", "they're": "theyare",
+    "we're": "weare",
+}
+
+
+def format_timestamp(seconds: float) -> str:
+    """Format seconds into MM:SS for user-facing audio review timestamps."""
+    total_seconds = max(0, int(seconds))
+    minutes = total_seconds // 60
+    secs = total_seconds % 60
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def phonetic_key(word: str) -> str:
+    """Simplified phonetic normalization for homophone and sound-alike matching."""
+    w = word.lower()
+    w = re.sub(r"ph", "f", w)
+    w = re.sub(r"c([eiy])", r"s\1", w)
+    w = re.sub(r"ck", "k", w)
+    w = re.sub(r"q", "k", w)
+    w = re.sub(r"x", "ks", w)
+    w = re.sub(r"wr", "r", w)
+    w = re.sub(r"kn", "n", w)
+    w = re.sub(r"y", "i", w)
+    w = re.sub(r"ou", "o", w)
+    w = re.sub(r"re$", "er", w)
+    w = re.sub(r"c", "k", w)
+    w = re.sub(r"(.)\1+", r"\1", w)
+    return w
+
+
+def levenshtein_dist(s1: str, s2: str) -> int:
+    """Levenshtein edit distance between two strings."""
+    if s1 == s2:
+        return 0
+    if len(s1) < len(s2):
+        return levenshtein_dist(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev[j + 1] + 1
+            deletions = curr[j] + 1
+            substitutions = prev[j] + (c1 != c2)
+            curr.append(min(insertions, deletions, substitutions))
+        prev = curr
+    return prev[-1]
+
+
+def are_words_equivalent(w1: str, w2: str) -> bool:
+    """Checks whether two words are orthographically, phonetically, or numerically equivalent."""
+    if w1 == w2:
+        return True
+    c1 = CONTRACTIONS.get(w1, w1)
+    c2 = CONTRACTIONS.get(w2, w2)
+    if c1 == c2:
+        return True
+    for num, words in NUMBER_WORDS.items():
+        if (w1 == num and w2 in words) or (w2 == num and w1 in words):
+            return True
+        if w1 in words and w2 in words:
+            return True
+    if phonetic_key(w1) == phonetic_key(w2):
+        return True
+    if len(w1) >= 4 and len(w2) >= 4 and levenshtein_dist(w1, w2) <= 1:
+        return True
+    return False
+
 
 def validate_audio_file(audio_path: str, expected_text: str | None = None) -> tuple[bool, list[dict[str, Any]], dict[str, Any]]:
     """Technical audio validation. Returns (is_valid, error_issues, audio_info)."""
@@ -170,11 +267,13 @@ def analyze_word_alignment_issues(
     return_metrics: bool = False,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
     """Analyzes ASR words with timestamps against source text to identify:
+    - Suspected stutter / syllable repetition / adjacent repeats (SUSPECTED_STUTTER)
+    - Unintended word repetition (REPEATED_WORD)
+    - Meaningful words swallowed / omitted (MISSING_WORD)
+    - Extra words detected with high confidence not in script (EXTRA_WORD)
     - Abnormal pauses between unpunctuated words (ABNORMAL_PAUSE)
     - Consecutive rapid/merged words lacking acoustic transition (CROWDED_WORDS)
     - Unusually rushed overall pace (RAPID_PACE)
-    - Missing meaningful words bounded by fast transitions (POSSIBLE_OMISSION)
-    - Severe word repetitions (REPEATED_WORDS)
     """
     issues: list[dict[str, Any]] = []
 
@@ -206,28 +305,7 @@ def analyze_word_alignment_issues(
     if not text.strip() or not asr_words:
         return (issues, metrics) if return_metrics else issues
 
-    # 1. Check for severe word repetition in ASR words (hallucination loop)
-    consecutive_repeat_count = 1
-    last_word_clean = ""
-    for w in asr_words:
-        w_clean = clean_word(w.get("word", ""))
-        if not w_clean:
-            continue
-        if w_clean == last_word_clean:
-            consecutive_repeat_count += 1
-            if consecutive_repeat_count == 4:
-                issues.append({
-                    "severity": "warning",
-                    "code": "REPEATED_WORDS",
-                    "message": f"Phát hiện khả năng lặp từ bất thường: '{w_clean}'. Vui lòng nghe lại đoạn này.",
-                    "words": [w_clean, w_clean],
-                    "timeRange": [w.get("startSec", 0.0), w.get("endSec", 0.0)],
-                })
-        else:
-            consecutive_repeat_count = 1
-            last_word_clean = w_clean
-
-    # 2. Check for overall rushing pace (RAPID_PACE)
+    # 1. Check for overall rushing pace (RAPID_PACE)
     is_vietnamese = (language == "vi") or bool(re.search(r"[\u00C0-\u1EF9]", text))
     rapid_threshold = 290.0 if is_vietnamese else 240.0
     if total_dur >= 2.0 and n_src >= 6 and effective_wpm > rapid_threshold:
@@ -242,19 +320,138 @@ def analyze_word_alignment_issues(
             "timeRange": [0.0, round(total_dur, 3)],
         })
 
-    # 3. Align source words and ASR words using SequenceMatcher
+    # Prepare cleaned word lists
     source_words_clean = [clean_word(w) for w in source_words]
     asr_words_clean = [clean_word(w.get("word", "")) for w in asr_words]
 
     matcher = difflib.SequenceMatcher(None, source_words_clean, asr_words_clean)
-    matching_blocks = matcher.get_matching_blocks()
+    opcodes = matcher.get_opcodes()
 
+    # Track ASR to source alignment for delimiter & pause checks
     asr_to_source: dict[int, int] = {}
-    for block in matching_blocks:
-        for offset in range(block.size):
-            asr_to_source[block.b + offset] = block.a + offset
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal":
+            for offset in range(i2 - i1):
+                asr_to_source[j1 + offset] = i1 + offset
+        elif tag == "replace":
+            # If phonetically / semantically equivalent, map them
+            if (i2 - i1) == (j2 - j1):
+                for offset in range(i2 - i1):
+                    s_w = source_words_clean[i1 + offset]
+                    a_w = asr_words_clean[j1 + offset]
+                    if are_words_equivalent(s_w, a_w):
+                        asr_to_source[j1 + offset] = i1 + offset
 
-    # 4. Check for crowded/merged words (CROWDED_WORDS: 3+ consecutive words with gap <= 0.02s and dur < 0.09s)
+    # 2. Check opcodes for Stutter, Repetition, Missing Word, and Extra Word
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "insert":
+            # Extra words in ASR not present in source text
+            for j in range(j1, j2):
+                w_obj = asr_words[j]
+                w_clean = asr_words_clean[j]
+                if not w_clean:
+                    continue
+                p = float(w_obj.get("probability", 1.0))
+                t_end = float(w_obj.get("endSec", 0.0))
+
+                # Check if it's an orthographic split (e.g. source: cannot -> ASR: can not)
+                if j > 0 and i1 > 0:
+                    prev_asr = asr_words_clean[j - 1]
+                    prev_src = source_words_clean[i1 - 1]
+                    if prev_asr + w_clean == prev_src:
+                        continue
+
+                prev_w = asr_words_clean[j - 1] if j > 0 else ""
+                next_w = asr_words_clean[j + 1] if (j + 1 < len(asr_words_clean)) else ""
+
+                # Repetition check (stutter vs repeated word)
+                is_repeat = (w_clean == prev_w) or (w_clean == next_w)
+                is_prefix_stutter = (
+                    bool(next_w and len(w_clean) >= 1 and next_w.startswith(w_clean) and len(next_w) > len(w_clean))
+                    or bool(prev_w and len(w_clean) >= 1 and prev_w.startswith(w_clean) and len(prev_w) > len(w_clean))
+                )
+
+                # Use start of repetition sequence so timestamp takes user to the start of the event
+                if j > 0 and w_clean == prev_w:
+                    t_start = float(asr_words[j - 1].get("startSec", 0.0))
+                else:
+                    t_start = float(w_obj.get("startSec", 0.0))
+                ts = format_timestamp(t_start)
+
+                if is_repeat or is_prefix_stutter:
+                    if next_w:
+                        ctx_words = f"{w_clean} {next_w}"
+                    elif prev_w:
+                        ctx_words = f"{prev_w} {w_clean}"
+                    else:
+                        ctx_words = w_clean
+
+                    # Group if consecutive duplicate issue already recorded for same word
+                    if issues and issues[-1]["code"] in ("SUSPECTED_STUTTER", "REPEATED_WORD", "REPEATED_WORDS") and w_clean in issues[-1].get("words", []):
+                        issues[-1]["timeRange"][1] = round(t_end, 3)
+                        # Multiple repeats (> 2) escalate to REPEATED_WORD
+                        issues[-1]["code"] = "REPEATED_WORD"
+                        continue
+
+                    if is_prefix_stutter or (len(w_clean) <= 5 and not (j > 1 and w_clean == asr_words_clean[j - 2])):
+                        issues.append({
+                            "severity": "warning",
+                            "code": "SUSPECTED_STUTTER",
+                            "message": f'Nghi vấn vấp âm gần từ "{ctx_words}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                            "words": [w_clean, next_w or prev_w],
+                            "timeRange": [round(t_start, 3), round(t_end, 3)],
+                        })
+                    else:
+                        issues.append({
+                            "severity": "warning",
+                            "code": "REPEATED_WORD",
+                            "message": f'Nghi vấn lặp từ gần từ "{ctx_words}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                            "words": [w_clean],
+                            "timeRange": [round(t_start, 3), round(t_end, 3)],
+                        })
+                elif p >= 0.65 and len(w_clean) >= 3 and w_clean not in IGNORED_OMISSION_WORDS:
+                    issues.append({
+                        "severity": "warning",
+                        "code": "EXTRA_WORD",
+                        "message": f'Nghi vấn thừa từ "{w_clean}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                        "words": [w_clean],
+                        "timeRange": [round(t_start, 3), round(t_end, 3)],
+                    })
+
+        elif tag == "delete":
+            # Meaningful words in source text swallowed/missing in ASR bounded by spoken words
+            if j1 > 0 and j1 < len(asr_words):
+                w_prev = asr_words[j1 - 1]
+                w_next = asr_words[j1]
+                t_end_prev = float(w_prev.get("endSec", 0.0))
+                t_start_next = float(w_next.get("startSec", 0.0))
+                gap = t_start_next - t_end_prev
+                p_prev = float(w_prev.get("probability", 1.0))
+                p_next = float(w_next.get("probability", 1.0))
+                ts = format_timestamp(t_end_prev)
+
+                for i in range(i1, i2):
+                    src_clean = source_words_clean[i]
+                    if not src_clean or len(src_clean) < 3 or src_clean in IGNORED_OMISSION_WORDS:
+                        continue
+
+                    # Check if it was merged with an adjacent word (e.g. ice cream -> icecream)
+                    if i > 0 and (source_words_clean[i - 1] + src_clean == asr_words_clean[j1 - 1]):
+                        continue
+                    if i + 1 < len(source_words_clean) and (src_clean + source_words_clean[i + 1] == asr_words_clean[j1]):
+                        continue
+
+                    # If surrounding words are clear and gap is too narrow to pronounce the word (< 0.18s)
+                    if p_prev >= 0.55 and p_next >= 0.55 and gap < 0.18:
+                        issues.append({
+                            "severity": "warning",
+                            "code": "MISSING_WORD",
+                            "message": f'Nghi vấn nuốt chữ tại từ "{src_clean}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                            "words": [src_clean],
+                            "timeRange": [round(t_end_prev, 3), round(t_start_next, 3)],
+                        })
+
+    # 3. Check for crowded/merged words (CROWDED_WORDS: 3+ consecutive words with gap <= 0.02s and dur < 0.09s)
     crowded_group: list[int] = []
 
     def _record_crowded(indices: list[int]) -> None:
@@ -272,12 +469,13 @@ def analyze_word_alignment_issues(
         joined_words = " ".join(words_text)
         t_start = float(asr_words[indices[0]].get("startSec", 0.0))
         t_end = float(asr_words[indices[-1]].get("endSec", 0.0))
+        ts = format_timestamp(t_start)
         issues.append({
             "severity": "warning",
             "code": "CROWDED_WORDS",
             "message": (
-                f"Cảnh báo: Phát hiện các từ bị dính vào nhau không có khoảng chuyển tiếp tự nhiên ('{joined_words}'). "
-                f"Vui lòng nghe lại hoặc bật Tối ưu độ rõ giọng đọc."
+                f"Cảnh báo: Phát hiện các từ bị dính vào nhau không có khoảng chuyển tiếp tự nhiên ('{joined_words}') "
+                f"— khoảng {ts}. Vui lòng nghe lại hoặc bật Tối ưu độ rõ giọng đọc."
             ),
             "words": [clean_word(words_text[0]), clean_word(words_text[-1])],
             "timeRange": [round(t_start, 3), round(t_end, 3)],
@@ -303,7 +501,7 @@ def analyze_word_alignment_issues(
 
     _record_crowded(crowded_group)
 
-    # 5. Check for abnormal pauses between consecutive ASR words
+    # 4. Check for abnormal pauses between consecutive ASR words
     for i in range(len(asr_words) - 1):
         w1 = asr_words[i]
         w2 = asr_words[i + 1]
@@ -318,7 +516,6 @@ def analyze_word_alignment_issues(
         w1_prob = float(w1.get("probability", 1.0))
         w2_prob = float(w2.get("probability", 1.0))
 
-        # Only evaluate confident speech detections
         if min(w1_prob, w2_prob) < 0.35:
             continue
 
@@ -330,9 +527,7 @@ def analyze_word_alignment_issues(
         src_idx1 = asr_to_source.get(i)
         src_idx2 = asr_to_source.get(i + 1)
 
-        # Check if these two words appear consecutively or close together in source text
         is_natural_pause = False
-
         if src_idx1 is not None and src_idx2 is not None and src_idx2 > src_idx1:
             combined_delimiter = "".join(delimiters[k] for k in range(src_idx1 + 1, src_idx2 + 1))
             if has_punctuation_boundary(combined_delimiter):
@@ -344,52 +539,17 @@ def analyze_word_alignment_issues(
                 is_natural_pause = True
 
         if not is_natural_pause:
+            ts = format_timestamp(end1)
             issues.append({
                 "severity": "warning",
                 "code": "ABNORMAL_PAUSE",
                 "message": (
-                    f"Cảnh báo: Phát hiện khoảng ngắt có thể bất thường giữa '{w1_text}' và '{w2_text}' "
-                    f"({gap:.2f}s). Vui lòng nghe lại đoạn này."
+                    f'Cảnh báo: Khoảng ngắt bất thường giữa "{w1_text}" và "{w2_text}" '
+                    f"({gap:.2f}s) — khoảng {ts}. Vui lòng nghe kiểm tra."
                 ),
                 "words": [w1_text, w2_text],
                 "timeRange": [round(end1, 3), round(start2, 3)],
             })
-
-    # 6. Check for possible omitted words (POSSIBLE_OMISSION)
-    for b_idx in range(len(matching_blocks) - 1):
-        block_curr = matching_blocks[b_idx]
-        block_next = matching_blocks[b_idx + 1]
-
-        end_src = block_curr.a + block_curr.size
-        start_src = block_next.a
-
-        if start_src > end_src:
-            if block_curr.size > 0 and block_next.b < len(asr_words):
-                idx_prev_asr = block_curr.b + block_curr.size - 1
-                idx_next_asr = block_next.b
-                w_prev = asr_words[idx_prev_asr]
-                w_next = asr_words[idx_next_asr]
-                p_prev = float(w_prev.get("probability", 1.0))
-                p_next = float(w_next.get("probability", 1.0))
-                t_end_prev = float(w_prev.get("endSec", 0.0))
-                t_start_next = float(w_next.get("startSec", 0.0))
-                gap_omission = t_start_next - t_end_prev
-
-                if p_prev >= 0.65 and p_next >= 0.65 and gap_omission < 0.12:
-                    for src_pos in range(end_src, start_src):
-                        missing_word = source_words[src_pos]
-                        m_clean = clean_word(missing_word)
-                        if len(m_clean) >= 4 and m_clean not in IGNORED_OMISSION_WORDS:
-                            issues.append({
-                                "severity": "warning",
-                                "code": "POSSIBLE_OMISSION",
-                                "message": (
-                                    f"Cảnh báo: Nghi vấn nuốt từ hoặc phát âm không đầy đủ tại '{m_clean}'. "
-                                    f"Vui lòng nghe lại đoạn này."
-                                ),
-                                "words": [m_clean],
-                                "timeRange": [round(t_end_prev, 3), round(t_start_next, 3)],
-                            })
 
     return (issues, metrics) if return_metrics else issues
 

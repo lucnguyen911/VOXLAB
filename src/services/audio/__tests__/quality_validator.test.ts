@@ -298,4 +298,63 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(isChunkError(chunks[1]), false);
     assert.equal(isChunkWarning(chunks[1]), true);
   });
+
+  it("V10: recognizes SUSPECTED_STUTTER, REPEATED_WORD, MISSING_WORD, and EXTRA_WORD as yellow warnings", () => {
+    const chunks: ChunkItem[] = [
+      {
+        id: "chunk_stutter",
+        index: 1,
+        text: "Out in the Nevada desert, that comfortable certainty just shattered.",
+        originalText: "Out in the Nevada desert, that comfortable certainty just shattered.",
+        status: "ready",
+        durationSec: 5.2,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "SUSPECTED_STUTTER",
+              message: 'Nghi vấn vấp âm gần từ "that comfortable" — khoảng 00:47. Vui lòng nghe kiểm tra.',
+              words: ["that", "comfortable"],
+              timeRange: [47.6, 48.2],
+            },
+          ],
+          summary: 'Nghi vấn vấp âm gần từ "that comfortable" — khoảng 00:47. Vui lòng nghe kiểm tra.',
+          checkedAt: Date.now(),
+        },
+      },
+      {
+        id: "chunk_missing",
+        index: 2,
+        text: "moving freight on diesel fuel",
+        originalText: "moving freight on diesel fuel",
+        status: "ready",
+        durationSec: 3.1,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "MISSING_WORD",
+              message: 'Nghi vấn nuốt chữ tại từ "freight" — khoảng 00:01. Vui lòng nghe kiểm tra.',
+              words: ["freight"],
+              timeRange: [1.05, 1.10],
+            },
+          ],
+          summary: 'Nghi vấn nuốt chữ tại từ "freight" — khoảng 00:01. Vui lòng nghe kiểm tra.',
+          checkedAt: Date.now(),
+        },
+      },
+    ];
+
+    const stats = countChunkQualityIssues(chunks);
+    assert.equal(stats.errorCount, 0);
+    assert.equal(stats.warningCount, 2);
+    assert.equal(isChunkError(chunks[0]), false);
+    assert.equal(isChunkWarning(chunks[0]), true);
+    assert.equal(isChunkError(chunks[1]), false);
+    assert.equal(isChunkWarning(chunks[1]), true);
+  });
 });

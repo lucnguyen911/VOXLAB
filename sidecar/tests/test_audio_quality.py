@@ -147,7 +147,7 @@ class AudioQualityTest(unittest.TestCase):
             {"word": "test", "startSec": 1.85, "endSec": 2.1, "probability": 0.98},
         ]
         issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
-        self.assertTrue(any(i["code"] == "REPEATED_WORDS" for i in issues))
+        self.assertTrue(any(i["code"] in ("REPEATED_WORD", "REPEATED_WORDS", "SUSPECTED_STUTTER") for i in issues))
 
     def test_mandatory_diesel_fuel_natural_gap_is_not_flagged(self):
         """Mandatory requirement: No abnormal pause flagged between 'diesel' and 'fuel' under normal flow."""
@@ -238,10 +238,110 @@ class AudioQualityTest(unittest.TestCase):
             {"word": "speech.", "startSec": 2.1, "endSec": 2.5, "probability": 0.98},
         ]
         issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
-        omission_issues = [i for i in issues if i["code"] == "POSSIBLE_OMISSION"]
+        omission_issues = [i for i in issues if i["code"] in ("MISSING_WORD", "POSSIBLE_OMISSION")]
         self.assertEqual(len(omission_issues), 1)
         self.assertEqual(omission_issues[0]["words"], ["remarkable"])
         self.assertIn("remarkable", omission_issues[0]["message"])
+
+    def test_mandatory_stutter_at_that_comfortable(self):
+        """Mandatory requirement: 'that comfortable' in script vs 'that that comfortable' in ASR flags stutter at 00:47."""
+        nevada_text = "Out in the Nevada desert, that comfortable certainty just shattered."
+        nevada_asr = [
+            {"word": "Out", "startSec": 45.5, "endSec": 45.8, "probability": 0.95},
+            {"word": "in", "startSec": 45.8, "endSec": 46.0, "probability": 0.95},
+            {"word": "the", "startSec": 46.0, "endSec": 46.2, "probability": 0.95},
+            {"word": "Nevada", "startSec": 46.2, "endSec": 46.8, "probability": 0.95},
+            {"word": "desert,", "startSec": 46.8, "endSec": 47.4, "probability": 0.95},
+            {"word": "that", "startSec": 47.6, "endSec": 48.06, "probability": 0.775},
+            {"word": "that", "startSec": 48.06, "endSec": 48.20, "probability": 0.855},
+            {"word": "comfortable", "startSec": 48.20, "endSec": 48.56, "probability": 0.967},
+            {"word": "certainty", "startSec": 48.6, "endSec": 49.2, "probability": 0.95},
+            {"word": "just", "startSec": 49.2, "endSec": 49.6, "probability": 0.95},
+            {"word": "shattered.", "startSec": 49.6, "endSec": 50.4, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(nevada_text, nevada_asr)
+        self.assertEqual(len(issues), 1)
+        stutter_issue = issues[0]
+        self.assertEqual(stutter_issue["severity"], "warning")
+        self.assertEqual(stutter_issue["code"], "SUSPECTED_STUTTER")
+        self.assertIn("that comfortable", stutter_issue["message"])
+        self.assertIn("00:47", stutter_issue["message"])
+
+    def test_mandatory_intentional_repetition_not_flagged(self):
+        """Mandatory requirement: 'that that is correct' present in both script and ASR must not be flagged."""
+        text = "I know that that is correct."
+        mock_words = [
+            {"word": "I", "startSec": 0.1, "endSec": 0.3, "probability": 0.98},
+            {"word": "know", "startSec": 0.35, "endSec": 0.6, "probability": 0.98},
+            {"word": "that", "startSec": 0.65, "endSec": 0.9, "probability": 0.98},
+            {"word": "that", "startSec": 0.95, "endSec": 1.2, "probability": 0.98},
+            {"word": "is", "startSec": 1.25, "endSec": 1.4, "probability": 0.98},
+            {"word": "correct.", "startSec": 1.45, "endSec": 1.9, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
+
+    def test_mandatory_diesel_fuel_abnormal_pause(self):
+        """Mandatory requirement: 'moving freight on diesel fuel' with 0.58s unpunctuated pause flags ABNORMAL_PAUSE."""
+        text = "moving freight on diesel fuel"
+        mock_words = [
+            {"word": "moving", "startSec": 0.5, "endSec": 1.0, "probability": 0.95},
+            {"word": "freight", "startSec": 1.05, "endSec": 1.5, "probability": 0.95},
+            {"word": "on", "startSec": 1.55, "endSec": 1.8, "probability": 0.95},
+            {"word": "diesel", "startSec": 1.85, "endSec": 2.25, "probability": 0.95},
+            # 0.58s gap between diesel and fuel without punctuation in script
+            {"word": "fuel", "startSec": 2.83, "endSec": 3.3, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "ABNORMAL_PAUSE")
+        self.assertIn("diesel", issues[0]["message"])
+        self.assertIn("fuel", issues[0]["message"])
+        self.assertIn("0.58", issues[0]["message"])
+
+    def test_mandatory_diesel_fuel_missing_freight(self):
+        """Mandatory requirement: 'moving freight on diesel fuel' with swallowed 'freight' flags MISSING_WORD."""
+        text = "moving freight on diesel fuel"
+        mock_words = [
+            {"word": "moving", "startSec": 0.5, "endSec": 1.0, "probability": 0.95},
+            # 'freight' omitted: gap 0.05s < 0.18s between moving and on
+            {"word": "on", "startSec": 1.05, "endSec": 1.3, "probability": 0.95},
+            {"word": "diesel", "startSec": 1.35, "endSec": 1.75, "probability": 0.95},
+            {"word": "fuel", "startSec": 1.8, "endSec": 2.2, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "MISSING_WORD")
+        self.assertIn("freight", issues[0]["message"])
+
+    def test_mandatory_homophone_sysco_cisco_not_flagged(self):
+        """Mandatory requirement: Homophones / phonetic equivalences like PepsiCo, Sysco vs Cisco are not flagged."""
+        text = "Companies like PepsiCo, Sysco, and others."
+        mock_words = [
+            {"word": "Companies", "startSec": 0.1, "endSec": 0.6, "probability": 0.95},
+            {"word": "like", "startSec": 0.65, "endSec": 0.9, "probability": 0.95},
+            {"word": "PepsiCo,", "startSec": 0.95, "endSec": 1.5, "probability": 0.95},
+            {"word": "Cisco,", "startSec": 1.8, "endSec": 2.2, "probability": 0.95},
+            {"word": "and", "startSec": 2.4, "endSec": 2.55, "probability": 0.95},
+            {"word": "others.", "startSec": 2.6, "endSec": 3.0, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
+
+    def test_mandatory_numbers_and_contractions_not_flagged(self):
+        """Mandatory requirement: Numbers (10 vs ten) and contractions (cannot vs can't) are not flagged."""
+        text = "I have 10 ideas and cannot wait."
+        mock_words = [
+            {"word": "I", "startSec": 0.1, "endSec": 0.25, "probability": 0.98},
+            {"word": "have", "startSec": 0.28, "endSec": 0.45, "probability": 0.98},
+            {"word": "ten", "startSec": 0.48, "endSec": 0.75, "probability": 0.98},
+            {"word": "ideas", "startSec": 0.78, "endSec": 1.15, "probability": 0.98},
+            {"word": "and", "startSec": 1.18, "endSec": 1.30, "probability": 0.98},
+            {"word": "can't", "startSec": 1.32, "endSec": 1.65, "probability": 0.98},
+            {"word": "wait.", "startSec": 1.68, "endSec": 2.05, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
 
     def test_clarity_time_stretch(self):
         from voxlab_sidecar.audio_ops import apply_clarity_time_stretch

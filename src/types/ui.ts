@@ -35,7 +35,7 @@ export interface AudioQualityIssue {
   code: string;
   message: string;
   timeRange?: [number, number];
-  words?: [string, string];
+  words?: string[];
 }
 
 export interface AudioQualityMetrics {
