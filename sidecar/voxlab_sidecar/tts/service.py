@@ -73,6 +73,7 @@ class TtsService:
             a.unload()
             raise SidecarError("MODEL_LOAD_FAILED", f"{type(e).__name__}: {e}") from e
         self._active = a
+        self._active_model_dir = model_dir
         load_sec = round(time.perf_counter() - started, 3)
         log(f"tts loaded engine={engine} device={device} in {load_sec}s")
         ctx.progress(100, "model_loaded")
@@ -102,6 +103,9 @@ class TtsService:
                 raise SidecarError("INVALID_REQUEST", f"{caps.display_name} does not support voice cloning")
             if not os.path.isfile(ref_audio):
                 raise SidecarError("INPUT_NOT_FOUND", "refAudioPath does not exist")
+            from ..audio_ops import prepare_clone_reference
+            models_dir = os.path.dirname(getattr(self, "_active_model_dir", "")) if getattr(self, "_active_model_dir", None) else None
+            ref_audio, ref_text = prepare_clone_reference(ref_audio, ref_text, language=language, models_dir=models_dir)
             if caps.reference_text_required and not (isinstance(ref_text, str) and ref_text.strip()):
                 raise SidecarError("INVALID_REQUEST", f"{caps.display_name} voice cloning requires refText")
         elif caps.reference_audio_required:
@@ -123,13 +127,22 @@ class TtsService:
             raise Cancelled()
         if audio is None or audio.size == 0:
             raise SidecarError("INFERENCE_FAILED", f"{caps.display_name} returned empty audio")
+        target_sr = int(params.get("sampleRate") or 0)
+        if target_sr > 0 and target_sr != sr:
+            from ..audio_ops import _resample
+            audio = _resample(audio, sr, target_sr)
+            sr = target_sr
+
+        # Master WAV Canonical Invariant: strictly MONO (1 channel)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
 
         ctx.progress(90, "writing_audio")
         import soundfile as sf
 
         tmp_path = output_path + ".tmp.wav"
         try:
-            sf.write(tmp_path, audio, sr, subtype="PCM_16")
+            sf.write(tmp_path, audio, sr, subtype="PCM_16", format="WAV")
             os.replace(tmp_path, output_path)
         finally:
             if os.path.exists(tmp_path):

@@ -8,11 +8,14 @@ import {
   PronunciationRule,
 } from "../pronunciation";
 
+import { resolveLanguage } from "./languageDetector";
+
 const STORAGE_KEY = "voxlab_normalization_enabled_groups";
 
 export interface NormalizeOptions {
   pronunciationRules?: PronunciationRule[];
   projectId?: string;
+  language?: string;
 }
 
 /**
@@ -86,10 +89,13 @@ export function normalizeText(
     replacements = matchResult.replacements;
   }
 
+  // Resolve source language
+  const resolvedLang = resolveLanguage(originalText, options);
+
   // Apply enabled groups 1-4 in fixed, deterministic order
   for (const groupId of ORDERED_GROUP_IDS) {
     if (enabledSet.has(groupId) && GROUP_APPLY_MAP[groupId]) {
-      currentText = GROUP_APPLY_MAP[groupId](currentText);
+      currentText = GROUP_APPLY_MAP[groupId](currentText, resolvedLang);
     }
   }
 

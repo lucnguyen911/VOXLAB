@@ -20,12 +20,13 @@ import {
 import { SAMPLE_VIETNAMESE_DIALOGUE } from "../services/dialogue/sampleScripts";
 import {
   assembleMasterAudioBuffer,
-  encodePcmWav,
+  calculateDialogueTimeline,
 } from "../services/dialogue/masterAssembly";
 import {
   generateDialogueSrt,
   downloadTextFile,
 } from "../services/dialogue/srtExporter";
+import { downloadAudioBlob } from "../services/audio/masterExport";
 import { loadSubtitleSettings } from "../services/subtitle";
 import { DialogueEditor } from "../components/dialogue/DialogueEditor";
 import { DialogueStudio } from "../components/dialogue/DialogueStudio";
@@ -35,7 +36,11 @@ import { TextNormalizationModal } from "../components/modals/TextNormalizationMo
 import { PronunciationManagerModal } from "../components/modals/PronunciationManagerModal";
 import { BottomAudioPlayer, ActiveAudioTrack } from "../components/layout/BottomAudioPlayer";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
-import { parsePauseDurationMs, stripPauseTokens } from "../services/pause";
+import { stripPauseTokens } from "../services/pause";
+import { createEffectiveVoiceSnapshot } from "../services/providers";
+import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
+import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
+import { MOCK_VOICES } from "../mock/data";
 
 export interface DialogueWorkspaceProps {
   voices: VoiceProfile[];
@@ -165,6 +170,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
             status: existing.status,
             audioBuffer: existing.audioBuffer,
             audioBlobUrl: existing.audioBlobUrl,
+            audioFilePath: existing.audioFilePath,
             durationSec: existing.durationSec,
             errorMessage: existing.errorMessage,
           };
@@ -276,59 +282,93 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     );
   };
 
-  // Synthesize single segment AudioBuffer & WAV blob
+  // Synthesize single segment with real speech engine (Edge TTS, OmniVoice, Cloned voices, Google)
   const synthesizeSegmentAudio = async (
     seg: DialogueSegment,
     chars: DialogueCharacter[],
-    audioCtx: AudioContext,
-    sampleRate = 44100
+    onProgress?: (pct: number, stage: string) => void
   ): Promise<DialogueSegment> => {
     const char = chars.find((c) => c.id === seg.characterId);
     const speed = char?.speed ?? 1.0;
     const pitch = char?.pitch ?? 1.0;
+    const volume = char?.volume ?? 1.0;
 
-    // Calculate duration based on words & speed, factoring in manual pauses
-    const pauseMs = parsePauseDurationMs(seg.rawText) || 0;
-    const pauseSec = pauseMs / 1000;
+    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const voiceId = char?.voiceId || availableVoices[0]?.id || "vi-VN-HoaiMyNeural";
 
-    const cleanSpeechText = stripPauseTokens(seg.cleanText);
-    const wordCount = cleanSpeechText.split(/\s+/).filter(Boolean).length;
-    const speechDurationSec = Math.max(1.0, (wordCount / 3.4) / speed);
-    const totalDurationSec = speechDurationSec + pauseSec;
-    const sampleCount = Math.floor(totalDurationSec * sampleRate);
-    const speechSampleCount = Math.floor(speechDurationSec * sampleRate);
+    const snapshot = createEffectiveVoiceSnapshot(voiceId, availableVoices, {
+      activeModel: settings.model || "Omni Voice",
+      speed,
+      pitch,
+      volume,
+    });
 
-    // Generate harmonic speech-like preview buffer
-    const buffer = audioCtx.createBuffer(1, sampleCount, sampleRate);
-    const data = buffer.getChannelData(0);
-    const baseFreq = (char?.id.charCodeAt(0) ? 140 + (char.id.charCodeAt(0) % 80) : 180) * pitch;
-
-    const isPauseAtStart = /^\s*\[(?:PAUSE|pause)\b/i.test(seg.rawText);
-    const speechOffset = isPauseAtStart ? Math.floor(pauseSec * sampleRate) : 0;
-
-    for (let s = 0; s < speechSampleCount; s++) {
-      if (speechOffset + s < sampleCount) {
-        const t = s / sampleRate;
-        const env = Math.sin(Math.PI * (s / speechSampleCount));
-        const wave =
-          Math.sin(2 * Math.PI * baseFreq * t) * 0.4 +
-          Math.sin(2 * Math.PI * (baseFreq * 2) * t) * 0.2 +
-          Math.sin(2 * Math.PI * (baseFreq * 3) * t) * 0.1;
-        data[speechOffset + s] = wave * env * 0.6;
-      }
-    }
-
-    const blob = encodePcmWav(data, sampleRate, settings.masterVolume);
-    const audioBlobUrl = URL.createObjectURL(blob);
+    const cleanSpeechText = stripPauseTokens(seg.cleanText || seg.rawText);
+    const res = await synthesizeSpeechCore(cleanSpeechText, snapshot, {
+      scope: "dialogue",
+      id: `seg_${seg.id}`,
+      onProgress,
+    });
 
     return {
       ...seg,
       status: "ready",
-      durationSec: totalDurationSec,
-      audioBuffer: buffer,
-      audioBlobUrl,
+      durationSec: res.durationSec,
+      audioBlobUrl: res.blobUrl,
+      audioFilePath: res.outputPath,
       errorMessage: undefined,
     };
+  };
+
+  // Reassembles master audio from current ready segments
+  const updateMasterAssembly = async (currentSegments: DialogueSegment[]) => {
+    const readySegs = currentSegments.filter((s) => s.status === "ready" && s.audioFilePath);
+    if (readySegs.length === 0) return;
+
+    const plan = calculateDialogueTimeline(currentSegments, settings);
+    const ai = await getSharedAiServices();
+
+    if (ai && readySegs.length === currentSegments.length) {
+      try {
+        const masterPath = await ai.scratchPath("dialogue", "dialogue_master_preview.wav");
+        const inputs = currentSegments.map((seg, i) => ({
+          path: seg.audioFilePath!,
+          gapAfterMs: Math.round((plan.timeline[i]?.pauseAfterSec ?? 0) * 1000),
+        }));
+        const assembleRes = await ai.assemble({
+          inputs,
+          outputPath: masterPath,
+          format: "wav",
+          mode: "sequential",
+        });
+        const url = await readAudioFileBlobUrl(assembleRes.outputPath);
+        setMasterAudioUrl(url);
+        setMasterDurationSec(assembleRes.durationSec);
+      } catch (assembleErr) {
+        console.warn("Direct master assemble error:", assembleErr);
+        const assembly = assembleMasterAudioBuffer(currentSegments, settings, 44100);
+        const url = URL.createObjectURL(assembly.blob);
+        setMasterAudioUrl(url);
+        setMasterDurationSec(assembly.totalDurationSec);
+      }
+    } else {
+      const assembly = assembleMasterAudioBuffer(currentSegments, settings, 44100);
+      const url = URL.createObjectURL(assembly.blob);
+      setMasterAudioUrl(url);
+      setMasterDurationSec(assembly.totalDurationSec);
+    }
+
+    if (settings.exportSrt) {
+      const subtitleSettings = loadSubtitleSettings();
+      setMasterSrtContent(
+        generateDialogueSrt(plan.timeline, {
+          aspectRatio: subtitleSettings.aspectRatio,
+          maxLines: subtitleSettings.maxLines,
+        })
+      );
+    } else {
+      setMasterSrtContent(null);
+    }
   };
 
   // Play/Pause single segment audio
@@ -344,39 +384,47 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       setIsPlayingMaster(false);
     }
 
-    // Synthesize on the fly if not ready yet
     let targetBlobUrl = seg.audioBlobUrl;
-    if (!targetBlobUrl || !seg.audioBuffer) {
+    let currentSeg = seg;
+
+    // Synthesize on the fly if not ready yet
+    if (!targetBlobUrl || !seg.audioFilePath || seg.status !== "ready") {
       try {
-        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
-          sampleRate: 44100,
-        });
-        const synthesized = await synthesizeSegmentAudio(seg, characters, audioCtx, 44100);
-        targetBlobUrl = synthesized.audioBlobUrl;
         setSegments((prev) =>
-          prev.map((s) => (s.id === seg.id ? synthesized : s))
+          prev.map((s) => (s.id === seg.id ? { ...s, status: "generating", errorMessage: undefined } : s))
         );
-      } catch (err) {
+        currentSeg = await synthesizeSegmentAudio(seg, characters);
+        targetBlobUrl = currentSeg.audioBlobUrl;
+        setSegments((prev) =>
+          prev.map((s) => (s.id === seg.id ? currentSeg : s))
+        );
+      } catch (err: any) {
         console.error("Single segment synthesis error:", err);
+        setSegments((prev) =>
+          prev.map((s) =>
+            s.id === seg.id ? { ...s, status: "failed", errorMessage: String(err?.message || err) } : s
+          )
+        );
+        alert(`Lỗi khi tạo giọng cho lượt thoại: ${err?.message || err}`);
         return;
       }
     }
 
-    const char = characters.find((c) => c.id === seg.characterId);
+    const char = characters.find((c) => c.id === currentSeg.characterId);
     const voice = voices.find((v) => v.id === char?.voiceId);
-    const speakerName = voice?.name || "Giọng đọc";
+    const speakerName = voice?.name || currentSeg.characterName || "Giọng đọc";
     const track: ActiveAudioTrack = {
-      id: `seg_${seg.id}`,
-      chunkIndex: seg.index,
+      id: `seg_${currentSeg.id}`,
+      chunkIndex: currentSeg.index,
       voiceName: speakerName,
-      title: `Câu ${seg.index < 10 ? `0${seg.index}` : seg.index} · [${seg.characterName}]`,
-      durationSec: seg.durationSec || 4.2,
+      title: `Câu ${currentSeg.index < 10 ? `0${currentSeg.index}` : currentSeg.index} · [${currentSeg.characterName}]`,
+      durationSec: currentSeg.durationSec || 4.2,
       audioUrl: targetBlobUrl,
-      text: seg.cleanText || seg.rawText,
+      text: currentSeg.cleanText || currentSeg.rawText,
     };
 
     setActiveSegmentTrack(track);
-    setActivePlayingSegmentId(seg.id);
+    setActivePlayingSegmentId(currentSeg.id);
     setIsPlayingSegment(true);
   };
 
@@ -390,15 +438,10 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     );
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 500));
       const target = segments.find((s) => s.id === segmentId);
       if (!target) return;
 
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: 44100,
-      });
-
-      const synthesized = await synthesizeSegmentAudio(target, characters, audioCtx, 44100);
+      const synthesized = await synthesizeSegmentAudio(target, characters);
 
       const nextSegments = segments.map((s) =>
         s.id === segmentId ? synthesized : s
@@ -406,23 +449,9 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       setSegments(nextSegments);
 
       // Reassemble master audio if ready segments exist
-      const readySegs = nextSegments.filter((s) => s.audioBuffer);
+      const readySegs = nextSegments.filter((s) => s.status === "ready" && s.audioFilePath);
       if (readySegs.length > 0) {
-        const assembly = assembleMasterAudioBuffer(nextSegments, settings, 44100);
-        const url = URL.createObjectURL(assembly.blob);
-        setMasterAudioUrl(url);
-        setMasterDurationSec(assembly.totalDurationSec);
-        if (settings.exportSrt) {
-          const subtitleSettings = loadSubtitleSettings();
-          setMasterSrtContent(
-            generateDialogueSrt(assembly.timeline, {
-              aspectRatio: subtitleSettings.aspectRatio,
-              maxLines: subtitleSettings.maxLines,
-            })
-          );
-        } else {
-          setMasterSrtContent(null);
-        }
+        await updateMasterAssembly(nextSegments);
       }
     } catch (err: any) {
       setSegments((prev) =>
@@ -432,6 +461,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
             : s
         )
       );
+      alert(`Lỗi khi tạo lại lượt thoại: ${err?.message || err}`);
     }
   };
 
@@ -500,11 +530,6 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     setConversionProgress({ current: 0, total: toProcess.length });
 
     try {
-      const sampleRate = 44100;
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate,
-      });
-
       let updatedSegments = [...currentSegments];
 
       for (let i = 0; i < toProcess.length; i++) {
@@ -521,9 +546,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
           prev.map((s) => (s.id === seg.id ? { ...s, status: "generating" } : s))
         );
 
-        await new Promise((resolve) => setTimeout(resolve, 350));
-
-        const synthesized = await synthesizeSegmentAudio(seg, characters, audioCtx, sampleRate);
+        const synthesized = await synthesizeSegmentAudio(seg, characters);
 
         updatedSegments = updatedSegments.map((s) =>
           s.id === seg.id ? synthesized : s
@@ -531,31 +554,15 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         setSegments(updatedSegments);
       }
 
-      // Assemble into master audio WAV
-      const assembly = assembleMasterAudioBuffer(updatedSegments, settings, sampleRate);
-      const url = URL.createObjectURL(assembly.blob);
-
-      setMasterAudioUrl(url);
-      setMasterDurationSec(assembly.totalDurationSec);
-      setActiveSegmentTrack(null);
-      setIsPlayingSegment(false);
-      setActivePlayingSegmentId(null);
-      setIsPlayingMaster(true);
-
-      // Generate SRT
-      if (settings.exportSrt) {
-        const subtitleSettings = loadSubtitleSettings();
-        const srt = generateDialogueSrt(assembly.timeline, {
-          aspectRatio: subtitleSettings.aspectRatio,
-          maxLines: subtitleSettings.maxLines,
-        });
-        setMasterSrtContent(srt);
-      } else {
-        setMasterSrtContent(null);
+      if (!cancelRequestedRef.current) {
+        await updateMasterAssembly(updatedSegments);
+        setActiveSegmentTrack(null);
+        setIsPlayingSegment(false);
+        setActivePlayingSegmentId(null);
+        setIsPlayingMaster(true);
+        // Automatically switch to studio stage so user can check each segment
+        setStage("studio");
       }
-
-      // Automatically switch to studio stage so user can check each segment
-      setStage("studio");
     } catch (err: any) {
       alert(`Lỗi khi tạo audio hội thoại: ${err?.message || err}`);
     } finally {
@@ -582,33 +589,139 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     setConversionProgress(null);
   };
 
-  // Download Master WAV
-  const handleDownloadWav = () => {
-    if (!masterAudioUrl) return;
-    const a = document.createElement("a");
-    a.href = masterAudioUrl;
-    a.download = "VoxLab_HoiThoai_Master.wav";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  // Export Dialogue Master Audio with Native Dialog & Sidecar on-disk assembly
+  const handleExportDialogueAudio = async () => {
+    const readySegs = segments.filter((s) => s.status === "ready" && s.audioFilePath);
+    if (readySegs.length === 0) {
+      alert("Chưa có lượt thoại nào hoàn tất để xuất audio. Vui lòng bấm 'Tạo Audio Hội Thoại' trước.");
+      return;
+    }
+
+    try {
+      let chosenPath: string | null = null;
+      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+        try {
+          const { save } = await import("@tauri-apps/plugin-dialog");
+          chosenPath = await save({
+            defaultPath: "VoxLab_HoiThoai_Master.wav",
+            filters: [
+              { name: "Audio WAV (*.wav)", extensions: ["wav"] },
+              { name: "Audio MP3 (*.mp3)", extensions: ["mp3"] },
+              { name: "Tất cả các tệp (*.*)", extensions: ["*"] },
+            ],
+          });
+          if (!chosenPath) return;
+        } catch (dialogErr) {
+          console.warn("Tauri save dialog error:", dialogErr);
+        }
+      }
+
+      const plan = calculateDialogueTimeline(readySegs, settings);
+      const ai = await getSharedAiServices();
+
+      if (chosenPath && ai) {
+        const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
+        await ai.assemble({
+          inputs: readySegs.map((seg, i) => ({
+            path: seg.audioFilePath!,
+            gapAfterMs: Math.round((plan.timeline[i]?.pauseAfterSec ?? 0) * 1000),
+          })),
+          outputPath: chosenPath,
+          format: isMp3 ? "mp3" : "wav",
+          mode: "sequential",
+        });
+
+        if (settings.exportSrt) {
+          try {
+            const subtitleSettings = loadSubtitleSettings();
+            const srt = generateDialogueSrt(plan.timeline, {
+              aspectRatio: subtitleSettings.aspectRatio,
+              maxLines: subtitleSettings.maxLines,
+            });
+            const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("fs_write_text", {
+              path: srtPath,
+              content: srt,
+            });
+          } catch (err: any) {
+            console.error("SRT export error:", err);
+          }
+        }
+
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("fs_show_in_folder", { path: chosenPath });
+        } catch (folderErr) {
+          console.warn("Could not reveal file in folder:", folderErr);
+        }
+
+        alert(`Đã xuất file âm thanh hội thoại thành công:\n${chosenPath}`);
+        return;
+      }
+
+      // Browser fallback
+      if (masterAudioUrl) {
+        const resp = await fetch(masterAudioUrl);
+        const blob = await resp.blob();
+        downloadAudioBlob(blob, "VoxLab_HoiThoai_Master.wav");
+      } else {
+        const assembly = assembleMasterAudioBuffer(readySegs, settings, 44100);
+        downloadAudioBlob(assembly.blob, "VoxLab_HoiThoai_Master.wav");
+      }
+
+      if (settings.exportSrt) {
+        const subtitleSettings = loadSubtitleSettings();
+        const srt = generateDialogueSrt(plan.timeline, {
+          aspectRatio: subtitleSettings.aspectRatio,
+          maxLines: subtitleSettings.maxLines,
+        });
+        downloadTextFile(srt, "VoxLab_HoiThoai_PhuDe.srt");
+      }
+    } catch (err: any) {
+      console.error("Dialogue export error:", err);
+      alert(`Lỗi khi xuất audio hội thoại: ${err?.message || err}`);
+    }
   };
 
   // Download SRT
-  const handleDownloadSrt = () => {
-    const readySegs = segments.filter((s) => s.audioBuffer);
-    if (readySegs.length === 0 && !masterSrtContent) return;
-    const subtitleSettings = loadSubtitleSettings();
-    const content =
-      readySegs.length > 0
-        ? generateDialogueSrt(assembleMasterAudioBuffer(segments, settings, 44100).timeline, {
-            aspectRatio: subtitleSettings.aspectRatio,
-            maxLines: subtitleSettings.maxLines,
-          })
-        : masterSrtContent;
-    if (content) {
-      setMasterSrtContent(content);
-      downloadTextFile(content, "VoxLab_HoiThoai_PhuDe.srt");
+  const handleDownloadSrt = async () => {
+    const readySegs = segments.filter((s) => s.status === "ready");
+    if (readySegs.length === 0 && !masterSrtContent) {
+      alert("Chưa có lượt thoại nào để xuất phụ đề.");
+      return;
     }
+    const subtitleSettings = loadSubtitleSettings();
+    const plan = calculateDialogueTimeline(readySegs, settings);
+    const content = generateDialogueSrt(plan.timeline, {
+      aspectRatio: subtitleSettings.aspectRatio,
+      maxLines: subtitleSettings.maxLines,
+    });
+    setMasterSrtContent(content);
+
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      try {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const chosenPath = await save({
+          defaultPath: "VoxLab_HoiThoai_PhuDe.srt",
+          filters: [
+            { name: "SubRip Subtitle (*.srt)", extensions: ["srt"] },
+            { name: "Tất cả các tệp (*.*)", extensions: ["*"] },
+          ],
+        });
+        if (chosenPath) {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("fs_write_text", { path: chosenPath, content });
+          await invoke("fs_show_in_folder", { path: chosenPath });
+          alert(`Đã lưu tệp phụ đề SRT thành công:\n${chosenPath}`);
+          return;
+        }
+      } catch (err: any) {
+        console.warn("Tauri save SRT error:", err);
+      }
+    }
+
+    downloadTextFile(content, "VoxLab_HoiThoai_PhuDe.srt");
   };
 
   // Calculate stats for editor
@@ -692,43 +805,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
               <button
                 type="button"
                 disabled={isConverting || segments.length === 0}
-                onClick={() => {
-                  if (masterAudioUrl) {
-                    handleDownloadWav();
-                    if (settings.exportSrt) {
-                      handleDownloadSrt();
-                    }
-                    return;
-                  }
-                  const readySegments = segments.filter((s) => s.audioBuffer);
-                  if (readySegments.length === 0) {
-                    return;
-                  }
-                  try {
-                    const assembly = assembleMasterAudioBuffer(segments, settings, 24000);
-                    const url = URL.createObjectURL(assembly.blob);
-                    setMasterAudioUrl(url);
-                    setMasterDurationSec(assembly.totalDurationSec);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = "VoxLab_HoiThoai_Master.wav";
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-
-                    if (settings.exportSrt) {
-                      const subtitleSettings = loadSubtitleSettings();
-                      const srt = generateDialogueSrt(assembly.timeline, {
-                        aspectRatio: subtitleSettings.aspectRatio,
-                        maxLines: subtitleSettings.maxLines,
-                      });
-                      setMasterSrtContent(srt);
-                      downloadTextFile(srt, "VoxLab_HoiThoai_PhuDe.srt");
-                    }
-                  } catch (err: any) {
-                    alert(`Lỗi ghép file: ${err?.message || err}`);
-                  }
-                }}
+                onClick={handleExportDialogueAudio}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors whitespace-nowrap cursor-pointer ${
                   isConverting || segments.length === 0
                     ? "bg-surface2 text-textMuted cursor-not-allowed opacity-60 border border-borderDefault"
@@ -826,7 +903,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={handleDownloadWav}
+                          onClick={handleExportDialogueAudio}
                           className="flex items-center gap-1.5 px-3 py-1 bg-surface2 hover:bg-surface3 text-textPrimary border border-borderDefault rounded-md text-xs font-medium transition-colors cursor-pointer"
                           title="Tải tệp âm thanh Master (.wav)"
                         >
@@ -879,9 +956,9 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
             completedCount={conversionProgress?.current || 0}
             totalCount={conversionProgress?.total || segments.length || 0}
             canConvert={segments.length > 0 && characters.length > 0}
-            hasGeneratedAudio={segments.some((s) => !!s.audioBuffer)}
+            hasGeneratedAudio={segments.some((s) => s.status === "ready" && (!!s.audioFilePath || !!s.audioBlobUrl))}
             convertTooltip={
-              segments.some((s) => !!s.audioBuffer)
+              segments.some((s) => s.status === "ready" && (!!s.audioFilePath || !!s.audioBlobUrl))
                 ? "Chạy lại toàn bộ audio hội thoại (ghi đè kết quả cũ)"
                 : "Tạo audio cho toàn bộ lời thoại"
             }

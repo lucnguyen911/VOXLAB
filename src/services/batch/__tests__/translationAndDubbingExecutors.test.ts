@@ -59,25 +59,40 @@ Today we will explore artificial intelligence in voice dubbing.
 
   describe("TranslationExecutor", () => {
     it("translates subtitle cues 1:1 and outputs translated SRT", async () => {
-      const writtenFiles = new Map<string, Uint8Array | string>();
-      const result = await TranslationExecutor.execute(baseJob, {
-        subtitleContent: sampleSrt,
-        sourceLanguage: "en",
-        writeFile: async (path, content) => {
-          writtenFiles.set(path, content);
-        },
-      });
+      const origFetch = globalThis.fetch;
+      globalThis.fetch = async (url: string | URL | Request) => {
+        const u = String(url);
+        const match = u.match(/[?&]q=([^&]+)/);
+        const text = match ? decodeURIComponent(match[1]) : "Dịch mẫu";
+        return new Response(JSON.stringify([[["Bản dịch: " + text, text]]]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      };
 
-      assert.equal(result.status, "completed");
-      assert.equal(result.progressPct, 100);
-      assert.ok(result.outputArtifactPaths.length > 0);
+      try {
+        const writtenFiles = new Map<string, Uint8Array | string>();
+        const result = await TranslationExecutor.execute(baseJob, {
+          subtitleContent: sampleSrt,
+          sourceLanguage: "en",
+          writeFile: async (path, content) => {
+            writtenFiles.set(path, content);
+          },
+        });
 
-      const srtPath = result.outputArtifactPaths[0];
-      assert.ok(srtPath.includes("_vi.srt"));
+        assert.equal(result.status, "completed");
+        assert.equal(result.progressPct, 100);
+        assert.ok(result.outputArtifactPaths.length > 0);
 
-      const srtContent = writtenFiles.get(srtPath) as string;
-      assert.ok(srtContent.includes("00:00:01,000 --> 00:00:04,000"));
-      assert.ok(srtContent.includes("00:00:05,000 --> 00:00:08,000"));
+        const srtPath = result.outputArtifactPaths[0];
+        assert.ok(srtPath.includes("_vi.srt"));
+
+        const srtContent = writtenFiles.get(srtPath) as string;
+        assert.ok(srtContent.includes("00:00:01,000 --> 00:00:04,000"));
+        assert.ok(srtContent.includes("00:00:05,000 --> 00:00:08,000"));
+      } finally {
+        globalThis.fetch = origFetch;
+      }
     });
 
     it("skips translation when detected sourceLanguage matches targetLanguage (AC-07)", async () => {

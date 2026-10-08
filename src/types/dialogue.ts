@@ -111,6 +111,7 @@ export interface DialogueSegment {
   voiceId?: string;
   audioBuffer?: AudioBuffer;
   audioBlobUrl?: string;
+  audioFilePath?: string;
   durationSec?: number;
   errorMessage?: string;
 }

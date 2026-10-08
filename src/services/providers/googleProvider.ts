@@ -1,6 +1,13 @@
 import { VoiceProfile } from "../../types/ui";
 import { SupportedLang } from "../../i18n/translations";
-import { TtsProviderAdapter, ProviderCapabilities, PreviewResult } from "./types";
+import {
+  TtsProviderAdapter,
+  ProviderCapabilities,
+  PreviewResult,
+  ProviderSynthesizeParams,
+  ProviderSynthesizeResult,
+} from "./types";
+import { previewAudioPlayer } from "./audioPlayer";
 
 export class GoogleTranslateTtsProvider implements TtsProviderAdapter {
   readonly id = "google_translate" as const;
@@ -12,14 +19,22 @@ export class GoogleTranslateTtsProvider implements TtsProviderAdapter {
     return "Google TTS";
   }
 
+  getApiKey(): string | null {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("voxlab_google_tts_api_key") || null;
+    }
+    return null;
+  }
+
   availability() {
-    return "available" as const;
+    const hasKey = Boolean(this.getApiKey());
+    return hasKey ? ("available" as const) : ("not_configured" as const);
   }
 
   capabilities(): ProviderCapabilities {
     return {
       streaming: false,
-      requiresApiKey: false,
+      requiresApiKey: true,
       supportsEmotions: false,
       supportsCustomPitch: false,
       supportsCustomSpeed: true,
@@ -232,28 +247,120 @@ export class GoogleTranslateTtsProvider implements TtsProviderAdapter {
     return catalog;
   }
 
-  async preview(voice: VoiceProfile, _text?: string): Promise<PreviewResult> {
+  async preview(voice: VoiceProfile, text?: string, onEnded?: () => void): Promise<PreviewResult> {
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
+      return {
+        success: false,
+        isNotConfigured: true,
+        unconfigured: true,
+        errorCode: "AUTH_REQUIRED",
+        error: "Chưa cấu hình Google TTS",
+      };
+    }
+
     try {
       const lang = voice.supportedLanguages[0] || "vi";
-      const sampleText = lang === "vi" ? "Xin chào, đây là giọng đọc Google TTS." : "Hello, this is Google Text-to-Speech preview.";
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${encodeURIComponent(lang)}&client=tw-ob&q=${encodeURIComponent(sampleText)}`;
+      const sampleText = text || (lang === "vi" ? "Xin chào, đây là giọng đọc thử nghiệm Google Cloud TTS." : "Hello, this is Google Cloud Text-to-Speech preview.");
 
-      const audio = new Audio(url);
-      await audio.play().catch(() => {
-        // Fallback to speech synthesis if direct URL audio stream is blocked by browser CORS
-        if (typeof window !== "undefined" && "speechSynthesis" in window) {
-          window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(sampleText);
-          utterance.lang = lang === "vi" ? "vi-VN" : "en-US";
-          window.speechSynthesis.speak(utterance);
-        }
+      const res = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          input: { text: sampleText },
+          voice: {
+            languageCode: lang === "vi" ? "vi-VN" : "en-US",
+            name: voice.id.startsWith("google_") ? undefined : voice.id,
+          },
+          audioConfig: { audioEncoding: "MP3" },
+        }),
       });
 
-      return { success: true, audioUrl: url };
+      if (!res.ok) {
+        throw new Error(`Google Cloud TTS API error: ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      if (!data.audioContent) {
+        throw new Error("No audioContent in Google Cloud response");
+      }
+
+      const byteCharacters = atob(data.audioContent);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: "audio/mpeg" });
+      const audioUrl = URL.createObjectURL(blob);
+
+      await previewAudioPlayer.play(audioUrl, onEnded);
+      return { success: true, audioUrl };
     } catch (e: any) {
-      // PROV-R-024: Graceful failure without crashing modal or falling back to paid Google Cloud
-      return { success: false, error: e?.message || "Google TTS preview unavailable" };
+      return {
+        success: false,
+        errorCode: "PLAYBACK_FAILED",
+        error: e?.message || "Failed to preview Google Cloud voice",
+      };
     }
+  }
+
+  async synthesize(options: ProviderSynthesizeParams): Promise<ProviderSynthesizeResult> {
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
+      throw new Error("Chưa cấu hình Google TTS. Vui lòng vào Cài đặt để thêm API Key.");
+    }
+
+    const isVi = options.voiceId.includes("vi");
+    const langCode = isVi ? "vi-VN" : "en-US";
+    options.onProgress?.(10, "connecting");
+
+    const res = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: { text: options.text },
+        voice: {
+          languageCode: langCode,
+          name: options.voiceId.startsWith("google_") ? undefined : options.voiceId,
+        },
+        audioConfig: {
+          audioEncoding: "MP3",
+          speakingRate: options.speed ?? 1.0,
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Google Cloud TTS API error: ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    if (!data.audioContent) {
+      throw new Error("Không nhận được dữ liệu âm thanh từ Google Cloud TTS");
+    }
+
+    const byteCharacters = atob(data.audioContent);
+    const bytes = new Uint8Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      bytes[i] = byteCharacters.charCodeAt(i);
+    }
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("fs_write_bytes", { path: options.outputPath, bytes: Array.from(bytes) });
+    options.onProgress?.(100, "ready");
+
+    return {
+      outputPath: options.outputPath,
+      durationSec: 0,
+      sampleRate: 24000,
+      sizeBytes: bytes.length,
+      format: "mp3",
+    };
+  }
+
+  stop(): void {
+    previewAudioPlayer.stop();
   }
 }
 

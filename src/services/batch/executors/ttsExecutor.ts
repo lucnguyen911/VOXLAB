@@ -25,6 +25,7 @@ import {
 } from "../outputResolver";
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
+import { edgeTtsProvider } from "../../providers/edgeProvider";
 
 export interface TtsExecutorOptions {
   textContent?: string;
@@ -119,10 +120,15 @@ export class TtsExecutor {
     const model = ttsSnapshot?.model || "";
     const voiceId = ttsSnapshot?.voiceId || "";
     const speed = ttsSnapshot?.speed && ttsSnapshot.speed !== 1 ? ttsSnapshot.speed : undefined;
-    try {
-      ai.resolveEngine(model, voiceId, normalizedText, undefined, speed);
-    } catch (e) {
-      return fail(10, AiError.from(e).message);
+    const isOnlineVoice =
+      typeof voiceId === "string" &&
+      (voiceId.includes("Neural") || voiceId.startsWith("edge_") || voiceId.startsWith("google_"));
+    if (!isOnlineVoice) {
+      try {
+        ai.resolveEngine(model, voiceId, normalizedText, undefined, speed);
+      } catch (e) {
+        return fail(10, AiError.from(e).message);
+      }
     }
 
     const scratchScope = `tts-${job.id}`.replace(/[^\w-]/g, "_");
@@ -132,8 +138,21 @@ export class TtsExecutor {
       if (isCancelled?.()) return cancelled(Math.floor(10 + (i / totalChunks) * 60));
       const chunk = sortedChunks[i];
       try {
-        const outputPath = await ai.scratchPath(scratchScope, `chunk_${String(i + 1).padStart(4, "0")}.wav`);
-        const r = await ai.synthesize({ model, voiceId, text: chunk.text, outputPath, speed });
+        const outputPath = await ai.scratchPath(
+          scratchScope,
+          `chunk_${String(i + 1).padStart(4, "0")}.${isOnlineVoice ? "mp3" : "wav"}`
+        );
+        let r: { durationSec: number; outputPath: string };
+        if (isOnlineVoice) {
+          r = await edgeTtsProvider.synthesize({
+            voiceId,
+            text: chunk.text,
+            outputPath,
+            speed,
+          });
+        } else {
+          r = await ai.synthesize({ model, voiceId, text: chunk.text, outputPath, speed });
+        }
         chunk.durationSec = r.durationSec; // real audio duration → synthesized_timing subtitles
         chunk.audioUrl = r.outputPath;
         chunk.status = "ready";

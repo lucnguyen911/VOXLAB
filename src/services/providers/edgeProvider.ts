@@ -1,6 +1,83 @@
 import { VoiceProfile } from "../../types/ui";
 import { SupportedLang } from "../../i18n/translations";
-import { TtsProviderAdapter, ProviderCapabilities, PreviewResult } from "./types";
+import {
+  TtsProviderAdapter,
+  ProviderCapabilities,
+  PreviewResult,
+  ProviderSynthesizeParams,
+  ProviderSynthesizeResult,
+} from "./types";
+import { isTauriRuntime } from "../ai/tauriBackend";
+import { readAudioFileBlobUrl } from "../batch/batchRuntime";
+import { previewAudioPlayer } from "./audioPlayer";
+
+export const EDGE_VOICE_MAP: Record<string, { voiceName: string; previewText: string }> = {
+  edge_vi_hoaimy: {
+    voiceName: "vi-VN-HoaiMyNeural",
+    previewText: "Xin chào, đây là giọng đọc Hoài My của Microsoft Edge trên VoxLab.",
+  },
+  edge_vi_namminh: {
+    voiceName: "vi-VN-NamMinhNeural",
+    previewText: "Xin chào, đây là giọng đọc Nam Minh của Microsoft Edge trên VoxLab.",
+  },
+  edge_en_jenny: {
+    voiceName: "en-US-JennyNeural",
+    previewText: "Hello, this is Jenny's voice preview from Microsoft Edge on VoxLab.",
+  },
+  edge_en_guy: {
+    voiceName: "en-US-GuyNeural",
+    previewText: "Hello, this is Guy's voice preview from Microsoft Edge on VoxLab.",
+  },
+  edge_en_sonia: {
+    voiceName: "en-GB-SoniaNeural",
+    previewText: "Hello, this is Sonia's voice preview from Microsoft Edge on VoxLab.",
+  },
+  edge_es_elvira: {
+    voiceName: "es-ES-ElviraNeural",
+    previewText: "Hola, esta es una muestra de voz de Elvira en VoxLab.",
+  },
+  edge_fr_denise: {
+    voiceName: "fr-FR-DeniseNeural",
+    previewText: "Bonjour, ceci est un aperçu de la voix de Denise sur VoxLab.",
+  },
+  edge_de_katja: {
+    voiceName: "de-DE-KatjaNeural",
+    previewText: "Hallo, dies ist eine Sprachprobe von Katja auf VoxLab.",
+  },
+  edge_ja_nanami: {
+    voiceName: "ja-JP-NanamiNeural",
+    previewText: "こんにちは、VoxLabでの音声プレビューです。",
+  },
+  edge_zh_xiaoxiao: {
+    voiceName: "zh-CN-XiaoxiaoNeural",
+    previewText: "你好，这是晓晓在 VoxLab 的语音试听。",
+  },
+};
+
+export function resolveEdgeVoiceName(voiceId: string): string | null {
+  if (EDGE_VOICE_MAP[voiceId]) {
+    return EDGE_VOICE_MAP[voiceId].voiceName;
+  }
+  if (voiceId.includes("Neural")) {
+    return voiceId;
+  }
+  return null;
+}
+
+export function formatEdgeRate(speed = 1.0): string {
+  const percent = Math.round((speed - 1.0) * 100);
+  return `${percent >= 0 ? "+" : ""}${percent}%`;
+}
+
+export function formatEdgePitch(pitch = 1.0): string {
+  const hz = Math.round((pitch - 1.0) * 50);
+  return `${hz >= 0 ? "+" : ""}${hz}Hz`;
+}
+
+export function formatEdgeVolume(volume = 1.0): string {
+  const percent = Math.round((volume - 1.0) * 100);
+  return `${percent >= 0 ? "+" : ""}${percent}%`;
+}
 
 export class EdgeTtsProvider implements TtsProviderAdapter {
   readonly id = "edge" as const;
@@ -281,24 +358,120 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
     return catalog;
   }
 
-  async preview(voice: VoiceProfile, _text?: string): Promise<PreviewResult> {
+  async preview(voice: VoiceProfile, text?: string, onEnded?: () => void): Promise<PreviewResult> {
     try {
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance("Xin chào, đây là giọng đọc thử nghiệm của Edge TTS.");
-        utterance.rate = 1.0;
-        if (voice.supportedLanguages.includes("vi")) {
-          utterance.lang = "vi-VN";
-        } else if (voice.supportedLanguages.includes("en")) {
-          utterance.lang = "en-US";
-        }
-        window.speechSynthesis.speak(utterance);
-        return { success: true };
+      if (!isTauriRuntime()) {
+        return {
+          success: false,
+          errorCode: "PROVIDER_UNAVAILABLE",
+          error: "Sidecar runtime not available in browser mode",
+        };
       }
-      return { success: true };
+
+      const mapping = EDGE_VOICE_MAP[voice.id];
+      let edgeVoiceName = mapping?.voiceName;
+      if (!edgeVoiceName) {
+        if (voice.id.includes("Neural")) {
+          edgeVoiceName = voice.id;
+        } else if (voice.supportedLanguages.includes("vi")) {
+          edgeVoiceName = "vi-VN-HoaiMyNeural";
+        } else {
+          edgeVoiceName = "en-US-JennyNeural";
+        }
+      }
+
+      const isVi = voice.supportedLanguages.includes("vi");
+      const sampleText = text || mapping?.previewText || (isVi
+        ? "Xin chào, đây là giọng đọc thử nghiệm của Microsoft Edge trên VoxLab."
+        : "Hello, this is a voice sample preview from Microsoft Edge on VoxLab.");
+
+      const { invoke } = await import("@tauri-apps/api/core");
+      const synthResult = await invoke<{
+        outputPath: string;
+        durationSec: number;
+        sampleRate: number;
+        sizeBytes: number;
+        format: string;
+      }>("ai_request", {
+        runtime: "core",
+        method: "tts.edge_preview",
+        params: {
+          voice: edgeVoiceName,
+          text: sampleText,
+        },
+      });
+
+      if (!synthResult || !synthResult.outputPath) {
+        return {
+          success: false,
+          errorCode: "PROVIDER_UNAVAILABLE",
+          error: "Edge TTS service did not return an audio file",
+        };
+      }
+
+      const blobUrl = await readAudioFileBlobUrl(synthResult.outputPath);
+      await previewAudioPlayer.play(blobUrl, onEnded);
+
+      return {
+        success: true,
+        audioUrl: blobUrl,
+      };
     } catch (e: any) {
-      return { success: false, error: e?.message || "Failed to preview Edge voice" };
+      const code = e?.code || (e?.message?.includes("Network") || e?.message?.includes("connect")
+        ? "NETWORK_ERROR"
+        : e?.message?.includes("not found")
+        ? "VOICE_NOT_FOUND"
+        : "PLAYBACK_FAILED");
+      return {
+        success: false,
+        errorCode: code,
+        error: e?.message || "Failed to preview Edge voice",
+      };
     }
+  }
+
+  async synthesize(options: ProviderSynthesizeParams): Promise<ProviderSynthesizeResult> {
+    if (!isTauriRuntime()) {
+      throw new Error("Sidecar runtime not available in browser mode");
+    }
+
+    const edgeVoiceName = resolveEdgeVoiceName(options.voiceId);
+    if (!edgeVoiceName) {
+      throw new Error(`Giọng Edge "${options.voiceId}" không hợp lệ hoặc không tìm thấy.`);
+    }
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    options.onProgress?.(10, "connecting");
+
+    const synthResult = await invoke<{
+      outputPath: string;
+      durationSec: number;
+      sampleRate: number;
+      sizeBytes: number;
+      format: string;
+    }>("ai_request", {
+      runtime: "core",
+      method: "tts.edge_synthesize",
+      params: {
+        voice: edgeVoiceName,
+        text: options.text,
+        outputPath: options.outputPath,
+        rate: formatEdgeRate(options.speed),
+        pitch: formatEdgePitch(options.pitch),
+        volume: formatEdgeVolume(options.volume),
+      },
+    });
+
+    if (!synthResult || !synthResult.outputPath) {
+      throw new Error("Edge TTS synthesis did not return an output file");
+    }
+
+    options.onProgress?.(100, "ready");
+    return synthResult;
+  }
+
+  stop(): void {
+    previewAudioPlayer.stop();
   }
 }
 

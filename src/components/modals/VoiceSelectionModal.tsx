@@ -490,26 +490,37 @@ export const VoiceSelectionModal: React.FC<VoiceSelectionModalProps> = ({
     setPreviewLoadingId(voice.id);
 
     try {
-      const result = await providerRegistry.previewVoice(voice);
+      const onEnded = () => {
+        setPlayingVoiceId((prev) => (prev === voice.id ? null : prev));
+      };
+
+      const result = await providerRegistry.previewVoice(voice, onEnded);
       setPreviewLoadingId(null);
 
-      if (result.unconfigured || result.isNotConfigured || result.error === "not_configured") {
-        const msg = voice.provider === "openai"
-          ? t.voiceModal.openAiNotConfigured
-          : t.voiceModal.notConfigured;
+      if (
+        result.unconfigured ||
+        result.isNotConfigured ||
+        result.error === "not_configured" ||
+        result.errorCode === "AUTH_REQUIRED"
+      ) {
+        const msg =
+          voice.provider === "openai"
+            ? t.voiceModal.openAiNotConfigured
+            : voice.provider === "google_translate"
+            ? "Chưa cấu hình Google TTS"
+            : t.voiceModal.notConfigured;
         showToast(msg);
         return;
       }
 
       if (!result.success) {
-        showToast(result.error && result.error !== "Failed to preview" ? result.error : t.voiceModal.previewError);
+        const errorPrefix = result.errorCode ? `[${result.errorCode}] ` : "";
+        const errorMsg = result.error ? `${errorPrefix}${result.error}` : t.voiceModal.previewError;
+        showToast(errorMsg);
         return;
       }
 
       setPlayingVoiceId(voice.id);
-      setTimeout(() => {
-        setPlayingVoiceId((prev) => (prev === voice.id ? null : prev));
-      }, 4000);
     } catch (err: any) {
       setPreviewLoadingId(null);
       showToast(err?.message || t.voiceModal.previewError);

@@ -28,6 +28,7 @@ export const TextNormalizationModal: React.FC<TextNormalizationModalProps> = ({
   onClose,
   originalText,
   onApply,
+  language,
   onOpenPronunciationManager,
 }) => {
   const { t } = useI18n();
@@ -55,8 +56,8 @@ export const TextNormalizationModal: React.FC<TextNormalizationModalProps> = ({
 
   // Compute live normalization result strictly from snapshotText (never cascades or mutates original)
   const result = useMemo(() => {
-    return normalizeText(snapshotText, enabledGroupIds);
-  }, [snapshotText, enabledGroupIds]);
+    return normalizeText(snapshotText, enabledGroupIds, { language });
+  }, [snapshotText, enabledGroupIds, language]);
 
   // Handle keyboard shortcut: Escape to close, Ctrl+Enter to apply
   useEffect(() => {
@@ -265,18 +266,6 @@ export const TextNormalizationModal: React.FC<TextNormalizationModalProps> = ({
                         <div className="mt-1 text-[11px] font-medium text-textSecondary flex items-center gap-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-accent" />
                           <span>{activeCount} quy tắc đang hoạt động</span>
-                        </div>
-                      )}
-
-                      {/* Short Example */}
-                      {group.example && !isPronunciation && (
-                        <div className="mt-1.5 text-[11px] font-mono text-textMuted flex items-center gap-1.5 flex-wrap">
-                          <span className="text-textSecondary/70 font-sans text-[10px] font-semibold tracking-wide">
-                            Ví dụ:
-                          </span>
-                          <span className="text-textSecondary dark:text-textMuted bg-surface2/60 px-1.5 py-0.5 rounded border border-borderDefault/50 whitespace-pre text-[10.5px]">
-                            {group.example}
-                          </span>
                         </div>
                       )}
                     </div>

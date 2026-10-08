@@ -1,4 +1,8 @@
 import { NormalizerGroup, NormalizerGroupId } from "./types";
+import { processPunctuation } from "./punctuationProcessor";
+import { classifyTextTokens } from "./tokenClassifier";
+import { normalizeTokens } from "./localeNormalizer";
+import { resolveLanguage } from "./languageDetector";
 
 export const NORMALIZER_GROUPS: NormalizerGroup[] = [
   {
@@ -38,9 +42,9 @@ export const NORMALIZER_GROUPS: NormalizerGroup[] = [
     id: "numbers",
     name: "Số liệu & đơn vị",
     description: "Chuẩn hóa cách đọc số, phần trăm, tiền tệ và đơn vị.",
-    example: '"15,000" → "fifteen thousand"',
-    exampleBefore: '"$119B"',
-    exampleAfter: '"one hundred and nineteen billion dollars"',
+    example: '"15,000₫" → "mười lăm nghìn đồng"',
+    exampleBefore: '"10:30, 3.14, 50%"',
+    exampleAfter: '"mười giờ ba mươi phút, ba phẩy một bốn, năm mươi phần trăm"',
     category: "content",
     categoryName: "Xử lý nội dung",
     defaultEnabled: false,
@@ -471,41 +475,7 @@ export function applyWhitespaceGroup(text: string): string {
 
 /** Group 2: Dấu câu & khoảng cách */
 export function applyPunctuationGroup(text: string): string {
-  const { protectedText, restore } = protectTokens(text);
-  let res = protectedText;
-
-  // 1. Collapse repeated punctuation (collapse !!! -> !, ??? -> ?, ... -> ., etc., while preserving ?! and !?)
-  // Protect ?! and !?
-  res = res.replace(/\?!+/g, "?!").replace(/!\?+/g, "!?");
-  // Collapse 2+ of the same mark
-  res = res
-    .replace(/(?<!\?)\!{2,}/g, "!")
-    .replace(/(?<!\!)\?{2,}/g, "?")
-    .replace(/\.{2,}/g, ".")
-    .replace(/,{2,}/g, ",")
-    .replace(/;{2,}/g, ";")
-    .replace(/:{2,}/g, ":");
-
-  // 2. Obvious stray punctuation (, . -> . và . , -> .)
-  res = res
-    .replace(/,\s*\./g, ".")
-    .replace(/\.\s*,/g, ".");
-
-  // 3. Clean stray punctuation at start of line
-  res = res.replace(/^[^\S\r\n]*[,;]+/gm, "");
-
-  // 4. Remove space before punctuation (.,:;!?)
-  res = res.replace(/[^\S\r\n]+([,.:;!?])/g, "$1");
-
-  // 5. Add space after punctuation when directly adjacent to word characters
-  res = res
-    .replace(/([,;:])(?=[^\s\d\p{P}])/gu, "$1 ")
-    .replace(/([.!?])(?=[^\s\d\p{P}])/gu, "$1 ");
-
-  // 6. Capitalization after sentence boundary (. ! ?) on the same line
-  res = res.replace(/([.!?][^\S\r\n]+)(\p{Ll})/gu, (_, p1, letter) => p1 + letter.toUpperCase());
-
-  return restore(res);
+  return processPunctuation(text);
 }
 
 /**
@@ -811,184 +781,24 @@ export function numberToWords(n: number | string): string {
   return parts.join(" ");
 }
 
-function decimalToWords(str: string): string {
-  const [intPart, decPart] = str.split(".");
-  const intWords = numberToWords(intPart);
-  const decWords = decPart
-    .split("")
-    .map((d) => NUM_WORDS_UNDER_20[parseInt(d, 10)])
-    .join(" ");
-  return `${intWords} point ${decWords}`;
-}
 
-function formatNumberString(str: string): string {
-  if (str.includes(".")) {
-    return decimalToWords(str);
-  }
-  return numberToWords(str);
-}
 
-function yearToWords(yearStr: string): string {
-  const y = parseInt(yearStr, 10);
-  const century = Math.floor(y / 100);
-  const rem = y % 100;
-  if (y >= 2000 && y <= 2009) {
-    if (rem === 0) return "two thousand";
-    return `two thousand ${NUM_WORDS_UNDER_20[rem]}`;
-  }
-  const centuryWords = smallIntToWords(century);
-  let remWords = "";
-  if (rem === 0) {
-    remWords = "hundred";
-  } else if (rem < 10) {
-    remWords = `zero ${NUM_WORDS_UNDER_20[rem]}`;
-  } else {
-    remWords = smallIntToWords(rem);
-  }
-  return `${centuryWords} ${remWords}`;
-}
 
-const UNIT_MAP: Record<string, { singular: string; plural: string }> = {
-  MW: { singular: "megawatt", plural: "megawatts" },
-  kW: { singular: "kilowatt", plural: "kilowatts" },
-  GW: { singular: "gigawatt", plural: "gigawatts" },
-  W: { singular: "watt", plural: "watts" },
-  km: { singular: "kilometer", plural: "kilometers" },
-  m: { singular: "meter", plural: "meters" },
-  cm: { singular: "centimeter", plural: "centimeters" },
-  mm: { singular: "millimeter", plural: "millimeters" },
-  kg: { singular: "kilogram", plural: "kilograms" },
-  g: { singular: "gram", plural: "grams" },
-  kWh: { singular: "kilowatt hour", plural: "kilowatt hours" },
-  MWh: { singular: "megawatt hour", plural: "megawatt hours" },
-  Hz: { singular: "hertz", plural: "hertz" },
-  GHz: { singular: "gigahertz", plural: "gigahertz" },
-  MHz: { singular: "megahertz", plural: "megahertz" },
-  V: { singular: "volt", plural: "volts" },
-  A: { singular: "amp", plural: "amps" },
-  hp: { singular: "horsepower", plural: "horsepower" },
-  "°C": { singular: "degree Celsius", plural: "degrees Celsius" },
-  "°F": { singular: "degree Fahrenheit", plural: "degrees Fahrenheit" },
-};
 
 /**
  * Group 4: Số liệu & đơn vị
- * Verbalizes written numeric forms into spoken English words according to Section G contracts.
- * DEFAULT: OFF
+ * Locale-aware normalization based on source language.
  */
-export function applyNumbersGroup(text: string): string {
-  let sessionKey = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  while (text.includes(sessionKey)) {
-    sessionKey = Math.random().toString(36).slice(2) + Date.now().toString(36);
+export function applyNumbersGroup(text: string, language?: string): string {
+  const effectiveLang = language || resolveLanguage(text);
+  if (!effectiveLang) {
+    return text;
   }
-
-  const protectedItems: string[] = [];
-  const modelPattern =
-    /(?:https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+|\bv\d+(?:\.\d+)+[a-zA-Z0-9._-]*\b|\b\d+(?:\.\d+){2,}[a-zA-Z0-9._-]*\b|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|\b[A-Za-z]+[0-9]+[A-Za-z0-9_-]*\b|\b[A-Za-z]+-[0-9]+[A-Za-z0-9_-]*\b|\b[A-Za-z0-9_-]+-[0-9]+[A-Za-z]+[A-Za-z0-9_-]*\b|\b[A-Za-z]-[0-9]+\b|\b\d+\/\d+\b|\[(?:PAUSE|pause)\s+\d+(?:\.\d+)?\s*(?:ms|s)?\]|VOX_PRON_P\d+_XOV)/gu;
-
-  let res = text.replace(modelPattern, (match) => {
-    if (/^\d+$/.test(match)) return match;
-    protectedItems.push(match);
-    return `NUM${sessionKey}P${protectedItems.length - 1}MUN`;
-  });
-
-  // 1. Currencies: $119B, $15,000, etc. (with attributive vs noun detection)
-  res = res.replace(
-    /(\ba\s+|\ban\s+|\bthe\s+|\bthis\s+|\bthat\s+)?\$(\d+(?:,\d+)*(?:\.\d+)?)\s*([BMKbmk])?(?:\s+([a-zA-Z]+))?/gu,
-    (_full, article, numStr, scale, followingWord) => {
-      const numWords = formatNumberString(numStr);
-      let scaleWord = "";
-      if (scale) {
-        const s = scale.toUpperCase();
-        if (s === "B") scaleWord = "billion";
-        else if (s === "M") scaleWord = "million";
-        else if (s === "K") scaleWord = "thousand";
-      }
-
-      const isAttributive = Boolean(article && followingWord);
-      let unitWord = isAttributive ? "dollar" : "dollars";
-      if (!isAttributive && numStr === "1" && !scale) {
-        unitWord = "dollar";
-      }
-
-      const spokenAmount = scaleWord ? `${numWords} ${scaleWord} ${unitWord}` : `${numWords} ${unitWord}`;
-      if (article && followingWord) {
-        return `${article}${spokenAmount} ${followingWord}`;
-      }
-      if (followingWord) {
-        return `${spokenAmount} ${followingWord}`;
-      }
-      return spokenAmount;
-    }
-  );
-
-  // 2. Compound units: 20 km/h -> twenty kilometers per hour
-  res = res.replace(/(\b\d+(?:,\d+)*(?:\.\d+)?)\s*km\/h\b/gu, (_, numStr) => {
-    return `${formatNumberString(numStr)} kilometers per hour`;
-  });
-
-  // 3. Units / Measurements: 1.2 MW, a 1.2 MW system
-  const unitKeys = Object.keys(UNIT_MAP).join("|");
-  const unitRegex = new RegExp(
-    `(\\ba\\s+|\\ban\\s+|\\bthe\\s+|\\bthis\\s+|\\bthat\\s+)?(\\b\\d+(?:,\\d+)*(?:\\.\\d+)?)\\s*(${unitKeys})\\b(?:\\s+([a-zA-Z]+))?`,
-    "gu"
-  );
-  res = res.replace(unitRegex, (_full, article, numStr, unitKey, followingWord) => {
-    const unitInfo = UNIT_MAP[unitKey];
-    if (!unitInfo) return _full;
-    const numWords = formatNumberString(numStr);
-    const isAttributive = Boolean(article && followingWord);
-    const unitWord = isAttributive ? unitInfo.singular : unitInfo.plural;
-
-    const spokenMeasurement = `${numWords} ${unitWord}`;
-    if (article && followingWord) {
-      return `${article}${spokenMeasurement} ${followingWord}`;
-    }
-    if (followingWord) {
-      return `${spokenMeasurement} ${followingWord}`;
-    }
-    return spokenMeasurement;
-  });
-
-  // 4. Percentages: 13.5% -> thirteen point five percent
-  res = res.replace(/(\b\d+(?:,\d+)*(?:\.\d+)?)%/gu, (_, numStr) => {
-    return `${formatNumberString(numStr)} percent`;
-  });
-
-  // 5. Ranges: 10-15 -> ten to fifteen
-  res = res.replace(/(?<=\s|^|\()(\d+)-(\d+)(?=\s+[a-zA-Z]+|[\s\p{P}]|$)/gu, (_, start, end) => {
-    return `${numberToWords(start)} to ${numberToWords(end)}`;
-  });
-
-  // 6. Year in context:
-  // 6a. Article/Demonstrative + Year + Noun: The 2021 report -> The twenty twenty one report
-  res = res.replace(/\b(the|this|that)\s+(19\d{2}|20\d{2})\s+([a-zA-Z]+)\b/giu, (_, article, yearStr, noun) => {
-    return `${article} ${yearToWords(yearStr)} ${noun}`;
-  });
-
-  // 6b. Preposition + Year: in 2021, from 2020 to 2021, since 1999
-  res = res.replace(/\b(in|since|by|during|year|from|until|to|between|and)\s+(19\d{2}|20\d{2})\b/giu, (_, prep, yearStr) => {
-    return `${prep} ${yearToWords(yearStr)}`;
-  });
-
-  // 7. Decimals: 1.2 -> one point two, 1.07 -> one point zero seven
-  res = res.replace(/\b(\d+)\.(\d+)\b/gu, (_full, intPart, decPart) => {
-    return decimalToWords(`${intPart}.${decPart}`);
-  });
-
-  // 8. Basic numbers with thousands separator: 15,000, 150,000
-  res = res.replace(/\b\d{1,3}(?:,\d{3})+\b/gu, (match) => {
-    return numberToWords(match);
-  });
-
-  // Restore protected models & technical tokens
-  const restoreRegex = new RegExp(`NUM${sessionKey}P(\\d+)MUN`, "g");
-  res = res.replace(restoreRegex, (_, idx) => protectedItems[Number(idx)] ?? "");
-
-  return res;
+  const tokens = classifyTextTokens(text);
+  return normalizeTokens(tokens, effectiveLang);
 }
 
-export const GROUP_APPLY_MAP: Record<NormalizerGroupId, (text: string) => string> = {
+export const GROUP_APPLY_MAP: Record<NormalizerGroupId, (text: string, language?: string) => string> = {
   unicode: applyUnicodeGroup,
   punctuation: applyPunctuationGroup,
   whitespace: applyWhitespaceGroup,

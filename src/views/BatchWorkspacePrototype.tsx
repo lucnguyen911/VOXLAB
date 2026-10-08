@@ -5116,17 +5116,6 @@ export const BatchWorkspacePrototype: React.FC = () => {
                               <div className="text-[11.5px] text-textMuted leading-snug mt-0.5">
                                 {group.description}
                               </div>
-
-                              {group.example && (
-                                <div className="mt-1.5 text-[11px] font-mono text-textMuted flex items-center gap-1.5 flex-wrap">
-                                  <span className="text-textSecondary/70 font-sans text-[10px] font-semibold tracking-wide">
-                                    Ví dụ:
-                                  </span>
-                                  <span className="text-textSecondary dark:text-textMuted bg-surface1/70 px-1.5 py-0.5 rounded border border-borderDefault/50 whitespace-pre text-[10.5px]">
-                                    {group.example}
-                                  </span>
-                                </div>
-                              )}
                             </div>
                           </div>
                         );

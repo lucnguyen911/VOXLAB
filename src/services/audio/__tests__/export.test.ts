@@ -4,6 +4,7 @@ import { ChunkItem } from "../../../types/ui";
 import {
   validateChunksForExport,
   mergeMasterAudio,
+  assembleMasterAudioAsync,
   formatSrtTimestamp,
   generateSrtFromChunks,
 } from "../masterExport";
@@ -440,6 +441,52 @@ describe("SRT Subtitle Export Tests (S1 - S6)", () => {
     const multilineChunk = createMockChunk(1, "Dòng một.\nDòng hai.", 4.0);
     const srt = generateSrtFromChunks([multilineChunk]);
     assert.equal(srt, "1\n00:00:00,000 --> 00:00:04,000\nDòng một.\nDòng hai.\n");
+  });
+});
+
+describe("Master Audio Real Assembly Tests (Async Web Audio / Fallback)", () => {
+  const createTestChunk = (
+    index: number,
+    text: string,
+    durationSec: number,
+    pauseAfterMs: number | "auto" = "auto"
+  ): ChunkItem => ({
+    id: `chunk_${String(index).padStart(2, "0")}`,
+    index,
+    text,
+    originalText: text,
+    status: "ready",
+    durationSec,
+    pauseAfterMs,
+  });
+
+  it("assembles master audio blob for all chunks with calculated inter-chunk pauses", async () => {
+    const chunks = [
+      createTestChunk(1, "Chào mừng quý vị.", 3.0),
+      createTestChunk(2, "Hôm nay chúng ta tiếp tục.", 4.0),
+    ];
+
+    const result = await assembleMasterAudioAsync(chunks, {
+      projectTitle: "Ban tin sang",
+    });
+
+    assert.equal(result.chunkCount, 2);
+    assert.deepEqual(result.orderedChunkIndices, [1, 2]);
+    assert.ok(result.blob instanceof Blob);
+    assert.equal(result.blob.type, "audio/wav");
+    assert.ok(result.totalDurationSec >= 7.0);
+    assert.equal(result.filename, "VoxLab_Ban_tin_sang_Master.wav");
+  });
+
+  it("handles out-of-order chunks by sorting strictly by index", async () => {
+    const chunks = [
+      createTestChunk(3, "Đoạn ba.", 2.0),
+      createTestChunk(1, "Đoạn một.", 2.0),
+      createTestChunk(2, "Đoạn hai.", 2.0),
+    ];
+
+    const result = await assembleMasterAudioAsync(chunks);
+    assert.deepEqual(result.orderedChunkIndices, [1, 2, 3]);
   });
 });
 

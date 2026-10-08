@@ -24,6 +24,7 @@ export interface BatchTopBarProps {
   onStartQueue: () => void;
   onPauseQueue: () => void;
   onGlobalConfigClick: () => void;
+  onStartFromList?: () => void;
 }
 
 /**
@@ -32,7 +33,7 @@ export interface BatchTopBarProps {
  * - 4 View Switcher Tabs (Danh sách, Hàng đợi, Hoàn tất, Lỗi)
  * - Dynamic Status Diagnostics (Right side)
  * - Contextual Primary Action Button:
- *   - Tab Danh sách: [Chuyển sang hàng đợi (X)]
+ *   - Tab Danh sách: [Chuyển sang hàng đợi (X)] & [Bắt đầu xử lý (X)]
  *   - Tab Hàng đợi: [Bắt đầu xử lý] / [Tạm dừng]
  *   - Tab Hoàn tất / Lỗi: [Về Hàng đợi]
  */
@@ -47,6 +48,7 @@ export const BatchTopBar: React.FC<BatchTopBarProps> = ({
   onStartQueue,
   onPauseQueue,
   onGlobalConfigClick: _onGlobalConfigClick,
+  onStartFromList,
 }) => {
   return (
     <div className="h-12 px-4 border-b border-borderDefault bg-panel flex items-center justify-between flex-shrink-0 z-10 shadow-xs gap-3 select-none">
@@ -93,20 +95,36 @@ export const BatchTopBar: React.FC<BatchTopBarProps> = ({
 
         {/* Primary Action Button per view */}
         {activeView === "list" ? (
-          <button
-            type="button"
-            onClick={onStageToQueue}
-            disabled={selectedJobCount === 0}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap ${
-              selectedJobCount === 0
-                ? "bg-surface3 text-textMuted cursor-not-allowed border border-borderDefault opacity-60"
-                : "bg-accent hover:bg-accentHover text-slate-950 shadow-accent/20 cursor-pointer active:scale-98"
-            }`}
-            title="Giải quyết phụ thuộc và chuyển các tệp đã chọn sang Hàng đợi"
-          >
-            <ListPlus className="w-3.5 h-3.5" />
-            <span>Chuyển sang hàng đợi ({selectedJobCount})</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onStageToQueue}
+              disabled={selectedJobCount === 0}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all whitespace-nowrap ${
+                selectedJobCount === 0
+                  ? "bg-surface3 text-textMuted cursor-not-allowed border-borderDefault opacity-60"
+                  : "bg-surface2 hover:bg-surface3 text-textPrimary border-borderDefault cursor-pointer active:scale-98"
+              }`}
+              title="Giải quyết phụ thuộc và chuyển các tệp đã chọn sang Hàng đợi"
+            >
+              <ListPlus className="w-3.5 h-3.5 text-accent" />
+              <span>Chuyển sang hàng đợi ({selectedJobCount})</span>
+            </button>
+            <button
+              type="button"
+              onClick={onStartFromList || onStageToQueue}
+              disabled={selectedJobCount === 0}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap ${
+                selectedJobCount === 0
+                  ? "bg-surface3 text-textMuted cursor-not-allowed border border-borderDefault opacity-60"
+                  : "bg-accent hover:bg-accentHover text-slate-950 shadow-accent/20 cursor-pointer active:scale-98"
+              }`}
+              title="Chuyển các tệp đã chọn vào hàng đợi và bắt đầu xử lý ngay"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>Bắt đầu xử lý ({selectedJobCount})</span>
+            </button>
+          </div>
         ) : activeView === "queued" ? (
           <div className="flex items-center gap-2">
             {queueStatus === "running" ? (

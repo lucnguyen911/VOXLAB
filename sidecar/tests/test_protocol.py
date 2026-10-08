@@ -180,6 +180,7 @@ class CapabilityValidationTests(unittest.TestCase):
 
             def synthesize(self, req):
                 Dummy.calls += 1
+                Dummy.last_req = req
                 return np.zeros(16000, dtype=np.float32) + 0.1, 16000
 
             def unload(self):
@@ -219,6 +220,20 @@ class CapabilityValidationTests(unittest.TestCase):
         self.assertEqual(self._synth(server, out, "a")["error"]["code"], "INVALID_REQUEST")
         self.assertEqual(self._synth(server, out, "b", refAudioPath=__file__)["error"]["code"], "INVALID_REQUEST")
         self.assertTrue(self._synth(server, out, "c", refAudioPath=__file__, refText="hi")["ok"])
+
+    def test_auto_transcribe_when_ref_text_is_omitted(self):
+        sample_audio = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "public", "audio", "samples", "default_local.mp3")
+        )
+        if not os.path.isfile(sample_audio):
+            self.skipTest("Sample audio default_local.mp3 not found")
+        server, out, dummy = self._service(supports_voice_clone=True, reference_audio_required=True,
+                                           reference_text_required=True)
+        res = self._synth(server, out, "auto_trans_1", refAudioPath=sample_audio)
+        self.assertTrue(res["ok"])
+        self.assertIsNotNone(dummy.last_req)
+        self.assertIsNotNone(dummy.last_req.ref_text)
+        self.assertTrue(len(dummy.last_req.ref_text.strip()) > 0)
 
     def test_cpu_unsupported_engine_reports_device_unavailable(self):
         from voxlab_sidecar.tts.base import cuda_available

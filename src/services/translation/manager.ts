@@ -139,6 +139,8 @@ export class TranslationManager {
       sourceLang?: string;
       isPaused?: () => boolean;
       isCancelled?: () => boolean;
+      /** Batch: a provider failure fails the call instead of keeping the source text. */
+      strict?: boolean;
     }
   ): Promise<TranslatedCue[]> {
     if (!cues || cues.length === 0) return [];
@@ -189,6 +191,9 @@ export class TranslationManager {
           translatedText = result.trim();
         }
       } catch (err: any) {
+        if (options?.strict) {
+          throw new Error(`Dịch câu #${cue.index} thất bại: ${err?.message || err}`);
+        }
         console.warn(`Translation failed for cue #${cue.index}:`, err?.message);
       }
 

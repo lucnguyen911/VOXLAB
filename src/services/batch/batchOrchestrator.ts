@@ -88,6 +88,9 @@ export class BatchOrchestrator {
   private pauseRequested = false;
   private listeners = new Set<OrchestratorListener>();
   private globalDefaults: BatchTaskConfigMap = getDefaultTaskConfigMap();
+  private persistChain: Promise<void> = Promise.resolve();
+  /** Durable-queue persistence on structural changes (enabled by the production runtime). */
+  public autoPersist = false;
 
   // Injectable file I/O for tests and runtime
   public fileReader?: (path: string) => Promise<string>;
@@ -148,6 +151,11 @@ export class BatchOrchestrator {
   setJobs(jobs: BatchJob[]): void {
     this.jobs = [...jobs];
     this.notify();
+    this.persistIfEnabled();
+  }
+
+  private persistIfEnabled(): void {
+    if (this.autoPersist) void this.persistState();
   }
 
   /**
@@ -183,6 +191,7 @@ export class BatchOrchestrator {
       prevJob.queueOrder = currJob.queueOrder;
       currJob.queueOrder = tempOrder;
       this.notify();
+      this.persistIfEnabled();
       return true;
     }
 
@@ -193,6 +202,7 @@ export class BatchOrchestrator {
       nextJob.queueOrder = currJob.queueOrder;
       currJob.queueOrder = tempOrder;
       this.notify();
+      this.persistIfEnabled();
       return true;
     }
 
@@ -321,6 +331,8 @@ export class BatchOrchestrator {
     job.startedAt = Date.now();
     job.progressPct = 0;
     this.notify();
+    // Persist the in-flight marker so a crash/restart restores this job as "interrupted".
+    this.persistIfEnabled();
 
     let hasAnyWarning = false;
     let failedStepTask: BatchTaskType | null = null;
@@ -527,6 +539,7 @@ export class BatchOrchestrator {
     job.queueOrder = maxOrder + 1;
 
     this.notify();
+    this.persistIfEnabled();
     return true;
   }
 
@@ -572,6 +585,7 @@ export class BatchOrchestrator {
     job.queueOrder = maxOrder + 1;
 
     this.notify();
+    this.persistIfEnabled();
     return true;
   }
 
@@ -635,6 +649,7 @@ export class BatchOrchestrator {
     job.status = "completed";
     syncBatchJobToHistory(job);
     this.notify();
+    this.persistIfEnabled();
     return true;
   }
 
@@ -740,12 +755,21 @@ export class BatchOrchestrator {
   /**
    * Persists queue state using BatchStorage.
    */
-  private async persistState(): Promise<void> {
-    try {
-      await saveBatchQueueState(this.jobs, this.queueStatus);
-    } catch (err) {
-      console.warn("Lỗi lưu trạng thái hàng đợi vào bộ nhớ bền vững:", err);
-    }
+  private persistState(): Promise<void> {
+    // Serialized: saveBatchQueueState reads-then-writes, so concurrent saves must not interleave.
+    this.persistChain = this.persistChain.then(async () => {
+      try {
+        await saveBatchQueueState(this.jobs, this.queueStatus);
+      } catch (err) {
+        console.warn("Lỗi lưu trạng thái hàng đợi vào bộ nhớ bền vững:", err);
+      }
+    });
+    return this.persistChain;
+  }
+
+  /** Resolves when all scheduled durable-queue writes have completed. */
+  flushPersist(): Promise<void> {
+    return this.persistChain;
   }
 
   /**
@@ -760,5 +784,6 @@ export class BatchOrchestrator {
     this.listeners.clear();
     this.ai = undefined;
     this.beforeStep = undefined;
+    this.autoPersist = false;
   }
 }

@@ -1,8 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-// Default Supabase project configuration (anon key only, no service-role - LICENSE-AC-06)
-pub const DEFAULT_SUPABASE_URL: &str = "https://voxlab-auth.supabase.co";
-pub const DEFAULT_SUPABASE_ANON_KEY: &str = "sb_anon_public_voxlab_desktop_token";
+/// Retrieves Supabase URL and anon key from build-time or runtime environment.
+/// Does NOT hardcode static secrets in source code (Gate E security requirement).
+pub fn get_supabase_config() -> Option<(String, String)> {
+    let url = std::env::var("VOXLAB_SUPABASE_URL")
+        .ok()
+        .or_else(|| option_env!("VOXLAB_SUPABASE_URL").map(String::from));
+    let key = std::env::var("VOXLAB_SUPABASE_ANON_KEY")
+        .ok()
+        .or_else(|| option_env!("VOXLAB_SUPABASE_ANON_KEY").map(String::from));
+
+    match (url, key) {
+        (Some(u), Some(k)) if !u.trim().is_empty() && !k.trim().is_empty() => Some((u.trim().to_string(), k.trim().to_string())),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RpcLicenseRequest<'a> {

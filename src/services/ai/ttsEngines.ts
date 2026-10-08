@@ -43,12 +43,12 @@ export const TTS_ENGINES: Record<LocalTtsEngineId, TtsEngineCapabilities> = {
     supportsVietnamese: true,
     supportsVoiceClone: true,
     referenceAudioRequired: false,
-    referenceTextRequired: true,
+    referenceTextRequired: false, // Auto-transcribed by backend faster-whisper when omitted
     supportsCUDA: true,
     supportsCPU: false,
     supportsSpeed: true,
     modelSizeMb: 3116,
-    requiredVramMb: null,
+    requiredVramMb: 3200,
     notes: ["Weights CC-BY-NC-4.0; audio tokenizer: Boson Higgs Audio 2 Community License."],
   },
   chatterbox: {
@@ -67,7 +67,7 @@ export const TTS_ENGINES: Record<LocalTtsEngineId, TtsEngineCapabilities> = {
     supportsCPU: false,
     supportsSpeed: false,
     modelSizeMb: 2849,
-    requiredVramMb: null,
+    requiredVramMb: 3300,
     notes: ["English only.", "Output carries Resemble Perth watermark.", "MIT."],
   },
   qwen: {
@@ -85,17 +85,24 @@ export const TTS_ENGINES: Record<LocalTtsEngineId, TtsEngineCapabilities> = {
     supportsCPU: false,
     supportsSpeed: false,
     modelSizeMb: 4334,
-    requiredVramMb: null,
+    requiredVramMb: 4800,
     notes: ["No Vietnamese.", "Base variant: reference audio + transcript required.", "Apache-2.0."],
   },
 };
 
-/** Maps a VoxLab model id (snapshot `model`, VoiceProfile.engine) to a local engine, or null if not local. */
+/** Maps a VoxLab model id (snapshot `model`, VoiceProfile.engine, display name) to a local engine, or null if not local. */
 export function resolveLocalEngine(model: string | undefined | null): TtsEngineCapabilities | null {
   if (!model) return null;
-  const m = model.toLowerCase();
+  const m = model.toLowerCase().replace(/[\s_-]+/g, "");
   for (const caps of Object.values(TTS_ENGINES)) {
-    if (m === caps.voxlabModelId || m === caps.engine || m === caps.modelId) return caps;
+    const v = caps.voxlabModelId.replace(/[\s_-]+/g, "").toLowerCase();
+    const e = caps.engine.replace(/[\s_-]+/g, "").toLowerCase();
+    const d = caps.displayName.replace(/[\s_-]+/g, "").toLowerCase();
+    const mid = caps.modelId.replace(/[\s_-]+/g, "").toLowerCase();
+    if (m === v || m === e || m === d || m === mid) return caps;
+    if (m.includes("omni") && (e === "omnivoice" || v === "omnivoice")) return caps;
+    if (m.includes("chatterbox") && (e === "chatterbox" || v === "chatterboxturbo")) return caps;
+    if (m.includes("qwen") && (e === "qwen" || v === "qwentts17b")) return caps;
   }
   return null;
 }

@@ -13,6 +13,21 @@ export type ChunkStatus = "pending" | "generating" | "ready" | "failed" | "modif
 
 export type ChunkDensity = "comfortable" | "compact";
 
+export interface EffectiveVoiceSnapshot {
+  voiceId: string;
+  provider: VoiceProviderId;
+  engine?: VoiceEngineId | string;
+  modelId?: string;
+  language?: string;
+  voiceName: string;
+  speed: number;
+  pitch?: number;
+  volume?: number;
+  providerVoiceId?: string;
+  refAudioPath?: string;
+  refText?: string;
+}
+
 export interface ChunkItem {
   id: string;
   index: number;
@@ -23,8 +38,10 @@ export interface ChunkItem {
   pauseAfterMs: number | "auto";
   voiceOverrideId?: string;
   audioUrl?: string;
+  audioFilePath?: string;
   errorMessage?: string;
   trailingSilenceMs?: number;
+  effectiveVoiceSnapshot?: EffectiveVoiceSnapshot;
 }
 
 export type VoiceSource = "edge" | "google" | "local" | "local_clone" | "preset_local" | "online";

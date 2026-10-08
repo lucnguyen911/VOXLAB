@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { TopBar } from "./components/layout/TopBar";
 import { Sidebar } from "./components/layout/Sidebar";
 import { BottomAudioPlayer, ActiveAudioTrack } from "./components/layout/BottomAudioPlayer";
@@ -137,11 +137,15 @@ function loadInitialVoices(): VoiceProfile[] {
   const [activeAudioTrack, setActiveAudioTrack] = useState<ActiveAudioTrack | null>(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
 
+  const handleTogglePlay = useCallback(() => {
+    setIsAudioPlaying((prev) => !prev);
+  }, []);
+
   const handlePlayChunk = (chunk: ChunkItem) => {
     const voice = voices.find((v) => v.id === (chunk.voiceOverrideId || activeVoiceId));
     const speakerName = voice?.name || "Thảo Trinh";
 
-    if (activeAudioTrack?.id === chunk.id) {
+    if (activeAudioTrack?.id === chunk.id && activeAudioTrack?.audioUrl === chunk.audioUrl) {
       setIsAudioPlaying((prev) => !prev);
       return;
     }
@@ -150,6 +154,7 @@ function loadInitialVoices(): VoiceProfile[] {
       id: chunk.id,
       chunkIndex: chunk.index,
       voiceName: speakerName,
+      title: (chunk as any).title,
       durationSec: chunk.durationSec || 34,
       audioUrl: chunk.audioUrl,
       text: chunk.text,
@@ -283,6 +288,7 @@ function loadInitialVoices(): VoiceProfile[] {
             <main className="flex-1 flex flex-col overflow-hidden relative">
               {activeWorkspace === "tts" && (
                 <TtsWorkspace
+                  voices={voices}
                   selectedChunk={selectedChunk}
                   onSelectChunk={(c) => {
                     setSelectedChunk(c);
@@ -326,6 +332,8 @@ function loadInitialVoices(): VoiceProfile[] {
                   exportSrt={exportSrt}
                   incomingScript={ttsIncomingScript}
                   onConsumeIncomingScript={() => setTtsIncomingScript(null)}
+                  activeModel={activeModel}
+                  activeVoiceId={activeVoiceId}
                   inspector={
                     <TtsInspector
                       selectedChunk={selectedChunk}
@@ -350,7 +358,7 @@ function loadInitialVoices(): VoiceProfile[] {
                       <BottomAudioPlayer
                         track={activeAudioTrack}
                         isPlaying={isAudioPlaying}
-                        onTogglePlay={() => setIsAudioPlaying((prev) => !prev)}
+                        onTogglePlay={handleTogglePlay}
                         onClose={handleCloseAudioPlayer}
                         className="mx-0 mb-0"
                       />
@@ -446,7 +454,7 @@ function loadInitialVoices(): VoiceProfile[] {
             <BottomAudioPlayer
               track={activeAudioTrack}
               isPlaying={isAudioPlaying}
-              onTogglePlay={() => setIsAudioPlaying((prev) => !prev)}
+              onTogglePlay={handleTogglePlay}
               onClose={handleCloseAudioPlayer}
             />
           )}

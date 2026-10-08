@@ -8,9 +8,14 @@ export type PunctuationType =
   | "ellipsis"
   | "none";
 
+/**
+ * Baseline punctuation pauses (in seconds).
+ * NOTE: PERIOD_PAUSE = TUNING REQUIRED (Baseline: 0.5s).
+ * Production audio should tune these via user inspector settings (TtsInspector).
+ */
 export const DEFAULT_PUNCTUATION_PAUSES: PunctuationPauses = {
   comma: 0.5,
-  period: 0.5,
+  period: 0.5, // PERIOD_PAUSE = TUNING REQUIRED (0.5s development baseline)
   questionExclamation: 1.0,
   colonSemicolon: 0.6,
 };

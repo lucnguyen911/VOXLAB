@@ -28,6 +28,7 @@ import {
 } from "../outputResolver";
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
+import { edgeTtsProvider } from "../../providers/edgeProvider";
 
 export interface DialogueExecutorOptions {
   scriptContent?: string;
@@ -124,10 +125,14 @@ export class DialogueExecutor {
     const totalSegments = segments.length;
     for (const seg of segments) {
       seg.voiceId = characterVoices[seg.characterName] || defaultVoice;
-      try {
-        ai.resolveEngine(model, seg.voiceId, seg.cleanText);
-      } catch (e) {
-        return fail(15, `Nhân vật "${seg.characterName}": ${AiError.from(e).message}`);
+      const vId = String(seg.voiceId);
+      const isOnlineVoice = vId.includes("Neural") || vId.startsWith("edge_") || vId.startsWith("google_");
+      if (!isOnlineVoice) {
+        try {
+          ai.resolveEngine(model, seg.voiceId, seg.cleanText);
+        } catch (e) {
+          return fail(15, `Nhân vật "${seg.characterName}": ${AiError.from(e).message}`);
+        }
       }
     }
 
@@ -137,8 +142,22 @@ export class DialogueExecutor {
       if (isCancelled?.()) return cancelled(Math.floor(15 + (i / totalSegments) * 55));
       const seg = segments[i];
       try {
-        const outputPath = await ai.scratchPath(scratchScope, `turn_${String(i + 1).padStart(4, "0")}.wav`);
-        const r = await ai.synthesize({ model, voiceId: seg.voiceId as string, text: seg.cleanText, outputPath });
+        const vId = String(seg.voiceId || defaultVoice);
+        const isOnline = vId.includes("Neural") || vId.startsWith("edge_");
+        const outputPath = await ai.scratchPath(
+          scratchScope,
+          `turn_${String(i + 1).padStart(4, "0")}.${isOnline ? "mp3" : "wav"}`
+        );
+        let r: { durationSec: number; outputPath: string };
+        if (isOnline) {
+          r = await edgeTtsProvider.synthesize({
+            voiceId: vId,
+            text: seg.cleanText,
+            outputPath,
+          });
+        } else {
+          r = await ai.synthesize({ model, voiceId: vId, text: seg.cleanText, outputPath });
+        }
         seg.durationSec = r.durationSec; // real duration → speaker timeline + subtitles
         segmentPaths.push(r.outputPath);
       } catch (e) {

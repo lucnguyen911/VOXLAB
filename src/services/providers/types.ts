@@ -13,8 +13,27 @@ export interface PreviewResult {
   success: boolean;
   audioUrl?: string;
   error?: string;
+  errorCode?: string;
   isNotConfigured?: boolean;
   unconfigured?: boolean;
+}
+
+export interface ProviderSynthesizeParams {
+  voiceId: string;
+  text: string;
+  outputPath: string;
+  speed?: number;
+  pitch?: number;
+  volume?: number;
+  onProgress?: (pct: number, stage: string) => void;
+}
+
+export interface ProviderSynthesizeResult {
+  outputPath: string;
+  durationSec: number;
+  sampleRate: number;
+  sizeBytes?: number;
+  format: string;
 }
 
 export interface TtsProviderAdapter {
@@ -23,7 +42,8 @@ export interface TtsProviderAdapter {
   getDisplayName(lang: SupportedLang): string;
   availability(): Promise<VoiceAvailability> | VoiceAvailability;
   listVoices(): Promise<VoiceProfile[]> | VoiceProfile[];
-  preview(voice: VoiceProfile, text?: string): Promise<PreviewResult>;
-  synthesize?(voice: VoiceProfile, text: string, options?: any): Promise<PreviewResult>;
+  preview(voice: VoiceProfile, text?: string, onEnded?: () => void): Promise<PreviewResult>;
+  synthesize?(params: ProviderSynthesizeParams): Promise<ProviderSynthesizeResult>;
+  stop?(): void;
   capabilities(): ProviderCapabilities;
 }

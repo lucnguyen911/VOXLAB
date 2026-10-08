@@ -353,7 +353,7 @@ export function smartChunkScript(
       index: idx + 1,
       text: cleanText,
       originalText: cleanText,
-      status: "ready",
+      status: "pending",
       durationSec: estSec,
       pauseAfterMs: chunk.pauseAfterMs,
     };

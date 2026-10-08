@@ -146,6 +146,7 @@ export class TranslationExecutor {
         {
           sourceLang: detectedSource,
           isCancelled,
+          strict: true,
         }
       );
     } catch (err: unknown) {

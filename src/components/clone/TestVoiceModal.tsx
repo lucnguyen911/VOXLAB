@@ -1,7 +1,11 @@
 import React, { useState } from "react";
-import { X, Sparkles, Volume2, Mic } from "lucide-react";
+import { X, Sparkles, Volume2, Mic, FolderOpen, AlertCircle, RefreshCw } from "lucide-react";
 import { VoiceProfile } from "../../types/ui";
-import { cloneVoiceProvider } from "../../services/providers/cloneProvider";
+import {
+  getSharedAiServices,
+  readAudioFileBlobUrl,
+  showPathInFolder,
+} from "../../services/batch/batchRuntime";
 
 interface TestVoiceModalProps {
   isOpen: boolean;
@@ -27,34 +31,65 @@ export const TestVoiceModal: React.FC<TestVoiceModalProps> = ({
     "Xin chào, đây là đoạn văn bản thử nghiệm để kiểm tra âm sắc và nhịp điệu của giọng nói vừa được nhân bản."
   );
   const [isGenerating, setIsGenerating] = useState(false);
+  const [progressStage, setProgressStage] = useState<string>("");
+  const [errorText, setErrorText] = useState<string | null>(null);
   const [lastGeneratedAt, setLastGeneratedAt] = useState<string | null>(null);
+  const [lastOutputPath, setLastOutputPath] = useState<string | null>(null);
 
   if (!isOpen || !voice) return null;
+
+  const handleCancelTest = async () => {
+    try {
+      const ai = await getSharedAiServices();
+      await ai?.cancelActive();
+    } catch {}
+    setIsGenerating(false);
+    setProgressStage("Đã hủy");
+  };
 
   const handleGenerateTest = async () => {
     if (!testText.trim()) return;
 
     setIsGenerating(true);
+    setErrorText(null);
+    setProgressStage("Bắt đầu khởi tạo...");
     try {
-      // Call clone voice provider for speech preview
-      await cloneVoiceProvider.preview(voice, testText);
+      const ai = await getSharedAiServices();
+      if (!ai) throw new Error("Local AI runtime chưa khởi tạo.");
 
-      // Estimate duration based on text length (approx 15 chars/sec)
-      const estimatedDuration = Math.max(3.5, Math.min(20, Math.round((testText.length / 14) * 10) / 10));
+      const scratchDir = await ai.scratchPath("clone_test", "");
+      const outputPath = `${scratchDir}\\test_${voice.id}_${Date.now()}.wav`;
 
-      // Trigger global bottom audio preview player
+      const res = await ai.synthesize({
+        model: voice.engine || "omnivoice",
+        voiceId: voice.id,
+        text: testText,
+        outputPath,
+        language: voice.supportedLanguages.includes("vi") ? "vi" : "en",
+        onProgress: (pct, stage) => {
+          setProgressStage(`${stage} (${pct}%)`);
+        },
+      });
+
+      const blobUrl = await readAudioFileBlobUrl(res.outputPath);
+      setLastOutputPath(res.outputPath);
+
+      // Trigger global bottom audio preview player with real audio!
       onPlayTestTrack({
         id: `test_${voice.id}_${Date.now()}`,
         voiceName: voice.name,
         title: `${voice.name} (Bản thử giọng)`,
-        durationSec: estimatedDuration,
-        audioUrl: voice.sampleAudioPath,
+        durationSec: res.durationSec,
+        audioUrl: blobUrl,
         text: testText,
       });
 
       setLastGeneratedAt(new Date().toLocaleTimeString());
+    } catch (err: any) {
+      setErrorText(err?.message || "Lỗi khi tạo bản thử giọng.");
     } finally {
       setIsGenerating(false);
+      setProgressStage("");
     }
   };
 
@@ -113,12 +148,38 @@ export const TestVoiceModal: React.FC<TestVoiceModalProps> = ({
             />
           </div>
 
+          {errorText && (
+            <div className="flex items-center gap-2 p-2.5 bg-danger/15 text-danger border border-danger/30 rounded-lg text-[11px]">
+              <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>{errorText}</span>
+            </div>
+          )}
+
+          {isGenerating && progressStage && (
+            <div className="flex items-center gap-2 p-2.5 bg-accent/15 text-accent border border-accent/30 rounded-lg text-[11px]">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+              <span>{progressStage}</span>
+            </div>
+          )}
+
           {lastGeneratedAt && (
-            <div className="flex items-center gap-2 p-2.5 bg-emerald-950/20 text-emerald-400 border border-emerald-800/30 rounded-lg text-[11px]">
-              <Volume2 className="w-3.5 h-3.5 flex-shrink-0" />
-              <span>
-                Đã tạo bản thử lúc {lastGeneratedAt}. Bạn có thể nghe và chỉnh tốc độ trên thanh phát dưới đáy màn hình.
-              </span>
+            <div className="flex items-center justify-between p-2.5 bg-emerald-950/20 text-emerald-400 border border-emerald-800/30 rounded-lg text-[11px]">
+              <div className="flex items-center gap-2">
+                <Volume2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>
+                  Đã tạo bản thử lúc {lastGeneratedAt}. Nghe thử trên thanh phát dưới đáy màn hình.
+                </span>
+              </div>
+              {lastOutputPath && (
+                <button
+                  type="button"
+                  onClick={() => showPathInFolder(lastOutputPath)}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded text-[11px] border border-borderDefault transition-colors cursor-pointer shrink-0"
+                >
+                  <FolderOpen className="w-3 h-3 text-accent" />
+                  <span>Mở file</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -131,14 +192,27 @@ export const TestVoiceModal: React.FC<TestVoiceModalProps> = ({
           >
             Đóng
           </button>
-          <button
-            onClick={handleGenerateTest}
-            disabled={isGenerating || !testText.trim()}
-            className="flex items-center gap-2 px-5 py-2 bg-accent hover:bg-accent/90 text-background rounded-lg text-xs font-bold shadow-xs transition-colors disabled:opacity-50"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>{isGenerating ? "Đang tạo bản thử..." : "Tạo bản thử"}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {isGenerating ? (
+              <button
+                type="button"
+                onClick={handleCancelTest}
+                className="flex items-center gap-1.5 px-4 py-2 bg-danger/15 hover:bg-danger/25 text-danger border border-danger/30 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Hủy</span>
+              </button>
+            ) : (
+              <button
+                onClick={handleGenerateTest}
+                disabled={!testText.trim()}
+                className="flex items-center gap-2 px-5 py-2 bg-accent hover:bg-accent/90 text-background rounded-lg text-xs font-bold shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Tạo bản thử</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

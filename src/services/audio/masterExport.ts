@@ -437,6 +437,373 @@ export function downloadTextBlob(content: string, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
+export interface SpeechBoundaryAnalysis {
+  trimmedSamples: Float32Array;
+  speechStartSample: number;
+  speechEndSample: number;
+  cutStartSample: number;
+  cutEndSample: number;
+  actualLeadingSilenceRetainedMs: number;
+  actualTrailingSilenceRetainedMs: number;
+}
+
+/**
+ * Analyzes audio chunk boundaries to detect true speech onset and offset.
+ * Applies safety margins (30ms leading, 50ms trailing) to preserve weak final
+ * consonants (s, t, m, n), breath, natural decay, and soft speech.
+ * Computes exact actual silence retained at boundaries so dynamic injected gaps
+ * never double-accumulate silence.
+ * Applies Hann raised-cosine micro-fade (8ms) at cut points to eliminate clicks/pops.
+ */
+export function analyzeSpeechBoundaries(
+  samples: Float32Array,
+  sampleRate: number,
+  isFirst: boolean,
+  isLast: boolean
+): SpeechBoundaryAnalysis {
+  const SAFETY_HEAD_MS = 30; // Preserves onset attack transients and breath
+  const SAFETY_TAIL_MS = 50; // Preserves weak final consonants (s, t, m, n), decay, room tone
+
+  // 1. Calculate peak amplitude
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const abs = Math.abs(samples[i]);
+    if (abs > peak) peak = abs;
+  }
+
+  // Gracefully handle empty or silent buffer
+  if (peak < 1e-4) {
+    return {
+      trimmedSamples: samples.slice(0),
+      speechStartSample: 0,
+      speechEndSample: samples.length,
+      cutStartSample: 0,
+      cutEndSample: samples.length,
+      actualLeadingSilenceRetainedMs: 0,
+      actualTrailingSilenceRetainedMs: 0,
+    };
+  }
+
+  // 2. Sensitive adaptive threshold: -58.4 dBFS to -49.1 dBFS
+  // Catches delicate whispered speech and faint consonant releases
+  const silenceThresholdRms = Math.max(0.0012, Math.min(0.0035, peak * 0.012));
+  const frameSize = Math.max(1, Math.floor(sampleRate * 0.010)); // 10ms frame
+  const numFrames = Math.floor(samples.length / frameSize);
+
+  if (numFrames < 2) {
+    return {
+      trimmedSamples: samples.slice(0),
+      speechStartSample: 0,
+      speechEndSample: samples.length,
+      cutStartSample: 0,
+      cutEndSample: samples.length,
+      actualLeadingSilenceRetainedMs: 0,
+      actualTrailingSilenceRetainedMs: 0,
+    };
+  }
+
+  const frameRms = new Float32Array(numFrames);
+  for (let f = 0; f < numFrames; f++) {
+    const start = f * frameSize;
+    const end = Math.min(samples.length, start + frameSize);
+    let sumSquares = 0;
+    for (let j = start; j < end; j++) {
+      sumSquares += samples[j] * samples[j];
+    }
+    frameRms[f] = Math.sqrt(sumSquares / (end - start));
+  }
+
+  // 3. Find speech onset (scan forward)
+  let speechStartFrame = 0;
+  let foundStart = false;
+  for (let f = 0; f < numFrames; f++) {
+    if (frameRms[f] >= silenceThresholdRms) {
+      speechStartFrame = f;
+      foundStart = true;
+      break;
+    }
+  }
+
+  // 4. Find speech offset (scan backward)
+  let speechEndFrame = numFrames - 1;
+  let foundEnd = false;
+  for (let f = numFrames - 1; f >= 0; f--) {
+    if (frameRms[f] >= silenceThresholdRms) {
+      speechEndFrame = f;
+      foundEnd = true;
+      break;
+    }
+  }
+
+  const speechStartSample = foundStart ? speechStartFrame * frameSize : 0;
+  const speechEndSample = foundEnd
+    ? Math.min(samples.length, (speechEndFrame + 1) * frameSize)
+    : samples.length;
+
+  // 5. Apply safety margins
+  const safetyHeadSamples = Math.floor(sampleRate * (SAFETY_HEAD_MS / 1000));
+  const safetyTailSamples = Math.floor(sampleRate * (SAFETY_TAIL_MS / 1000));
+
+  const cutStartSample = isFirst
+    ? 0
+    : Math.max(0, speechStartSample - safetyHeadSamples);
+
+  const cutEndSample = isLast
+    ? samples.length
+    : Math.min(samples.length, speechEndSample + safetyTailSamples);
+
+  const actualStart = Math.min(cutStartSample, cutEndSample);
+  const actualEnd = Math.max(cutStartSample, cutEndSample);
+
+  // Exact measurement of silence retained
+  const actualLeadingSilenceRetainedMs = isFirst
+    ? 0
+    : Math.max(0, ((speechStartSample - actualStart) / sampleRate) * 1000);
+
+  const actualTrailingSilenceRetainedMs = isLast
+    ? 0
+    : Math.max(0, ((actualEnd - speechEndSample) / sampleRate) * 1000);
+
+  // 6. Slice samples and apply Hann raised-cosine micro-fade (8ms)
+  const trimmed = samples.slice(actualStart, actualEnd);
+  const fadeLen = Math.min(trimmed.length, Math.floor(sampleRate * 0.008)); // 8ms fade
+
+  if (!isFirst && fadeLen > 0) {
+    for (let i = 0; i < fadeLen; i++) {
+      const w = 0.5 * (1 - Math.cos((Math.PI * i) / fadeLen));
+      trimmed[i] *= w;
+    }
+  }
+
+  if (!isLast && fadeLen > 0) {
+    for (let i = 0; i < fadeLen; i++) {
+      const idx = trimmed.length - 1 - i;
+      const w = 0.5 * (1 - Math.cos((Math.PI * i) / fadeLen));
+      trimmed[idx] *= w;
+    }
+  }
+
+  return {
+    trimmedSamples: trimmed,
+    speechStartSample,
+    speechEndSample,
+    cutStartSample: actualStart,
+    cutEndSample: actualEnd,
+    actualLeadingSilenceRetainedMs: Math.round(actualLeadingSilenceRetainedMs * 10) / 10,
+    actualTrailingSilenceRetainedMs: Math.round(actualTrailingSilenceRetainedMs * 10) / 10,
+  };
+}
+
+/**
+ * Backward compatible range selector using analyzeSpeechBoundaries.
+ */
+export function getEffectiveAudioRange(
+  samples: Float32Array,
+  sampleRate: number,
+  isFirst: boolean,
+  isLast: boolean
+): { start: number; end: number } {
+  const analysis = analyzeSpeechBoundaries(samples, sampleRate, isFirst, isLast);
+  return { start: analysis.cutStartSample, end: analysis.cutEndSample };
+}
+
+/**
+ * Asynchronously stitches real audio chunks together (using Web Audio API when available)
+ * with accurate punctuation pauses into a standard 16-bit PCM WAV Blob.
+ */
+export async function assembleMasterAudioAsync(
+  chunks: ChunkItem[],
+  options?: MasterExportOptions
+): Promise<MasterExportResult> {
+  const validation = validateChunksForExport(chunks);
+  if (!validation.canExport) {
+    throw new Error(
+      `Không thể ghép audio: còn ${validation.invalidChunks.length} đoạn chưa sẵn sàng.`
+    );
+  }
+
+  const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
+  const AudioCtx =
+    typeof window !== "undefined"
+      ? window.AudioContext || (window as any).webkitAudioContext
+      : null;
+
+  if (AudioCtx && sortedChunks.some((c) => c.audioUrl || (c as any).audioFilePath)) {
+    try {
+      const ctx = new AudioCtx();
+
+      // Decode all chunk audio buffers
+      const buffers = await Promise.all(
+        sortedChunks.map(async (chunk) => {
+          let url = chunk.audioUrl || (chunk as any).audioFilePath;
+          if (!url) return null;
+          if (
+            !url.startsWith("blob:") &&
+            !url.startsWith("http:") &&
+            !url.startsWith("https:") &&
+            !url.startsWith("data:")
+          ) {
+            try {
+              const { readAudioFileBlobUrl } = await import("../batch/batchRuntime");
+              url = await readAudioFileBlobUrl(url);
+            } catch (e) {
+              console.warn("Could not read audio file blob url:", e);
+            }
+          }
+          try {
+            const resp = await fetch(url);
+            if (resp.ok) {
+              const arr = await resp.arrayBuffer();
+              return await ctx.decodeAudioData(arr);
+            }
+          } catch (e) {
+            console.warn(`Failed to decode audio for chunk ${chunk.index}:`, e);
+          }
+          return null;
+        })
+      );
+
+      const sampleRate = ctx.sampleRate || 44100;
+      // Extract trimmed audio segments with exact silence measurements
+      const processedSegments: {
+        samples: Float32Array;
+        actualLeadingMs: number;
+        actualTrailingMs: number;
+      }[] = [];
+
+      for (let i = 0; i < sortedChunks.length; i++) {
+        const isFirst = i === 0;
+        const isLast = i === sortedChunks.length - 1;
+        const buf = buffers[i];
+        let chunkSamples: Float32Array;
+        let actualLeadingMs = 0;
+        let actualTrailingMs = 0;
+
+        if (buf) {
+          const raw = buf.getChannelData(0);
+          const analysis = analyzeSpeechBoundaries(raw, sampleRate, isFirst, isLast);
+          chunkSamples = analysis.trimmedSamples;
+          actualLeadingMs = analysis.actualLeadingSilenceRetainedMs;
+          actualTrailingMs = analysis.actualTrailingSilenceRetainedMs;
+        } else {
+          // Fallback tone for missing buffer
+          const chunkDuration = sortedChunks[i].durationSec || 4.0;
+          const count = Math.floor(chunkDuration * sampleRate);
+          chunkSamples = new Float32Array(count);
+          const baseFreq = 300 + (sortedChunks[i].index % 8) * 40;
+          for (let s = 0; s < count; s++) {
+            chunkSamples[s] = Math.sin(2 * Math.PI * baseFreq * (s / sampleRate)) * 0.25;
+          }
+        }
+
+        processedSegments.push({
+          samples: chunkSamples,
+          actualLeadingMs,
+          actualTrailingMs,
+        });
+      }
+
+      // Exact dynamic injected gap between consecutive segments:
+      // injectedGapMs = max(0, targetPauseMs - actualTrailingSilenceRetained - actualLeadingSilenceRetained)
+      const interChunkGapsSamples: number[] = [];
+      for (let i = 0; i < processedSegments.length - 1; i++) {
+        const targetPauseMs = getTargetPauseMs(
+          sortedChunks[i].text,
+          options?.punctuationPauses,
+          sortedChunks[i].pauseAfterMs
+        );
+        const actualTrailing = processedSegments[i].actualTrailingMs;
+        const actualLeading = processedSegments[i + 1].actualLeadingMs;
+        const injectedGapMs = Math.max(0, targetPauseMs - actualTrailing - actualLeading);
+        const gapSamples = Math.floor((injectedGapMs / 1000) * sampleRate);
+        interChunkGapsSamples.push(gapSamples);
+      }
+
+      let totalSamples = 0;
+      let pauseCount = 0;
+      for (let i = 0; i < processedSegments.length; i++) {
+        totalSamples += processedSegments[i].samples.length;
+        if (i < interChunkGapsSamples.length) {
+          totalSamples += interChunkGapsSamples[i];
+          if (interChunkGapsSamples[i] > 0) pauseCount++;
+        }
+      }
+
+      const masterChannel = new Float32Array(totalSamples);
+      let cursor = 0;
+      for (let i = 0; i < processedSegments.length; i++) {
+        masterChannel.set(processedSegments[i].samples, cursor);
+        cursor += processedSegments[i].samples.length;
+        if (i < interChunkGapsSamples.length && interChunkGapsSamples[i] > 0) {
+          cursor += interChunkGapsSamples[i]; // Left as exact zero PCM samples
+        }
+      }
+
+      // Encode masterChannel to 16-bit PCM WAV
+      const numChannels = 1;
+      const bytesPerSample = 2;
+      const blockAlign = numChannels * bytesPerSample;
+      const byteRate = sampleRate * blockAlign;
+      const dataSize = masterChannel.length * bytesPerSample;
+      const wavBuffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(wavBuffer);
+
+      const writeString = (offset: number, str: string) => {
+        for (let i = 0; i < str.length; i++) {
+          view.setUint8(offset + i, str.charCodeAt(i));
+        }
+      };
+
+      writeString(0, "RIFF");
+      view.setUint32(4, 36 + dataSize, true);
+      writeString(8, "WAVE");
+      writeString(12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true); // PCM
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, 16, true);
+      writeString(36, "data");
+      view.setUint32(40, dataSize, true);
+
+      let offset = 44;
+      for (let i = 0; i < masterChannel.length; i++) {
+        let s = masterChannel[i];
+        if (s > 1.0) s = 1.0;
+        else if (s < -1.0) s = -1.0;
+        const val = s < 0 ? Math.floor(s * 0x8000) : Math.floor(s * 0x7fff);
+        view.setInt16(offset, val, true);
+        offset += 2;
+      }
+
+      const blob = new Blob([wavBuffer], { type: "audio/wav" });
+      const safeTitle = (options?.projectTitle || "Audio")
+        .replace(/[^\w\s-]/g, "")
+        .trim()
+        .replace(/\s+/g, "_");
+      const filename = `VoxLab_${safeTitle}_Master.wav`;
+      const totalDurationSec = Math.round((masterChannel.length / sampleRate) * 100) / 100;
+
+      return {
+        blob,
+        filename,
+        totalDurationSec,
+        totalBytes: wavBuffer.byteLength,
+        chunkCount: sortedChunks.length,
+        pauseCount,
+        orderedChunkIndices: sortedChunks.map((c) => c.index),
+      };
+    } catch (err) {
+      console.warn("Async master audio assembly error, falling back to sync merger:", err);
+    }
+  }
+
+  // Fallback to synchronous mergeMasterAudio
+  return mergeMasterAudio(chunks, options);
+}
+
 /**
  * Alias for mergeMasterAudio matching Plan and Batch Executor terminology.
  */

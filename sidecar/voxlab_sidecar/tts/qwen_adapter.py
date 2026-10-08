@@ -54,14 +54,32 @@ class QwenTtsAdapter(TtsEngineAdapter):
     def load(self, model_dir: str, device: str) -> dict[str, Any]:
         if device != "cuda" or not cuda_available():
             raise SidecarError("DEVICE_UNAVAILABLE", "Qwen3-TTS requires CUDA (CPU execution not verified)")
+        import gc
+        import os
         import torch
+        if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+            torch.backends.cuda.matmul.allow_tf32 = True
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
         from qwen_tts import Qwen3TTSModel
 
         # flash-attn is optional upstream and not available on Windows; use PyTorch SDPA.
         self._model = Qwen3TTSModel.from_pretrained(
             model_dir, device_map="cuda:0", dtype=torch.bfloat16, attn_implementation="sdpa")
         self.device = device
-        return {"dtype": "bfloat16", "sampleRate": 24000}
+
+        gc.collect()
+        if os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+            except Exception:
+                pass
+
+        vram_mb = int(torch.cuda.memory_allocated(0) // (1024 * 1024)) if torch.cuda.is_available() else 0
+        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NVIDIA GPU"
+        return {"dtype": "bfloat16", "sampleRate": 24000, "gpu": gpu_name, "vramMb": vram_mb, "device": "cuda:0"}
 
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
         language = LANGUAGE_NAMES.get(req.language, "Auto") if req.language else "Auto"
@@ -76,3 +94,10 @@ class QwenTtsAdapter(TtsEngineAdapter):
         self._model = None
         self.device = None
         release_torch_memory()
+        import os
+        if os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+            except Exception:
+                pass

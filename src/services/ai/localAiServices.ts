@@ -43,6 +43,7 @@ export interface SynthesizeRequest {
   outputPath: string;
   language?: string;
   speed?: number;
+  sampleRate?: number;
   onProgress?: (pct: number, stage: string) => void;
 }
 
@@ -149,7 +150,18 @@ export class LocalAiServices {
     const modelDir = joinPath(s.modelsDir, caps.modelId);
     const key = `${caps.engine}|${modelDir}|${s.device}`;
     if (this.loadedTts?.runtime === caps.runtime && this.loadedTts.key === key) return;
-    this.loadedTts = null;
+
+    // Model switch lifecycle: unload previous model from VRAM before loading the next one
+    if (this.loadedTts) {
+      const prev = this.loadedTts;
+      this.loadedTts = null;
+      try {
+        await this.call(prev.runtime, "tts.unload", {}, onProgress);
+      } catch {
+        // ignore unload error
+      }
+    }
+
     await this.call(caps.runtime, "tts.load", { engine: caps.engine, modelDir, device: s.device }, onProgress);
     this.loadedTts = { runtime: caps.runtime, key };
   }
@@ -165,6 +177,7 @@ export class LocalAiServices {
     if (ref?.refAudioPath) params.refAudioPath = ref.refAudioPath;
     if (ref?.refText) params.refText = ref.refText;
     if (req.speed !== undefined && caps.supportsSpeed) params.speed = req.speed;
+    if (req.sampleRate !== undefined) params.sampleRate = req.sampleRate;
 
     for (let attempt = 0; attempt < 2; attempt++) {
       await this.ensureTtsLoaded(caps, req.onProgress);
@@ -187,9 +200,10 @@ export class LocalAiServices {
   }
 
   async transcribe(audioPath: string, language: string | "auto", wordTimestamps: boolean,
-                   onProgress?: (pct: number, stage: string) => void): Promise<TranscribeResult> {
+                   onProgress?: (pct: number, stage: string) => void,
+                   asrModelId?: string): Promise<TranscribeResult> {
     const s = this.settings();
-    const modelDir = joinPath(s.modelsDir, s.asrModelId);
+    const modelDir = joinPath(s.modelsDir, asrModelId || s.asrModelId);
     const key = `${modelDir}|${s.device}`;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (this.loadedAsrKey !== key) {
@@ -218,8 +232,12 @@ export class LocalAiServices {
     format: "wav" | "mp3";
     mode?: "sequential" | "timeline";
     totalDurationSec?: number;
+    sampleRate?: number;
   }, onProgress?: (pct: number, stage: string) => void): Promise<AssembleResult> {
-    return this.call<AssembleResult>("core", "audio.assemble", { ...params }, onProgress);
+    return this.call<AssembleResult>("core", "audio.assemble", {
+      sampleRate: 44100,
+      ...params,
+    }, onProgress);
   }
 
   /** Soft cancel first; if the engine is inside one blocking call, hard-cancel (kill) after graceMs. */

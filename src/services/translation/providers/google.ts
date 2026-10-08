@@ -20,7 +20,7 @@ export class GoogleTranslateProvider implements TranslationProvider {
     const trimmed = text.trim();
     if (!trimmed) return "";
 
-    try {
+    {
       const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(
         sourceLang
       )}&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(trimmed)}`;
@@ -33,10 +33,8 @@ export class GoogleTranslateProvider implements TranslationProvider {
       if (Array.isArray(data) && Array.isArray(data[0])) {
         return data[0].map((item: any) => item[0]).join("");
       }
-      return trimmed;
-    } catch (err: any) {
-      console.warn("Google Translate error, returning original text:", err?.message);
-      return trimmed;
+      // Unexpected payload: surface it instead of passing the source text off as a translation.
+      throw new Error("Google Translate trả về dữ liệu không hợp lệ.");
     }
   }
 

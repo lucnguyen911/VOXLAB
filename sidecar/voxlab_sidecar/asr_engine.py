@@ -40,6 +40,103 @@ def _cuda_device_count() -> int:
         return 0
 
 
+_shared_whisper_instance = None
+_transcript_cache: dict[str, str] = {}
+
+
+def find_whisper_model_dir(preferred_parent: str | None = None) -> str | None:
+    candidates = []
+    if preferred_parent:
+        candidates.append(os.path.join(preferred_parent, "faster-whisper-small"))
+        if os.path.isdir(preferred_parent):
+            try:
+                for name in os.listdir(preferred_parent):
+                    if "whisper" in name.lower():
+                        candidates.append(os.path.join(preferred_parent, name))
+            except Exception:
+                pass
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        base = os.path.join(appdata, "com.voxlab.app", "models")
+        candidates.append(os.path.join(base, "faster-whisper-small"))
+        if os.path.isdir(base):
+            try:
+                for name in os.listdir(base):
+                    if "whisper" in name.lower():
+                        candidates.append(os.path.join(base, name))
+            except Exception:
+                pass
+
+    for c in candidates:
+        if os.path.isfile(os.path.join(c, "model.bin")):
+            return c
+    return None
+
+
+def auto_transcribe_sample(
+    audio_path: str,
+    language: str | None = None,
+    models_dir: str | None = None,
+) -> str:
+    """Quickly transcribe a reference audio sample using faster-whisper.
+    Cached in-memory so repeated chunks reuse the exact transcript with zero overhead."""
+    global _shared_whisper_instance, _transcript_cache
+
+    if not audio_path or not os.path.isfile(audio_path):
+        return ""
+
+    cache_key = f"{os.path.abspath(audio_path)}_{language or 'auto'}"
+    if cache_key in _transcript_cache:
+        return _transcript_cache[cache_key]
+
+    model_dir = find_whisper_model_dir(models_dir)
+    if not model_dir:
+        log("[auto_transcribe] No local faster-whisper model found, skipping auto-transcribe")
+        return ""
+
+    _register_cuda_dlls()
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        log("[auto_transcribe] faster-whisper package not installed")
+        return ""
+
+    try:
+        if _shared_whisper_instance is None:
+            has_cuda = _cuda_device_count() > 0
+            device = "cuda" if has_cuda else "cpu"
+            compute_type = "float16" if has_cuda else "int8"
+            _shared_whisper_instance = WhisperModel(
+                model_dir, device=device, compute_type=compute_type, local_files_only=True
+            )
+
+        lang_code = None if not language or language == "auto" else language
+        segments_iter, info = _shared_whisper_instance.transcribe(
+            audio_path,
+            language=lang_code,
+            beam_size=5,
+            vad_filter=True,
+        )
+        text = " ".join(s.text.strip() for s in segments_iter if s.text.strip()).strip()
+        if not text:
+            segments_iter, _ = _shared_whisper_instance.transcribe(
+                audio_path,
+                language=lang_code,
+                beam_size=5,
+                vad_filter=False,
+            )
+            text = " ".join(s.text.strip() for s in segments_iter if s.text.strip()).strip()
+
+        if text:
+            _transcript_cache[cache_key] = text
+            log(f"[auto_transcribe] Transcribed {os.path.basename(audio_path)} ({info.language}): {text[:60]}...")
+        return text
+    except Exception as e:
+        log(f"[auto_transcribe] Failed to transcribe {audio_path}: {e}")
+        return ""
+
+
 class AsrEngine:
     # faster-whisper (CTranslate2) is verified to run on both CUDA and CPU.
     SUPPORTED_DEVICES = ("cuda", "cpu")

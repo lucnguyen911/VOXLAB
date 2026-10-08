@@ -22,6 +22,13 @@ ERROR_CODES = frozenset(
         "INFERENCE_FAILED",
         "OUT_OF_MEMORY",
         "ENGINE_NOT_INSTALLED",
+        "NETWORK_ERROR",
+        "AUTH_REQUIRED",
+        "PROVIDER_UNAVAILABLE",
+        "VOICE_NOT_FOUND",
+        "AUDIO_DECODE_FAILED",
+        "PLAYBACK_FAILED",
+        "INVALID_PARAMS",
         "INTERNAL",
     }
 )

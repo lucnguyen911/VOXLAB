@@ -8,6 +8,9 @@ import unittest
 import numpy as np
 import soundfile as sf
 
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 from voxlab_sidecar import audio_ops
 from voxlab_sidecar.protocol import SidecarError
 
@@ -40,11 +43,11 @@ class AudioOpsTest(unittest.TestCase):
         r = audio_ops.assemble("audio.assemble", {
             "inputs": [{"path": self.a, "gapAfterMs": 250}, {"path": self.b}],
             "outputPath": out, "format": "wav"}, _Ctx())
-        self.assertEqual(r["sampleRate"], 24000)
+        self.assertEqual(r["sampleRate"], 44100)
         self.assertAlmostEqual(r["durationSec"], 1.75, places=2)
         self.assertAlmostEqual(r["segments"][1]["startSec"], 1.25, places=3)
         data, sr = sf.read(out)
-        self.assertEqual(sr, 24000)
+        self.assertEqual(sr, 44100)
         self.assertAlmostEqual(len(data) / sr, 1.75, places=2)
         self.assertLess(np.abs(data[int(1.05 * sr):int(1.2 * sr)]).max(), 1e-4)  # gap is silence
         self.assertGreater(np.abs(data[: sr // 2]).max(), 0.4)                    # real samples, not zeros
@@ -57,7 +60,7 @@ class AudioOpsTest(unittest.TestCase):
             head = f.read(3)
         self.assertTrue(head == b"ID3" or head[0] == 0xFF)
         data, sr = sf.read(out)  # libsndfile MP3 decoder: fails on fake bitstreams
-        self.assertEqual(sr, 24000)
+        self.assertEqual(sr, 44100)
         self.assertAlmostEqual(len(data) / sr, 1.0, delta=0.1)
         spectrum = np.abs(np.fft.rfft(data[:sr]))
         self.assertAlmostEqual(np.argmax(spectrum) * sr / (2 * (len(spectrum) - 1)), 440, delta=5)
@@ -85,6 +88,34 @@ class AudioOpsTest(unittest.TestCase):
         self.assertEqual(r["sampleRate"], 44100)
         self.assertAlmostEqual(r["durationSec"], 0.5, places=3)
 
+    def test_prepare_clone_reference_short_preserves_file(self):
+        p, txt = audio_ops.prepare_clone_reference(self.a, ref_text="User Text", max_duration=10.0)
+        self.assertEqual(p, self.a)
+        self.assertEqual(txt, "User Text")
+
+    def test_prepare_clone_reference_long_auto_trims(self):
+        # Create a 15-second audio: tone from 0-4s, silence from 4-6s, tone from 6-15s
+        long_wav = os.path.join(self.dir, "long.wav")
+        sr = 16000
+        samples = np.zeros(15 * sr, dtype=np.float32)
+        # Tone in 0-4s
+        t1 = np.arange(4 * sr) / sr
+        samples[: 4 * sr] = 0.5 * np.sin(2 * np.pi * 440.0 * t1)
+        # Silence in 4-6s (samples already zero)
+        # Tone in 6-15s
+        t2 = np.arange(9 * sr) / sr
+        samples[6 * sr :] = 0.5 * np.sin(2 * np.pi * 440.0 * t2)
+        sf.write(long_wav, samples, sr)
+
+        trimmed_path, _txt = audio_ops.prepare_clone_reference(long_wav, ref_text="", max_duration=10.0)
+        self.assertNotEqual(trimmed_path, long_wav)
+        self.assertTrue(os.path.isfile(trimmed_path))
+        info = sf.info(trimmed_path)
+        # Sliced cleanly in the silence window between 4.5s and 8.5s
+        self.assertGreaterEqual(info.duration, 4.0)
+        self.assertLessEqual(info.duration, 8.5)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -23,6 +23,22 @@ import { PerFileConfigDrawer } from "./batch/PerFileConfigDrawer";
 import { GlobalDefaultsModal } from "./batch/GlobalDefaultsModal";
 import { BatchArtifactPreviewModal } from "./batch/BatchArtifactPreviewModal";
 import { BatchFooter } from "../components/batch/BatchFooter";
+import { initBatchRuntime, tauriAiFs, getDefaultBatchOutputDir } from "../services/batch/batchRuntime";
+import { isTauriRuntime } from "../services/ai/tauriBackend";
+
+/** A file to stage. In the desktop runtime `path` is absolute; in browser preview it is only the name. */
+interface IncomingFile {
+  path: string;
+  name: string;
+  size: number;
+  mtime: number;
+  /** Text content (text files only) so dialogue detection inspects the script, not the file name. */
+  textContent?: string;
+}
+
+function baseName(p: string): string {
+  return p.split(/[\\/]/).pop() || p;
+}
 
 export const BatchWorkspace: React.FC = () => {
   const orchestrator = useMemo(() => BatchOrchestrator.getInstance(), []);
@@ -49,10 +65,13 @@ export const BatchWorkspace: React.FC = () => {
 
   // Subscribe to orchestrator
   useEffect(() => {
-    // Initial load from durable storage
-    loadBatchState().then((state) => {
-      orchestrator.setJobs(state.jobs);
-    });
+    // Wire the real desktop runtime first (Tauri fs + local AI sidecar), then restore the durable queue.
+    initBatchRuntime()
+      .catch((err) => console.error("Không thể khởi tạo local AI runtime:", err))
+      .then(() => loadBatchState())
+      .then((state) => {
+        orchestrator.setJobs(state.jobs);
+      });
 
     const unsubscribe = orchestrator.subscribe((updatedJobs, qStatus) => {
       setJobs(updatedJobs);
@@ -125,12 +144,15 @@ export const BatchWorkspace: React.FC = () => {
   const isIndeterminate = viewJobs.some((j) => selectedJobIds.has(j.id)) && !isAllSelected;
 
   // Add files
-  const handleAddFiles = (fileList: File[]) => {
+  const handleAddFiles = (fileList: IncomingFile[]) => {
     const newJobs: BatchJob[] = [];
 
     fileList.forEach((file, index) => {
       const compat = getFileCompatibilityReport(file.name);
-      const isDialogueValid = compat.fileKind === "text" ? validateDialogueScript(file.name).isDialogueScript : false;
+      const isDialogueValid =
+        compat.fileKind === "text"
+          ? validateDialogueScript(file.textContent ?? file.name).isDialogueScript
+          : false;
 
       let defaultTasks: BatchTaskType[] = [];
       if (compat.fileKind === "text") {
@@ -145,10 +167,10 @@ export const BatchWorkspace: React.FC = () => {
 
       const job: BatchJob = {
         id: `job-${Date.now()}-${index}`,
-        sourceFilePath: file.name,
+        sourceFilePath: file.path,
         sourceFileName: file.name,
         sourceFileSize: file.size,
-        sourceFileMtime: file.lastModified || Date.now(),
+        sourceFileMtime: file.mtime || Date.now(),
         fileKind: compat.fileKind,
         stage: "staging",
         queueOrder: jobs.length + index + 1,
@@ -160,7 +182,12 @@ export const BatchWorkspace: React.FC = () => {
         stepResults: {},
         status: "waiting",
         progressPct: 0,
-        outputSnapshot: getDefaultOutputSnapshot(),
+        outputSnapshot: {
+          ...getDefaultOutputSnapshot(),
+          // Desktop runtime needs an absolute folder; browser preview keeps the template value.
+          resolvedOutputDirectory:
+            getDefaultOutputSnapshot().resolvedOutputDirectory || getDefaultBatchOutputDir(),
+        },
         artifacts: { ownedArtifactPaths: [] },
         createdAt: Date.now(),
       };
@@ -170,6 +197,41 @@ export const BatchWorkspace: React.FC = () => {
 
     const updated = [...jobs, ...newJobs];
     orchestrator.setJobs(updated);
+  };
+
+  // Desktop runtime: native picker gives absolute paths the sidecar can read.
+  const handleUploadClick = async () => {
+    if (!isTauriRuntime()) {
+      fileInputRef.current?.click();
+      return;
+    }
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: true,
+        filters: [
+          { name: "VoxLab", extensions: ["txt", "srt", "vtt", "mp3", "wav", "m4a", "flac", "ogg", "mp4", "mkv", "mov", "webm"] },
+        ],
+      });
+      const paths = picked === null ? [] : Array.isArray(picked) ? picked : [picked];
+      const { invoke } = await import("@tauri-apps/api/core");
+      const incoming = await Promise.all(
+        paths.map(async (p): Promise<IncomingFile> => {
+          const st = await invoke<{ size: number; mtimeMs: number } | null>("fs_stat", { path: p });
+          const isText = /\.txt$/i.test(p);
+          return {
+            path: p,
+            name: baseName(p),
+            size: st?.size ?? 0,
+            mtime: st?.mtimeMs ?? Date.now(),
+            textContent: isText ? await tauriAiFs.readText(p).catch(() => undefined) : undefined,
+          };
+        })
+      );
+      if (incoming.length > 0) handleAddFiles(incoming);
+    } catch (err) {
+      console.error("Không thể mở hộp thoại chọn tệp:", err);
+    }
   };
 
   // Toggle tasks
@@ -296,6 +358,12 @@ export const BatchWorkspace: React.FC = () => {
     setActiveView("queued");
   };
 
+  // Stage to Queue and directly start processing
+  const handleStartFromList = () => {
+    handleStageToQueue();
+    orchestrator.startQueue();
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-background select-none">
       {/* Hidden File Input */}
@@ -304,7 +372,16 @@ export const BatchWorkspace: React.FC = () => {
         ref={fileInputRef}
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {
-            handleAddFiles(Array.from(e.target.files));
+            const files = Array.from(e.target.files);
+            Promise.all(
+              files.map(async (f): Promise<IncomingFile> => ({
+                path: f.name,
+                name: f.name,
+                size: f.size,
+                mtime: f.lastModified,
+                textContent: /\.txt$/i.test(f.name) ? await f.text() : undefined,
+              }))
+            ).then(handleAddFiles);
             e.target.value = "";
           }
         }}
@@ -324,6 +401,7 @@ export const BatchWorkspace: React.FC = () => {
         onStartQueue={() => orchestrator.startQueue()}
         onPauseQueue={() => orchestrator.requestPause()}
         onGlobalConfigClick={() => setIsGlobalModalOpen(true)}
+        onStartFromList={handleStartFromList}
       />
 
       {/* 2. CENTER WORKSPACE */}
@@ -333,7 +411,7 @@ export const BatchWorkspace: React.FC = () => {
           <BatchSubToolbar
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            onUploadClick={() => fileInputRef.current?.click()}
+            onUploadClick={handleUploadClick}
             onGlobalConfigClick={() => setIsGlobalModalOpen(true)}
           />
         )}

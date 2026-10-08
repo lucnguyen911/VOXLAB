@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Provisional development baseline: 7 days.
+/// NOTE: OFFLINE_GRACE_DAYS is marked TUNING REQUIRED before product-final freeze.
 pub const DEFAULT_OFFLINE_GRACE_DAYS: u64 = 7;
 pub const APP_VERSION: &str = "0.1.0";
 
@@ -58,6 +60,12 @@ impl SecurityService {
 
         // Must be within grace duration
         let now = now_epoch_secs();
+
+        // Clock rollback protection: reject if current clock is earlier than last verification
+        if now + 60 < cached.last_verified_at {
+            return false;
+        }
+
         let grace_duration = grace_days * 86400;
         if now > cached.last_verified_at + grace_duration {
             return false;
@@ -127,9 +135,16 @@ impl SecurityService {
         let hwid = device_identity::generate_hwid();
         let masked_key = license_storage::mask_license_key(trimmed_key);
 
+        let (supabase_url, anon_key) = match license_client::get_supabase_config() {
+            Some(cfg) => cfg,
+            None => {
+                return Err("Chưa cấu hình Supabase Server (VOXLAB_SUPABASE_URL / VOXLAB_SUPABASE_ANON_KEY). Vui lòng cấu hình biến môi trường server để kích hoạt online.".to_string());
+            }
+        };
+
         let rpc_res = license_client::verify_with_server(
-            license_client::DEFAULT_SUPABASE_URL,
-            license_client::DEFAULT_SUPABASE_ANON_KEY,
+            &supabase_url,
+            &anon_key,
             trimmed_key,
             &hwid,
             app_version,
@@ -194,10 +209,38 @@ impl SecurityService {
 
         let current_hwid = device_identity::generate_hwid();
 
+        let (supabase_url, anon_key) = match license_client::get_supabase_config() {
+            Some(cfg) => cfg,
+            None => {
+                // No server configured: fall back to offline grace evaluation
+                if Self::can_grant_offline_grace(&cached, &current_hwid, DEFAULT_OFFLINE_GRACE_DAYS) {
+                    return Ok(LicenseSummary {
+                        is_valid: true,
+                        status: "OFFLINE_GRACE".to_string(),
+                        masked_key: cached.license_key_masked,
+                        license_type: cached.license_type,
+                        expires_at_formatted: format_epoch_date(cached.expires_at),
+                        error_message: Some("Đang hoạt động trong thời gian ân hạn ngoại tuyến (Offline Grace).".to_string()),
+                        can_use_app: true,
+                    });
+                } else {
+                    return Ok(LicenseSummary {
+                        is_valid: false,
+                        status: "SERVER_NOT_CONFIGURED".to_string(),
+                        masked_key: cached.license_key_masked,
+                        license_type: cached.license_type,
+                        expires_at_formatted: format_epoch_date(cached.expires_at),
+                        error_message: Some("Chưa cấu hình Supabase Server để xác thực bản quyền trực tuyến.".to_string()),
+                        can_use_app: false,
+                    });
+                }
+            }
+        };
+
         // Call Supabase RPC with decrypted key
         let rpc_result = license_client::verify_with_server(
-            license_client::DEFAULT_SUPABASE_URL,
-            license_client::DEFAULT_SUPABASE_ANON_KEY,
+            &supabase_url,
+            &anon_key,
             &cached.license_key,
             &current_hwid,
             app_version,
@@ -301,5 +344,70 @@ impl SecurityService {
         app_version: &str,
     ) -> Result<LicenseSummary, String> {
         Self::activate(base_dir, new_key, app_version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_sample_cache(hwid: &str, status: &str, expires_at: Option<u64>) -> license_storage::LicenseCacheData {
+        license_storage::LicenseCacheData {
+            schema_version: license_storage::LICENSE_SCHEMA_VERSION,
+            license_key: "VOXLAB-PRO-ABCD-EFGH-IJKL-MNOP".to_string(),
+            license_key_masked: "VOXL-••••-••••-••••-MNOP".to_string(),
+            license_type: "Professional License".to_string(),
+            hwid_version: device_identity::HWID_VERSION.to_string(),
+            hwid: hwid.to_string(),
+            status: status.to_string(),
+            saved_at: now_epoch_secs(),
+            last_verified_at: now_epoch_secs(),
+            expires_at,
+            last_server_status: Some(status.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_can_grant_offline_grace_matching_hwid() {
+        let current_hwid = "TEST-DEVICE-HWID-12345";
+        let cache = make_sample_cache(current_hwid, "VALID", None);
+        assert!(SecurityService::can_grant_offline_grace(&cache, current_hwid, 7));
+    }
+
+    #[test]
+    fn test_rejects_offline_grace_on_device_mismatch() {
+        let cache = make_sample_cache("ORIGINAL-DEVICE-HWID", "VALID", None);
+        let mismatched_hwid = "DIFFERENT-DEVICE-HWID";
+        assert!(!SecurityService::can_grant_offline_grace(&cache, mismatched_hwid, 7));
+    }
+
+    #[test]
+    fn test_rejects_offline_grace_when_expired() {
+        let current_hwid = "TEST-DEVICE-HWID-12345";
+        let past_time = now_epoch_secs().saturating_sub(3600); // expired 1 hour ago
+        let cache = make_sample_cache(current_hwid, "VALID", Some(past_time));
+        assert!(!SecurityService::can_grant_offline_grace(&cache, current_hwid, 7));
+    }
+
+    #[test]
+    fn test_rejects_offline_grace_on_clock_rollback() {
+        let current_hwid = "TEST-DEVICE-HWID-12345";
+        let mut cache = make_sample_cache(current_hwid, "VALID", None);
+        // Simulate clock rollback: last_verified_at is set in the future relative to current clock
+        cache.last_verified_at = now_epoch_secs() + 86400; // verified "tomorrow"
+        assert!(!SecurityService::can_grant_offline_grace(&cache, current_hwid, 7));
+    }
+
+    #[test]
+    fn test_summary_masks_key_and_never_leaks_raw_key() {
+        let temp_dir = std::env::temp_dir().join(format!("voxlab_sec_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let cache = make_sample_cache("HWID-ABC", "VALID", None);
+        license_storage::save_license_cache(&temp_dir, &cache).unwrap();
+
+        let summary = SecurityService::get_summary(&temp_dir);
+        assert_eq!(summary.masked_key, "VOXL-••••-••••-••••-MNOP");
+        assert!(!format!("{:?}", summary).contains("VOXLAB-PRO-ABCD-EFGH-IJKL-MNOP"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

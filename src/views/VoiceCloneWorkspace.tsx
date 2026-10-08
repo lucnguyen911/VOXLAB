@@ -49,6 +49,8 @@ import { DeleteVoiceModal } from "../components/clone/DeleteVoiceModal";
 import { CompactWaveform } from "../components/waveform";
 import { SearchableLanguageSelect } from "../components/common/SearchableLanguageSelect";
 import { ALL_STANDARD_LANGUAGES, findLanguage, LanguageItem } from "../services/subtitle/languages";
+import { upsertCloneVoice } from "../services/ai/cloneVoiceRegistry";
+import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
 
 // Model definition with real capabilities
 export interface CloneModelDefinition {
@@ -119,11 +121,10 @@ const CLONE_MODELS: CloneModelDefinition[] = [
     name: "Qwen TTS",
     engine: "qwen_tts_1_7b",
     badge: "Neural trung thực cao",
-    description: "Mô hình mạng nơ-ron sâu chất lượng phòng thu, phát huy tối đa khi cung cấp văn bản tham chiếu.",
+    description: "Mô hình mạng nơ-ron sâu chất lượng phòng thu (10 ngôn ngữ, không hỗ trợ tiếng Việt), bắt buộc văn bản tham chiếu.",
     supportedLanguages: [
-      { code: "vi", label: "Tiếng Việt (VI)" },
-      { code: "zh", label: "Tiếng Trung (ZH)" },
       { code: "en", label: "Tiếng Anh (EN)" },
+      { code: "zh", label: "Tiếng Trung (ZH)" },
       { code: "ja", label: "Tiếng Nhật (JA)" },
       { code: "ko", label: "Tiếng Hàn (KO)" },
       { code: "de", label: "Tiếng Đức (DE)" },
@@ -227,6 +228,41 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
   const [activeVoiceForModal, setActiveVoiceForModal] = useState<VoiceProfile | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [referenceAudioPath, setReferenceAudioPath] = useState<string>("");
+
+  const handlePickReferenceAudio = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "Audio", extensions: ["wav", "mp3", "m4a", "flac", "ogg"] }],
+      });
+      if (typeof picked === "string") {
+        setReferenceAudioPath(picked);
+        const blobUrl = await readAudioFileBlobUrl(picked);
+        const resp = await fetch(blobUrl);
+        const arr = await resp.arrayBuffer();
+        const ctx = getOrCreateAudioContext();
+        const buffer = await ctx.decodeAudioData(arr);
+        setAudioBuffer(buffer);
+        setAudioUrl(blobUrl);
+        const fileName = picked.split(/[\\/]/).pop() || "reference.wav";
+        setReferenceFileMeta({
+          name: fileName,
+          size: `${(arr.byteLength / (1024 * 1024)).toFixed(1)} MB`,
+          duration: `${buffer.duration.toFixed(1)}s`,
+        });
+        if (!voiceName.trim()) {
+          const base = fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
+          setVoiceName(base.charAt(0).toUpperCase() + base.slice(1));
+        }
+        return;
+      }
+    } catch (e) {
+      console.warn("Tauri dialog open error, fallback to file input:", e);
+    }
+    fileInputRef.current?.click();
+  };
 
   // Current Model Definition
   const currentModel = useMemo(() => {
@@ -366,6 +402,23 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
         duration: `${buffer.duration.toFixed(1)}s`,
       });
 
+      let p = (file as any).path || "";
+      if (!p) {
+        try {
+          const ai = await getSharedAiServices();
+          if (ai) {
+            const scratch = await ai.scratchPath("clone_ref", "");
+            p = `${scratch}\\ref_${Date.now()}_${file.name}`;
+            const arr = await file.arrayBuffer();
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("fs_write_bytes", { path: p, bytes: Array.from(new Uint8Array(arr)) });
+          }
+        } catch {
+          // ignore
+        }
+      }
+      setReferenceAudioPath(p);
+
       // Suggest voice name if empty
       if (!voiceName.trim()) {
         const base = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
@@ -483,6 +536,15 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
   const handleCreateVoice = () => {
     if (!voiceName.trim() || !audioBuffer) return;
 
+    if (currentModel.requiresTranscript && !referenceTranscript.trim()) {
+      alert(
+        lang === "vi"
+          ? `Mô hình ${currentModel.name} bắt buộc phải có văn bản tham chiếu.`
+          : `Model ${currentModel.name} requires reference transcript.`
+      );
+      return;
+    }
+
     setIsCreating(true);
     setCreationProgress(15);
     setCreationStatusText(
@@ -531,9 +593,21 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
         lastUsedAt: nowIso,
         isFavorite: false,
         avatarColor: "from-accent to-teal-500",
-        sampleAudioPath: referenceFileMeta?.name || "reference_clone.wav",
+        sampleAudioPath: referenceAudioPath || referenceFileMeta?.name || "reference_clone.wav",
         ...(referenceTranscript.trim() ? { referenceTranscript: referenceTranscript.trim() } : {}),
       };
+
+      // Register in durable Clone Voice Registry
+      if (referenceAudioPath) {
+        upsertCloneVoice({
+          id: newVoice.id,
+          name: newVoice.name,
+          refAudioPath: referenceAudioPath,
+          refText: referenceTranscript.trim(),
+          language: selectedLang === "auto" ? undefined : selectedLang,
+          createdAt: Date.now(),
+        }).catch((err) => console.error("upsertCloneVoice error:", err));
+      }
 
       handleSaveToState(newVoice);
 
@@ -631,6 +705,17 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                     </option>
                   ))}
                 </select>
+                <div className="p-2.5 bg-surface2/60 rounded-lg border border-borderDefault/80 text-[11px] space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-accent">{currentModel.badge}</span>
+                    {currentModel.requiresTranscript ? (
+                      <span className="text-warning font-semibold">Cần văn bản mẫu</span>
+                    ) : (
+                      <span className="text-textMuted">Văn bản mẫu tùy chọn</span>
+                    )}
+                  </div>
+                  <p className="text-textMuted leading-relaxed">{currentModel.description}</p>
+                </div>
               </div>
 
               {/* 3. NGÔN NGỮ */}
@@ -723,7 +808,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                       </button>
 
                       <button
-                        onClick={() => fileInputRef.current?.click()}
+                        onClick={handlePickReferenceAudio}
                         className="text-xs text-accent hover:underline font-semibold transition-colors"
                       >
                         {lang === "vi" ? "Đổi file" : "Change file"}
@@ -733,7 +818,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                 ) : (
                   /* Empty Dropzone */
                   <div
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={handlePickReferenceAudio}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={handleDrop}
                     className="border-2 border-dashed border-borderDefault hover:border-accent/70 hover:bg-accent/5 rounded-xl p-7 text-center cursor-pointer transition-all bg-surface2/30 space-y-2.5 group"
@@ -755,17 +840,24 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
 
               {/* 5. VĂN BẢN THAM CHIẾU */}
               <div className="space-y-1.5">
-                <label className="block text-textSecondary font-medium">
-                  {lang === "vi" ? "Văn bản tham chiếu (không bắt buộc)" : "Reference Transcript (Optional)"}
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-textSecondary font-medium">
+                    Văn bản tham chiếu
+                  </label>
+                  {currentModel.requiresTranscript ? (
+                    <span className="text-[11px] font-semibold text-danger">* Bắt buộc với {currentModel.name}</span>
+                  ) : (
+                    <span className="text-[11px] text-textMuted">Tùy chọn</span>
+                  )}
+                </div>
                 <textarea
                   rows={2}
                   value={referenceTranscript}
                   onChange={(e) => setReferenceTranscript(e.target.value)}
                   placeholder={
-                    lang === "vi"
-                      ? "Nội dung lời nói trong file âm thanh (giúp mô hình clone chính xác hơn)..."
-                      : "Spoken words in audio file (helps clone more accurately)..."
+                    currentModel.requiresTranscript
+                      ? "Bắt buộc nhập chính xác lời thoại trong file audio mẫu để mô hình Qwen clone..."
+                      : "Nội dung lời nói trong file âm thanh (giúp mô hình clone chính xác hơn)..."
                   }
                   className="w-full bg-surface2 border border-borderDefault rounded-lg p-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none resize-none leading-relaxed cursor-text caret-accent"
                 />

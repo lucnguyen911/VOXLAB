@@ -169,11 +169,31 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
   const startTimeRef = useRef<number>(0);
   const playRequestIdRef = useRef<number>(0);
   const isPlayingRef = useRef<boolean>(isPlaying);
-
-  // Keep isPlayingRef in sync synchronously on every render
-  isPlayingRef.current = isPlaying;
+  const lastTrackKeyRef = useRef<string>("");
+  const currentTimeRef = useRef<number>(0);
+  const volumeRef = useRef<number>(volume);
+  const isMutedRef = useRef<boolean>(isMuted);
+  const playbackSpeedRef = useRef<number>(playbackSpeed);
+  const onTogglePlayRef = useRef(onTogglePlay);
+  const onSeekRef = useRef(onSeek);
 
   const duration = Math.max(0.1, track.durationSec || 4.2);
+  const durationRef = useRef(duration);
+  const trackKey = `${track.id}_${track.audioUrl || ""}`;
+
+  // Keep refs in sync synchronously on every render
+  isPlayingRef.current = isPlaying;
+  volumeRef.current = volume;
+  isMutedRef.current = isMuted;
+  playbackSpeedRef.current = playbackSpeed;
+  onTogglePlayRef.current = onTogglePlay;
+  onSeekRef.current = onSeek;
+  durationRef.current = duration;
+
+  const updateCurrentTime = useCallback((time: number) => {
+    currentTimeRef.current = time;
+    setCurrentTime(time);
+  }, []);
 
   const stopAudioNode = useCallback(() => {
     playRequestIdRef.current++;
@@ -201,27 +221,33 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
 
   const getAudioBuffer = useCallback(
     async (ctx: AudioContext): Promise<AudioBuffer> => {
-      if (bufferCacheRef.current.has(track.id)) {
-        return bufferCacheRef.current.get(track.id)!;
+      const cacheKey = `${track.id}_${track.audioUrl || ""}`;
+      if (bufferCacheRef.current.has(cacheKey)) {
+        return bufferCacheRef.current.get(cacheKey)!;
       }
 
-      if (
-        track.audioUrl &&
-        (track.audioUrl.startsWith("blob:") ||
-          track.audioUrl.startsWith("http:") ||
-          track.audioUrl.startsWith("https:") ||
-          track.audioUrl.startsWith("data:"))
-      ) {
+      if (track.audioUrl) {
         try {
-          const resp = await fetch(track.audioUrl);
+          let url = track.audioUrl;
+          const isLocalDiskPath =
+            url &&
+            (url.startsWith("file://") ||
+              /^[a-zA-Z]:[/\\]/.test(url) ||
+              url.startsWith("\\\\"));
+
+          if (isLocalDiskPath) {
+            const { readAudioFileBlobUrl } = await import("../../services/batch/batchRuntime");
+            url = await readAudioFileBlobUrl(url);
+          }
+          const resp = await fetch(url);
           if (resp.ok) {
             const arr = await resp.arrayBuffer();
             const decoded = await ctx.decodeAudioData(arr);
-            bufferCacheRef.current.set(track.id, decoded);
+            bufferCacheRef.current.set(cacheKey, decoded);
             return decoded;
           }
-        } catch {
-          // fallback to synthetic speech
+        } catch (e) {
+          console.warn("Failed to load audio for track:", e);
         }
       }
 
@@ -231,7 +257,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
         track.voiceName || track.title || "preview",
         track.text
       );
-      bufferCacheRef.current.set(track.id, synthetic);
+      bufferCacheRef.current.set(cacheKey, synthetic);
       return synthetic;
     },
     [track.id, track.audioUrl, track.voiceName, track.title, track.text, duration]
@@ -275,12 +301,12 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
           return;
         }
 
-        const effectiveVol = isMuted ? 0 : volume * 0.45;
+        const effectiveVol = isMutedRef.current ? 0 : volumeRef.current * 0.45;
         gainNodeRef.current.gain.setValueAtTime(effectiveVol, ctx.currentTime);
 
         const source = ctx.createBufferSource();
         source.buffer = buf;
-        source.playbackRate.value = playbackSpeed;
+        source.playbackRate.value = playbackSpeedRef.current;
         source.connect(gainNodeRef.current);
 
         source.onended = () => {
@@ -289,14 +315,15 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
           }
         };
 
-        const safeOffset = Math.max(0, Math.min(offsetSec, duration - 0.05));
+        const currentDuration = durationRef.current;
+        const safeOffset = Math.max(0, Math.min(offsetSec, currentDuration - 0.05));
         source.start(0, safeOffset);
         sourceNodeRef.current = source;
       } catch (err) {
         console.warn("Could not start Web Audio playback:", err);
       }
     },
-    [stopAudioNode, getAudioBuffer, isMuted, volume, playbackSpeed, duration]
+    [stopAudioNode, getAudioBuffer]
   );
 
   // Sync volume / mute changes into GainNode
@@ -312,35 +339,61 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
     if (sourceNodeRef.current) {
       sourceNodeRef.current.playbackRate.value = playbackSpeed;
     }
+    if (isPlayingRef.current) {
+      startTimeRef.current = Date.now() - (currentTimeRef.current / playbackSpeed) * 1000;
+    }
   }, [playbackSpeed]);
 
-  // Reset currentTime & stop audio when track changes
+  // Unified deterministic playback & track switching effect
   useEffect(() => {
-    setCurrentTime(0);
-    stopAudioNode();
-  }, [track.id, stopAudioNode]);
+    const isNewTrack = lastTrackKeyRef.current !== trackKey;
+    lastTrackKeyRef.current = trackKey;
 
-  // Playback timer & Web Audio synthetic simulation
-  useEffect(() => {
+    if (isNewTrack) {
+      // Whenever track changes (different chunk or regenerated audio):
+      // 1. Immediately reset playback position to 0
+      updateCurrentTime(0);
+      // 2. Stop any existing audio node
+      stopAudioNode();
+      // 3. Clear interval
+      if (synthIntervalRef.current) {
+        clearInterval(synthIntervalRef.current);
+        synthIntervalRef.current = null;
+      }
+    }
+
     if (isPlaying) {
-      let currentT = currentTime;
-      if (currentT >= duration - 0.1) {
-        currentT = 0;
-        setCurrentTime(0);
+      // If it's a new track, strictly start from 0:00!
+      // If it's the same track (resumed from pause), continue from currentTimeRef.current
+      let startOffset = isNewTrack ? 0 : currentTimeRef.current;
+      if (startOffset >= duration - 0.1) {
+        startOffset = 0;
+        updateCurrentTime(0);
       }
 
-      playFromOffset(currentT);
-      const startTime = Date.now() - (currentT / playbackSpeed) * 1000;
+      playFromOffset(startOffset);
+      const currentSpeed = playbackSpeedRef.current || 1.0;
+      const startTime = Date.now() - (startOffset / currentSpeed) * 1000;
       startTimeRef.current = startTime;
 
+      if (synthIntervalRef.current) {
+        clearInterval(synthIntervalRef.current);
+      }
+
       synthIntervalRef.current = window.setInterval(() => {
-        const elapsed = ((Date.now() - startTime) / 1000) * playbackSpeed;
-        if (elapsed >= duration) {
+        const speed = playbackSpeedRef.current || 1.0;
+        const elapsed = ((Date.now() - startTimeRef.current) / 1000) * speed;
+        const maxDuration = durationRef.current;
+        if (elapsed >= maxDuration) {
           stopAudioNode();
-          setCurrentTime(0);
-          onTogglePlay(); // End of audio track
+          updateCurrentTime(0);
+          if (synthIntervalRef.current) {
+            clearInterval(synthIntervalRef.current);
+            synthIntervalRef.current = null;
+          }
+          onTogglePlayRef.current(); // End of audio track
         } else {
-          setCurrentTime(elapsed);
+          updateCurrentTime(elapsed);
         }
       }, 40);
     } else {
@@ -358,41 +411,41 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
         synthIntervalRef.current = null;
       }
     };
-  }, [isPlaying, duration, playbackSpeed, onTogglePlay, playFromOffset, stopAudioNode]);
+  }, [trackKey, isPlaying, duration, playFromOffset, stopAudioNode, updateCurrentTime]);
 
   // Direct seek handler for range slider
   const handleSeek = useCallback(
     (targetTime: number) => {
-      const clamped = Math.max(0, Math.min(duration, targetTime));
-      setCurrentTime(clamped);
-      onSeek?.(clamped);
-      if (isPlaying) {
+      const clamped = Math.max(0, Math.min(durationRef.current, targetTime));
+      updateCurrentTime(clamped);
+      onSeekRef.current?.(clamped);
+      if (isPlayingRef.current) {
         playFromOffset(clamped);
-        startTimeRef.current = Date.now() - (clamped / playbackSpeed) * 1000;
+        startTimeRef.current = Date.now() - (clamped / playbackSpeedRef.current) * 1000;
       }
     },
-    [duration, onSeek, isPlaying, playFromOffset, playbackSpeed]
+    [playFromOffset, updateCurrentTime]
   );
 
-  const handleRewind5s = () => {
-    const target = Math.max(0, currentTime - 5);
-    setCurrentTime(target);
-    onSeek?.(target);
-    if (isPlaying) {
+  const handleRewind5s = useCallback(() => {
+    const target = Math.max(0, currentTimeRef.current - 5);
+    updateCurrentTime(target);
+    onSeekRef.current?.(target);
+    if (isPlayingRef.current) {
       playFromOffset(target);
-      startTimeRef.current = Date.now() - (target / playbackSpeed) * 1000;
+      startTimeRef.current = Date.now() - (target / playbackSpeedRef.current) * 1000;
     }
-  };
+  }, [playFromOffset, updateCurrentTime]);
 
-  const handleForward5s = () => {
-    const target = Math.min(duration, currentTime + 5);
-    setCurrentTime(target);
-    onSeek?.(target);
-    if (isPlaying) {
+  const handleForward5s = useCallback(() => {
+    const target = Math.min(durationRef.current, currentTimeRef.current + 5);
+    updateCurrentTime(target);
+    onSeekRef.current?.(target);
+    if (isPlayingRef.current) {
       playFromOffset(target);
-      startTimeRef.current = Date.now() - (target / playbackSpeed) * 1000;
+      startTimeRef.current = Date.now() - (target / playbackSpeedRef.current) * 1000;
     }
-  };
+  }, [playFromOffset, updateCurrentTime]);
 
   const handleCycleSpeed = () => {
     const currentIndex = PLAYBACK_SPEEDS.indexOf(playbackSpeed);
@@ -402,7 +455,8 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
 
   const handleDownload = () => {
     try {
-      const cachedBuffer = bufferCacheRef.current.get(track.id);
+      const cacheKey = `${track.id}_${track.audioUrl || ""}`;
+      const cachedBuffer = bufferCacheRef.current.get(cacheKey) || bufferCacheRef.current.get(track.id);
       const sampleRate = cachedBuffer ? cachedBuffer.sampleRate : 44100;
       const numChannels = 1;
       const bytesPerSample = 2;
@@ -457,6 +511,11 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
 
   const handleClose = () => {
     stopAudioNode();
+    updateCurrentTime(0);
+    if (synthIntervalRef.current) {
+      clearInterval(synthIntervalRef.current);
+      synthIntervalRef.current = null;
+    }
     onClose();
   };
 

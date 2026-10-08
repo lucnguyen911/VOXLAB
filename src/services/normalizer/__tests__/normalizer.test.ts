@@ -861,18 +861,25 @@ describe("Text Normalizer V1 - Final Implementation Pass Matrix", () => {
     assert.equal(res.normalizedText, input);
   });
 
-  it("Option 4: [basic integer & thousands] 15,000 and 150,000", () => {
-    assert.equal(normalizeText("15,000", ["numbers" as any]).normalizedText, "fifteen thousand");
-    assert.equal(normalizeText("150,000", ["numbers" as any]).normalizedText, "one hundred fifty thousand");
+  it("Option 4: [basic integer & thousands] 15,000 and 150,000 (English explicit)", () => {
+    assert.equal(normalizeText("15,000", ["numbers" as any], { language: "en" }).normalizedText, "fifteen thousand");
+    assert.equal(normalizeText("150,000", ["numbers" as any], { language: "en" }).normalizedText, "one hundred fifty thousand");
   });
 
-  it("Option 4: [decimals & zero preservation] 1.2 and 1.07", () => {
-    assert.equal(normalizeText("1.2", ["numbers" as any]).normalizedText, "one point two");
-    assert.equal(normalizeText("1.07", ["numbers" as any]).normalizedText, "one point zero seven");
+  it("Option 4: [decimals & zero preservation] 1.2 and 1.07 (English explicit)", () => {
+    assert.equal(normalizeText("1.2", ["numbers" as any], { language: "en" }).normalizedText, "one point two");
+    assert.equal(normalizeText("1.07", ["numbers" as any], { language: "en" }).normalizedText, "one point zero seven");
   });
 
-  it("Option 4: [percentage] 13.5%", () => {
-    assert.equal(normalizeText("13.5%", ["numbers" as any]).normalizedText, "thirteen point five percent");
+  it("Option 4: [percentage] 13.5% (English explicit)", () => {
+    assert.equal(normalizeText("13.5%", ["numbers" as any], { language: "en" }).normalizedText, "thirteen point five percent");
+  });
+
+  it("Option 4: [undetermined language preserves raw tokens without English fallback]", () => {
+    assert.equal(normalizeText("15,000", ["numbers" as any]).normalizedText, "15,000");
+    assert.equal(normalizeText("1.2", ["numbers" as any]).normalizedText, "1.2");
+    assert.equal(normalizeText("13.5%", ["numbers" as any]).normalizedText, "13.5%");
+    assert.equal(normalizeText("20 km/h", ["numbers" as any]).normalizedText, "20 km/h");
   });
 
   it("Option 4: [currency noun and attributive] costs $119B vs a $119B project", () => {
@@ -899,7 +906,7 @@ describe("Text Normalizer V1 - Final Implementation Pass Matrix", () => {
 
   it("Option 4: [compound unit] 20 km/h", () => {
     assert.equal(
-      normalizeText("20 km/h", ["numbers" as any]).normalizedText,
+      normalizeText("20 km/h", ["numbers" as any], { language: "en" }).normalizedText,
       "twenty kilometers per hour"
     );
   });
@@ -1318,7 +1325,7 @@ describe("Lexical Hyphen Normalization (H1 - H17)", () => {
   it("H8: 10-15 preserves range behavior", () => {
     const res = normalizeText("10-15", defaultGroups);
     assert.equal(res.normalizedText, "10-15");
-    const withNumbers = normalizeText("10-15", ["whitespace", "punctuation", "unicode", "numbers"]);
+    const withNumbers = normalizeText("10-15", ["whitespace", "punctuation", "unicode", "numbers"], { language: "en" });
     assert.equal(withNumbers.normalizedText, "ten to fifteen");
   });
 

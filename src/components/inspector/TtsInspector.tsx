@@ -45,7 +45,7 @@ const DEFAULT_TTS_SETTINGS: PersistedTtsSettings = {
   volume: 1.0,
   pauses: {
     comma: 0.5,
-    period: 0.5,
+    period: 0.5, // PERIOD_PAUSE = TUNING REQUIRED (0.5s development baseline)
     questionExclamation: 1.0,
     colonSemicolon: 0.6,
   },
@@ -123,6 +123,12 @@ export const saveStoredTtsSettings = (settings: Partial<PersistedTtsSettings>) =
   }
 };
 
+import {
+  scanAiModels,
+  type ModelStatus,
+} from "../../services/ai/aiRuntimeSettings";
+import { resolveLocalEngine } from "../../services/ai/ttsEngines";
+
 interface TtsInspectorProps {
   selectedChunk: ChunkItem | null;
   voices: VoiceProfile[];
@@ -146,6 +152,7 @@ interface TtsInspectorProps {
   generateTooltip?: string;
   completedCount?: number;
   totalCount?: number;
+  progressStage?: string;
   isPaused?: boolean;
   onTogglePause?: () => void;
   onCancel?: () => void;
@@ -173,11 +180,25 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   generateTooltip,
   completedCount = 0,
   totalCount = 0,
+  progressStage,
   isPaused = false,
   onTogglePause,
   onCancel,
 }) => {
   const { t, lang } = useI18n();
+
+  // Model scanning
+  const [installedModels, setInstalledModels] = useState<ModelStatus[]>([]);
+
+  useEffect(() => {
+    scanAiModels().then(setInstalledModels).catch(() => {});
+  }, []);
+
+  const currentCaps = resolveLocalEngine(activeModel);
+  const currentModelStatus = installedModels.find(
+    (m) => m.id === currentCaps?.modelId || m.engine === currentCaps?.engine
+  );
+  const isCurrentModelInstalled = currentModelStatus ? currentModelStatus.installed : true;
 
   // Load initial persisted settings
   const initialSettings = loadStoredTtsSettings();
@@ -361,20 +382,45 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
           </div>
         </div>
 
-        {/* 2. MODEL (Section 5: Logical Group with Voice Card) */}
+        {/* 2. MODEL & DEVICE (Section 5 & Requirement 6: Online voice vs Local model consistency) */}
         <div className="space-y-1.5 pt-0.5">
-          <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-            {t.inspector.model}
-          </label>
-          <select
-            value={activeModel}
-            onChange={(e) => onChangeModel(e.target.value)}
-            className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
-          >
-            <option value="Omni Voice">Omni Voice</option>
-            <option value="Chatterbox Turbo">Chatterbox Turbo</option>
-            <option value="Qwen 1.7B">Qwen 1.7B</option>
-          </select>
+          {activeVoice?.isOnline || activeVoice?.provider === "edge" || activeVoice?.provider === "google_translate" || activeVoice?.provider === "openai" ? (
+            <>
+              <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                {t.inspector.model}
+              </label>
+              <div className="w-full h-[34px] bg-surface2/70 border border-borderDefault rounded-lg px-2.5 flex items-center justify-between text-xs text-textPrimary">
+                <div className="flex items-center gap-2 truncate">
+                  <span className="w-2 h-2 rounded-full bg-sky-400" />
+                  <span className="font-medium truncate">
+                    {activeVoice.provider === "edge"
+                      ? "Microsoft Edge Neural (Cloud API)"
+                      : activeVoice.provider === "google_translate"
+                      ? "Google Cloud TTS (API v1)"
+                      : "OpenAI Audio TTS"}
+                  </span>
+                </div>
+                <span className="text-[10px] text-textMuted uppercase font-mono tracking-wider ml-2 flex-shrink-0">
+                  Online
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                {t.inspector.model}
+              </label>
+              <select
+                value={activeModel}
+                onChange={(e) => onChangeModel(e.target.value)}
+                className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
+              >
+                <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
+                <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
+                <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>
+              </select>
+            </>
+          )}
         </div>
 
         {/* Section 5: Subtle Divider before CÀI ĐẶT */}
@@ -824,7 +870,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                       <Pause className="w-4 h-4 fill-textPrimary text-textPrimary absolute opacity-0 group-hover:opacity-100 transition-opacity" />
                     </span>
                     <span className="truncate">
-                      Đang tạo: {completedCount}/{totalCount} đoạn ({effectivePercent}%)
+                      Đang tạo: {completedCount}/{totalCount} đoạn ({effectivePercent}%){progressStage ? ` · ${progressStage}` : ""}
                     </span>
                   </div>
 
@@ -840,7 +886,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                       <Pause className="w-4 h-4 fill-white absolute opacity-0 group-hover:opacity-100 transition-opacity" />
                     </span>
                     <span className="truncate">
-                      Đang tạo: {completedCount}/{totalCount} đoạn ({effectivePercent}%)
+                      Đang tạo: {completedCount}/{totalCount} đoạn ({effectivePercent}%){progressStage ? ` · ${progressStage}` : ""}
                     </span>
                   </div>
                 </button>
@@ -850,16 +896,22 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
               <button
                 type="button"
                 onClick={onGenerateAudio}
-                disabled={canGenerate === false}
-                title={generateTooltip || t.tts.generateAudio}
+                disabled={canGenerate === false || !isCurrentModelInstalled}
+                title={
+                  !isCurrentModelInstalled
+                    ? "Model chưa được cài đặt trong thư mục models."
+                    : generateTooltip || t.tts.generateAudio
+                }
                 className={`w-full h-[68px] px-4 rounded-xl text-sm font-semibold shadow-md transition-all flex items-center justify-center gap-2 ${
-                  canGenerate === false
+                  canGenerate === false || !isCurrentModelInstalled
                     ? "bg-surface3 text-textMuted cursor-not-allowed border border-borderDefault/50"
                     : "bg-accent hover:bg-accentHover text-white cursor-pointer active:scale-[0.98] hover:shadow-lg hover:shadow-accent/20"
                 }`}
               >
                 <Sparkles className="w-4 h-4 fill-current" />
-                <span>{t.tts.generateAudio}</span>
+                <span>
+                  {!isCurrentModelInstalled ? "Model chưa được cài" : t.tts.generateAudio}
+                </span>
               </button>
             )}
           </div>

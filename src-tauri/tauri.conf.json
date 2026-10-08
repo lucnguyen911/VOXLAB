@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "VoxLab",
         "width": 1024,
         "height": 720

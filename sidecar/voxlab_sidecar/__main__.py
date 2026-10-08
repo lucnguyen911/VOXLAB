@@ -108,6 +108,23 @@ def main(argv: list[str] | None = None) -> int:
     server.register_heavy("tts.load", tts.load)
     server.register_heavy("tts.synthesize", tts.synthesize)
     server.register_heavy("tts.unload", tts.unload)
+
+    def edge_preview_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
+        from .edge_tts_engine import synthesize_edge_tts
+        ctx.progress(10.0, "connecting")
+        res = synthesize_edge_tts(
+            text=params.get("text", "Xin chào, đây là giọng đọc thử nghiệm của Edge TTS."),
+            voice=params.get("voice", "vi-VN-HoaiMyNeural"),
+            output_path=params.get("outputPath"),
+            rate=params.get("rate", "+0%"),
+            pitch=params.get("pitch", "+0Hz"),
+            volume=params.get("volume", "+0%"),
+        )
+        ctx.progress(100.0, "ready")
+        return res
+
+    server.register_heavy("tts.edge_preview", edge_preview_handler)
+    server.register_heavy("tts.edge_synthesize", edge_preview_handler)
     server.register_heavy("system.debug_sleep", debug_sleep)
     return server.serve(protocol_in)
 

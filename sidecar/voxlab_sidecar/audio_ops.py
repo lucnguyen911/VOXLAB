@@ -15,6 +15,9 @@ from .protocol import SidecarError, require
 from .server import RequestContext
 
 DEFAULT_MP3_KBPS = 192
+CANONICAL_SAMPLE_RATE = 44100
+CANONICAL_CHANNELS = 1
+CANONICAL_SUBTYPE = "PCM_16"
 
 
 def _read_mono(path: str) -> tuple[np.ndarray, int]:
@@ -38,22 +41,25 @@ def _resample(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
     return resample_poly(x, sr_to // g, sr_from // g).astype(np.float32)
 
 
-def write_audio_atomic(path: str, audio: np.ndarray, sr: int, fmt: str, mp3_kbps: int = DEFAULT_MP3_KBPS) -> None:
+def write_audio_atomic(path: str, audio: np.ndarray, sr: int = CANONICAL_SAMPLE_RATE, fmt: str = "wav", mp3_kbps: int = DEFAULT_MP3_KBPS) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
+    # Master WAV Canonical Invariant: strictly MONO (1 channel)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
     pcm = np.clip(audio, -1.0, 1.0)
     try:
         if fmt == "wav":
             import soundfile as sf
 
-            sf.write(tmp, pcm, sr, subtype="PCM_16", format="WAV")
+            sf.write(tmp, pcm, sr, subtype=CANONICAL_SUBTYPE, format="WAV")
         elif fmt == "mp3":
             import lameenc
 
             enc = lameenc.Encoder()
             enc.set_bit_rate(int(mp3_kbps))
             enc.set_in_sample_rate(int(sr))
-            enc.set_channels(1)
+            enc.set_channels(CANONICAL_CHANNELS)
             enc.set_quality(2)
             data = enc.encode((pcm * 32767.0).astype("<i2").tobytes()) + enc.flush()
             with open(tmp, "wb") as f:
@@ -84,7 +90,7 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
             raise SidecarError("INVALID_REQUEST", f"inputs[{i}].path must be a string")
         decoded.append(_read_mono(item["path"]))
         ctx.progress(5 + 60 * (i + 1) / len(inputs), "decoding")
-    sr = int(params.get("sampleRate") or decoded[0][1])
+    sr = int(params.get("sampleRate") or CANONICAL_SAMPLE_RATE)
     clips = [_resample(x, s, sr) for x, s in decoded]
 
     segments: list[dict[str, Any]] = []
@@ -137,3 +143,87 @@ def probe(params: dict[str, Any]) -> dict[str, Any]:
         raise SidecarError("INVALID_REQUEST", f"cannot read audio header: {e}") from e
     return {"durationSec": round(float(info.duration), 4), "sampleRate": int(info.samplerate),
             "channels": int(info.channels), "format": str(info.format)}
+
+
+def prepare_clone_reference(
+    ref_audio_path: str,
+    ref_text: str | None = None,
+    language: str | None = None,
+    models_dir: str | None = None,
+    max_duration: float = 10.0,
+) -> tuple[str, str]:
+    """Ensures reference audio passed to zero-shot voice cloning engines (OmniVoice, Chatterbox, Qwen)
+    is within optimal duration (3.0s - 8.5s) and has an exact matching transcript.
+
+    When an audio exceeds max_duration (e.g. 80s podcast or raw recording), zero-shot flow-matching
+    models suffer severe attention drift, word dropping, and hallucination. This function automatically:
+      1. Finds the optimal silence/breath boundary between 4.5s and 8.5s.
+      2. Saves the trimmed slice into a persistent cache.
+      3. Transcribes the slice using faster-whisper to guarantee 100% audio-text synchronization.
+    """
+    import hashlib
+    import tempfile
+    import soundfile as sf
+    from .protocol import log
+
+    if not os.path.isfile(ref_audio_path):
+        return ref_audio_path, ref_text or ""
+
+    try:
+        info = sf.info(ref_audio_path)
+        duration = float(info.duration)
+    except Exception as e:
+        log(f"[prepare_clone_reference] Could not probe audio header: {e}")
+        return ref_audio_path, ref_text or ""
+
+    # If within optimal duration (<= 10.0s), keep original audio file
+    if duration <= max_duration:
+        user_txt = (ref_text or "").strip()
+        if not user_txt:
+            from .asr_engine import auto_transcribe_sample
+            user_txt = auto_transcribe_sample(ref_audio_path, language=language, models_dir=models_dir)
+        return ref_audio_path, user_txt
+
+    # Audio is long (> 10.0s). Cache and trim to an optimal 4.5-8.5s slice.
+    abs_path = os.path.abspath(ref_audio_path)
+    try:
+        stat = os.stat(abs_path)
+        cache_key = hashlib.md5(f"{abs_path}_{stat.st_mtime}_{stat.st_size}".encode()).hexdigest()[:12]
+    except Exception:
+        cache_key = hashlib.md5(abs_path.encode()).hexdigest()[:12]
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "voxlab_ref_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cached_wav = os.path.join(cache_dir, f"ref_{cache_key}_trimmed.wav")
+
+    if not os.path.isfile(cached_wav) or os.path.getsize(cached_wav) == 0:
+        log(f"[prepare_clone_reference] Audio is {duration:.1f}s (>10s). Auto-trimming to optimal slice...")
+        sr = int(info.samplerate)
+        read_frames = min(int(10.0 * sr), int(info.frames))
+        data, sr = sf.read(abs_path, stop=read_frames, dtype="float32", always_2d=True)
+        mono = data.mean(axis=1)
+
+        # Search for silence / breath pause in [4.5s, 8.5s]
+        min_idx = int(4.5 * sr)
+        max_idx = min(int(8.5 * sr), len(mono))
+        window_len = int(0.05 * sr)  # 50ms window
+
+        best_idx = int(min(6.5 * sr, len(mono)))
+        if max_idx > min_idx + window_len:
+            step = int(0.01 * sr)
+            rms_vals = []
+            for idx in range(min_idx, max_idx - window_len, step):
+                chunk = mono[idx : idx + window_len]
+                rms = float(np.sqrt(np.mean(chunk**2)))
+                rms_vals.append((rms, idx))
+            if rms_vals:
+                _best_rms, best_idx = min(rms_vals, key=lambda x: x[0])
+
+        trimmed = mono[:best_idx]
+        write_audio_atomic(cached_wav, trimmed, sr=sr, fmt="wav")
+        log(f"[prepare_clone_reference] Extracted {best_idx / sr:.2f}s slice to {cached_wav}")
+
+    from .asr_engine import auto_transcribe_sample
+    transcript = auto_transcribe_sample(cached_wav, language=language, models_dir=models_dir)
+    return cached_wav, transcript
+

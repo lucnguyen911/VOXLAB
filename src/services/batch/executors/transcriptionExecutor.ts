@@ -130,7 +130,8 @@ export class TranscriptionExecutor {
           audioPath,
           transSnapshot?.audioLanguage || "auto",
           true,
-          (pct, stage) => onProgress?.(Math.floor(40 + pct * 0.3), `Whisper: ${stage}`)
+          (pct, stage) => onProgress?.(Math.floor(40 + pct * 0.3), `Whisper: ${stage}`),
+          transSnapshot?.whisperModel ? `faster-whisper-${transSnapshot.whisperModel}` : undefined
         );
         rawSegments = r.segments.map((s, idx) => ({
           id: idx + 1,

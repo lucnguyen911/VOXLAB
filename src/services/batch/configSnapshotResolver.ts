@@ -18,15 +18,16 @@ import {
 export function getDefaultTaskConfigMap(): BatchTaskConfigMap {
   return {
     tts: {
-      model: "edge_tts",
-      voiceId: "vi-VN-HoaiMyNeural",
+      // Gate E baseline: local OmniVoice (default/auto voice). Online engines are not wired into Batch.
+      model: "omnivoice",
+      voiceId: "omnivoice-auto",
       speed: 1.0,
       pitch: 0,
       volume: 100,
     },
     dialogue: {
-      model: "edge_tts",
-      defaultVoiceId: "vi-VN-HoaiMyNeural",
+      model: "omnivoice",
+      defaultVoiceId: "omnivoice-auto",
       turnPauseSec: 0.5,
       sameSpeakerPauseSec: 0.3,
       exportSrt: true,
@@ -34,7 +35,8 @@ export function getDefaultTaskConfigMap(): BatchTaskConfigMap {
     },
     transcription: {
       audioLanguage: "auto",
-      whisperModel: "base",
+      // Development verification baseline only; production default is TUNING REQUIRED.
+      whisperModel: "small",
       speechSpeed: 1.0,
       outputFormat: "srt",
     },
@@ -45,8 +47,8 @@ export function getDefaultTaskConfigMap(): BatchTaskConfigMap {
       outputFormat: "preserve_input",
     },
     dubbing: {
-      ttsModel: "edge_tts",
-      voiceId: "vi-VN-HoaiMyNeural",
+      ttsModel: "omnivoice",
+      voiceId: "omnivoice-auto",
       speedMultiplier: 1.0,
       turnPauseSec: 0.3,
     },

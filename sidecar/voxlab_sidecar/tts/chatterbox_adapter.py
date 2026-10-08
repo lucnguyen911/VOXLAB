@@ -56,11 +56,30 @@ class ChatterboxAdapter(TtsEngineAdapter):
     def load(self, model_dir: str, device: str) -> dict[str, Any]:
         if device != "cuda" or not cuda_available():
             raise SidecarError("DEVICE_UNAVAILABLE", "Chatterbox Turbo requires CUDA (CPU execution not verified)")
+        import gc
+        import os
+        import torch
+        if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+            torch.backends.cuda.matmul.allow_tf32 = True
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 
         self._model = ChatterboxTurboTTS.from_local(model_dir, "cuda")
         self.device = device
-        return {"dtype": "float32", "sampleRate": int(self._model.sr)}
+
+        gc.collect()
+        if os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+            except Exception:
+                pass
+
+        vram_mb = int(torch.cuda.memory_allocated(0) // (1024 * 1024)) if torch.cuda.is_available() else 0
+        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NVIDIA GPU"
+        return {"dtype": "float32", "sampleRate": int(self._model.sr), "gpu": gpu_name, "vramMb": vram_mb, "device": "cuda:0"}
 
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
         kwargs: dict[str, Any] = {"text": req.text}
@@ -78,6 +97,13 @@ class ChatterboxAdapter(TtsEngineAdapter):
         self._model = None
         self.device = None
         release_torch_memory()
+        import os
+        if os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+            except Exception:
+                pass
 
 
 def _check_ref_duration(path: str) -> None:

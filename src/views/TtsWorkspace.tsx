@@ -14,10 +14,13 @@ import {
   Clock,
   UploadCloud,
 } from "lucide-react";
-import { ChunkItem } from "../types/ui";
-import { INITIAL_SCRIPT, MOCK_CHUNKS } from "../mock/data";
+import { ChunkItem, VoiceProfile, EffectiveVoiceSnapshot } from "../types/ui";
+import { INITIAL_SCRIPT, MOCK_CHUNKS, MOCK_VOICES } from "../mock/data";
 import { useI18n } from "../i18n/context";
 import { batchQueueExecutor } from "../services/concurrencyExecutor";
+import {
+  createEffectiveVoiceSnapshot,
+} from "../services/providers";
 import { TextNormalizationModal } from "../components/modals/TextNormalizationModal";
 import { PronunciationManagerModal } from "../components/modals/PronunciationManagerModal";
 import { ManualPausePopover } from "../components/popovers/ManualPausePopover";
@@ -25,14 +28,21 @@ import { formatPauseToken, splitScriptWithPauses } from "../services/pause";
 import {
   validateChunksForExport,
   mergeMasterAudio,
+  assembleMasterAudioAsync,
   downloadAudioBlob,
   generateSrtFromChunks,
   downloadTextBlob,
+  computeChunkPausesMs,
 } from "../services/audio/masterExport";
 import { loadStoredTtsSettings } from "../components/inspector/TtsInspector";
 import { loadSubtitleSettings } from "../services/subtitle";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { extractFilesFromDropEvent } from "../services/fileDropHelper";
+import {
+  getSharedAiServices,
+} from "../services/batch/batchRuntime";
+import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
+
 
 interface TtsWorkspaceProps {
   onOpenDiffModal?: (original: string, proposed: string) => void;
@@ -57,6 +67,9 @@ interface TtsWorkspaceProps {
   exportSrt?: boolean;
   incomingScript?: string | null;
   onConsumeIncomingScript?: () => void;
+  activeModel?: string;
+  activeVoiceId?: string;
+  voices?: VoiceProfile[];
 }
 
 const AutoResizeTextarea: React.FC<{
@@ -121,8 +134,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   exportSrt = false,
   incomingScript,
   onConsumeIncomingScript,
+  activeModel = "OmniVoice",
+  activeVoiceId = "voice_01",
+  voices = [],
 }) => {
   const { t, lang } = useI18n();
+  const [progressStage, setProgressStage] = useState<string>("");
   const [stage, setStage] = useState<"prep" | "studio">(() => {
     try {
       const saved = localStorage.getItem("voxlab_tts_stage");
@@ -179,6 +196,9 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
   const scriptFileInputRef = useRef<HTMLInputElement>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [isAssemblingMaster, setIsAssemblingMaster] = useState(false);
+  const masterBlobUrlRef = useRef<string | null>(null);
+  const lastChunksSignatureRef = useRef<string>("");
 
   const handleProcessScriptFile = async (file: File) => {
     try {
@@ -279,26 +299,82 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     setPlayingChunkId(playingChunkId === id ? null : id);
   };
 
+  // Core real synthesis via provider routing & immutable voice snapshot
+  const synthesizeChunkCore = async (
+    targetChunk: ChunkItem,
+    snapshot: EffectiveVoiceSnapshot,
+    onStage?: (stage: string) => void
+  ) => {
+    // 1. TRACE VOICE SOURCE (Requirement 1: development-only trace log per chunk)
+    if (import.meta.env.DEV) {
+      console.log(`[TTS Chunk Synthesize]`, {
+        chunkId: targetChunk.id,
+        selectedVoiceId: activeVoiceId,
+        effectiveVoiceId: snapshot.providerVoiceId || snapshot.voiceId,
+        provider: snapshot.provider,
+        engine: snapshot.engine,
+        model: snapshot.modelId,
+        referenceAudioPath: snapshot.refAudioPath,
+      });
+    }
+
+    return await synthesizeSpeechCore(targetChunk.text, snapshot, {
+      scope: "tts",
+      id: targetChunk.id,
+      onProgress: (pct, stage) => {
+        onStage?.(`${stage} (${pct}%)`);
+        setProgressStage(`${stage} (${pct}%)`);
+      },
+    });
+  };
+
   // Regenerate single chunk (Section 9: Only targets this chunk, new version becomes current)
   const handleRegenerateChunk = async (id: string) => {
+    const target = chunks.find((c) => c.id === id);
+    if (!target) return;
+
+    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const storedSettings = loadStoredTtsSettings();
+
+    // Requirement 7: By default use target's existing snapshot if it matches activeVoiceId, or create new from active voice
+    const snapshotToUse = (target.effectiveVoiceSnapshot && target.effectiveVoiceSnapshot.voiceId === activeVoiceId)
+      ? target.effectiveVoiceSnapshot
+      : createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
+          activeModel,
+          speed: storedSettings.speed,
+          pitch: storedSettings.pitch,
+          volume: storedSettings.volume,
+        });
+
     setChunks((prev) =>
       prev.map((c) =>
         c.id === id ? { ...c, status: "generating", errorMessage: undefined } : c
       )
     );
+    onTriggerJob();
     try {
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      const res = await synthesizeChunkCore(target, snapshotToUse, (s) => setProgressStage(s));
+      const readyChunk: ChunkItem = {
+        ...target,
+        status: "ready",
+        durationSec: res.durationSec,
+        audioUrl: res.blobUrl,
+        audioFilePath: res.outputPath,
+        effectiveVoiceSnapshot: snapshotToUse,
+      };
       setChunks((prev) =>
-        prev.map((c) =>
-          c.id === id ? { ...c, status: "ready", durationSec: 6.2, audioUrl: undefined } : c
-        )
+        prev.map((c) => (c.id === id ? readyChunk : c))
       );
+      onPlayChunk?.(readyChunk);
     } catch (err: any) {
       setChunks((prev) =>
         prev.map((c) =>
           c.id === id ? { ...c, status: "failed", errorMessage: String(err?.message || err) } : c
         )
       );
+    } finally {
+      setProgressStage("");
+      onJobComplete?.();
     }
   };
 
@@ -325,14 +401,32 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     }
   };
 
-  const handleCancelGeneration = () => {
+  const handleCancelGeneration = async () => {
     batchQueueExecutor.cancel();
+    try {
+      const ai = await getSharedAiServices();
+      await ai?.cancelActive();
+    } catch (e) {
+      console.warn("Cancel AI error:", e);
+    }
+    setProgressStage("Đã hủy");
     onCancel?.();
   };
 
   // Batch regenerate all invalid chunks using real concurrency executor
   const handleRegenerateInvalidChunks = async () => {
     if (invalidChunks.length === 0 || isGenerating) return;
+    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const storedSettings = loadStoredTtsSettings();
+
+    // Requirement 2: Single source of truth immutable snapshot for entire regeneration batch
+    const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
+      activeModel,
+      speed: storedSettings.speed,
+      pitch: storedSettings.pitch,
+      volume: storedSettings.volume,
+    });
+
     setCompletedCount(0);
     setSkippedCount(0);
     setIsCompletedState(false);
@@ -344,72 +438,92 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     setBatchTotal(targetIds.length);
     setPendingItems(targetIds.length);
 
-    await batchQueueExecutor.runBatch(
-      targetIds,
-      {
-        concurrency,
-        onWorkerChange: (_active, pending) => {
-          setPendingItems(pending ?? 0);
-        },
-        processItem: async (chunkId) => {
-          setChunks((prev) =>
-            prev.map((c) =>
-              c.id === chunkId
-                ? { ...c, status: "generating", errorMessage: undefined }
-                : c
-            )
-          );
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          setChunks((prev) =>
-            prev.map((c) =>
-              c.id === chunkId
-                ? { ...c, status: "ready", durationSec: 5.8 }
-                : c
-            )
-          );
-        },
-        onItemCompleted: (_item, _idx, completed, total) => {
-          setCompletedCount(completed);
-          onChunkProgress?.(completed, total);
-        },
-        onItemFailed: async (chunkId, index, err) => {
-          setChunks((prev) =>
-            prev.map((c) =>
-              c.id === chunkId
-                ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
-                : c
-            )
-          );
-          return new Promise<"retry" | "skip" | "cancel">((resolve) => {
+    let firstFinishedChunk: ChunkItem | null = null;
+    try {
+      await batchQueueExecutor.runBatch(
+        targetIds,
+        {
+          concurrency,
+          onWorkerChange: (_active, pending) => {
+            setPendingItems(pending ?? 0);
+          },
+          processItem: async (chunkId) => {
+            const target = chunks.find((c) => c.id === chunkId);
+            if (!target) return;
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.id === chunkId
+                  ? { ...c, status: "generating", errorMessage: undefined }
+                  : c
+              )
+            );
+            const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s));
+            const readyChunk: ChunkItem = {
+              ...target,
+              status: "ready",
+              durationSec: res.durationSec,
+              audioUrl: res.blobUrl,
+              audioFilePath: res.outputPath,
+              effectiveVoiceSnapshot: batchVoiceSnapshot,
+            };
+            setChunks((prev) =>
+              prev.map((c) => (c.id === chunkId ? readyChunk : c))
+            );
+            if (!firstFinishedChunk) {
+              firstFinishedChunk = readyChunk;
+              onPlayChunk?.(readyChunk);
+            }
+          },
+          onItemCompleted: (_item, _idx, completed, total) => {
+            setCompletedCount(completed);
+            onChunkProgress?.(completed, total);
+          },
+          onItemFailed: async (chunkId, index, err) => {
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.id === chunkId
+                  ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
+                  : c
+              )
+            );
             setGenerationError({
               chunkId,
               chunkIndex: index,
               error: err,
-              resolveAction: resolve,
             });
-          });
-        },
-      }
-    );
-
-    if (!batchQueueExecutor.isQueueCancelled() && !batchQueueExecutor.isQueuePaused()) {
-      setIsCompletedState(true);
-      setTimeout(() => {
-        setIsCompletedState(false);
-        onJobComplete?.();
-      }, 2500);
-    } else {
+            return "skip" as const;
+          },
+        }
+      );
+    } catch (batchErr) {
+      console.error("Selective regeneration error:", batchErr);
+    } finally {
+      setProgressStage("");
       onJobComplete?.();
     }
   };
 
   // Nút tạo audio: chức năng tạo toàn bộ hoặc tạo lại toàn bộ các đoạn trong kịch bản (ghi đè kết quả cũ)
-  const handleGenerateAllAudio = async () => {
-    if (isGenerating || chunks.length === 0) return;
+  const handleGenerateAllAudio = async (customChunks?: ChunkItem[] | unknown) => {
+    if (isGenerating) return;
+    const validCustom = Array.isArray(customChunks) ? (customChunks as ChunkItem[]) : undefined;
+    const targetChunks = validCustom || chunks;
+    if (!targetChunks || targetChunks.length === 0) return;
 
-    // Luôn xử lý toàn bộ các đoạn trong kịch bản
-    const targetChunks = chunks;
+    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const storedSettings = loadStoredTtsSettings();
 
+    // Requirement 2: Single source of truth immutable snapshot for entire generation run
+    const generationVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
+      activeModel,
+      speed: storedSettings.speed,
+      pitch: storedSettings.pitch,
+      volume: storedSettings.volume,
+    });
+
+    if (validCustom) {
+      setChunks(validCustom);
+    }
     setCompletedCount(0);
     setSkippedCount(0);
     setIsCompletedState(false);
@@ -417,11 +531,13 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     batchQueueExecutor.reset();
     onTriggerJob();
 
+    let firstFinishedChunk: ChunkItem | null = null;
     const targetIds = targetChunks.map((c) => c.id);
     setBatchTotal(targetIds.length);
     setPendingItems(targetIds.length);
 
-    await batchQueueExecutor.runBatch(
+    try {
+      await batchQueueExecutor.runBatch(
       targetIds,
       {
         concurrency,
@@ -429,6 +545,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           setPendingItems(pending ?? 0);
         },
         processItem: async (chunkId) => {
+          const target = targetChunks.find((c) => c.id === chunkId) || chunks.find((c) => c.id === chunkId);
+          if (!target) return;
           setChunks((prev) =>
             prev.map((c) =>
               c.id === chunkId
@@ -436,14 +554,22 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 : c
             )
           );
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          const res = await synthesizeChunkCore(target, generationVoiceSnapshot, (s) => setProgressStage(s));
+          const readyChunk: ChunkItem = {
+            ...target,
+            status: "ready",
+            durationSec: res.durationSec,
+            audioUrl: res.blobUrl,
+            audioFilePath: res.outputPath,
+            effectiveVoiceSnapshot: generationVoiceSnapshot,
+          };
           setChunks((prev) =>
-            prev.map((c) =>
-              c.id === chunkId
-                ? { ...c, status: "ready", durationSec: 5.8 }
-                : c
-            )
+            prev.map((c) => (c.id === chunkId ? readyChunk : c))
           );
+          if (!firstFinishedChunk) {
+            firstFinishedChunk = readyChunk;
+            onPlayChunk?.(readyChunk);
+          }
         },
         onItemCompleted: (_item, _idx, completed, total) => {
           setCompletedCount(completed);
@@ -457,25 +583,19 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 : c
             )
           );
-          return new Promise<"retry" | "skip" | "cancel">((resolve) => {
-            setGenerationError({
-              chunkId,
-              chunkIndex: index,
-              error: err,
-              resolveAction: resolve,
-            });
+          setGenerationError({
+            chunkId,
+            chunkIndex: index,
+            error: err,
           });
+          return "skip" as const;
         },
       }
     );
-
-    if (!batchQueueExecutor.isQueueCancelled() && !batchQueueExecutor.isQueuePaused()) {
-      setIsCompletedState(true);
-      setTimeout(() => {
-        setIsCompletedState(false);
-        onJobComplete?.();
-      }, 2500);
-    } else {
+    } catch (batchErr) {
+      console.error("Batch synthesis error:", batchErr);
+    } finally {
+      setProgressStage("");
       onJobComplete?.();
     }
   };
@@ -502,8 +622,90 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     }
   });
 
-  // Master audio export execution with validation check
-  const handleExportAudio = () => {
+  const isMasterPlaying = activePlayingChunkId === "tts_master_preview" && isPlayingAudio;
+
+  // Master audio full preview handler (stitched continuous speech across all chunks)
+  const handlePreviewMasterAudio = async () => {
+    if (isGenerating || isAssemblingMaster) return;
+
+    if (isMasterPlaying) {
+      onPlayChunk?.({
+        id: "tts_master_preview",
+        index: 0,
+        title: "Toàn bộ bài đọc (Master)",
+        status: "ready",
+        durationSec: 10,
+        audioUrl: masterBlobUrlRef.current || "",
+        text: workingText,
+      } as any);
+      return;
+    }
+
+    const readyChunks = chunks.filter((c) => c.status === "ready" && (c.durationSec ?? 0) > 0);
+    if (readyChunks.length === 0) {
+      alert("Chưa có đoạn audio nào hoàn thành để nghe thử. Vui lòng bấm 'Tạo audio' trước.");
+      return;
+    }
+
+    // Invalidate cached master audio if ready chunks changed
+    const currentSig = readyChunks
+      .map((c) => `${c.id}_${c.status}_${c.audioUrl || ""}_${c.durationSec}`)
+      .join("|");
+    if (lastChunksSignatureRef.current !== currentSig) {
+      lastChunksSignatureRef.current = currentSig;
+      masterBlobUrlRef.current = null;
+    }
+
+    try {
+      setIsAssemblingMaster(true);
+      let blobUrl = masterBlobUrlRef.current;
+      let durationSec = 10;
+
+      if (!blobUrl) {
+        const ttsSettings = loadStoredTtsSettings();
+        const safeTitle =
+          (workingText.slice(0, 30) || "Podcast")
+            .replace(/[^\w\s-]/g, "")
+            .trim()
+            .replace(/\s+/g, "_") || "Audio";
+
+        const result = await assembleMasterAudioAsync(readyChunks, {
+          projectTitle: safeTitle,
+          punctuationPauses: ttsSettings.pauses,
+        });
+
+        blobUrl = URL.createObjectURL(result.blob);
+        durationSec = result.totalDurationSec;
+        masterBlobUrlRef.current = blobUrl;
+      }
+
+      const isAllReady = readyChunks.length === chunks.length;
+      const masterTitle = isAllReady
+        ? "Toàn bộ bài đọc (Master)"
+        : `Toàn bộ đoạn đã tạo (${readyChunks.length}/${chunks.length})`;
+
+      const masterChunk: ChunkItem = {
+        id: "tts_master_preview",
+        index: 0,
+        title: masterTitle,
+        text: readyChunks.map((c) => c.text).join(" ").slice(0, 150) + (workingText.length > 150 ? "..." : ""),
+        status: "ready",
+        durationSec,
+        audioUrl: blobUrl,
+        voiceOverrideId: activeVoiceId,
+      } as any;
+
+      onPlayChunk?.(masterChunk);
+    } catch (err: any) {
+      console.error("Preview master audio error:", err);
+      alert(`Lỗi khi ghép audio nghe thử: ${err?.message || err}`);
+    } finally {
+      setIsAssemblingMaster(false);
+    }
+  };
+
+  // Master audio export execution with user-chosen destination dialog
+  const handleExportAudio = async () => {
     const val = validateChunksForExport(chunks);
     if (!val.canExport) {
       onOpenExportValidation(val.invalidChunks);
@@ -512,29 +714,128 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
     try {
       const ttsSettings = loadStoredTtsSettings();
-      const result = mergeMasterAudio(chunks, {
-        projectTitle: "Podcast_Ep12",
+      const safeTitle =
+        (workingText.slice(0, 30) || "Podcast")
+          .replace(/[^\w\s-]/g, "")
+          .trim()
+          .replace(/\s+/g, "_") || "Audio";
+      const defaultFilename = `VoxLab_${safeTitle}_Master.wav`;
+
+      // 1. Cho phép chọn đường dẫn export (Native File Save Dialog)
+      let chosenPath: string | null = null;
+      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+        try {
+          const { save } = await import("@tauri-apps/plugin-dialog");
+          chosenPath = await save({
+            defaultPath: defaultFilename,
+            filters: [
+              { name: "Audio WAV (*.wav)", extensions: ["wav"] },
+              { name: "Audio MP3 (*.mp3)", extensions: ["mp3"] },
+              { name: "Tất cả các tệp (*.*)", extensions: ["*"] },
+            ],
+          });
+          // Nếu người dùng bấm Hủy (Cancel) trong hộp thoại chọn nơi lưu -> dừng, không xuất
+          if (!chosenPath) {
+            return;
+          }
+        } catch (dialogErr) {
+          console.warn("Tauri save dialog error:", dialogErr);
+        }
+      }
+
+      const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
+      const chunkPausesMs = computeChunkPausesMs(sortedChunks, ttsSettings.pauses);
+      const ai = await getSharedAiServices();
+      const allHaveDiskPaths = sortedChunks.every((c) => !!c.audioFilePath);
+
+      // 2. High-performance on-disk assembly via Python sidecar if in desktop Tauri
+      if (chosenPath && ai && allHaveDiskPaths) {
+        const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
+        await ai.assemble({
+          inputs: sortedChunks.map((c, i) => ({
+            path: c.audioFilePath!,
+            gapAfterMs: chunkPausesMs[i] || 0,
+          })),
+          outputPath: chosenPath,
+          format: isMp3 ? "mp3" : "wav",
+          mode: "sequential",
+        });
+
+        if (exportSrt) {
+          try {
+            const subtitleSettings = loadSubtitleSettings();
+            const srtContent = generateSrtFromChunks(chunks, {
+              punctuationPauses: ttsSettings.pauses,
+              aspectRatio: subtitleSettings.aspectRatio,
+              maxLines: subtitleSettings.maxLines,
+              optimize: true,
+            });
+            const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("fs_write_text", {
+              path: srtPath,
+              content: srtContent,
+            });
+          } catch (err: any) {
+            console.error("SRT export error:", err);
+          }
+        }
+
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("fs_show_in_folder", { path: chosenPath });
+        } catch (folderErr) {
+          console.warn("Could not reveal file in folder:", folderErr);
+        }
+
+        alert(`Đã xuất file âm thanh thành công:\n${chosenPath}`);
+        return;
+      }
+
+      // 3. Fallback trình duyệt Web Audio API
+      const result = await assembleMasterAudioAsync(chunks, {
+        projectTitle: safeTitle,
         punctuationPauses: ttsSettings.pauses,
       });
-      downloadAudioBlob(result.blob, result.filename);
 
-      if (exportSrt) {
-        try {
-          const subtitleSettings = loadSubtitleSettings();
-          const srtContent = generateSrtFromChunks(chunks, {
-            punctuationPauses: ttsSettings.pauses,
-            aspectRatio: subtitleSettings.aspectRatio,
-            maxLines: subtitleSettings.maxLines,
-            optimize: true,
-          });
-          const srtFilename = result.filename.replace(/\.wav$/i, ".srt");
-          downloadTextBlob(srtContent, srtFilename);
-        } catch (err: any) {
-          console.error("SRT export error:", err);
+      if (chosenPath) {
+        downloadAudioBlob(result.blob, result.filename);
+      } else {
+        if (typeof window !== "undefined" && "showSaveFilePicker" in window) {
+          try {
+            const handle = await (window as any).showSaveFilePicker({
+              suggestedName: result.filename,
+              types: [{ description: "Audio WAV", accept: { "audio/wav": [".wav"] } }],
+            });
+            const writable = await handle.createWritable();
+            await writable.write(result.blob);
+            await writable.close();
+            return;
+          } catch (e: any) {
+            if (e.name === "AbortError") return;
+          }
+        }
+        downloadAudioBlob(result.blob, result.filename);
+
+        if (exportSrt) {
+          try {
+            const subtitleSettings = loadSubtitleSettings();
+            const srtContent = generateSrtFromChunks(chunks, {
+              punctuationPauses: ttsSettings.pauses,
+              aspectRatio: subtitleSettings.aspectRatio,
+              maxLines: subtitleSettings.maxLines,
+              optimize: true,
+            });
+            const srtFilename = result.filename.replace(/\.wav$/i, ".srt");
+            downloadTextBlob(srtContent, srtFilename);
+          } catch (err: any) {
+            console.error("SRT export error:", err);
+          }
         }
       }
     } catch (err: any) {
       console.error("Master export error:", err);
+      alert(`Lỗi khi xuất audio: ${err?.message || err}`);
     }
   };
 
@@ -561,7 +862,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             </button>
             <button
               onClick={() => {
-                if (chunks.length === 0 && workingText.trim().length > 0) {
+                if (stage === "prep") {
                   const parsedChunks = splitScriptWithPauses(workingText);
                   if (parsedChunks.length > 0) {
                     setChunks(parsedChunks);
@@ -626,6 +927,36 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 </div>
               )}
 
+              {/* Preview Master Audio Button */}
+              <button
+                type="button"
+                onClick={handlePreviewMasterAudio}
+                disabled={chunks.length === 0 || isGenerating || isAssemblingMaster}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors whitespace-nowrap cursor-pointer ${
+                  isMasterPlaying
+                    ? "bg-accent text-white shadow-2xs"
+                    : "bg-surface2 hover:bg-surface3 text-textPrimary hover:text-accent border border-borderDefault hover:border-accent/40"
+                }`}
+                title="Nghe thử toàn bộ các đoạn ghép lại thành một bản thu hoàn chỉnh"
+              >
+                {isAssemblingMaster ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent" />
+                    <span>Đang ghép...</span>
+                  </>
+                ) : isMasterPlaying ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5 fill-current" />
+                    <span>Tạm dừng</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-accent" />
+                    <span>Nghe toàn bộ</span>
+                  </>
+                )}
+              </button>
+
               {/* PERMANENT TOP-RIGHT CTA: Ghép & xuất */}
               <button
                 type="button"
@@ -639,7 +970,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 title={
                   isGenerating
                     ? "Đang tạo audio, vui lòng chờ hoàn tất để ghép & xuất"
-                    : "Ghép tất cả các đoạn và xuất file audio master"
+                    : "Chọn vị trí lưu và xuất file audio master"
                 }
               >
                 <FileAudio className="w-3.5 h-3.5 text-accent" />
@@ -859,7 +1190,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                           {String(chunk.index).padStart(2, "0")}
                         </span>
 
-                        {chunk.durationSec && (
+                        {typeof chunk.durationSec === "number" && !Number.isNaN(chunk.durationSec) && (
                           <span className="font-mono text-xs text-textMuted font-medium shrink-0">
                             {chunk.durationSec.toFixed(1)}s
                           </span>
@@ -1000,7 +1331,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           </div>
           {React.isValidElement(inspector)
             ? React.cloneElement(inspector as React.ReactElement<any>, {
-                onGenerateAudio: handleGenerateAllAudio,
+                onGenerateAudio: () => handleGenerateAllAudio(),
                 isGenerating: isGenerating,
                 canGenerate: chunks.length > 0,
                 generateTooltip:
@@ -1009,6 +1340,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                     : t.tts.generateAudio,
                 completedCount: completedCount,
                 totalCount: effectiveTotal,
+                progressStage: progressStage,
                 isPaused: isPaused && batchQueueExecutor.isQueuePaused(),
                 onTogglePause: onTogglePause,
                 onCancel: handleCancelGeneration,

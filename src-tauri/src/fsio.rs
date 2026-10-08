@@ -66,6 +66,31 @@ pub fn fs_exists(path: String) -> Result<bool, String> {
     Ok(absolute(&path)?.exists())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileStat {
+    pub size: u64,
+    pub mtime_ms: f64,
+}
+
+/// Size and modification time; `None` when the file does not exist.
+#[tauri::command]
+pub fn fs_stat(path: String) -> Result<Option<FileStat>, String> {
+    let p = absolute(&path)?;
+    let meta = match std::fs::metadata(&p) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+    Ok(Some(FileStat { size: meta.len(), mtime_ms }))
+}
+
 #[tauri::command]
 pub fn fs_remove_file(path: String) -> Result<(), String> {
     let p = absolute(&path)?;
@@ -86,6 +111,33 @@ pub fn fs_scratch_dir(app: tauri::AppHandle, name: String) -> Result<String, Str
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("scratch").join(name);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn fs_read_bytes(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(absolute(&path)?).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn fs_show_in_folder(path: String) -> Result<(), String> {
+    let p = absolute(&path)?;
+    #[cfg(target_os = "windows")]
+    {
+        let arg = if p.is_dir() {
+            p.to_string_lossy().to_string()
+        } else {
+            format!("/select,\"{}\"", p.to_string_lossy())
+        };
+        std::process::Command::new("explorer.exe")
+            .arg(arg)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = p;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

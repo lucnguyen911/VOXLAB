@@ -100,7 +100,7 @@ test("TASK-04: Config Snapshot & Scope Isolation Suite", async (t) => {
 
     const frozen = freezeJobSnapshot(job);
     assert.ok(frozen.effectiveConfigSnapshot);
-    assert.equal(frozen.effectiveConfigSnapshot.tasks.tts?.voiceId, "vi-VN-HoaiMyNeural");
+    assert.equal(frozen.effectiveConfigSnapshot.tasks.tts?.voiceId, getDefaultTaskConfigMap().tts?.voiceId);
     assert.equal(frozen.configChanged, false);
     assert.equal(frozen.subtitleMode, "synthesized_timing");
   });
@@ -153,7 +153,7 @@ test("TASK-04: Config Snapshot & Scope Isolation Suite", async (t) => {
 
     // Job1 was NOT selected => remains completely untouched
     assert.equal(updated[0].configOverrides.tts, undefined);
-    assert.equal(updated[0].effectiveConfigSnapshot?.tasks.tts?.voiceId, "vi-VN-HoaiMyNeural");
+    assert.equal(updated[0].effectiveConfigSnapshot?.tasks.tts?.voiceId, getDefaultTaskConfigMap().tts?.voiceId);
 
     // Job2 and Job3 WERE selected => received new config
     assert.equal(updated[1].configOverrides.tts?.voiceId, "new-custom-voice");
