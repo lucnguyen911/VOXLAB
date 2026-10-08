@@ -96,12 +96,13 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
   };
 
   const pauses = settings.pauses || DEFAULT_DIALOGUE_SETTINGS.pauses;
+  const isZeroRange = settings.turnPauseMinSec === 0 && settings.turnPauseMaxSec === 0;
   const turnPauseMinSec =
-    typeof settings.turnPauseMinSec === "number"
+    typeof settings.turnPauseMinSec === "number" && !isZeroRange
       ? settings.turnPauseMinSec
       : DEFAULT_DIALOGUE_SETTINGS.turnPauseMinSec;
   const turnPauseMaxSec =
-    typeof settings.turnPauseMaxSec === "number"
+    typeof settings.turnPauseMaxSec === "number" && !isZeroRange
       ? settings.turnPauseMaxSec
       : DEFAULT_DIALOGUE_SETTINGS.turnPauseMaxSec;
 
@@ -245,16 +246,16 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
                 {/* Min-Max Turn Pause Section */}
                 <div className="p-2.5 rounded-lg bg-surface2/60 border border-borderDefault/70 space-y-2">
                   <div className="flex items-center justify-between text-[11px] font-semibold text-textPrimary">
-                    <span>Nghỉ đổi lượt thoại</span>
+                    <span>Thời gian nghỉ khi đổi nhân vật</span>
                     <span className="text-[10px] font-mono text-accent">
                       {turnPauseMinSec.toFixed(2)}s – {turnPauseMaxSec.toFixed(2)}s
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    {/* Nghỉ đổi lượt (Min) */}
+                    {/* Tối thiểu (Min) */}
                     <div className="space-y-1">
                       <span className="text-[10px] font-medium text-textSecondary block truncate">
-                        Nghỉ đổi lượt (Min)
+                        Tối thiểu (Min)
                       </span>
                       <div className="flex items-center gap-1">
                         <input
@@ -272,10 +273,10 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
                       </div>
                     </div>
 
-                    {/* Nghỉ đổi lượt (Max) */}
+                    {/* Tối đa (Max) */}
                     <div className="space-y-1">
                       <span className="text-[10px] font-medium text-textSecondary block truncate">
-                        Nghỉ đổi lượt (Max)
+                        Tối đa (Max)
                       </span>
                       <div className="flex items-center gap-1">
                         <input

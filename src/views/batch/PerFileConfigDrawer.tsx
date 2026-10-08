@@ -299,14 +299,27 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
           {/* TAB: DIALOGUE OVERRIDES */}
           {activeTab === "dialogue" && (() => {
             const currentDialogue: Partial<BatchDialogueSnapshot> = configOverrides.dialogue || {};
+            const baseDialogue = job.effectiveConfigSnapshot?.tasks.dialogue;
+            const rawMin = currentDialogue.turnPauseMinSec;
+            const rawMax = currentDialogue.turnPauseMaxSec;
+            const isZeroRange = rawMin === 0 && rawMax === 0;
+
             const minSec =
-              typeof currentDialogue.turnPauseMinSec === "number"
-                ? currentDialogue.turnPauseMinSec
-                : (typeof currentDialogue.turnPauseSec === "number" ? currentDialogue.turnPauseSec : 0.40);
+              typeof rawMin === "number" && !isZeroRange
+                ? rawMin
+                : (typeof currentDialogue.turnPauseSec === "number" && currentDialogue.turnPauseSec > 0
+                  ? currentDialogue.turnPauseSec
+                  : (typeof baseDialogue?.turnPauseMinSec === "number" && (baseDialogue.turnPauseMinSec > 0 || (baseDialogue.turnPauseMaxSec ?? 0) > 0)
+                    ? baseDialogue.turnPauseMinSec
+                    : 0.40));
             const maxSec =
-              typeof currentDialogue.turnPauseMaxSec === "number"
-                ? currentDialogue.turnPauseMaxSec
-                : (typeof currentDialogue.turnPauseSec === "number" ? currentDialogue.turnPauseSec : 0.70);
+              typeof rawMax === "number" && !isZeroRange
+                ? rawMax
+                : (typeof currentDialogue.turnPauseSec === "number" && currentDialogue.turnPauseSec > 0
+                  ? currentDialogue.turnPauseSec
+                  : (typeof baseDialogue?.turnPauseMaxSec === "number" && (baseDialogue.turnPauseMaxSec > 0 || (baseDialogue.turnPauseMinSec ?? 0) > 0)
+                    ? baseDialogue.turnPauseMaxSec
+                    : 0.70));
 
             const handleMinChange = (raw: number) => {
               const val = isNaN(raw) ? 0 : Math.max(0, Math.min(2.0, Math.round(raw * 100) / 100));
@@ -344,7 +357,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
               <div className="space-y-4">
                 <div className="p-3.5 rounded-xl bg-surface2/60 border border-borderDefault/70 space-y-3">
                   <div className="flex items-center justify-between text-xs font-semibold text-textPrimary">
-                    <span>Khoảng nghỉ chuyển lượt thoại</span>
+                    <span>Thời gian nghỉ khi đổi nhân vật</span>
                     <span className="font-mono text-accent text-xs">
                       {minSec.toFixed(2)}s – {maxSec.toFixed(2)}s
                     </span>
@@ -353,7 +366,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <label className="block text-[11px] font-medium text-textSecondary">
-                        Nghỉ đổi lượt (Min)
+                        Tối thiểu (Min)
                       </label>
                       <div className="flex items-center gap-1.5">
                         <input
@@ -371,7 +384,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
 
                     <div className="space-y-1">
                       <label className="block text-[11px] font-medium text-textSecondary">
-                        Nghỉ đổi lượt (Max)
+                        Tối đa (Max)
                       </label>
                       <div className="flex items-center gap-1.5">
                         <input

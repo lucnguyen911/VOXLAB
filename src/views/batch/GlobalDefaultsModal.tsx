@@ -217,13 +217,17 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
 
           {/* TAB 3: DIALOGUE */}
           {activeTab === "dialogue" && (() => {
+            const rawMin = localDefaults.dialogue?.turnPauseMinSec;
+            const rawMax = localDefaults.dialogue?.turnPauseMaxSec;
+            const isZeroRange = rawMin === 0 && rawMax === 0;
+
             const minSec =
-              typeof localDefaults.dialogue?.turnPauseMinSec === "number"
-                ? localDefaults.dialogue.turnPauseMinSec
+              typeof rawMin === "number" && !isZeroRange
+                ? rawMin
                 : 0.40;
             const maxSec =
-              typeof localDefaults.dialogue?.turnPauseMaxSec === "number"
-                ? localDefaults.dialogue.turnPauseMaxSec
+              typeof rawMax === "number" && !isZeroRange
+                ? rawMax
                 : 0.70;
 
             const handleMinChange = (raw: number) => {
@@ -262,7 +266,7 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
               <div className="space-y-4">
                 <div className="p-3.5 rounded-xl bg-surface2/60 border border-borderDefault/70 space-y-3">
                   <div className="flex items-center justify-between text-xs font-semibold text-textPrimary">
-                    <span>Khoảng nghỉ chuyển lượt thoại</span>
+                    <span>Thời gian nghỉ khi đổi nhân vật</span>
                     <span className="font-mono text-accent text-xs">
                       {minSec.toFixed(2)}s – {maxSec.toFixed(2)}s
                     </span>
@@ -271,7 +275,7 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <label className="block text-[11px] font-medium text-textSecondary">
-                        Nghỉ đổi lượt (Min)
+                        Tối thiểu (Min)
                       </label>
                       <div className="flex items-center gap-1.5">
                         <input
@@ -289,7 +293,7 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
 
                     <div className="space-y-1">
                       <label className="block text-[11px] font-medium text-textSecondary">
-                        Nghỉ đổi lượt (Max)
+                        Tối đa (Max)
                       </label>
                       <div className="flex items-center gap-1.5">
                         <input

@@ -74,18 +74,26 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         const model = parsed.model === "Lingual Speech V2" ? "Omni Voice" : (parsed.model || "Omni Voice");
-        const hasExplicitMinMax =
-          typeof parsed.turnPauseMinSec === "number" && typeof parsed.turnPauseMaxSec === "number";
-        const legacyTurnPause =
-          typeof parsed.turnPauseSec === "number" ? parsed.turnPauseSec : undefined;
-        const turnPauseMinSec = hasExplicitMinMax
-          ? parsed.turnPauseMinSec
-          : (legacyTurnPause !== undefined ? legacyTurnPause : DEFAULT_DIALOGUE_SETTINGS.turnPauseMinSec);
-        const turnPauseMaxSec = hasExplicitMinMax
-          ? parsed.turnPauseMaxSec
-          : (legacyTurnPause !== undefined ? legacyTurnPause : DEFAULT_DIALOGUE_SETTINGS.turnPauseMaxSec);
+        
+        let turnPauseMinSec = typeof parsed.turnPauseMinSec === "number" ? parsed.turnPauseMinSec : undefined;
+        let turnPauseMaxSec = typeof parsed.turnPauseMaxSec === "number" ? parsed.turnPauseMaxSec : undefined;
 
-        return {
+        // If turn pause min/max are not set, OR both are 0 (from the legacy 0 default placeholder):
+        if (
+          turnPauseMinSec === undefined ||
+          turnPauseMaxSec === undefined ||
+          (turnPauseMinSec === 0 && turnPauseMaxSec === 0)
+        ) {
+          if (typeof parsed.turnPauseSec === "number" && parsed.turnPauseSec > 0) {
+            turnPauseMinSec = parsed.turnPauseSec;
+            turnPauseMaxSec = parsed.turnPauseSec;
+          } else {
+            turnPauseMinSec = DEFAULT_DIALOGUE_SETTINGS.turnPauseMinSec;
+            turnPauseMaxSec = DEFAULT_DIALOGUE_SETTINGS.turnPauseMaxSec;
+          }
+        }
+
+        const migratedSettings: DialogueGlobalSettings = {
           ...DEFAULT_DIALOGUE_SETTINGS,
           ...parsed,
           model,
@@ -96,6 +104,12 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
             ...(parsed.pauses || {}),
           },
         };
+
+        try {
+          localStorage.setItem("voxlab_dialogue_settings", JSON.stringify(migratedSettings));
+        } catch {}
+
+        return migratedSettings;
       }
     } catch {
       // fallback

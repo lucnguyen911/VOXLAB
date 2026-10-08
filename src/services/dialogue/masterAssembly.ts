@@ -44,9 +44,12 @@ export function resolveTurnPauseRange(settings?: {
 
   const hasMin = typeof settings.turnPauseMinSec === "number" && !isNaN(settings.turnPauseMinSec);
   const hasMax = typeof settings.turnPauseMaxSec === "number" && !isNaN(settings.turnPauseMaxSec);
-  const hasLegacy = typeof settings.turnPauseSec === "number" && !isNaN(settings.turnPauseSec);
+  const hasLegacy =
+    typeof settings.turnPauseSec === "number" &&
+    !isNaN(settings.turnPauseSec) &&
+    settings.turnPauseSec > 0;
 
-  // If caller explicitly provided legacy turnPauseSec and min/max are either missing or untouched defaults
+  // If caller explicitly provided positive legacy turnPauseSec and min/max are either missing or untouched defaults
   if (hasLegacy && (!hasMin || !hasMax || (settings.turnPauseMinSec === 0.40 && settings.turnPauseMaxSec === 0.70))) {
     const legacy = Math.max(0, Math.min(2.0, settings.turnPauseSec!));
     return { minSec: legacy, maxSec: legacy };
@@ -59,6 +62,12 @@ export function resolveTurnPauseRange(settings?: {
       max = min;
     }
     return { minSec: min, maxSec: max };
+  }
+
+  // If caller only provided legacy turnPauseSec without min/max
+  if (typeof settings.turnPauseSec === "number" && !isNaN(settings.turnPauseSec)) {
+    const legacy = Math.max(0, Math.min(2.0, settings.turnPauseSec!));
+    return { minSec: legacy, maxSec: legacy };
   }
 
   if (hasMin) {
