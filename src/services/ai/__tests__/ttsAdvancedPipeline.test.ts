@@ -4,8 +4,6 @@ import { makeTestAi } from "../testing/recordingAiBackend";
 import {
   saveTtsAdvancedSettings,
   getDefaultTtsAdvancedSettings,
-  OMNIVOICE_PRESETS,
-  CHATTERBOX_PRESETS,
 } from "../ttsAdvancedSettings";
 import { TtsExecutor } from "../../batch/executors/ttsExecutor";
 import { BatchJob } from "../../../types/batch";
@@ -16,10 +14,11 @@ describe("Global Advanced TTS Settings - Pipeline Transmission & Snapshot Freeze
   });
 
   it("automatically attaches active global settings to LocalAiServices.synthesize", async () => {
-    // 1. Configure OmniVoice with Stable preset
+    // 1. Configure OmniVoice with custom parameters
     const customSettings = getDefaultTtsAdvancedSettings();
-    customSettings.omnivoice.preset = "stable";
-    customSettings.omnivoice.settings = { ...OMNIVOICE_PRESETS.stable };
+    customSettings.omnivoice.settings.num_step = 40;
+    customSettings.omnivoice.settings.guidance_scale = 2.5;
+    customSettings.omnivoice.settings.denoise = true;
     await saveTtsAdvancedSettings(customSettings);
 
     const { ai, backend } = makeTestAi();
@@ -42,10 +41,10 @@ describe("Global Advanced TTS Settings - Pipeline Transmission & Snapshot Freeze
   });
 
   it("attaches engine-specific settings when switching engines", async () => {
-    // Configure Chatterbox with Expressive preset
+    // Configure Chatterbox with custom parameters
     const customSettings = getDefaultTtsAdvancedSettings();
-    customSettings.chatterbox.preset = "expressive";
-    customSettings.chatterbox.settings = { ...CHATTERBOX_PRESETS.expressive };
+    customSettings.chatterbox.settings.temperature = 0.95;
+    customSettings.chatterbox.settings.repetition_penalty = 1.15;
     await saveTtsAdvancedSettings(customSettings);
 
     const { ai, backend } = makeTestAi();
@@ -62,7 +61,7 @@ describe("Global Advanced TTS Settings - Pipeline Transmission & Snapshot Freeze
     assert.ok(chatterCall);
     const adv = chatterCall.params.advancedSettings as Record<string, unknown>;
     assert.equal(adv.temperature, 0.95);
-    assert.equal(adv.top_k, 1500);
+    assert.equal(adv.top_k, 1000); // locked official internal parameter
     assert.equal(adv.repetition_penalty, 1.15);
   });
 

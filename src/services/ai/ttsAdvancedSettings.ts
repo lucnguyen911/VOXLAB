@@ -92,7 +92,7 @@ export interface QwenAdvancedSettings {
 }
 
 export interface ModelAdvancedState<T> {
-  preset: ModelPresetId;
+  preset?: ModelPresetId;
   settings: T;
 }
 
@@ -104,20 +104,21 @@ export interface StoredTtsAdvancedSettings {
 }
 
 // ---------------------------------------------------------------------------
-// Presets Definitions
+// Official Defaults & Presets (Presets retained for backward compatibility)
 // ---------------------------------------------------------------------------
 
 export const OMNIVOICE_DEFAULT_SETTINGS: OmniVoiceAdvancedSettings = {
   num_step: 32,
   guidance_scale: 2.0,
-  denoise: true,
   position_temperature: 5.0,
   class_temperature: 0.0,
-  postprocess_output: true,
+  denoise: true,
+  // Internal parameters (managed by system, not displayed in UI):
   t_shift: 0.1,
   layer_penalty_factor: 5.0,
   duration: null,
   preprocess_prompt: true,
+  postprocess_output: true,
   pad_duration: 0.1,
   fade_duration: 0.1,
   audio_chunk_duration: 15.0,
@@ -125,74 +126,34 @@ export const OMNIVOICE_DEFAULT_SETTINGS: OmniVoiceAdvancedSettings = {
 };
 
 export const OMNIVOICE_PRESETS: Record<"stable" | "balanced" | "expressive", OmniVoiceAdvancedSettings> = {
-  stable: {
-    num_step: 40,
-    guidance_scale: 2.5,
-    denoise: true,
-    position_temperature: 3.0,
-    class_temperature: 0.0,
-    postprocess_output: true,
-    t_shift: 0.1,
-    layer_penalty_factor: 6.0,
-    duration: null,
-    preprocess_prompt: true,
-    pad_duration: 0.1,
-    fade_duration: 0.1,
-    audio_chunk_duration: 15.0,
-    audio_chunk_threshold: 30.0,
-  },
+  stable: { ...OMNIVOICE_DEFAULT_SETTINGS },
   balanced: { ...OMNIVOICE_DEFAULT_SETTINGS },
-  expressive: {
-    num_step: 32,
-    guidance_scale: 1.8,
-    denoise: true,
-    position_temperature: 6.0,
-    class_temperature: 0.2,
-    postprocess_output: true,
-    t_shift: 0.12,
-    layer_penalty_factor: 4.0,
-    duration: null,
-    preprocess_prompt: true,
-    pad_duration: 0.1,
-    fade_duration: 0.1,
-    audio_chunk_duration: 15.0,
-    audio_chunk_threshold: 30.0,
-  },
+  expressive: { ...OMNIVOICE_DEFAULT_SETTINGS },
 };
 
 export const CHATTERBOX_DEFAULT_SETTINGS: ChatterboxAdvancedSettings = {
   temperature: 0.8,
   top_p: 0.95,
-  top_k: 1000,
   repetition_penalty: 1.2,
   norm_loudness: true,
+  // Internal parameter:
+  top_k: 1000,
 };
 
 export const CHATTERBOX_PRESETS: Record<"stable" | "balanced" | "expressive", ChatterboxAdvancedSettings> = {
-  stable: {
-    temperature: 0.6,
-    top_p: 0.90,
-    top_k: 500,
-    repetition_penalty: 1.3,
-    norm_loudness: true,
-  },
+  stable: { ...CHATTERBOX_DEFAULT_SETTINGS },
   balanced: { ...CHATTERBOX_DEFAULT_SETTINGS },
-  expressive: {
-    temperature: 0.95,
-    top_p: 0.98,
-    top_k: 1500,
-    repetition_penalty: 1.15,
-    norm_loudness: true,
-  },
+  expressive: { ...CHATTERBOX_DEFAULT_SETTINGS },
 };
 
 export const QWEN_DEFAULT_SETTINGS: QwenAdvancedSettings = {
   temperature: 0.9,
   top_p: 1.0,
-  top_k: 50,
   repetition_penalty: 1.05,
-  do_sample: true,
   x_vector_only_mode: false,
+  // Internal parameters:
+  top_k: 50,
+  do_sample: true,
   subtalker_dosample: true,
   subtalker_top_k: 50,
   subtalker_top_p: 1.0,
@@ -202,50 +163,21 @@ export const QWEN_DEFAULT_SETTINGS: QwenAdvancedSettings = {
 };
 
 export const QWEN_PRESETS: Record<"stable" | "balanced" | "expressive", QwenAdvancedSettings> = {
-  stable: {
-    temperature: 0.7,
-    top_p: 0.95,
-    top_k: 30,
-    repetition_penalty: 1.15,
-    do_sample: true,
-    x_vector_only_mode: false,
-    subtalker_dosample: true,
-    subtalker_top_k: 30,
-    subtalker_top_p: 0.95,
-    subtalker_temperature: 0.7,
-    max_new_tokens: 2048,
-    non_streaming_mode: false,
-  },
+  stable: { ...QWEN_DEFAULT_SETTINGS },
   balanced: { ...QWEN_DEFAULT_SETTINGS },
-  expressive: {
-    temperature: 1.0,
-    top_p: 1.0,
-    top_k: 70,
-    repetition_penalty: 1.02,
-    do_sample: true,
-    x_vector_only_mode: false,
-    subtalker_dosample: true,
-    subtalker_top_k: 70,
-    subtalker_top_p: 1.0,
-    subtalker_temperature: 1.0,
-    max_new_tokens: 2048,
-    non_streaming_mode: false,
-  },
+  expressive: { ...QWEN_DEFAULT_SETTINGS },
 };
 
 export function getDefaultTtsAdvancedSettings(): StoredTtsAdvancedSettings {
   return {
     version: TTS_ADVANCED_SETTINGS_VERSION,
     omnivoice: {
-      preset: "balanced",
       settings: { ...OMNIVOICE_DEFAULT_SETTINGS },
     },
     chatterbox: {
-      preset: "balanced",
       settings: { ...CHATTERBOX_DEFAULT_SETTINGS },
     },
     qwen: {
-      preset: "balanced",
       settings: { ...QWEN_DEFAULT_SETTINGS },
     },
   };
@@ -267,73 +199,61 @@ function toBoolean(val: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
-function toNullableNumber(val: unknown, min: number, max: number): number | null {
-  if (val === null || val === undefined || val === "" || val === "auto") {
-    return null;
-  }
-  if (typeof val === "number" && !isNaN(val) && isFinite(val)) {
-    return Math.min(max, Math.max(min, val));
-  }
-  const parsed = parseFloat(String(val));
-  if (!isNaN(parsed) && isFinite(parsed)) {
-    return Math.min(max, Math.max(min, parsed));
-  }
-  return null;
-}
-
-function sanitizePreset(val: unknown): ModelPresetId {
-  if (val === "stable" || val === "balanced" || val === "expressive" || val === "custom") {
-    return val;
-  }
-  return "balanced";
-}
-
 export function sanitizeOmniVoiceSettings(raw: unknown): OmniVoiceAdvancedSettings {
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   return {
+    // 5 visible user-configurable parameters:
     num_step: Math.round(clamp(o.num_step, 4, 128, OMNIVOICE_DEFAULT_SETTINGS.num_step)),
     guidance_scale: clamp(o.guidance_scale, 1.0, 10.0, OMNIVOICE_DEFAULT_SETTINGS.guidance_scale),
-    denoise: toBoolean(o.denoise, OMNIVOICE_DEFAULT_SETTINGS.denoise),
     position_temperature: clamp(o.position_temperature, 0.0, 20.0, OMNIVOICE_DEFAULT_SETTINGS.position_temperature),
     class_temperature: clamp(o.class_temperature, 0.0, 5.0, OMNIVOICE_DEFAULT_SETTINGS.class_temperature),
-    postprocess_output: toBoolean(o.postprocess_output, OMNIVOICE_DEFAULT_SETTINGS.postprocess_output),
-    t_shift: clamp(o.t_shift, 0.01, 5.0, OMNIVOICE_DEFAULT_SETTINGS.t_shift),
-    layer_penalty_factor: clamp(o.layer_penalty_factor, 0.0, 20.0, OMNIVOICE_DEFAULT_SETTINGS.layer_penalty_factor),
-    duration: toNullableNumber(o.duration, 0.1, 300.0),
-    preprocess_prompt: toBoolean(o.preprocess_prompt, OMNIVOICE_DEFAULT_SETTINGS.preprocess_prompt),
-    pad_duration: clamp(o.pad_duration, 0.0, 2.0, OMNIVOICE_DEFAULT_SETTINGS.pad_duration),
-    fade_duration: clamp(o.fade_duration, 0.0, 2.0, OMNIVOICE_DEFAULT_SETTINGS.fade_duration),
-    audio_chunk_duration: clamp(o.audio_chunk_duration, 5.0, 60.0, OMNIVOICE_DEFAULT_SETTINGS.audio_chunk_duration),
-    audio_chunk_threshold: clamp(o.audio_chunk_threshold, 10.0, 120.0, OMNIVOICE_DEFAULT_SETTINGS.audio_chunk_threshold),
+    denoise: toBoolean(o.denoise, OMNIVOICE_DEFAULT_SETTINGS.denoise),
+
+    // Hidden internal parameters always locked to unified official defaults:
+    t_shift: OMNIVOICE_DEFAULT_SETTINGS.t_shift,
+    layer_penalty_factor: OMNIVOICE_DEFAULT_SETTINGS.layer_penalty_factor,
+    duration: OMNIVOICE_DEFAULT_SETTINGS.duration,
+    preprocess_prompt: OMNIVOICE_DEFAULT_SETTINGS.preprocess_prompt,
+    postprocess_output: OMNIVOICE_DEFAULT_SETTINGS.postprocess_output,
+    pad_duration: OMNIVOICE_DEFAULT_SETTINGS.pad_duration,
+    fade_duration: OMNIVOICE_DEFAULT_SETTINGS.fade_duration,
+    audio_chunk_duration: OMNIVOICE_DEFAULT_SETTINGS.audio_chunk_duration,
+    audio_chunk_threshold: OMNIVOICE_DEFAULT_SETTINGS.audio_chunk_threshold,
   };
 }
 
 export function sanitizeChatterboxSettings(raw: unknown): ChatterboxAdvancedSettings {
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   return {
+    // 4 visible user-configurable parameters:
     temperature: clamp(o.temperature, 0.1, 2.0, CHATTERBOX_DEFAULT_SETTINGS.temperature),
     top_p: clamp(o.top_p, 0.1, 1.0, CHATTERBOX_DEFAULT_SETTINGS.top_p),
-    top_k: Math.round(clamp(o.top_k, 10, 2000, CHATTERBOX_DEFAULT_SETTINGS.top_k)),
     repetition_penalty: clamp(o.repetition_penalty, 1.0, 2.0, CHATTERBOX_DEFAULT_SETTINGS.repetition_penalty),
     norm_loudness: toBoolean(o.norm_loudness, CHATTERBOX_DEFAULT_SETTINGS.norm_loudness),
+
+    // Hidden internal parameter:
+    top_k: CHATTERBOX_DEFAULT_SETTINGS.top_k,
   };
 }
 
 export function sanitizeQwenSettings(raw: unknown): QwenAdvancedSettings {
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   return {
+    // 4 visible user-configurable parameters:
     temperature: clamp(o.temperature, 0.1, 2.0, QWEN_DEFAULT_SETTINGS.temperature),
     top_p: clamp(o.top_p, 0.1, 1.0, QWEN_DEFAULT_SETTINGS.top_p),
-    top_k: Math.round(clamp(o.top_k, 1, 200, QWEN_DEFAULT_SETTINGS.top_k)),
     repetition_penalty: clamp(o.repetition_penalty, 1.0, 2.0, QWEN_DEFAULT_SETTINGS.repetition_penalty),
-    do_sample: toBoolean(o.do_sample, QWEN_DEFAULT_SETTINGS.do_sample),
     x_vector_only_mode: toBoolean(o.x_vector_only_mode, QWEN_DEFAULT_SETTINGS.x_vector_only_mode),
-    subtalker_dosample: toBoolean(o.subtalker_dosample, QWEN_DEFAULT_SETTINGS.subtalker_dosample),
-    subtalker_top_k: Math.round(clamp(o.subtalker_top_k, 1, 200, QWEN_DEFAULT_SETTINGS.subtalker_top_k)),
-    subtalker_top_p: clamp(o.subtalker_top_p, 0.1, 1.0, QWEN_DEFAULT_SETTINGS.subtalker_top_p),
-    subtalker_temperature: clamp(o.subtalker_temperature, 0.1, 2.0, QWEN_DEFAULT_SETTINGS.subtalker_temperature),
-    max_new_tokens: Math.round(clamp(o.max_new_tokens, 256, 8192, QWEN_DEFAULT_SETTINGS.max_new_tokens)),
-    non_streaming_mode: toBoolean(o.non_streaming_mode, QWEN_DEFAULT_SETTINGS.non_streaming_mode),
+
+    // Hidden internal parameters:
+    top_k: QWEN_DEFAULT_SETTINGS.top_k,
+    do_sample: QWEN_DEFAULT_SETTINGS.do_sample,
+    subtalker_dosample: QWEN_DEFAULT_SETTINGS.subtalker_dosample,
+    subtalker_top_k: QWEN_DEFAULT_SETTINGS.subtalker_top_k,
+    subtalker_top_p: QWEN_DEFAULT_SETTINGS.subtalker_top_p,
+    subtalker_temperature: QWEN_DEFAULT_SETTINGS.subtalker_temperature,
+    max_new_tokens: QWEN_DEFAULT_SETTINGS.max_new_tokens,
+    non_streaming_mode: QWEN_DEFAULT_SETTINGS.non_streaming_mode,
   };
 }
 
@@ -348,16 +268,13 @@ export function sanitizeTtsAdvancedSettings(raw: unknown): StoredTtsAdvancedSett
   return {
     version: typeof o.version === "number" ? o.version : defaults.version,
     omnivoice: {
-      preset: sanitizePreset(omniRaw.preset),
-      settings: sanitizeOmniVoiceSettings(omniRaw.settings),
+      settings: sanitizeOmniVoiceSettings(omniRaw.settings || omniRaw),
     },
     chatterbox: {
-      preset: sanitizePreset(chatterRaw.preset),
-      settings: sanitizeChatterboxSettings(chatterRaw.settings),
+      settings: sanitizeChatterboxSettings(chatterRaw.settings || chatterRaw),
     },
     qwen: {
-      preset: sanitizePreset(qwenRaw.preset),
-      settings: sanitizeQwenSettings(qwenRaw.settings),
+      settings: sanitizeQwenSettings(qwenRaw.settings || qwenRaw),
     },
   };
 }
@@ -437,27 +354,50 @@ export async function saveTtsAdvancedSettings(settings: StoredTtsAdvancedSetting
   }
 }
 
-/** Resets a specific model's settings to its Balanced default and saves. */
+/** Resets a specific model's settings to its official default and immediately persists to App Data. */
 export async function resetModelTtsAdvancedSettings(model: TtsModelKey): Promise<StoredTtsAdvancedSettings> {
   const current = getTtsAdvancedSettingsSnapshot();
   if (model === "omnivoice") {
     current.omnivoice = {
-      preset: "balanced",
       settings: { ...OMNIVOICE_DEFAULT_SETTINGS },
     };
   } else if (model === "chatterbox") {
     current.chatterbox = {
-      preset: "balanced",
       settings: { ...CHATTERBOX_DEFAULT_SETTINGS },
     };
   } else if (model === "qwen") {
     current.qwen = {
-      preset: "balanced",
       settings: { ...QWEN_DEFAULT_SETTINGS },
     };
   }
   await saveTtsAdvancedSettings(current);
-  return current;
+  return getTtsAdvancedSettingsSnapshot();
+}
+
+/**
+ * Saves settings for a single model to App Data while preserving other models' persisted settings.
+ * Ensures model isolation and avoids overwriting unsaved drafts of other models.
+ */
+export async function saveModelTtsAdvancedSettings<K extends TtsModelKey>(
+  model: K,
+  settings: StoredTtsAdvancedSettings[K]["settings"]
+): Promise<StoredTtsAdvancedSettings> {
+  const current = getTtsAdvancedSettingsSnapshot();
+  if (model === "omnivoice") {
+    current.omnivoice = {
+      settings: sanitizeOmniVoiceSettings(settings),
+    };
+  } else if (model === "chatterbox") {
+    current.chatterbox = {
+      settings: sanitizeChatterboxSettings(settings),
+    };
+  } else if (model === "qwen") {
+    current.qwen = {
+      settings: sanitizeQwenSettings(settings),
+    };
+  }
+  await saveTtsAdvancedSettings(current);
+  return getTtsAdvancedSettingsSnapshot();
 }
 
 /**
