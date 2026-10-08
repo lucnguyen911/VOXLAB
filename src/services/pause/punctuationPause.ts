@@ -14,10 +14,10 @@ export type PunctuationType =
  * Production audio should tune these via user inspector settings (TtsInspector).
  */
 export const DEFAULT_PUNCTUATION_PAUSES: PunctuationPauses = {
-  comma: 0.5,
-  period: 0.5, // PERIOD_PAUSE = TUNING REQUIRED (0.5s development baseline)
-  questionExclamation: 1.0,
-  colonSemicolon: 0.6,
+  comma: 0.3, // 0.3s - Tránh đọc ngắt quãng
+  period: 0.6, // 0.6s - Tách câu tự nhiên
+  questionExclamation: 0.7, // 0.7s - Tránh ngắt quá dài
+  colonSemicolon: 0.4, // 0.4s - Giữ mạch nội dung
 };
 
 /**

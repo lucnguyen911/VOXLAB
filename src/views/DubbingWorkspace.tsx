@@ -170,7 +170,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         if (p) return p;
       }
     } catch {}
-    return { comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 };
+    return { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 };
   });
   const [concurrency, setConcurrency] = useState<number>(() => {
     try {
@@ -197,10 +197,10 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setPitch(1.0);
     setVolume(1.0);
     setPauses({
-      comma: 0.5,
-      period: 0.5,
-      questionExclamation: 1.0,
-      colonSemicolon: 0.6,
+      comma: 0.3,
+      period: 0.6,
+      questionExclamation: 0.7,
+      colonSemicolon: 0.4,
     });
     setConcurrency(1);
   };

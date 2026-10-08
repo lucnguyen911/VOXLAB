@@ -135,10 +135,10 @@ export const DEFAULT_DIALOGUE_SETTINGS: DialogueGlobalSettings = {
   turnPauseSec: 0,
   sameSpeakerPauseSec: 0,
   pauses: {
-    comma: 0.5,
-    period: 0.5,
-    questionExclamation: 1.0,
-    colonSemicolon: 0.6,
+    comma: 0.3,
+    period: 0.6,
+    questionExclamation: 0.7,
+    colonSemicolon: 0.4,
   },
   concurrency: 1,
 };

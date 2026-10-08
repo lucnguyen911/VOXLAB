@@ -44,10 +44,10 @@ const DEFAULT_TTS_SETTINGS: PersistedTtsSettings = {
   pitch: 1.0,
   volume: 1.0,
   pauses: {
-    comma: 0.5,
-    period: 0.5, // PERIOD_PAUSE = TUNING REQUIRED (0.5s development baseline)
-    questionExclamation: 1.0,
-    colonSemicolon: 0.6,
+    comma: 0.3,
+    period: 0.6,
+    questionExclamation: 0.7,
+    colonSemicolon: 0.4,
   },
   concurrency: 1, // Section 20: default is 1x · Mặc định
   exportSrt: false,

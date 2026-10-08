@@ -638,6 +638,104 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     }
   };
 
+  // Regenerate strictly yellow warning chunks
+  const handleRegenerateWarningChunks = async () => {
+    if (warningChunks.length === 0 || isGenerating) return;
+    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const storedSettings = loadStoredTtsSettings();
+
+    const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
+      activeModel,
+      speed: storedSettings.speed,
+      pitch: storedSettings.pitch,
+      volume: storedSettings.volume,
+    });
+    const batchEngineOrModel = batchVoiceSnapshot.modelId || batchVoiceSnapshot.engine || activeModel;
+    const batchAdvancedSettings = getEngineAdvancedSettings(batchEngineOrModel);
+
+    setCompletedCount(0);
+    setSkippedCount(0);
+    setIsCompletedState(false);
+    setGenerationError(null);
+    batchQueueExecutor.reset();
+    onTriggerJob();
+
+    const targetIds = warningChunks.map((c) => c.id);
+    setBatchTotal(targetIds.length);
+    setPendingItems(targetIds.length);
+
+    let firstFinishedChunk: ChunkItem | null = null;
+    try {
+      await batchQueueExecutor.runBatch(
+        targetIds,
+        {
+          concurrency,
+          onWorkerChange: (_active, pending) => {
+            setPendingItems(pending ?? 0);
+          },
+          processItem: async (chunkId) => {
+            const target = chunks.find((c) => c.id === chunkId);
+            if (!target) return;
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.id === chunkId
+                  ? { ...c, status: "generating", errorMessage: undefined }
+                  : c
+              )
+            );
+            const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
+            let readyChunk: ChunkItem = {
+              ...target,
+              status: "ready",
+              durationSec: res.durationSec,
+              audioUrl: res.blobUrl,
+              audioFilePath: res.outputPath,
+              effectiveVoiceSnapshot: batchVoiceSnapshot,
+              qualityReview: undefined,
+            };
+            try {
+              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language);
+              readyChunk = { ...readyChunk, qualityReview: review };
+            } catch (qErr) {
+              console.warn("Quality validation error:", qErr);
+            }
+            setChunks((prev) =>
+              prev.map((c) => (c.id === chunkId ? readyChunk : c))
+            );
+            if (!firstFinishedChunk) {
+              firstFinishedChunk = readyChunk;
+              onPlayChunk?.(readyChunk);
+            }
+          },
+          onItemCompleted: (_item, _idx, completed, total) => {
+            setCompletedCount(completed);
+            onChunkProgress?.(completed, total);
+          },
+          onItemFailed: async (chunkId, index, err) => {
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.id === chunkId
+                  ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
+                  : c
+              )
+            );
+            setGenerationError({
+              chunkId,
+              chunkIndex: index,
+              error: err,
+            });
+            return "skip" as const;
+          },
+        }
+      );
+    } catch (batchErr) {
+      console.error("Warning chunks regeneration error:", batchErr);
+    } finally {
+      setProgressStage("");
+      onJobComplete?.();
+    }
+  };
+
   // Nút tạo audio: chức năng tạo toàn bộ hoặc tạo lại toàn bộ các đoạn trong kịch bản (ghi đè kết quả cũ)
   const handleGenerateAllAudio = async (customChunks?: ChunkItem[] | unknown) => {
     if (isGenerating) return;
@@ -1283,29 +1381,29 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               </div>
               <div className="flex items-center gap-2 text-xs">
                 {errorChunks.length > 0 && (
-                  <>
-                    <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-danger/15 border border-danger/30 text-danger font-semibold">
-                      <span className="w-1.5 h-1.5 rounded-full bg-danger" />
-                      <span>{errorChunks.length} lỗi</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={handleRegenerateErrorChunks}
-                      disabled={isGenerating}
-                      className="flex items-center gap-1.5 px-2.5 py-1 bg-danger hover:bg-danger/90 text-white shadow-xs rounded-md text-xs font-semibold transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
-                      title="Chỉ tạo lại các đoạn bị lỗi đỏ"
-                    >
-                      <RefreshCw className="w-3 h-3 text-white" />
-                      <span>Tạo lại {errorChunks.length} lỗi</span>
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={handleRegenerateErrorChunks}
+                    disabled={isGenerating}
+                    className="flex items-center gap-1.5 px-2.5 py-1 bg-danger hover:bg-danger/90 text-white shadow-xs rounded-md text-xs font-semibold transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+                    title="Chỉ tạo lại các đoạn bị lỗi đỏ"
+                  >
+                    <RefreshCw className="w-3 h-3 text-white" />
+                    <span>Tạo lại {errorChunks.length} lỗi</span>
+                  </button>
                 )}
 
                 {warningChunks.length > 0 && (
-                  <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-500 font-semibold" title="Các đoạn có dấu hiệu ngắt nghỉ hoặc bất thường cần nghe lại">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                    <span>{warningChunks.length} cảnh báo</span>
-                  </span>
+                  <button
+                    type="button"
+                    onClick={handleRegenerateWarningChunks}
+                    disabled={isGenerating}
+                    className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white shadow-xs rounded-md text-xs font-semibold transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+                    title="Chỉ tạo lại các đoạn có cảnh báo chất lượng"
+                  >
+                    <RefreshCw className="w-3 h-3 text-white" />
+                    <span>Tạo lại {warningChunks.length} cảnh báo</span>
+                  </button>
                 )}
 
                 {chunks.filter((c) => c.status === "modified").length > 0 && (

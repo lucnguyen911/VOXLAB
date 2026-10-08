@@ -170,7 +170,10 @@ describe("Punctuation-Driven Pause Rhythm & Simplification (Cases 1 - 8)", () =>
     assert.equal(gap2, 0, "500ms target - 500ms model silence = 0ms inserted silence");
 
     // Verify DEFAULT_PUNCTUATION_PAUSES defaults
-    assert.equal(DEFAULT_PUNCTUATION_PAUSES.period, 0.5);
+    assert.equal(DEFAULT_PUNCTUATION_PAUSES.comma, 0.3);
+    assert.equal(DEFAULT_PUNCTUATION_PAUSES.period, 0.6);
+    assert.equal(DEFAULT_PUNCTUATION_PAUSES.questionExclamation, 0.7);
+    assert.equal(DEFAULT_PUNCTUATION_PAUSES.colonSemicolon, 0.4);
 
     // Verify detectTrailingSilenceMs on synthetic waveform with trailing zeros
     const sampleRate = 44100;

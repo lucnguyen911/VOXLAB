@@ -298,10 +298,10 @@ export const DEFAULT_GLOBAL_SETTINGS: BatchGlobalDefaults = {
     pitch: 1.0,
     volume: 1.0,
     pauses: {
-      comma: 0.5,
-      period: 0.5,
-      questionExclamation: 1.0,
-      colonSemicolon: 0.6,
+      comma: 0.3,
+      period: 0.6,
+      questionExclamation: 0.7,
+      colonSemicolon: 0.4,
     },
     concurrency: 1,
     exportSrt: false,
@@ -315,10 +315,10 @@ export const DEFAULT_GLOBAL_SETTINGS: BatchGlobalDefaults = {
     turnPauseSec: 0.4,
     sameSpeakerPauseSec: 0.2,
     pauses: {
-      comma: 0.5,
-      period: 0.5,
-      questionExclamation: 1.0,
-      colonSemicolon: 0.6,
+      comma: 0.3,
+      period: 0.6,
+      questionExclamation: 0.7,
+      colonSemicolon: 0.4,
     },
     concurrency: 1,
     exportSrt: true,
@@ -348,10 +348,10 @@ export const DEFAULT_GLOBAL_SETTINGS: BatchGlobalDefaults = {
     pitch: 1.0,
     volume: 1.0,
     pauses: {
-      comma: 0.5,
-      period: 0.5,
-      questionExclamation: 1.0,
-      colonSemicolon: 0.6,
+      comma: 0.3,
+      period: 0.6,
+      questionExclamation: 0.7,
+      colonSemicolon: 0.4,
     },
     concurrency: 1,
     autoFit: true,
@@ -463,10 +463,10 @@ export function loadStoredDubbingSettings(): StoredDubbingSettings {
     pitch: 1.0,
     volume: 1.0,
     pauses: {
-      comma: 0.5,
-      period: 0.5,
-      questionExclamation: 1.0,
-      colonSemicolon: 0.6,
+      comma: 0.3,
+      period: 0.6,
+      questionExclamation: 0.7,
+      colonSemicolon: 0.4,
     },
     concurrency: 1,
     autoFit: true,
@@ -493,10 +493,10 @@ export function loadStoredDubbingSettings(): StoredDubbingSettings {
       pitch: typeof parsed.pitch === "number" ? parsed.pitch : fallback.pitch,
       volume: typeof parsed.volume === "number" ? parsed.volume : fallback.volume,
       pauses: parsed.pauses && typeof parsed.pauses === "object" ? {
-        comma: typeof parsed.pauses.comma === "number" ? parsed.pauses.comma : 0.5,
-        period: typeof parsed.pauses.period === "number" ? parsed.pauses.period : 0.5,
-        questionExclamation: typeof parsed.pauses.questionExclamation === "number" ? parsed.pauses.questionExclamation : 1.0,
-        colonSemicolon: typeof parsed.pauses.colonSemicolon === "number" ? parsed.pauses.colonSemicolon : 0.6,
+        comma: typeof parsed.pauses.comma === "number" ? parsed.pauses.comma : 0.3,
+        period: typeof parsed.pauses.period === "number" ? parsed.pauses.period : 0.6,
+        questionExclamation: typeof parsed.pauses.questionExclamation === "number" ? parsed.pauses.questionExclamation : 0.7,
+        colonSemicolon: typeof parsed.pauses.colonSemicolon === "number" ? parsed.pauses.colonSemicolon : 0.4,
       } : fallback.pauses,
       concurrency: typeof parsed.concurrency === "number" ? parsed.concurrency : fallback.concurrency,
       autoFit: typeof parsed.autoFit === "boolean" ? parsed.autoFit : fallback.autoFit,
@@ -1384,7 +1384,7 @@ const INITIAL_SAMPLE_JOBS: MockBatchJob[] = [
         masterVolume: 1.0,
         turnPauseSec: 0.4,
         sameSpeakerPauseSec: 0.2,
-        pauses: { comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 },
+        pauses: { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 },
         concurrency: 1,
         exportSrt: true,
         aspectRatio: "16:9",
@@ -2434,10 +2434,10 @@ export const BatchWorkspacePrototype: React.FC = () => {
           pitch: 1.0,
           volume: 1.0,
           pauses: {
-            comma: 0.5,
-            period: 0.5,
-            questionExclamation: 1.0,
-            colonSemicolon: 0.6,
+            comma: 0.3,
+            period: 0.6,
+            questionExclamation: 0.7,
+            colonSemicolon: 0.4,
           },
           concurrency: 1,
           autoFit: true,
@@ -6318,10 +6318,10 @@ export const BatchWorkspacePrototype: React.FC = () => {
                                 min="0.1"
                                 max="3.0"
                                 step="0.1"
-                                value={globalDefaults.dubbing.pauses?.comma ?? 0.5}
+                                value={globalDefaults.dubbing.pauses?.comma ?? 0.3}
                                 onChange={(e) => {
                                   const val = parseFloat(e.target.value) || 0.1;
-                                  const base = globalDefaults.dubbing.pauses || { comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 };
+                                  const base = globalDefaults.dubbing.pauses || { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 };
                                   handleUpdateGlobalDubbing({
                                     pauses: { ...base, comma: val },
                                   });
@@ -6345,10 +6345,10 @@ export const BatchWorkspacePrototype: React.FC = () => {
                                 min="0.2"
                                 max="5.0"
                                 step="0.1"
-                                value={globalDefaults.dubbing.pauses?.period ?? 0.5}
+                                value={globalDefaults.dubbing.pauses?.period ?? 0.6}
                                 onChange={(e) => {
                                   const val = parseFloat(e.target.value) || 0.2;
-                                  const base = globalDefaults.dubbing.pauses || { comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 };
+                                  const base = globalDefaults.dubbing.pauses || { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 };
                                   handleUpdateGlobalDubbing({
                                     pauses: { ...base, period: val },
                                   });
@@ -6372,10 +6372,10 @@ export const BatchWorkspacePrototype: React.FC = () => {
                                 min="0.2"
                                 max="5.0"
                                 step="0.1"
-                                value={globalDefaults.dubbing.pauses?.questionExclamation ?? 1.0}
+                                value={globalDefaults.dubbing.pauses?.questionExclamation ?? 0.7}
                                 onChange={(e) => {
                                   const val = parseFloat(e.target.value) || 0.2;
-                                  const base = globalDefaults.dubbing.pauses || { comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 };
+                                  const base = globalDefaults.dubbing.pauses || { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 };
                                   handleUpdateGlobalDubbing({
                                     pauses: { ...base, questionExclamation: val },
                                   });
@@ -6399,10 +6399,10 @@ export const BatchWorkspacePrototype: React.FC = () => {
                                 min="0.1"
                                 max="3.0"
                                 step="0.1"
-                                value={globalDefaults.dubbing.pauses?.colonSemicolon ?? 0.6}
+                                value={globalDefaults.dubbing.pauses?.colonSemicolon ?? 0.4}
                                 onChange={(e) => {
                                   const val = parseFloat(e.target.value) || 0.1;
-                                  const base = globalDefaults.dubbing.pauses || { comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 };
+                                  const base = globalDefaults.dubbing.pauses || { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 };
                                   handleUpdateGlobalDubbing({
                                     pauses: { ...base, colonSemicolon: val },
                                   });
