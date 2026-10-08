@@ -6,6 +6,7 @@ import { googleTranslateTtsProvider } from "./googleProvider";
 export interface SynthesisCoreOptions {
   scope?: string;
   id?: string;
+  advancedSettings?: Record<string, unknown>;
   onProgress?: (pct: number, stage: string) => void;
 }
 
@@ -74,6 +75,7 @@ export async function synthesizeSpeechCore(
       text,
       outputPath,
       speed: snapshot.speed,
+      advancedSettings: options.advancedSettings,
       onProgress: options.onProgress,
     });
     durationSec = res.durationSec;

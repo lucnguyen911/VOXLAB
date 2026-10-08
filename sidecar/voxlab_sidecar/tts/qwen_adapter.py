@@ -84,10 +84,38 @@ class QwenTtsAdapter(TtsEngineAdapter):
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
         language = LANGUAGE_NAMES.get(req.language, "Auto") if req.language else "Auto"
         kwargs: dict[str, Any] = {}
-        if req.extra.get("temperature") is not None:
-            kwargs["temperature"] = float(req.extra["temperature"])
+        extra = req.extra or {}
+        temperature = extra.get("temperature")
+        if temperature is not None:
+            kwargs["temperature"] = max(0.1, min(2.0, float(temperature)))
+
+        top_p = extra.get("top_p", extra.get("topP"))
+        if top_p is not None:
+            kwargs["top_p"] = max(0.1, min(1.0, float(top_p)))
+
+        top_k = extra.get("top_k", extra.get("topK"))
+        if top_k is not None:
+            kwargs["top_k"] = max(1, min(200, int(top_k)))
+
+        rep_pen = extra.get("repetition_penalty", extra.get("repetitionPenalty"))
+        if rep_pen is not None:
+            kwargs["repetition_penalty"] = max(1.0, min(2.0, float(rep_pen)))
+
+        do_sample = extra.get("do_sample", extra.get("doSample"))
+        if do_sample is not None:
+            kwargs["do_sample"] = bool(do_sample)
+
+        x_vec = extra.get("x_vector_only_mode", extra.get("xVectorOnlyMode"))
+        x_vector_only_mode = bool(x_vec) if x_vec is not None else False
+
         wavs, sr = self._model.generate_voice_clone(
-            text=req.text, language=language, ref_audio=req.ref_audio_path, ref_text=req.ref_text, **kwargs)
+            text=req.text,
+            language=language,
+            ref_audio=req.ref_audio_path,
+            ref_text=req.ref_text,
+            x_vector_only_mode=x_vector_only_mode,
+            **kwargs,
+        )
         return np.asarray(wavs[0], dtype=np.float32).reshape(-1), int(sr)
 
     def unload(self) -> None:

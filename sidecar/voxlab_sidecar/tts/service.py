@@ -114,10 +114,23 @@ class TtsService:
         if speed is not None and float(speed) != 1.0 and not caps.supports_speed:
             raise SidecarError("INVALID_REQUEST", f"{caps.display_name} does not support speed control")
 
+        extra: dict[str, Any] = {}
+        if isinstance(params.get("advancedSettings"), dict):
+            extra.update(params["advancedSettings"])
+        allowed_direct_keys = (
+            "numStep", "num_step", "temperature", "top_p", "topP", "top_k", "topK",
+            "repetition_penalty", "repetitionPenalty", "guidance_scale", "guidanceScale",
+            "denoise", "position_temperature", "positionTemperature", "class_temperature",
+            "classTemperature", "postprocess_output", "postprocessOutput", "do_sample",
+            "doSample", "x_vector_only_mode", "xVectorOnlyMode", "instruct"
+        )
+        for k in allowed_direct_keys:
+            if k in params and params[k] is not None:
+                extra[k] = params[k]
+
         req = SynthesisRequest(text=text, language=language, ref_audio_path=ref_audio, ref_text=ref_text,
                                speed=float(speed) if speed is not None else None,
-                               extra={k: v for k, v in params.items() if k in ("numStep", "exaggeration", "cfgWeight",
-                                                                                "instruct", "temperature")})
+                               extra=extra)
         ctx.check_cancelled()
         ctx.progress(5, "synthesizing")
         started = time.perf_counter()

@@ -26,6 +26,7 @@ import {
 } from "../outputResolver";
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
+import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 
 export interface DubbingExecutorOptions {
   subtitleContent?: string;
@@ -148,6 +149,9 @@ export class DubbingExecutor {
     }
     const speedCeiling = Math.min(1.2, dubSnapshot?.speedMultiplier || 1.2);
 
+    // Freeze advanced settings snapshot for the entire batch task (Invariant D)
+    const jobAdvancedSettings = getEngineAdvancedSettings(model);
+
     // 2. Synthesize audio segment for each cue (fit with the engine's native speed, ceiling 1.20x)
     const audioSegments: Record<number, DubAudioSegment> = {};
     const segmentPaths: Record<number, string> = {};
@@ -161,13 +165,26 @@ export class DubbingExecutor {
       const cueDuration = cue.endSec - cue.startSec;
       try {
         const outputPath = await ai.scratchPath(scratchScope, `cue_${String(i + 1).padStart(4, "0")}.wav`);
-        const raw = await ai.synthesize({ model, voiceId, text: cue.text, outputPath });
+        const raw = await ai.synthesize({
+          model,
+          voiceId,
+          text: cue.text,
+          outputPath,
+          advancedSettings: jobAdvancedSettings,
+        });
         let fitted = raw;
         let speedFactor = 1.0;
         if (raw.durationSec > cueDuration && engineSupportsSpeed && cueDuration > 0) {
           speedFactor = Math.min(speedCeiling, raw.durationSec / cueDuration);
           if (speedFactor > 1.0001) {
-            fitted = await ai.synthesize({ model, voiceId, text: cue.text, outputPath, speed: speedFactor });
+            fitted = await ai.synthesize({
+              model,
+              voiceId,
+              text: cue.text,
+              outputPath,
+              speed: speedFactor,
+              advancedSettings: jobAdvancedSettings,
+            });
           }
         }
         const audioStartSec = cue.startSec;

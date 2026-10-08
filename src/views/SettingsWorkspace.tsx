@@ -30,6 +30,7 @@ import {
   type ModelStatus,
 } from "../services/ai/aiRuntimeSettings";
 import { showPathInFolder, reloadAiRuntimeSettings } from "../services/batch/batchRuntime";
+import { AdvancedTtsSettingsPanel } from "../components/settings/AdvancedTtsSettingsPanel";
 
 export interface SettingsWorkspaceProps {
   onOpenMigrationModal: (oldPath: string, newPath: string) => void;
@@ -777,6 +778,9 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                   </table>
                 </div>
               </div>
+
+              {/* Global Advanced TTS Settings Panel */}
+              <AdvancedTtsSettingsPanel />
             </div>
           )}
 

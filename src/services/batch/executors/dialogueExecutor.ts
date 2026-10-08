@@ -28,6 +28,7 @@ import {
 } from "../outputResolver";
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
+import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 
 export interface DialogueExecutorOptions {
@@ -136,6 +137,9 @@ export class DialogueExecutor {
       }
     }
 
+    // Freeze advanced settings snapshot for the entire batch task (Invariant D)
+    const jobAdvancedSettings = getEngineAdvancedSettings(model);
+
     const scratchScope = `dlg-${job.id}`.replace(/[^\w-]/g, "_");
     const segmentPaths: string[] = [];
     for (let i = 0; i < totalSegments; i++) {
@@ -156,7 +160,13 @@ export class DialogueExecutor {
             outputPath,
           });
         } else {
-          r = await ai.synthesize({ model, voiceId: vId, text: seg.cleanText, outputPath });
+          r = await ai.synthesize({
+            model,
+            voiceId: vId,
+            text: seg.cleanText,
+            outputPath,
+            advancedSettings: jobAdvancedSettings,
+          });
         }
         seg.durationSec = r.durationSec; // real duration → speaker timeline + subtitles
         segmentPaths.push(r.outputPath);

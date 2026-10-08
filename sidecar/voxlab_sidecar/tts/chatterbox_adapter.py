@@ -86,9 +86,22 @@ class ChatterboxAdapter(TtsEngineAdapter):
         if req.ref_audio_path:
             _check_ref_duration(req.ref_audio_path)
             kwargs["audio_prompt_path"] = req.ref_audio_path
-        for key, name in (("temperature", "temperature"), ("exaggeration", "exaggeration"), ("cfgWeight", "cfg_weight")):
-            if req.extra.get(key) is not None:
-                kwargs[name] = float(req.extra[key])
+        extra = req.extra or {}
+        temp = extra.get("temperature")
+        if temp is not None:
+            kwargs["temperature"] = max(0.1, min(2.0, float(temp)))
+
+        top_p = extra.get("top_p", extra.get("topP"))
+        if top_p is not None:
+            kwargs["top_p"] = max(0.1, min(1.0, float(top_p)))
+
+        top_k = extra.get("top_k", extra.get("topK"))
+        if top_k is not None:
+            kwargs["top_k"] = max(10, min(2000, int(top_k)))
+
+        rep_pen = extra.get("repetition_penalty", extra.get("repetitionPenalty"))
+        if rep_pen is not None:
+            kwargs["repetition_penalty"] = max(1.0, min(2.0, float(rep_pen)))
         wav = self._model.generate(**kwargs)
         arr = wav.detach().cpu().numpy() if hasattr(wav, "detach") else np.asarray(wav)
         return np.asarray(arr, dtype=np.float32).reshape(-1), int(self._model.sr)

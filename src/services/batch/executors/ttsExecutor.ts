@@ -25,6 +25,7 @@ import {
 } from "../outputResolver";
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
+import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 
 export interface TtsExecutorOptions {
@@ -131,6 +132,9 @@ export class TtsExecutor {
       }
     }
 
+    // Freeze advanced settings snapshot for the entire batch task (Invariant D)
+    const jobAdvancedSettings = !isOnlineVoice ? getEngineAdvancedSettings(model) : undefined;
+
     const scratchScope = `tts-${job.id}`.replace(/[^\w-]/g, "_");
     const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
     const totalChunks = sortedChunks.length;
@@ -151,7 +155,14 @@ export class TtsExecutor {
             speed,
           });
         } else {
-          r = await ai.synthesize({ model, voiceId, text: chunk.text, outputPath, speed });
+          r = await ai.synthesize({
+            model,
+            voiceId,
+            text: chunk.text,
+            outputPath,
+            speed,
+            advancedSettings: jobAdvancedSettings,
+          });
         }
         chunk.durationSec = r.durationSec; // real audio duration → synthesized_timing subtitles
         chunk.audioUrl = r.outputPath;

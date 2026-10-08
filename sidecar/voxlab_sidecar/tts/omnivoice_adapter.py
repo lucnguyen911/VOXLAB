@@ -123,8 +123,32 @@ class OmniVoiceAdapter(TtsEngineAdapter):
 
         if req.speed is not None:
             kwargs["speed"] = float(req.speed)
-        if req.extra.get("numStep") is not None:
-            kwargs["num_step"] = int(req.extra["numStep"])
+
+        extra = req.extra or {}
+        num_step = extra.get("num_step", extra.get("numStep"))
+        if num_step is not None:
+            kwargs["num_step"] = max(4, min(128, int(num_step)))
+
+        guidance_scale = extra.get("guidance_scale", extra.get("guidanceScale"))
+        if guidance_scale is not None:
+            kwargs["guidance_scale"] = max(1.0, min(10.0, float(guidance_scale)))
+
+        denoise = extra.get("denoise")
+        if denoise is not None:
+            kwargs["denoise"] = bool(denoise)
+
+        pos_temp = extra.get("position_temperature", extra.get("positionTemperature"))
+        if pos_temp is not None:
+            kwargs["position_temperature"] = max(0.0, min(20.0, float(pos_temp)))
+
+        cls_temp = extra.get("class_temperature", extra.get("classTemperature"))
+        if cls_temp is not None:
+            kwargs["class_temperature"] = max(0.0, min(5.0, float(cls_temp)))
+
+        postprocess = extra.get("postprocess_output", extra.get("postprocessOutput"))
+        if postprocess is not None:
+            kwargs["postprocess_output"] = bool(postprocess)
+
         audios = self._model.generate(**kwargs)
         return np.asarray(audios[0], dtype=np.float32), int(self._model.sampling_rate)
 

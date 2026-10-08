@@ -11,6 +11,7 @@ import {
   checkEngineSupport,
   resolveLocalEngine,
 } from "./ttsEngines";
+import { getEngineAdvancedSettings } from "./ttsAdvancedSettings";
 
 export interface AiFs {
   readText(path: string): Promise<string>;
@@ -44,6 +45,7 @@ export interface SynthesizeRequest {
   language?: string;
   speed?: number;
   sampleRate?: number;
+  advancedSettings?: Record<string, unknown>;
   onProgress?: (pct: number, stage: string) => void;
 }
 
@@ -178,6 +180,11 @@ export class LocalAiServices {
     if (ref?.refText) params.refText = ref.refText;
     if (req.speed !== undefined && caps.supportsSpeed) params.speed = req.speed;
     if (req.sampleRate !== undefined) params.sampleRate = req.sampleRate;
+
+    const advanced = req.advancedSettings || getEngineAdvancedSettings(caps.engine);
+    if (advanced && Object.keys(advanced).length > 0) {
+      params.advancedSettings = advanced;
+    }
 
     for (let attempt = 0; attempt < 2; attempt++) {
       await this.ensureTtsLoaded(caps, req.onProgress);

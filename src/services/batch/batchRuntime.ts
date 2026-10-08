@@ -13,6 +13,7 @@ import { resolveJobOutputDirectory } from "./outputResolver";
 import { LocalAiServices, type AiFs, type AiRuntimeSettings } from "../ai/localAiServices";
 import { TauriAiBackend, isTauriRuntime } from "../ai/tauriBackend";
 import { loadAiRuntimeSettings } from "../ai/aiRuntimeSettings";
+import { loadTtsAdvancedSettings } from "../ai/ttsAdvancedSettings";
 import { loadCloneVoiceRegistry } from "../ai/cloneVoiceRegistry";
 import { resolveUnifiedVoiceReference, ensurePresetVoiceSamples } from "../ai/presetVoiceRegistry";
 import { getAppDataDir } from "../storage/tauriFsBridge";
@@ -73,6 +74,7 @@ export function initBatchRuntime(): Promise<LocalAiServices | null> {
   initialized = (async () => {
     if (!isTauriRuntime()) return null;
     currentSettings = await loadAiRuntimeSettings();
+    await loadTtsAdvancedSettings();
     try {
       const pathApi = await import("@tauri-apps/api/path");
       defaultOutputDir = await pathApi.join(await pathApi.documentDir(), "VoxLab", "Batch_Export");
@@ -129,6 +131,7 @@ export function initBatchRuntime(): Promise<LocalAiServices | null> {
 /** Re-read runtime settings (models dir, device, ASR model) after the user changes them. */
 export async function reloadAiRuntimeSettings(): Promise<void> {
   if (currentSettings) currentSettings = await loadAiRuntimeSettings();
+  await loadTtsAdvancedSettings();
 }
 
 export const getSharedAiServices = initBatchRuntime;
