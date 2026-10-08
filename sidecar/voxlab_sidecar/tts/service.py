@@ -125,8 +125,10 @@ class TtsService:
                 raise SidecarError("INPUT_NOT_FOUND", "refAudioPath does not exist")
             from ..audio_ops import prepare_clone_reference
             models_dir = os.path.dirname(getattr(self, "_active_model_dir", "")) if getattr(self, "_active_model_dir", None) else None
-            # Requirement 3: If Qwen is in x_vector_only_mode, skip Whisper transcription completely
-            skip_transcribe = (caps.engine == "qwen" and x_vec_mode)
+            # Skip Whisper transcription when model doesn't need transcript:
+            # - Chatterbox Turbo does not use ref_text at all
+            # - Qwen in x_vector_only_mode does not use ref_text
+            skip_transcribe = (caps.engine == "chatterbox") or (caps.engine == "qwen" and x_vec_mode)
             ref_audio, ref_text = prepare_clone_reference(
                 ref_audio,
                 ref_text,
@@ -134,10 +136,13 @@ class TtsService:
                 models_dir=models_dir,
                 skip_transcribe=skip_transcribe,
             )
-            # In x_vector_only_mode for Qwen, ref_text is NOT required
-            ref_text_required = caps.reference_text_required and not (caps.engine == "qwen" and x_vec_mode)
-            if ref_text_required and not (isinstance(ref_text, str) and ref_text.strip()):
-                raise SidecarError("INVALID_REQUEST", f"{caps.display_name} voice cloning requires refText")
+            # In clone modes that require transcript (e.g. Qwen clone without x-vector, or OmniVoice clone):
+            clone_needs_transcript = (caps.reference_text_required and not (caps.engine == "qwen" and x_vec_mode)) or (caps.engine == "omnivoice")
+            if clone_needs_transcript and not (isinstance(ref_text, str) and ref_text.strip()):
+                raise SidecarError(
+                    "INVALID_REQUEST",
+                    f"{caps.display_name} voice cloning requires a valid reference transcript matching the audio. Automatic transcription failed or Faster-Whisper model is not available."
+                )
         elif caps.reference_audio_required:
             raise SidecarError("INVALID_REQUEST", f"{caps.display_name} requires a reference audio (refAudioPath)")
 

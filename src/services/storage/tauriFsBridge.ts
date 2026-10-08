@@ -9,6 +9,8 @@
 const memoryStorage = new Map<string, string>();
 let mockAppDataDir = "C:/Users/AppData/Roaming/com.voxlab.app";
 let forceMemoryMode = false;
+let mockSaveError: Error | null = null;
+let mockReadError: Error | null = null;
 
 function isTauriEnvironment(): boolean {
   if (forceMemoryMode) return false;
@@ -36,46 +38,45 @@ export async function getAppDataDir(): Promise<string> {
 }
 
 /**
- * Saves a file to the app data directory atomically
+ * Saves a file to the app data directory atomically.
+ * In a real Tauri desktop environment, any disk failure (disk full, permission denied,
+ * locked path) will throw an error to caller instead of silently falling back to RAM.
  */
 export async function saveAppDataFile(
   relativePath: string,
   content: string
 ): Promise<void> {
+  if (mockSaveError) {
+    throw mockSaveError;
+  }
   if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("save_app_data_file", { relativePath, content });
-      return;
-    } catch (err) {
-      // If native invoke fails, log and fallback to memory
-      console.warn("Tauri save_app_data_file failed, falling back to memory:", err);
-    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_app_data_file", { relativePath, content });
+    return;
   }
   memoryStorage.set(relativePath, content);
 }
 
 /**
- * Reads a file from the app data directory
+ * Reads a file from the app data directory.
+ * In a real Tauri desktop environment, native read errors propagate directly.
  */
 export async function readAppDataFile(relativePath: string): Promise<string> {
+  if (mockReadError) {
+    throw mockReadError;
+  }
   if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      return await invoke<string>("read_app_data_file", { relativePath });
-    } catch (err) {
-      // If native invoke fails, check memory fallback
-      if (memoryStorage.has(relativePath)) {
-        return memoryStorage.get(relativePath)!;
-      }
-      throw new Error(`File not found: ${relativePath} (${err})`);
-    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string>("read_app_data_file", { relativePath });
   }
 
   if (memoryStorage.has(relativePath)) {
     return memoryStorage.get(relativePath)!;
   }
-  throw new Error(`File not found: ${relativePath}`);
+  const err = new Error(`File not found: ${relativePath}`);
+  // @ts-ignore
+  err.code = "ENOENT";
+  throw err;
 }
 
 /**
@@ -97,6 +98,16 @@ export function setForceMemoryMode(enabled: boolean): void {
 
 export function clearMemoryStorage(): void {
   memoryStorage.clear();
+  mockSaveError = null;
+  mockReadError = null;
+}
+
+export function _setMockSaveError(err: Error | null): void {
+  mockSaveError = err;
+}
+
+export function _setMockReadError(err: Error | null): void {
+  mockReadError = err;
 }
 
 export function setMemoryFile(relativePath: string, content: string): void {

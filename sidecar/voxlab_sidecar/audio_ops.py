@@ -196,8 +196,13 @@ def prepare_clone_reference(
     cache_dir = os.path.join(tempfile.gettempdir(), "voxlab_ref_cache")
     os.makedirs(cache_dir, exist_ok=True)
     cached_wav = os.path.join(cache_dir, f"ref_{cache_key}_trimmed.wav")
+    cached_txt_path = os.path.join(cache_dir, f"ref_{cache_key}_trimmed.txt")
+    try:
+        cached_exists = os.path.isfile(cached_wav) and os.path.getsize(cached_wav) > 0
+    except OSError:
+        cached_exists = False
 
-    if not os.path.isfile(cached_wav) or os.path.getsize(cached_wav) == 0:
+    if not cached_exists:
         log(f"[prepare_clone_reference] Audio is {duration:.1f}s (>10s). Auto-trimming to optimal slice...")
         sr = int(info.samplerate)
         read_frames = min(int(10.0 * sr), int(info.frames))
@@ -224,9 +229,27 @@ def prepare_clone_reference(
         write_audio_atomic(cached_wav, trimmed, sr=sr, fmt="wav")
         log(f"[prepare_clone_reference] Extracted {best_idx / sr:.2f}s slice to {cached_wav}")
 
-    user_txt = (ref_text or "").strip()
-    if not user_txt and not skip_transcribe:
-        from .asr_engine import auto_transcribe_sample
-        user_txt = auto_transcribe_sample(cached_wav, language=language, models_dir=models_dir)
-    return cached_wav, user_txt
+    if skip_transcribe:
+        return cached_wav, ""
+
+    # Requirement 1: When audio is trimmed, the original ref_text corresponds to the full audio
+    # and MUST NOT be used for the trimmed slice. We transcribe the exact slice.
+    if os.path.isfile(cached_txt_path):
+        try:
+            with open(cached_txt_path, "r", encoding="utf-8") as f:
+                cached_text = f.read().strip()
+            if cached_text:
+                return cached_wav, cached_text
+        except Exception:
+            pass
+
+    from .asr_engine import auto_transcribe_sample
+    slice_transcript = auto_transcribe_sample(cached_wav, language=language, models_dir=models_dir)
+    if slice_transcript:
+        try:
+            with open(cached_txt_path, "w", encoding="utf-8") as f:
+                f.write(slice_transcript)
+        except Exception:
+            pass
+    return cached_wav, slice_transcript
 

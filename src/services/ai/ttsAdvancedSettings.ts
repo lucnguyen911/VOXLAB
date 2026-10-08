@@ -261,30 +261,74 @@ export function sanitizeTtsAdvancedSettings(raw: unknown): StoredTtsAdvancedSett
 // ---------------------------------------------------------------------------
 
 let cachedSettings: StoredTtsAdvancedSettings = getDefaultTtsAdvancedSettings();
+let activeSaveSeq = 0;
+
+export function isFileNotFoundError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes("not found") ||
+    msg.includes("cannot find the file") ||
+    msg.includes("no such file") ||
+    msg.includes("os error 2") ||
+    // @ts-ignore
+    err?.code === "ENOENT"
+  );
+}
 
 /** Returns a synchronous deep clone snapshot of the active advanced settings. */
 export function getTtsAdvancedSettingsSnapshot(): StoredTtsAdvancedSettings {
   return JSON.parse(JSON.stringify(cachedSettings));
 }
 
-/** Loads persistent settings from App Data (or falls back to defaults). */
+/**
+ * Loads persistent settings from App Data.
+ * Distinguishes between:
+ * 1) File does not exist yet (first launch / defaults).
+ * 2) File exists but cannot be read or JSON is corrupted (preserves existing cachedSettings and logs error).
+ */
 export async function loadTtsAdvancedSettings(): Promise<StoredTtsAdvancedSettings> {
-  let raw: unknown = null;
+  let fileContent: string;
   try {
-    const text = await readAppDataFile(TTS_ADVANCED_SETTINGS_FILE);
-    raw = JSON.parse(text);
-  } catch {
-    raw = null;
+    fileContent = await readAppDataFile(TTS_ADVANCED_SETTINGS_FILE);
+  } catch (err: unknown) {
+    if (isFileNotFoundError(err)) {
+      // First run / file not yet created -> safely use defaults
+      cachedSettings = getDefaultTtsAdvancedSettings();
+      return getTtsAdvancedSettingsSnapshot();
+    }
+    // Read / I/O / permission failure -> log error, retain current cached settings to protect user configuration
+    console.error(`[loadTtsAdvancedSettings] Failed to read ${TTS_ADVANCED_SETTINGS_FILE}:`, err);
+    return getTtsAdvancedSettingsSnapshot();
   }
-  cachedSettings = sanitizeTtsAdvancedSettings(raw);
+
+  try {
+    const raw = JSON.parse(fileContent);
+    cachedSettings = sanitizeTtsAdvancedSettings(raw);
+  } catch (parseErr) {
+    console.error(`[loadTtsAdvancedSettings] Corrupt JSON in ${TTS_ADVANCED_SETTINGS_FILE}:`, parseErr);
+  }
   return getTtsAdvancedSettingsSnapshot();
 }
 
-/** Persists settings to App Data atomically and updates active in-memory cache. */
+/**
+ * Persists settings to App Data atomically and updates active in-memory cache ONLY AFTER
+ * write succeeds.
+ * If disk write fails, throws error and leaves existing cachedSettings unmodified.
+ * Uses sequence counter to prevent race condition from concurrent saves.
+ */
 export async function saveTtsAdvancedSettings(settings: StoredTtsAdvancedSettings): Promise<void> {
   const sanitized = sanitizeTtsAdvancedSettings(settings);
-  cachedSettings = sanitized;
-  await saveAppDataFile(TTS_ADVANCED_SETTINGS_FILE, JSON.stringify(sanitized, null, 2));
+  const jsonStr = JSON.stringify(sanitized, null, 2);
+  const currentSeq = ++activeSaveSeq;
+
+  // Persist to disk FIRST before updating in-memory cache
+  await saveAppDataFile(TTS_ADVANCED_SETTINGS_FILE, jsonStr);
+
+  // Prevent race condition: update in-memory cache only if no newer save was initiated
+  if (currentSeq === activeSaveSeq) {
+    cachedSettings = sanitized;
+  }
 }
 
 /** Resets a specific model's settings to its Balanced default and saves. */

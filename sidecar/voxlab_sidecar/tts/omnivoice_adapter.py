@@ -105,8 +105,11 @@ class OmniVoiceAdapter(TtsEngineAdapter):
         if req.language:
             kwargs["language"] = req.language
         if req.ref_audio_path and os.path.isfile(req.ref_audio_path):
-            from ..audio_ops import prepare_clone_reference
-            ref_audio, ref_txt = prepare_clone_reference(req.ref_audio_path, req.ref_text, language=req.language)
+            ref_audio = req.ref_audio_path
+            ref_txt = (req.ref_text or "").strip()
+            if not ref_txt:
+                from ..audio_ops import prepare_clone_reference
+                ref_audio, ref_txt = prepare_clone_reference(req.ref_audio_path, req.ref_text, language=req.language)
             kwargs["ref_audio"] = ref_audio
             kwargs["ref_text"] = ref_txt
         else:

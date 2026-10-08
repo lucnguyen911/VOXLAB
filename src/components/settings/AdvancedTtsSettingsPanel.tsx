@@ -145,7 +145,12 @@ export const AdvancedTtsSettingsPanel: React.FC = () => {
       setIsSaved(true);
       setTimeout(() => setIsSaved(false), 3000);
     } catch (err: any) {
-      setSaveError(String(err?.message || err));
+      const msg = err?.message || String(err);
+      setSaveError(
+        msg.includes("Không thể") || msg.includes("thất bại")
+          ? msg
+          : `Không thể lưu cài đặt xuống ổ đĩa: ${msg}`
+      );
     } finally {
       setIsSaving(false);
     }
@@ -853,19 +858,27 @@ export const AdvancedTtsSettingsPanel: React.FC = () => {
           <span>Khôi phục mặc định cho {activeModel === "omnivoice" ? "OmniVoice" : activeModel === "chatterbox" ? "Chatterbox" : "Qwen3-TTS"}</span>
         </button>
 
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={isSaving}
-          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50 ${
-            hasUnsavedChanges
-              ? "bg-accent hover:bg-accentHover ring-2 ring-accent/40 font-bold"
-              : "bg-accent hover:bg-accentHover"
-          }`}
-        >
-          {isSaved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
-          <span>{isSaving ? "Đang lưu..." : isSaved ? "Đã lưu cài đặt" : hasUnsavedChanges ? "Lưu thay đổi cài đặt" : "Lưu cài đặt TTS"}</span>
-        </button>
+        <div className="flex items-center gap-3">
+          {saveError && (
+            <span className="text-xs text-rose-500 font-medium flex items-center gap-1">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              {saveError}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isSaving}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50 ${
+              hasUnsavedChanges
+                ? "bg-accent hover:bg-accentHover ring-2 ring-accent/40 font-bold"
+                : "bg-accent hover:bg-accentHover"
+            }`}
+          >
+            {isSaved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+            <span>{isSaving ? "Đang lưu..." : isSaved ? "Đã lưu cài đặt" : hasUnsavedChanges ? "Lưu thay đổi cài đặt" : "Lưu cài đặt TTS"}</span>
+          </button>
+        </div>
       </div>
     </div>
   );

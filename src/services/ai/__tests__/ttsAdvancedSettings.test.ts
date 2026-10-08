@@ -18,7 +18,14 @@ import {
   saveTtsAdvancedSettings,
   resetModelTtsAdvancedSettings,
   StoredTtsAdvancedSettings,
+  TTS_ADVANCED_SETTINGS_FILE,
 } from "../ttsAdvancedSettings";
+import {
+  _setMockSaveError,
+  _setMockReadError,
+  clearMemoryStorage,
+  setMemoryFile,
+} from "../../storage/tauriFsBridge";
 
 describe("Global Advanced TTS Settings - Model Configuration & Sanitization", () => {
   it("provides valid defaults for all 3 models", () => {
@@ -207,4 +214,88 @@ describe("Global Advanced TTS Settings - Storage Persistence & Isolation", () =>
     assert.equal(reloaded.chatterbox.settings.temperature, 0.7, "Chatterbox 0.7 must be persisted to disk");
     assert.equal(reloaded.omnivoice.settings.num_step, 32, "OmniVoice 32 must be persisted to disk");
   });
+
+  it("throws error and preserves existing cached settings when disk save fails", async () => {
+    // 1. Initial known good state
+    const initial = getDefaultTtsAdvancedSettings();
+    initial.omnivoice.settings.num_step = 32;
+    await saveTtsAdvancedSettings(initial);
+    assert.equal(getTtsAdvancedSettingsSnapshot().omnivoice.settings.num_step, 32);
+
+    // 2. Prepare modified settings
+    const modified: StoredTtsAdvancedSettings = JSON.parse(JSON.stringify(initial));
+    modified.omnivoice.preset = "custom";
+    modified.omnivoice.settings.num_step = 64;
+
+    // 3. Simulate disk write failure (e.g. disk full, permission denied, locked file)
+    _setMockSaveError(new Error("Disk I/O error: Access is denied"));
+
+    // 4. Attempt save -> MUST reject
+    await assert.rejects(
+      async () => {
+        await saveTtsAdvancedSettings(modified);
+      },
+      (err: any) => {
+        assert.match(err.message, /Access is denied/);
+        return true;
+      }
+    );
+
+    // 5. In-memory cached settings MUST NOT have been updated to 64!
+    const snapAfterFailure = getTtsAdvancedSettingsSnapshot();
+    assert.equal(
+      snapAfterFailure.omnivoice.settings.num_step,
+      32,
+      "cachedSettings must not be updated when disk write fails"
+    );
+
+    // 6. User retries after disk issue resolved -> succeeds
+    _setMockSaveError(null);
+    await saveTtsAdvancedSettings(modified);
+
+    const snapAfterRetry = getTtsAdvancedSettingsSnapshot();
+    assert.equal(
+      snapAfterRetry.omnivoice.settings.num_step,
+      64,
+      "cachedSettings should be updated after successful retry"
+    );
+  });
+
+  it("safely handles loadTtsAdvancedSettings when file does not exist vs disk read error vs corrupt JSON", async () => {
+    // 1. Initial state with customized settings in cache
+    const custom = getDefaultTtsAdvancedSettings();
+    custom.omnivoice.settings.num_step = 48;
+    await saveTtsAdvancedSettings(custom);
+    assert.equal(getTtsAdvancedSettingsSnapshot().omnivoice.settings.num_step, 48);
+
+    // 2. Case: Disk read error (permission denied / I/O error)
+    // Must NOT silently wipe cache to defaults! Must retain 48 and log error.
+    _setMockReadError(new Error("Hardware failure reading block"));
+    const retainedAfterReadError = await loadTtsAdvancedSettings();
+    assert.equal(
+      retainedAfterReadError.omnivoice.settings.num_step,
+      48,
+      "Existing cached settings must be retained when disk read fails"
+    );
+    _setMockReadError(null);
+
+    // 3. Case: Corrupt JSON in file (e.g. partial write from power outage)
+    setMemoryFile(TTS_ADVANCED_SETTINGS_FILE, "INVALID_JSON_CONTENT{{{");
+    const retainedAfterCorruptJson = await loadTtsAdvancedSettings();
+    assert.equal(
+      retainedAfterCorruptJson.omnivoice.settings.num_step,
+      48,
+      "Existing cached settings must be retained when file contains corrupt JSON"
+    );
+
+    // 4. Case: Missing file (first run / fresh install)
+    clearMemoryStorage();
+    const freshDefaults = await loadTtsAdvancedSettings();
+    assert.equal(
+      freshDefaults.omnivoice.settings.num_step,
+      32,
+      "First run with missing file should cleanly return default settings"
+    );
+  });
 });
+

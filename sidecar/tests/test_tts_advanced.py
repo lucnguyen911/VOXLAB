@@ -295,7 +295,7 @@ class TestQwenServiceAndOps(unittest.TestCase):
             with self.assertRaises(SidecarError) as cm:
                 svc.synthesize("tts.synthesize", params, mock_ctx)
             self.assertEqual(cm.exception.code, "INVALID_REQUEST")
-            self.assertIn("requires refText", cm.exception.message)
+            self.assertIn("requires a valid reference transcript", cm.exception.message)
 
     def test_qwen_missing_ref_audio_fails_in_both_modes(self):
         from voxlab_sidecar.protocol import SidecarError
@@ -333,6 +333,163 @@ class TestQwenServiceAndOps(unittest.TestCase):
             self.assertEqual(txt, "")
             mock_asr.assert_not_called()
 
+    def test_prepare_clone_reference_trimmed_audio_replaces_ref_text_with_whisper_slice(self):
+        """When audio is > 10s, user's 30s ref_text must NOT be used for the trimmed slice;
+        it must be re-transcribed with Whisper for the slice."""
+        from voxlab_sidecar.audio_ops import prepare_clone_reference
+
+        mock_info = MagicMock()
+        mock_info.duration = 30.0
+        mock_info.samplerate = 24000
+        mock_info.frames = 30 * 24000
+
+        audio_data = np.zeros((10 * 24000, 1), dtype=np.float32)
+
+        with patch("os.path.isfile", side_effect=lambda p: "_trimmed" not in str(p)), \
+             patch("soundfile.info", return_value=mock_info), \
+             patch("soundfile.read", return_value=(audio_data, 24000)), \
+             patch("voxlab_sidecar.audio_ops.write_audio_atomic"), \
+             patch("voxlab_sidecar.asr_engine.auto_transcribe_sample", return_value="Trimmed slice text") as mock_asr:
+            audio_path, txt = prepare_clone_reference(
+                "30s_audio.wav",
+                ref_text="This is full 30 seconds audio transcript which must not be used",
+                skip_transcribe=False
+            )
+            # The returned text must be the slice text, NOT the 30s text
+            self.assertEqual(txt, "Trimmed slice text")
+            mock_asr.assert_called_once()
+            self.assertIn("_trimmed.wav", audio_path)
+
+    def test_prepare_clone_reference_short_audio_preserves_user_ref_text(self):
+        """When audio is <= 10s, user-provided ref_text is preserved and Whisper is NOT called."""
+        from voxlab_sidecar.audio_ops import prepare_clone_reference
+
+        mock_info = MagicMock()
+        mock_info.duration = 7.0
+        mock_info.samplerate = 24000
+
+        with patch("os.path.isfile", return_value=True), \
+             patch("soundfile.info", return_value=mock_info), \
+             patch("voxlab_sidecar.asr_engine.auto_transcribe_sample") as mock_asr:
+            audio_path, txt = prepare_clone_reference(
+                "7s_audio.wav",
+                ref_text="Accurate user transcript for 7s audio",
+                skip_transcribe=False
+            )
+            self.assertEqual(audio_path, "7s_audio.wav")
+            self.assertEqual(txt, "Accurate user transcript for 7s audio")
+            mock_asr.assert_not_called()
+
+    def test_prepare_clone_reference_trimmed_audio_with_skip_transcribe(self):
+        """When audio is > 10s and skip_transcribe=True (Chatterbox / Qwen x-vector),
+        audio is trimmed but Whisper is never called and text is empty."""
+        from voxlab_sidecar.audio_ops import prepare_clone_reference
+
+        mock_info = MagicMock()
+        mock_info.duration = 20.0
+        mock_info.samplerate = 24000
+        mock_info.frames = 20 * 24000
+
+        audio_data = np.zeros((10 * 24000, 1), dtype=np.float32)
+
+        with patch("os.path.isfile", side_effect=lambda p: "_trimmed" not in str(p)), \
+             patch("soundfile.info", return_value=mock_info), \
+             patch("soundfile.read", return_value=(audio_data, 24000)), \
+             patch("voxlab_sidecar.audio_ops.write_audio_atomic"), \
+             patch("voxlab_sidecar.asr_engine.auto_transcribe_sample") as mock_asr:
+            audio_path, txt = prepare_clone_reference(
+                "20s_audio.wav",
+                ref_text="Some text",
+                skip_transcribe=True
+            )
+            self.assertEqual(txt, "")
+            mock_asr.assert_not_called()
+            self.assertIn("_trimmed.wav", audio_path)
+
+    def test_omnivoice_clone_missing_ref_text_and_no_whisper_fails(self):
+        """OmniVoice voice clone requires valid reference transcript matching audio."""
+        from voxlab_sidecar.protocol import SidecarError
+        mock_adapter = MagicMock()
+        mock_adapter.capabilities = Capabilities(
+            engine="omnivoice",
+            display_name="OmniVoice",
+            model_id="omnivoice",
+            supported_languages=("*",),
+            supports_vietnamese=True,
+            supports_voice_clone=True,
+            reference_audio_required=False,
+            reference_text_required=False,
+            supports_cuda=True,
+            supports_cpu=False,
+            supports_speed=True,
+            model_size_mb=3116,
+            sample_rate=24000,
+        )
+        mock_adapter.loaded = True
+
+        svc = TtsService([mock_adapter])
+        svc._active = mock_adapter
+
+        mock_ctx = MagicMock()
+        mock_ctx.cancelled = False
+
+        params = {
+            "engine": "omnivoice",
+            "text": "Xin chao",
+            "outputPath": "test_output.wav",
+            "refAudioPath": "long_ref.wav",
+        }
+
+        with patch("os.path.isdir", return_value=True), \
+             patch("os.path.isfile", return_value=True), \
+             patch("voxlab_sidecar.audio_ops.prepare_clone_reference", return_value=("trimmed.wav", "")):
+            with self.assertRaises(SidecarError) as cm:
+                svc.synthesize("tts.synthesize", params, mock_ctx)
+            self.assertEqual(cm.exception.code, "INVALID_REQUEST")
+            self.assertIn("OmniVoice voice cloning requires a valid reference transcript", cm.exception.message)
+
+    def test_chatterbox_service_sets_skip_transcribe_true(self):
+        """Chatterbox service call passes skip_transcribe=True to prepare_clone_reference."""
+        mock_adapter = MagicMock()
+        mock_adapter.capabilities = Capabilities(
+            engine="chatterbox",
+            display_name="Chatterbox Turbo",
+            model_id="chatterbox-turbo",
+            supported_languages=("en",),
+            supports_vietnamese=False,
+            supports_voice_clone=True,
+            reference_audio_required=True,
+            reference_text_required=False,
+            supports_cuda=True,
+            supports_cpu=False,
+            supports_speed=False,
+            model_size_mb=2000,
+            sample_rate=24000,
+        )
+        mock_adapter.loaded = True
+        mock_adapter.synthesize.return_value = (np.zeros(24000, dtype=np.float32), 24000)
+
+        svc = TtsService([mock_adapter])
+        svc._active = mock_adapter
+
+        mock_ctx = MagicMock()
+        mock_ctx.cancelled = False
+
+        params = {
+            "engine": "chatterbox",
+            "text": "Hello",
+            "outputPath": "test_output.wav",
+            "refAudioPath": "chatter_ref.wav",
+        }
+
+        with patch("soundfile.write"), patch("os.replace"), patch("os.path.isdir", return_value=True), \
+             patch("os.path.isfile", return_value=True), \
+             patch("voxlab_sidecar.audio_ops.prepare_clone_reference", return_value=("trimmed.wav", "")) as mock_prep:
+            svc.synthesize("tts.synthesize", params, mock_ctx)
+            mock_prep.assert_called_once()
+            self.assertEqual(mock_prep.call_args[1].get("skip_transcribe"), True)
+
 
 if __name__ == "__main__":
     unittest.main()
+
