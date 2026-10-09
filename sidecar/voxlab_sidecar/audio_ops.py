@@ -110,13 +110,44 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
     clips = [_resample(x, s, sr) for x, s in decoded]
 
     segments: list[dict[str, Any]] = []
+    boundary_warnings: list[dict[str, Any]] = []
     if mode == "sequential":
         parts: list[np.ndarray] = []
         cursor = 0
         for i, (item, clip) in enumerate(zip(inputs, clips)):
-            gap = max(0, int(round(float(item.get("gapAfterMs") or 0) * sr / 1000.0)))
+            gap_ms = float(item.get("gapAfterMs") or 0)
+            gap = max(0, int(round(gap_ms * sr / 1000.0)))
             segments.append({"index": i, "startSec": round(cursor / sr, 4),
                              "endSec": round((cursor + clip.size) / sr, 4), "durationSec": round(clip.size / sr, 4)})
+
+            # Master Audio Boundary Check: non-zero crossing clicks/pops or excessive silence gap (> 4.0s)
+            # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+            if clip.size > 0:
+                if abs(float(clip[0])) > 0.15:
+                    boundary_warnings.append({
+                        "type": "click_pop_risk",
+                        "chunkIndex": i,
+                        "position": "start",
+                        "amplitude": round(float(abs(clip[0])), 3),
+                        "message": f"Vết cắt đầu đoạn {i + 1} có biên độ lệch zero ({abs(clip[0]):.2f}), có thể gây tiếng click.",
+                    })
+                if abs(float(clip[-1])) > 0.15:
+                    boundary_warnings.append({
+                        "type": "click_pop_risk",
+                        "chunkIndex": i,
+                        "position": "end",
+                        "amplitude": round(float(abs(clip[-1])), 3),
+                        "message": f"Vết cắt cuối đoạn {i + 1} có biên độ lệch zero ({abs(clip[-1]):.2f}), có thể gây tiếng click.",
+                    })
+
+            if i < len(inputs) - 1 and gap_ms > 4000.0:
+                boundary_warnings.append({
+                    "type": "gap_too_long",
+                    "chunkIndex": i,
+                    "gapMs": round(gap_ms, 1),
+                    "message": f"Khoảng lặng giữa đoạn {i + 1} và {i + 2} quá dài ({gap_ms / 1000.0:.1f}s > 4.0s).",
+                })
+
             parts.append(clip)
             if gap:
                 parts.append(np.zeros(gap, dtype=np.float32))
@@ -144,7 +175,8 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
     write_audio_atomic(output_path, out, sr, fmt, int(params.get("mp3BitrateKbps") or DEFAULT_MP3_KBPS))
     ctx.progress(100, "written")
     return {"outputPath": output_path, "format": fmt, "sampleRate": sr, "durationSec": round(out.size / sr, 4),
-            "peakAmplitude": round(float(np.abs(out).max()) if out.size else 0.0, 4), "segments": segments}
+            "peakAmplitude": round(float(np.abs(out).max()) if out.size else 0.0, 4), "segments": segments,
+            "boundaryWarnings": boundary_warnings}
 
 
 def probe(params: dict[str, Any]) -> dict[str, Any]:

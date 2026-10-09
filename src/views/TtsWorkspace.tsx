@@ -14,6 +14,7 @@ import {
   Languages,
   Clock,
   UploadCloud,
+  ChevronDown,
 } from "lucide-react";
 import { ChunkItem, VoiceProfile, EffectiveVoiceSnapshot } from "../types/ui";
 import { INITIAL_SCRIPT, MOCK_CHUNKS, MOCK_VOICES } from "../mock/data";
@@ -28,6 +29,7 @@ import { ManualPausePopover } from "../components/popovers/ManualPausePopover";
 import { formatPauseToken, splitScriptWithPauses } from "../services/pause";
 import {
   validateChunksForExport,
+  validateMasterBoundaries,
   mergeMasterAudio,
   assembleMasterAudioAsync,
   downloadAudioBlob,
@@ -48,6 +50,7 @@ import {
   countChunkQualityIssues,
   isChunkError,
   isChunkWarning,
+  isChunkUnverified,
   validateChunkAudioQuality,
 } from "../services/audio/qualityValidator";
 
@@ -205,6 +208,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   const scriptFileInputRef = useRef<HTMLInputElement>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isAssemblingMaster, setIsAssemblingMaster] = useState(false);
+  const [expandedIssuesChunks, setExpandedIssuesChunks] = useState<Record<string, boolean>>({});
   const masterBlobUrlRef = useRef<string | null>(null);
   const lastChunksSignatureRef = useRef<string>("");
 
@@ -988,6 +992,10 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
       const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
       const chunkPausesMs = computeChunkPausesMs(sortedChunks, ttsSettings.pauses);
+      const seamWarnings = validateMasterBoundaries(sortedChunks, chunkPausesMs);
+      if (seamWarnings.length > 0) {
+        console.warn("[MasterExport] Boundary seam warnings detected:", seamWarnings);
+      }
       const ai = await getSharedAiServices();
       const allHaveDiskPaths = sortedChunks.every((c) => !!c.audioFilePath);
 
@@ -1371,14 +1379,60 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           /* STAGE 2: CHUNK STUDIO VIEW */
           <div className="h-full flex overflow-hidden min-h-0 min-w-0">
             <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-            {/* Header info bar */}
-            <div className="flex items-center justify-between text-xs text-textMuted px-4 pt-4 pb-2">
-              <div className="flex items-center gap-2 font-mono text-xs">
-                <Layers className="w-3.5 h-3.5 text-accent" />
-                <span className="font-semibold text-textPrimary">
-                  {t.tts.sentencesCount.replace("{count}", String(chunks.length))}
-                </span>
+            {/* Header info bar with 4 distinct counters: Đạt | Cảnh báo | Lỗi | Chưa kiểm chứng */}
+            <div className="flex flex-wrap items-center justify-between text-xs text-textMuted px-4 pt-4 pb-2 gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 font-mono text-xs">
+                  <Layers className="w-3.5 h-3.5 text-accent" />
+                  <span className="font-semibold text-textPrimary">
+                    {t.tts.sentencesCount.replace("{count}", String(chunks.length))}
+                  </span>
+                </div>
+
+                <div className="h-3.5 w-px bg-borderDefault mx-1" />
+
+                {/* 4 Status Counters */}
+                <div className="flex items-center gap-1.5 font-sans text-xs">
+                  <span
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                    title="Số đoạn đạt chuẩn chất lượng âm thanh"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    <span>Đạt: {qualityStats.passCount}</span>
+                  </span>
+
+                  {qualityStats.warningCount > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"
+                      title="Số đoạn có cảnh báo chất lượng"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                      <span>Cảnh báo: {qualityStats.warningCount}</span>
+                    </span>
+                  )}
+
+                  {qualityStats.errorCount > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-danger/10 text-danger border border-danger/20"
+                      title="Số đoạn bị lỗi âm thanh"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-danger" />
+                      <span>Lỗi: {qualityStats.errorCount}</span>
+                    </span>
+                  )}
+
+                  {qualityStats.unverifiedCount > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-surface3 text-textSecondary border border-borderDefault"
+                      title="Số đoạn chưa kiểm chứng (ASR không nhận diện được từ hoặc chưa chạy ASR)"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-textMuted" />
+                      <span>Chưa kiểm chứng: {qualityStats.unverifiedCount}</span>
+                    </span>
+                  )}
+                </div>
               </div>
+
               <div className="flex items-center gap-2 text-xs">
                 {errorChunks.length > 0 && (
                   <button
@@ -1506,6 +1560,19 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                             )}
                           </span>
                         )}
+
+                        {isChunkUnverified(chunk) && chunk.status !== "generating" && (
+                          <span
+                            className="text-xs font-medium px-2 py-0.5 rounded-md bg-surface3 text-textSecondary border border-borderDefault flex items-center gap-1.5 shrink-0"
+                            title={chunk.qualityReview?.summary}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-textMuted" />
+                            <span>Chưa kiểm chứng</span>
+                            {chunk.qualityReview?.summary && (
+                              <span className="font-normal opacity-80 max-w-[260px] truncate">· {chunk.qualityReview.summary}</span>
+                            )}
+                          </span>
+                        )}
                       </div>
 
                       {/* Right: Chunk Actions */}
@@ -1605,6 +1672,36 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                         placeholder="Nhập nội dung đoạn..."
                       />
                     </div>
+
+                    {/* Multi-issue expandable breakdown if more than 1 issue */}
+                    {chunk.qualityReview?.issues && chunk.qualityReview.issues.length > 1 && (
+                      <div className="pt-1.5 border-t border-borderDefault/40 text-xs" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExpandedIssuesChunks((prev) => ({ ...prev, [chunk.id]: !prev[chunk.id] }));
+                          }}
+                          className="text-textSecondary hover:text-accent font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <AlertTriangle className="w-3 h-3 text-amber-500" />
+                          <span>{expandedIssuesChunks[chunk.id] ? "Thu gọn chi tiết vấn đề" : `Xem tất cả ${chunk.qualityReview.issues.length} vấn đề phát hiện`}</span>
+                          <ChevronDown className={`w-3 h-3 transition-transform ${expandedIssuesChunks[chunk.id] ? "rotate-180" : ""}`} />
+                        </button>
+                        {expandedIssuesChunks[chunk.id] && (
+                          <div className="mt-1.5 space-y-1 pl-2 border-l-2 border-amber-500/40">
+                            {chunk.qualityReview.issues.map((iss, idx) => (
+                              <div key={idx} className="text-textSecondary leading-tight flex items-start gap-1.5 py-0.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0 mt-1" />
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-semibold text-textPrimary">[{iss.code}] </span>
+                                  <span>{iss.message}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}

@@ -5,9 +5,12 @@ import {
   countChunkQualityIssues,
   isChunkError,
   isChunkWarning,
+  isChunkUnverified,
+  isChunkPass,
   isReviewCurrent,
   validateChunkAudioQuality,
 } from "../qualityValidator";
+import { validateMasterBoundaries } from "../masterExport";
 
 describe("Audio Quality Validator Tests", () => {
   it("V1: countChunkQualityIssues returns 0 for clean ready chunks", () => {
@@ -480,5 +483,98 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(chunks[1].qualityReview?.issues[0].code, "UNEXPECTED_LETTER_SPELLING");
     assert.ok(chunks[0].qualityReview?.issues[0].message.includes("Nghi vấn phát âm thừa từ 'It's' trước 'Inside'"));
     assert.ok(chunks[1].qualityReview?.issues[0].message.includes("Nghi vấn sinh thêm chữ cái 'T' sau 'BOT'"));
+  });
+
+  it("V13: 4-status categorization correctly partitions chunks into Pass, Warning, Error, and Unverified", () => {
+    const chunks: ChunkItem[] = [
+      {
+        id: "c_pass",
+        index: 1,
+        text: "Clean audio text",
+        originalText: "Clean audio text",
+        status: "ready",
+        durationSec: 2.5,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "pass",
+          issues: [],
+          summary: "Đạt",
+          checkedAt: Date.now(),
+        },
+      },
+      {
+        id: "c_warn",
+        index: 2,
+        text: "Warning audio text with stutter",
+        originalText: "Warning audio text with stutter",
+        status: "ready",
+        durationSec: 3.0,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "SUSPECTED_STUTTER",
+              message: "Nghi vấn vấp âm gần từ 'with'",
+            },
+          ],
+          summary: "Nghi vấn vấp âm",
+          checkedAt: Date.now(),
+        },
+      },
+      {
+        id: "c_err",
+        index: 3,
+        text: "Failed audio text",
+        originalText: "Failed audio text",
+        status: "failed",
+        errorMessage: "Synthesis error",
+        pauseAfterMs: "auto",
+      },
+      {
+        id: "c_unverified",
+        index: 4,
+        text: "Audio with 0 ASR words detected",
+        originalText: "Audio with 0 ASR words detected",
+        status: "ready",
+        durationSec: 2.0,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "unverified",
+          issues: [],
+          summary: "Chưa kiểm chứng (ASR không nhận dạng được từ nào)",
+          checkedAt: Date.now(),
+        },
+      },
+    ];
+
+    const stats = countChunkQualityIssues(chunks);
+    assert.equal(stats.passCount, 1);
+    assert.equal(stats.warningCount, 1);
+    assert.equal(stats.errorCount, 1);
+    assert.equal(stats.unverifiedCount, 1);
+
+    assert.equal(isChunkPass(chunks[0]), true);
+    assert.equal(isChunkWarning(chunks[1]), true);
+    assert.equal(isChunkError(chunks[2]), true);
+    assert.equal(isChunkUnverified(chunks[3]), true);
+  });
+
+  it("V14: validateMasterBoundaries flags excessive silence gaps (> 4.0s)", () => {
+    const chunks: ChunkItem[] = [
+      { id: "c1", index: 1, text: "Chunk 1", originalText: "Chunk 1", status: "ready", durationSec: 2.0, pauseAfterMs: "auto" },
+      { id: "c2", index: 2, text: "Chunk 2", originalText: "Chunk 2", status: "ready", durationSec: 2.0, pauseAfterMs: "auto" },
+      { id: "c3", index: 3, text: "Chunk 3", originalText: "Chunk 3", status: "ready", durationSec: 2.0, pauseAfterMs: "auto" },
+    ];
+
+    // Gap between c1 and c2 is 5000ms (> 4.0s), gap between c2 and c3 is 800ms
+    const pausesMs = [5000, 800];
+    const warnings = validateMasterBoundaries(chunks, pausesMs);
+
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].type, "gap_too_long");
+    assert.equal(warnings[0].chunkIndex, 0);
+    assert.ok(warnings[0].message.includes("5.0s > 4.0s"));
   });
 });

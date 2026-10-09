@@ -33,15 +33,42 @@ export function isReviewCurrent(chunk: ChunkItem): boolean {
   return true;
 }
 
-export interface ChunkQualityStats {
-  errorCount: number;
-  warningCount: number;
-  errorChunks: ChunkItem[];
-  warningChunks: ChunkItem[];
+/**
+ * Returns true if the chunk is in 'ready' status and has an unverified review.
+ * Errors and warnings take precedence.
+ */
+export function isChunkUnverified(chunk: ChunkItem): boolean {
+  if (isChunkError(chunk) || isChunkWarning(chunk)) return false;
+  if (chunk.status !== "ready") return false;
+  return chunk.qualityReview?.status === "unverified";
 }
 
 /**
- * Aggregates quality issues across chunks.
+ * Returns true if the chunk is in 'ready' status and passed quality validation.
+ */
+export function isChunkPass(chunk: ChunkItem): boolean {
+  if (isChunkError(chunk) || isChunkWarning(chunk) || isChunkUnverified(chunk)) return false;
+  if (chunk.status !== "ready") return false;
+  return chunk.qualityReview?.status === "pass";
+}
+
+export interface ChunkQualityStats {
+  errorCount: number;
+  warningCount: number;
+  unverifiedCount: number;
+  passCount: number;
+  errorChunks: ChunkItem[];
+  warningChunks: ChunkItem[];
+  unverifiedChunks: ChunkItem[];
+  passChunks: ChunkItem[];
+}
+
+/**
+ * Aggregates quality issues across chunks into 4 mutually-exclusive categories:
+ * - Errors (Red)
+ * - Warnings (Yellow)
+ * - Unverified (Neutral)
+ * - Pass (Green)
  * Guarantee: A chunk with multiple warnings is counted as 1 warning chunk.
  * Guarantee: If a chunk has both error and warning, it is counted ONLY as an error chunk (Priority: Red > Yellow).
  * Guarantee: Modified chunks are not counted as quality warnings.
@@ -49,20 +76,30 @@ export interface ChunkQualityStats {
 export function countChunkQualityIssues(chunks: ChunkItem[]): ChunkQualityStats {
   const errorChunks: ChunkItem[] = [];
   const warningChunks: ChunkItem[] = [];
+  const unverifiedChunks: ChunkItem[] = [];
+  const passChunks: ChunkItem[] = [];
 
   for (const chunk of chunks) {
     if (isChunkError(chunk)) {
       errorChunks.push(chunk);
     } else if (isChunkWarning(chunk)) {
       warningChunks.push(chunk);
+    } else if (isChunkUnverified(chunk)) {
+      unverifiedChunks.push(chunk);
+    } else if (isChunkPass(chunk)) {
+      passChunks.push(chunk);
     }
   }
 
   return {
     errorCount: errorChunks.length,
     warningCount: warningChunks.length,
+    unverifiedCount: unverifiedChunks.length,
+    passCount: passChunks.length,
     errorChunks,
     warningChunks,
+    unverifiedChunks,
+    passChunks,
   };
 }
 

@@ -295,8 +295,8 @@ def tokenize_text_with_delimiters(text: str) -> tuple[list[str], list[str]]:
 
 
 def has_punctuation_boundary(delimiter: str) -> bool:
-    """Checks whether the delimiter between words contains any punctuation mark."""
-    return any(c in PUNCTUATION_CHARS for c in delimiter)
+    """Checks whether the delimiter between words contains any punctuation mark or line break."""
+    return any(c in PUNCTUATION_CHARS for c in delimiter) or "\n" in delimiter or "\r" in delimiter
 
 
 def clean_word(word: str) -> str:
@@ -593,10 +593,11 @@ def analyze_word_alignment_issues(
             # Case 1: Many-to-one / Many-to-few mismatch (e.g. "response mobile" -> "responsible")
             if (i2 - i1) > (j2 - j1) and unrepresented_content_indices:
                 ctx_span = extract_context_span(source_words, i1, i2)
+                asr_slice_str = " ".join(asr_slice_clean)
                 issues.append({
                     "severity": "warning",
                     "code": "SUSPECTED_SWALLOWED",
-                    "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm thiếu hoặc không rõ — khoảng {ts}. Vui lòng nghe lại.",
+                    "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm thiếu hoặc không rõ (ASR ghi nhận '{asr_slice_str}') — khoảng {ts}. Vui lòng nghe lại.",
                     "words": [source_words_clean[idx] for idx in unrepresented_content_indices],
                     "timeRange": [round(t_start, 3), round(t_end, 3)],
                 })
@@ -632,10 +633,11 @@ def analyze_word_alignment_issues(
                 max_prob = max((float(asr_words[k].get("probability", 0.0)) for k in range(j1, min(j2, len(asr_words)))), default=1.0)
                 if max_prob >= 0.55:
                     ctx_span = extract_context_span(source_words, i1, i2)
+                    asr_slice_str = " ".join(asr_slice_clean)
                     issues.append({
                         "severity": "warning",
                         "code": "SUSPECTED_SWALLOWED",
-                        "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm thiếu hoặc không rõ — khoảng {ts}. Vui lòng nghe lại.",
+                        "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm thiếu hoặc không rõ (ASR ghi nhận '{asr_slice_str}') — khoảng {ts}. Vui lòng nghe lại.",
                         "words": [source_words_clean[idx] for idx in unrepresented_content_indices],
                         "timeRange": [round(t_start, 3), round(t_end, 3)],
                     })
@@ -691,6 +693,11 @@ def analyze_word_alignment_issues(
     _record_crowded(crowded_group)
 
     # 4. Check for abnormal pauses between consecutive ASR words
+    # Pause threshold scaled inversely with playback speed: faster speech expects shorter pauses,
+    # slower speech allows longer pauses without penalty.
+    # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+    effective_min_pause = max(0.35, min_abnormal_pause_sec / eff_speed)
+
     for i in range(len(asr_words) - 1):
         w1 = asr_words[i]
         w2 = asr_words[i + 1]
@@ -699,7 +706,7 @@ def analyze_word_alignment_issues(
         start2 = float(w2.get("startSec", 0.0))
         gap = start2 - end1
 
-        if gap < min_abnormal_pause_sec:
+        if gap < effective_min_pause:
             continue
 
         w1_prob = float(w1.get("probability", 1.0))
@@ -741,6 +748,274 @@ def analyze_word_alignment_issues(
             })
 
     return (issues, metrics) if return_metrics else issues
+
+
+def detect_acoustic_stutter(
+    audio_data: np.ndarray,
+    sample_rate: int,
+    text: str = "",
+    asr_words: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Detects suspected acoustic stutter / syllable repetition (e.g. 'mo-mo-mobile')
+    directly from the audio waveform using short-frame energy bursts and spectral similarity.
+    Distinguishes stutter from natural vowel elongation (requires energy dip between bursts)
+    and intentional repetition in the script.
+    """
+    if audio_data.size == 0 or sample_rate <= 0:
+        return []
+
+    mono = np.ascontiguousarray(audio_data, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+
+    # Check if intentional repetition exists in text (e.g. "rất rất", "that that", "càng ngày càng")
+    text_words = [clean_word(w) for w in text.split()] if text else []
+    intentional_repeats = set()
+    for idx in range(len(text_words) - 1):
+        if text_words[idx] and text_words[idx] == text_words[idx + 1]:
+            intentional_repeats.add(text_words[idx])
+
+    # Frame-based energy analysis
+    # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+    frame_len = int(round(0.025 * sample_rate))  # 25ms frame
+    hop_len = int(round(0.010 * sample_rate))    # 10ms hop
+    if mono.size < frame_len * 2:
+        return []
+
+    num_frames = 1 + (mono.size - frame_len) // hop_len
+    # Compute RMS per frame
+    rms_frames = np.zeros(num_frames, dtype=np.float32)
+    for i in range(num_frames):
+        start = i * hop_len
+        f = mono[start : start + frame_len]
+        rms_frames[i] = np.sqrt(np.mean(f ** 2)) if f.size > 0 else 0.0
+
+    peak_rms = float(np.max(rms_frames)) if rms_frames.size > 0 else 0.0
+    if peak_rms < 0.02:
+        return []
+
+    # Find candidate burst regions: continuous frames where RMS > threshold
+    # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+    speech_thresh = max(0.015, peak_rms * 0.20)
+    valley_thresh = peak_rms * 0.45
+
+    bursts: list[dict[str, Any]] = []
+    in_burst = False
+    burst_start_idx = 0
+
+    for i in range(num_frames):
+        if rms_frames[i] >= speech_thresh:
+            if not in_burst:
+                in_burst = True
+                burst_start_idx = i
+        else:
+            if in_burst:
+                in_burst = False
+                b_dur_sec = (i - burst_start_idx) * hop_len / sample_rate
+                # Syllable burst duration typically 0.04s to 0.35s
+                if 0.04 <= b_dur_sec <= 0.35:
+                    bursts.append({
+                        "start_idx": burst_start_idx,
+                        "end_idx": i,
+                        "start_sec": burst_start_idx * hop_len / sample_rate,
+                        "end_sec": (i * hop_len + frame_len) / sample_rate,
+                        "peak_rms": float(np.max(rms_frames[burst_start_idx:i])),
+                    })
+
+    if in_burst:
+        b_dur_sec = (num_frames - burst_start_idx) * hop_len / sample_rate
+        if 0.04 <= b_dur_sec <= 0.35:
+            bursts.append({
+                "start_idx": burst_start_idx,
+                "end_idx": num_frames,
+                "start_sec": burst_start_idx * hop_len / sample_rate,
+                "end_sec": mono.size / sample_rate,
+                "peak_rms": float(np.max(rms_frames[burst_start_idx:num_frames])),
+            })
+
+    if len(bursts) < 2:
+        return []
+
+    # Compute spectrum for each burst using Hann-windowed FFT
+    burst_specs: list[np.ndarray] = []
+    for b in bursts:
+        st = b["start_idx"] * hop_len
+        en = min(mono.size, b["end_idx"] * hop_len + frame_len)
+        chunk = mono[st:en]
+        if chunk.size < 64:
+            burst_specs.append(np.zeros(32, dtype=np.float32))
+            continue
+        window = np.hanning(chunk.size)
+        fft_mag = np.abs(np.fft.rfft(chunk * window))
+        # Group into 32 spectral sub-bands
+        if fft_mag.size >= 32:
+            sub_len = fft_mag.size // 32
+            spec = np.array([np.mean(fft_mag[k * sub_len : (k + 1) * sub_len]) for k in range(32)], dtype=np.float32)
+        else:
+            spec = np.pad(fft_mag.astype(np.float32), (0, 32 - fft_mag.size))
+        norm = np.linalg.norm(spec)
+        burst_specs.append(spec / norm if norm > 1e-6 else spec)
+
+    issues: list[dict[str, Any]] = []
+    detected_ranges: list[tuple[float, float]] = []
+
+    for k in range(len(bursts) - 1):
+        b1 = bursts[k]
+        b2 = bursts[k + 1]
+
+        # Valley duration between bursts (frames below speech threshold)
+        valley_sec = (b2["start_idx"] - b1["end_idx"]) * hop_len / sample_rate
+        # Gap between repeated syllables typically 0.01s to 0.40s
+        # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+        if not (0.01 <= valley_sec <= 0.40):
+            continue
+
+        # Check for clear energy valley between bursts (distinguishes from vowel elongation)
+        gap_frames = rms_frames[b1["end_idx"] : b2["start_idx"]]
+        if gap_frames.size > 0:
+            min_gap_rms = float(np.min(gap_frames))
+            min_burst_peak = min(b1["peak_rms"], b2["peak_rms"])
+            if min_gap_rms > valley_thresh or min_gap_rms > 0.65 * min_burst_peak:
+                # No dip -> continuous vowel elongation, not a stutter
+                continue
+
+        # Check spectral cosine similarity
+        s1 = burst_specs[k]
+        s2 = burst_specs[k + 1]
+        cos_sim = float(np.dot(s1, s2))
+
+        # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+        if cos_sim >= 0.83:
+            t_start = round(b1["start_sec"], 3)
+            t_end = round(b2["end_sec"], 3)
+
+            # Check if ASR already recognized intentional repetition matching script
+            if asr_words:
+                overlapping_asr = [
+                    w.get("word", "").strip()
+                    for w in asr_words
+                    if abs(float(w.get("startSec", 0.0)) - t_start) <= 0.4
+                ]
+                if any(clean_word(w) in intentional_repeats for w in overlapping_asr):
+                    continue
+
+            # Avoid duplicate warnings for overlapping time ranges
+            if any(abs(t_start - r[0]) < 0.3 for r in detected_ranges):
+                continue
+            detected_ranges.append((t_start, t_end))
+
+            ts = format_timestamp(t_start)
+            issues.append({
+                "severity": "warning",
+                "code": "SUSPECTED_STUTTER",
+                "message": f"Nghi vấn vấp âm hoặc lặp âm tiết — khoảng {ts}. Vui lòng nghe kiểm tra.",
+                "words": [],
+                "timeRange": [t_start, t_end],
+            })
+
+    return issues
+
+
+def recover_unaligned_words(
+    audio_path: str,
+    detected_words: list[dict[str, Any]],
+    audio_duration_sec: float,
+    whisper_model: Any,
+    language: str | None = None,
+) -> list[dict[str, Any]]:
+    """Detects acoustic speech energy in gaps between/before/after detected ASR words
+    and runs targeted second-pass transcribe with vad_filter=False to recover unaligned
+    spoken words (such as monosyllables like 'Eat' or 'It's' filtered by aggressive VAD).
+    """
+    if whisper_model is None or not detected_words or audio_duration_sec <= 0.3:
+        return detected_words
+
+    import soundfile as sf
+    try:
+        data, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+        mono = data.mean(axis=1)
+    except Exception:
+        return detected_words
+
+    # Find candidate unaligned gaps
+    candidate_gaps: list[tuple[float, float]] = []
+
+    # Gap before first word
+    first_start = float(detected_words[0].get("startSec", 0.0))
+    if first_start >= 0.25:
+        candidate_gaps.append((0.0, first_start))
+
+    # Gaps between consecutive words
+    for i in range(len(detected_words) - 1):
+        w_end = float(detected_words[i].get("endSec", 0.0))
+        w_next_start = float(detected_words[i + 1].get("startSec", 0.0))
+        gap = w_next_start - w_end
+        if gap >= 0.28:
+            candidate_gaps.append((w_end, w_next_start))
+
+    # Gap after last word
+    last_end = float(detected_words[-1].get("endSec", 0.0))
+    if audio_duration_sec - last_end >= 0.25:
+        candidate_gaps.append((last_end, audio_duration_sec))
+
+    if not candidate_gaps:
+        return detected_words
+
+    additional_words: list[dict[str, Any]] = []
+    import tempfile
+
+    for gap_start, gap_end in candidate_gaps:
+        s_start = int(round(gap_start * sr))
+        s_end = min(mono.size, int(round(gap_end * sr)))
+        if s_end - s_start < int(round(0.15 * sr)):
+            continue
+
+        slice_audio = mono[s_start:s_end]
+        peak = float(np.max(np.abs(slice_audio)))
+        rms = float(np.sqrt(np.mean(slice_audio ** 2)))
+
+        # Check voice energy burst threshold
+        # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+        if peak >= 0.04 and rms >= 0.012:
+            tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp_wav_name = tmp_wav.name
+            tmp_wav.close()
+            try:
+                sf.write(tmp_wav_name, slice_audio, sr, subtype="PCM_16")
+                lang_code = None if not language or language == "auto" else language
+                seg_iter, _ = whisper_model.transcribe(
+                    tmp_wav_name,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=False,  # second pass with vad_filter=False
+                )
+                for seg in seg_iter:
+                    if seg.words:
+                        for w in seg.words:
+                            w_txt = w.word.strip()
+                            if w_txt and clean_word(w_txt):
+                                additional_words.append({
+                                    "word": w.word,
+                                    "startSec": round(gap_start + float(w.start), 3),
+                                    "endSec": round(gap_start + float(w.end), 3),
+                                    "probability": round(float(w.probability), 4),
+                                })
+            except Exception as e:
+                log(f"[audio_quality] second-pass transcribe gap error: {e}")
+            finally:
+                if os.path.exists(tmp_wav_name):
+                    try:
+                        os.remove(tmp_wav_name)
+                    except Exception:
+                        pass
+
+    if not additional_words:
+        return detected_words
+
+    # Merge and sort by startSec
+    combined = sorted(detected_words + additional_words, key=lambda x: float(x.get("startSec", 0.0)))
+    return combined
 
 
 def validate_audio_quality(
@@ -865,6 +1140,63 @@ def validate_audio_quality(
                         "probability": round(float(w.probability), 4),
                     })
 
+        # If detected_words is empty with vad_filter=True, retry once with vad_filter=False
+        if not detected_words:
+            try:
+                seg_retry, _ = whisper_model.transcribe(
+                    audio_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=False,
+                )
+                for seg in seg_retry:
+                    if seg.words:
+                        for w in seg.words:
+                            detected_words.append({
+                                "word": w.word,
+                                "startSec": round(float(w.start), 3),
+                                "endSec": round(float(w.end), 3),
+                                "probability": round(float(w.probability), 4),
+                            })
+            except Exception as e:
+                log(f"[audio_quality] retry transcribe error: {e}")
+
+        # Bugfix: If detected_words is empty on valid audio, mark as unverified instead of falsely passing
+        if not detected_words:
+            return {
+                "status": "unverified",
+                "issues": [],
+                "metrics": default_metrics,
+                "summary": "Chưa kiểm chứng (ASR không nhận dạng được từ nào trong âm thanh)",
+                "durationSec": dur,
+                "sampleRate": info.get("sampleRate", 0),
+                "checkedAt": checked_at,
+                "audioPath": audio_path,
+            }
+
+        # Low coverage check: if source sentence has >= 6 words but ASR recognizes < 20%
+        if n_src >= 6 and (len(detected_words) / n_src) < 0.20:
+            return {
+                "status": "unverified",
+                "issues": [],
+                "metrics": default_metrics,
+                "summary": "Chưa kiểm chứng (độ phủ nhận dạng của ASR quá thấp so với kịch bản)",
+                "durationSec": dur,
+                "sampleRate": info.get("sampleRate", 0),
+                "checkedAt": checked_at,
+                "audioPath": audio_path,
+            }
+
+        # Recover unaligned words in acoustic speech energy gaps
+        detected_words = recover_unaligned_words(
+            audio_path,
+            detected_words,
+            dur,
+            whisper_model,
+            language=language,
+        )
+
         alignment_issues, metrics = analyze_word_alignment_issues(
             text,
             detected_words,
@@ -873,6 +1205,23 @@ def validate_audio_quality(
             audio_duration_sec=dur,
             return_metrics=True,
         )
+
+        # Step 3: Acoustic Stutter Check (pure waveform analysis)
+        try:
+            import soundfile as sf
+            data, sr_in = sf.read(audio_path, dtype="float32", always_2d=True)
+            acoustic_stutters = detect_acoustic_stutter(data.mean(axis=1), sr_in, text=text, asr_words=detected_words)
+            for ast in acoustic_stutters:
+                if not any(
+                    iss["code"] == "SUSPECTED_STUTTER"
+                    and abs(float(iss["timeRange"][0]) - float(ast["timeRange"][0])) < 0.5
+                    for iss in alignment_issues
+                ):
+                    alignment_issues.append(ast)
+        except Exception as st_err:
+            log(f"[audio_quality] Acoustic stutter check error: {st_err}")
+
+        alignment_issues.sort(key=lambda x: float(x.get("timeRange", [0.0])[0]))
 
         if alignment_issues:
             return {

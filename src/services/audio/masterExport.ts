@@ -85,6 +85,36 @@ export function validateChunksForExport(chunks: ChunkItem[]): ValidationResult {
   };
 }
 
+export interface MasterBoundaryWarning {
+  type: "gap_too_long" | "click_pop_risk";
+  chunkIndex: number;
+  message: string;
+}
+
+/**
+ * Validates sequential master audio boundary seams for excessive silence gaps (> 4.0s).
+ */
+export function validateMasterBoundaries(
+  chunks: ChunkItem[],
+  pausesMs: number[]
+): MasterBoundaryWarning[] {
+  const warnings: MasterBoundaryWarning[] = [];
+  if (!chunks || chunks.length <= 1) return warnings;
+
+  for (let i = 0; i < chunks.length - 1; i++) {
+    const pause = pausesMs[i] || 0;
+    if (pause > 4000) {
+      warnings.push({
+        type: "gap_too_long",
+        chunkIndex: i,
+        message: `Khoảng lặng giữa đoạn ${i + 1} và ${i + 2} quá dài (${(pause / 1000).toFixed(1)}s > 4.0s).`,
+      });
+    }
+  }
+
+  return warnings;
+}
+
 /**
  * Generates an audio buffer containing 16-bit PCM waveform samples.
  * Used for deterministic concatenation and testing.

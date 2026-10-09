@@ -576,6 +576,165 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.analyze_word_alignment_issues(text, mock_words, audio_duration_sec=4.2)
         self.assertEqual(len(issues), 0)
 
+    def test_empty_asr_words_returns_unverified(self):
+        """When Whisper returns 0 words on valid audio, validation status must be unverified, NOT pass."""
+        valid_path = os.path.join(self.dir, "valid_speech.wav")
+        _create_wav(valid_path, 2.5, sr=24000)
+
+        # Mock whisper model returning empty segments
+        class MockEmptyWhisper:
+            def transcribe(self, *args, **kwargs):
+                return [], None
+
+        from unittest.mock import patch
+        with patch("voxlab_sidecar.asr_engine.get_shared_whisper_model", return_value=MockEmptyWhisper()):
+            with patch("voxlab_sidecar.asr_engine.find_whisper_model_dir", return_value="/mock/dir"):
+                res = audio_quality.validate_audio_quality(valid_path, text="This is a test of empty recognition data")
+                self.assertEqual(res["status"], "unverified")
+                self.assertIn("không nhận dạng được từ nào", res["summary"])
+
+    def test_low_coverage_returns_unverified(self):
+        """When ASR coverage is < 20% on sentences with >= 6 words, status must be unverified."""
+        valid_path = os.path.join(self.dir, "valid_speech_cov.wav")
+        _create_wav(valid_path, 3.5, sr=24000)
+
+        class MockWord:
+            def __init__(self, word, start, end):
+                self.word = word
+                self.start = start
+                self.end = end
+                self.probability = 0.95
+
+        class MockSegment:
+            def __init__(self):
+                self.words = [MockWord("This", 0.1, 0.4)]
+
+        class MockLowCoverageWhisper:
+            def transcribe(self, *args, **kwargs):
+                return [MockSegment()], None
+
+        from unittest.mock import patch
+        with patch("voxlab_sidecar.asr_engine.get_shared_whisper_model", return_value=MockLowCoverageWhisper()):
+            with patch("voxlab_sidecar.asr_engine.find_whisper_model_dir", return_value="/mock/dir"):
+                # 10 words in script, only 1 detected (10% coverage < 20%)
+                text = "This is a full sentence with ten words in total here"
+                res = audio_quality.validate_audio_quality(valid_path, text=text)
+                self.assertEqual(res["status"], "unverified")
+                self.assertIn("độ phủ nhận dạng", res["summary"])
+
+    def test_speed_scaled_abnormal_pause(self):
+        """Pause threshold scales inversely with playback speed."""
+        text = "moving freight on diesel fuel without pause"
+        # 0.40s gap between diesel (end 1.5) and fuel (start 1.9)
+        mock_words = [
+            {"word": "moving", "startSec": 0.1, "endSec": 0.4, "probability": 0.95},
+            {"word": "freight", "startSec": 0.45, "endSec": 0.8, "probability": 0.95},
+            {"word": "on", "startSec": 0.85, "endSec": 1.0, "probability": 0.95},
+            {"word": "diesel", "startSec": 1.05, "endSec": 1.5, "probability": 0.95},
+            {"word": "fuel", "startSec": 1.90, "endSec": 2.2, "probability": 0.95},
+            {"word": "without", "startSec": 2.25, "endSec": 2.6, "probability": 0.95},
+            {"word": "pause", "startSec": 2.65, "endSec": 3.0, "probability": 0.95},
+        ]
+        # At speed=1.0: threshold is 0.50s -> 0.40s gap is NOT flagged
+        issues_1x = audio_quality.analyze_word_alignment_issues(text, mock_words, speed=1.0)
+        self.assertEqual(len(issues_1x), 0)
+
+        # At speed=1.5: threshold is max(0.35, 0.50 / 1.5) = 0.35s -> 0.40s gap IS flagged
+        issues_1_5x = audio_quality.analyze_word_alignment_issues(text, mock_words, speed=1.5)
+        self.assertEqual(len(issues_1_5x), 1)
+        self.assertEqual(issues_1_5x[0]["code"], "ABNORMAL_PAUSE")
+
+    def test_line_break_in_delimiters_not_flagged_as_abnormal_pause(self):
+        """Newlines in script are natural boundaries and do not trigger abnormal pause warnings."""
+        text = "First line here\nSecond line follows"
+        # 0.70s pause at newline between "here" and "Second"
+        mock_words = [
+            {"word": "First", "startSec": 0.1, "endSec": 0.4, "probability": 0.95},
+            {"word": "line", "startSec": 0.45, "endSec": 0.7, "probability": 0.95},
+            {"word": "here", "startSec": 0.75, "endSec": 1.0, "probability": 0.95},
+            {"word": "Second", "startSec": 1.70, "endSec": 2.0, "probability": 0.95},
+            {"word": "line", "startSec": 2.05, "endSec": 2.3, "probability": 0.95},
+            {"word": "follows", "startSec": 2.35, "endSec": 2.7, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
+
+    def test_detect_acoustic_stutter_flags_repeated_syllables(self):
+        """Acoustic stutter with short bursts and valley dip is detected via waveform."""
+        sr = 24000
+        # Create burst 1 (100ms 440Hz), silence valley (60ms), burst 2 (100ms 440Hz)
+        t_burst = np.arange(int(0.10 * sr)) / sr
+        burst = (0.35 * np.sin(2 * np.pi * 440 * t_burst)).astype(np.float32)
+        valley = np.zeros(int(0.06 * sr), dtype=np.float32)
+        audio = np.concatenate([np.zeros(int(0.1 * sr), dtype=np.float32), burst, valley, burst, np.zeros(int(0.1 * sr), dtype=np.float32)])
+
+        stutters = audio_quality.detect_acoustic_stutter(audio, sr, text="single word")
+        self.assertEqual(len(stutters), 1)
+        self.assertEqual(stutters[0]["code"], "SUSPECTED_STUTTER")
+
+    def test_detect_acoustic_stutter_ignores_vowel_elongation(self):
+        """Continuous vowel elongation without energy dips is not flagged as stutter."""
+        sr = 24000
+        # Continuous uninterrupted 440Hz tone (300ms)
+        t = np.arange(int(0.30 * sr)) / sr
+        audio = (0.35 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+
+        stutters = audio_quality.detect_acoustic_stutter(audio, sr, text="sooooo")
+        self.assertEqual(len(stutters), 0)
+
+    def test_detect_acoustic_stutter_ignores_intentional_script_repetition(self):
+        """Intentional repetition in the script (e.g. 'that that') is not flagged as stutter."""
+        sr = 24000
+        t_burst = np.arange(int(0.10 * sr)) / sr
+        burst = (0.35 * np.sin(2 * np.pi * 440 * t_burst)).astype(np.float32)
+        valley = np.zeros(int(0.06 * sr), dtype=np.float32)
+        audio = np.concatenate([np.zeros(int(0.1 * sr), dtype=np.float32), burst, valley, burst, np.zeros(int(0.1 * sr), dtype=np.float32)])
+
+        mock_words = [
+            {"word": "that", "startSec": 0.1, "endSec": 0.2, "probability": 0.95},
+            {"word": "that", "startSec": 0.26, "endSec": 0.36, "probability": 0.95},
+        ]
+        # Text has intentional "that that"
+        stutters = audio_quality.detect_acoustic_stutter(audio, sr, text="I said that that is correct", asr_words=mock_words)
+        self.assertEqual(len(stutters), 0)
+
+    def test_master_boundary_assembly_checks(self):
+        """Master audio sequential assembly warns on excessive silence gap (>4.0s) and non-zero edges."""
+        from voxlab_sidecar.audio_ops import assemble
+        from voxlab_sidecar.server import RequestContext
+
+        p1 = os.path.join(self.dir, "clip1.wav")
+        p2 = os.path.join(self.dir, "clip2.wav")
+        out = os.path.join(self.dir, "master.wav")
+
+        # Clip 1 has a high amplitude cut at the end (0.35)
+        sr = 44100
+        data1 = np.ones(4410, dtype=np.float32) * 0.35
+        sf.write(p1, data1, sr, subtype="PCM_16")
+
+        # Clip 2 is normal
+        data2 = np.zeros(4410, dtype=np.float32)
+        sf.write(p2, data2, sr, subtype="PCM_16")
+
+        class _MockCtx:
+            cancelled = False
+            def progress(self, *_a): pass
+            def check_cancelled(self): pass
+
+        ctx = _MockCtx()
+        res = assemble("audio_ops.assemble", {
+            "inputs": [
+                {"path": p1, "gapAfterMs": 4500},  # > 4000ms excessive silence
+                {"path": p2, "gapAfterMs": 0},
+            ],
+            "outputPath": out,
+            "mode": "sequential",
+        }, ctx)
+
+        warnings = res.get("boundaryWarnings", [])
+        self.assertTrue(any(w["type"] == "gap_too_long" for w in warnings))
+        self.assertTrue(any(w["type"] == "click_pop_risk" for w in warnings))
+
 
 if __name__ == "__main__":
     unittest.main()
