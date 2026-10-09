@@ -3,6 +3,7 @@ export type TranslationProviderType =
   | "gemini"
   | "deepseek"
   | "lmstudio"
+  | "ollama"
   | "custom";
 
 export interface TranslationConnectionResult {

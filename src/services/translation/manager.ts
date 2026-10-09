@@ -8,6 +8,7 @@ import { GoogleTranslateProvider } from "./providers/google";
 import { GeminiTranslateProvider } from "./providers/gemini";
 import { DeepSeekTranslateProvider } from "./providers/deepseek";
 import { LmStudioTranslateProvider } from "./providers/lmstudio";
+import { OllamaTranslateProvider } from "./providers/ollama";
 import {
   loadTranslationSettings,
   saveTranslationSettings,
@@ -35,9 +36,10 @@ export class TranslationManager {
 
   private initBuiltIn() {
     this.builtInProviders.set("google", new GoogleTranslateProvider());
+    this.builtInProviders.set("lmstudio", new LmStudioTranslateProvider());
+    this.builtInProviders.set("ollama", new OllamaTranslateProvider());
     this.builtInProviders.set("gemini", new GeminiTranslateProvider());
     this.builtInProviders.set("deepseek", new DeepSeekTranslateProvider());
-    this.builtInProviders.set("lmstudio", new LmStudioTranslateProvider());
   }
 
   /**
@@ -191,10 +193,27 @@ export class TranslationManager {
           translatedText = result.trim();
         }
       } catch (err: any) {
-        if (options?.strict) {
-          throw new Error(`Dịch câu #${cue.index} thất bại: ${err?.message || err}`);
+        // If primary provider (LM Studio, Ollama, etc.) fails, attempt fallback to Google Translate so cues are actually translated
+        let fallbackSucceeded = false;
+        if (provider.id !== "google") {
+          try {
+            const googleFallback = this.builtInProviders.get("google") || new GoogleTranslateProvider();
+            const fallbackResult = await googleFallback.translate(cue.text, targetLang, activeSourceLang, context);
+            if (fallbackResult && fallbackResult.trim()) {
+              translatedText = fallbackResult.trim();
+              fallbackSucceeded = true;
+            }
+          } catch (fbErr: any) {
+            // fallback also failed
+          }
         }
-        console.warn(`Translation failed for cue #${cue.index}:`, err?.message);
+
+        if (!fallbackSucceeded) {
+          if (options?.strict) {
+            throw new Error(`Dịch câu #${cue.index} thất bại: ${err?.message || err}`);
+          }
+          console.warn(`Translation failed for cue #${cue.index}:`, err?.message);
+        }
       }
 
       // If cinema style is active, apply smart adaptation to eliminate overflow and polish dialogue cadence

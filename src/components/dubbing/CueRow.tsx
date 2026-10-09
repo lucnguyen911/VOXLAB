@@ -27,7 +27,7 @@ export const CueRow: React.FC<CueRowProps> = ({
   isPlaying = false,
   onUpdateText,
   onPlayAudio,
-  onRegenerateAudio: _onRegenerateAudio,
+  onRegenerateAudio,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const availableDuration = Number((original.endSec - original.startSec).toFixed(2));
@@ -173,6 +173,26 @@ export const CueRow: React.FC<CueRowProps> = ({
                   </span>
                 )}
               </div>
+            )}
+
+            {/* Single cue generate / regenerate button */}
+            {onRegenerateAudio && (
+              <button
+                type="button"
+                onClick={() => onRegenerateAudio(original.index)}
+                disabled={audioSegment?.status === "generating"}
+                className="flex items-center gap-1 px-2 py-0.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-50"
+                title={audioSegment?.status === "ready" ? "Tạo lại âm thanh cho câu này" : "Tạo âm thanh cho câu này"}
+              >
+                <RefreshCw className={`w-2.5 h-2.5 ${audioSegment?.status === "generating" ? "animate-spin text-accent" : ""}`} />
+                <span>
+                  {audioSegment?.status === "generating"
+                    ? "Đang tạo..."
+                    : audioSegment?.status === "ready"
+                    ? "Tạo lại"
+                    : "Tạo audio"}
+                </span>
+              </button>
             )}
 
             {/* Audio Playback button only if audio file exists */}

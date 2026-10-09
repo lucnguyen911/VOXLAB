@@ -48,12 +48,16 @@ import {
   loadDubbingSessionBackup,
 } from "../services/dubbing/sessionStorage";
 import { calculateTimingFit } from "../services/dubbing/timingFit";
-import { analyzeTimingCollision } from "../services/dubbing/collisionDetector";
+import { analyzeTimingCollision, canExportMasterWav } from "../services/dubbing/collisionDetector";
 import { resolveTimingCollisions, countCollisions } from "../services/dubbing/autoFit";
 import { mergeMasterAudio } from "../services/dubbing/masterAssembly";
 import { DubbingSynthesisQueue } from "../services/dubbing/synthesisQueue";
 import { extractFilesFromDropEvent } from "../services/fileDropHelper";
 import { useI18n } from "../i18n/context";
+import { createEffectiveVoiceSnapshot } from "../services/providers";
+import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
+import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
+import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
 
 export interface DubbingWorkspaceProps {
   handoffSnapshot?: DubbingHandoffSnapshot | null;
@@ -422,6 +426,21 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const handleTranslateAll = async () => {
     if (!originalCues || originalCues.length === 0) return;
 
+    // Check if local provider is reachable before translating
+    try {
+      const activeProvider = translationManager.getProvider(selectedProviderId);
+      if (activeProvider && (activeProvider.type === "lmstudio" || activeProvider.type === "ollama") && typeof activeProvider.testConnection === "function") {
+        const testRes = await activeProvider.testConnection();
+        if (!testRes.ok) {
+          setRestoredNotice(
+            `Máy chủ ${activeProvider.displayName} chưa bật (${(activeProvider as any).endpoint || "localhost"}). Hệ thống sẽ tự động dùng Google Translate để bản dịch hoàn tất.`
+          );
+        }
+      }
+    } catch {
+      // ignore check error
+    }
+
     setIsTranslating(true);
     setIsTranslationPaused(false);
     translationControlRef.current = { isPaused: false, isCancelled: false };
@@ -522,6 +541,15 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setIsGeneratingAudio(true);
     setIsAudioPaused(false);
     setAudioProgress({ done: 0, total: originalCues.length });
+    setErrorMessage("");
+
+    const snapshot = createEffectiveVoiceSnapshot(selectedVoiceId, voices, {
+      activeModel: selectedModel,
+      speed,
+      pitch,
+      volume,
+    });
+    const advancedSettings = getEngineAdvancedSettings(selectedModel);
 
     const jobs = originalCues.map((orig, i) => {
       const trans = translatedCues[i] || {
@@ -543,6 +571,8 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           pitch,
           volume,
         },
+        voiceSnapshot: snapshot,
+        advancedSettings,
       };
     });
 
@@ -618,44 +648,127 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setAudioProgress(null);
   };
 
-  // Single Cue Regeneration
-  const handleRegenerateAudio = (cueIndex: number) => {
+  // Single Cue Generation / Regeneration
+  const handleRegenerateAudio = async (cueIndex: number) => {
     const origIdx = originalCues.findIndex((c) => c.index === cueIndex);
     const orig = originalCues[origIdx];
     const trans = translatedCues.find((c) => c.index === cueIndex);
     if (!orig || !trans) return;
 
-    const nextCue = originalCues[origIdx + 1];
-    const cueSpanSec = Number((orig.endSec - orig.startSec).toFixed(3));
-    const effectiveLimit = autoFitEnabled && nextCue
-      ? Math.max(cueSpanSec, Number((nextCue.startSec - orig.startSec - 0.02).toFixed(3)))
-      : cueSpanSec;
-
-    const words = trans.text.trim().split(/\s+/).length;
-    const estimatedRawDuration = Math.max(0.5, Number((words / 3.0).toFixed(3)));
-    const fit = calculateTimingFit(estimatedRawDuration, effectiveLimit, autoFitEnabled ? 1.45 : undefined);
-
-    let fittedSec = fit.fittedDurationSec;
-    if (autoFitEnabled && nextCue && orig.startSec + fittedSec > nextCue.startSec) {
-      fittedSec = Math.max(0.1, Number((nextCue.startSec - orig.startSec - 0.005).toFixed(3)));
-    }
-
-    const updated: Record<number, DubAudioSegment> = {
-      ...audioSegments,
+    setAudioSegments((prev) => ({
+      ...prev,
       [cueIndex]: {
-        cueIndex,
-        status: "ready" as const,
-        rawDurationSec: estimatedRawDuration,
-        targetDurationSec: cueSpanSec,
-        fittedDurationSec: fittedSec,
-        speedFactor: fit.speedFactor,
-        audioStartSec: orig.startSec,
-        audioEndSec: Number((orig.startSec + fittedSec).toFixed(3)),
+        ...(prev[cueIndex] || {
+          cueIndex,
+          rawDurationSec: 0,
+          targetDurationSec: 0,
+          fittedDurationSec: 0,
+          speedFactor: 1.0,
+          audioStartSec: orig.startSec,
+          audioEndSec: orig.endSec,
+        }),
+        status: "generating",
       },
-    };
+    }));
 
-    setAudioSegments(updated);
-    setOverflowAnalysis(analyzeTimingCollision(originalCues, updated));
+    try {
+      const nextCue = originalCues[origIdx + 1];
+      const cueSpanSec = Number((orig.endSec - orig.startSec).toFixed(3));
+      const effectiveLimit = autoFitEnabled && nextCue
+        ? Math.max(cueSpanSec, Number((nextCue.startSec - orig.startSec - 0.02).toFixed(3)))
+        : cueSpanSec;
+
+      const snapshot = createEffectiveVoiceSnapshot(selectedVoiceId, voices, {
+        activeModel: selectedModel,
+        speed,
+        pitch,
+        volume,
+      });
+      const advancedSettings = getEngineAdvancedSettings(selectedModel);
+
+      let realResult: { durationSec: number; outputPath: string; blobUrl: string };
+      try {
+        realResult = await synthesizeSpeechCore(trans.text, snapshot, {
+          scope: "dubbing",
+          id: `cue_${cueIndex}`,
+          advancedSettings,
+        });
+      } catch (synthErr: any) {
+        console.warn("Real speech synthesis fallback in web/preview:", synthErr);
+        const words = trans.text.trim().split(/\s+/).length;
+        const estSec = Math.max(0.5, Number((words / 3.0 / speed).toFixed(3)));
+        realResult = {
+          durationSec: estSec,
+          outputPath: `scratch/cue_${cueIndex}.wav`,
+          blobUrl: "",
+        };
+      }
+
+      const fit = calculateTimingFit(realResult.durationSec, effectiveLimit, autoFitEnabled ? 1.45 : undefined);
+      let fittedSec = fit.fittedDurationSec;
+      let finalUrl = realResult.blobUrl;
+      let finalPath = realResult.outputPath;
+
+      // Re-synthesize at adjusted speed if auto-fit requires acceleration
+      if (autoFitEnabled && fit.speedFactor > 1.02 && snapshot) {
+        try {
+          const speedAdjusted = Number((speed * fit.speedFactor).toFixed(2));
+          const speedSnapshot = { ...snapshot, speed: speedAdjusted };
+          const reSynth = await synthesizeSpeechCore(trans.text, speedSnapshot, {
+            scope: "dubbing",
+            id: `cue_${cueIndex}_fit`,
+            advancedSettings,
+          });
+          finalUrl = reSynth.blobUrl;
+          finalPath = reSynth.outputPath;
+          fittedSec = reSynth.durationSec;
+        } catch (reErr) {
+          console.warn("Auto-fit re-synthesis failed for cue", cueIndex, reErr);
+        }
+      }
+
+      if (autoFitEnabled && nextCue && orig.startSec + fittedSec > nextCue.startSec) {
+        fittedSec = Math.max(0.1, Number((nextCue.startSec - orig.startSec - 0.005).toFixed(3)));
+      }
+
+      setAudioSegments((prev) => {
+        const updated: Record<number, DubAudioSegment> = {
+          ...prev,
+          [cueIndex]: {
+            cueIndex,
+            status: "ready" as const,
+            rawDurationSec: realResult.durationSec,
+            targetDurationSec: cueSpanSec,
+            fittedDurationSec: fittedSec,
+            speedFactor: fit.speedFactor,
+            audioStartSec: orig.startSec,
+            audioEndSec: Number((orig.startSec + fittedSec).toFixed(3)),
+            audioUrl: finalUrl,
+            fittedAudioUrl: finalUrl,
+            audioFilePath: finalPath,
+          },
+        };
+        setOverflowAnalysis(analyzeTimingCollision(originalCues, updated));
+        return updated;
+      });
+    } catch (err: any) {
+      setErrorMessage(`Lỗi tạo âm thanh cho câu #${cueIndex}: ${err?.message || err}`);
+      setAudioSegments((prev) => ({
+        ...prev,
+        [cueIndex]: {
+          ...(prev[cueIndex] || {
+            cueIndex,
+            rawDurationSec: 0,
+            targetDurationSec: 0,
+            fittedDurationSec: 0,
+            speedFactor: 1.0,
+            audioStartSec: orig.startSec,
+            audioEndSec: orig.endSec,
+          }),
+          status: "needs_generation",
+        },
+      }));
+    }
   };
 
   // One-click Auto-Fit across all colliding cues
@@ -668,33 +781,151 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   };
 
   // Export Master Audio WAV
-  const handleExportMasterWav = () => {
+  const handleExportMasterWav = async () => {
     if (originalCues.length === 0) return;
-    const res = mergeMasterAudio({
-      originalCues,
-      audioSegments,
-      overflowAnalysis,
-      autoResolveCollisions: autoFitEnabled,
-    });
-    if (!res.ok) {
-      setErrorMessage(res.reason || "Không thể xuất file Master WAV.");
+
+    const activeSegments = autoFitEnabled
+      ? resolveTimingCollisions(originalCues, audioSegments)
+      : audioSegments;
+    const activeOverflow = autoFitEnabled
+      ? analyzeTimingCollision(originalCues, activeSegments)
+      : overflowAnalysis;
+
+    const incompleteCues = originalCues.filter(
+      (c) => !activeSegments[c.index] || activeSegments[c.index].status !== "ready"
+    );
+    if (incompleteCues.length > 0) {
+      setErrorMessage(
+        `Có ${incompleteCues.length} câu chưa có âm thanh sẵn sàng (câu #${incompleteCues.map((c) => c.index).slice(0, 5).join(", ")}...). Vui lòng tạo audio toàn bộ kịch bản trước khi xuất.`
+      );
       return;
     }
-    if (res.resolvedSegments && res.resolvedOverflow) {
-      setAudioSegments(res.resolvedSegments);
-      setOverflowAnalysis(res.resolvedOverflow);
+
+    const collisionCheck = canExportMasterWav(activeOverflow);
+    if (!collisionCheck.allowed) {
+      setErrorMessage(collisionCheck.reason || "Phát hiện nguy cơ đè tiếng (collision_danger).");
+      return;
     }
-    if (res.blob) {
-      const baseName = sourceMediaName.replace(/\.[^/.]+$/, "") || "phu_de";
-      const filename = `${baseName}_master.wav`;
-      const url = URL.createObjectURL(res.blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+
+    try {
+      const baseStem = sourceMediaName.replace(/\.[^/.]+$/, "") || "phu_de";
+      let chosenPath: string | null = null;
+
+      // 1. If running under Tauri desktop environment, prompt native Save Dialog
+      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+        try {
+          const { save } = await import("@tauri-apps/plugin-dialog");
+          chosenPath = await save({
+            defaultPath: `${baseStem}_master.wav`,
+            filters: [
+              { name: "Audio WAV (*.wav)", extensions: ["wav"] },
+              { name: "Audio MP3 (*.mp3)", extensions: ["mp3"] },
+              { name: "Tất cả các tệp (*.*)", extensions: ["*"] },
+            ],
+          });
+          if (!chosenPath) return; // User cancelled
+        } catch (dialogErr) {
+          console.warn("Tauri save dialog error:", dialogErr);
+        }
+      }
+
+      // 2. If chosenPath and local AI sidecar available, use native timeline assembly
+      const ai = await getSharedAiServices();
+      const hasAllFilePaths = originalCues.every((c) => Boolean(activeSegments[c.index]?.audioFilePath));
+
+      if (chosenPath && ai && hasAllFilePaths) {
+        const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
+        const totalDurationSec = Math.max(...originalCues.map((c) => c.endSec));
+        await ai.assemble({
+          mode: "timeline",
+          inputs: originalCues.map((c) => ({
+            path: activeSegments[c.index].audioFilePath!,
+            startSec: activeSegments[c.index].audioStartSec,
+          })),
+          totalDurationSec,
+          outputPath: chosenPath,
+          format: isMp3 ? "mp3" : "wav",
+        });
+
+        if (autoFitEnabled) {
+          setAudioSegments(activeSegments);
+          setOverflowAnalysis(activeOverflow);
+        }
+
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("fs_show_in_folder", { path: chosenPath });
+        } catch (folderErr) {
+          console.warn("Could not reveal file in folder:", folderErr);
+        }
+
+        alert(`Đã xuất Master Audio thành công:\n${chosenPath}`);
+        return;
+      }
+
+      // 3. Fallback: Assemble audio buffer via Web Audio API or PCM merger
+      let sampleMap = new Map<number, Float32Array>();
+      if (typeof window !== "undefined" && (window.AudioContext || (window as any).webkitAudioContext)) {
+        try {
+          const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+          const ctx = new AudioCtx();
+          await Promise.all(
+            originalCues.map(async (cue) => {
+              const seg = activeSegments[cue.index];
+              let url = seg?.fittedAudioUrl || seg?.audioUrl;
+              if (!url && seg?.audioFilePath) {
+                try {
+                  url = await readAudioFileBlobUrl(seg.audioFilePath);
+                } catch {}
+              }
+              if (!url) return;
+              try {
+                const resp = await fetch(url);
+                const arr = await resp.arrayBuffer();
+                const audioBuf = await ctx.decodeAudioData(arr);
+                sampleMap.set(cue.index, audioBuf.getChannelData(0));
+              } catch (e) {
+                console.warn("Failed to decode cue audio buffer for cue", cue.index, e);
+              }
+            })
+          );
+        } catch (ctxErr) {
+          console.warn("AudioContext decode error:", ctxErr);
+        }
+      }
+
+      const res = mergeMasterAudio({
+        originalCues,
+        audioSegments: activeSegments,
+        overflowAnalysis: activeOverflow,
+        sampleGetter: (idx) => sampleMap.get(idx) || null,
+        autoResolveCollisions: autoFitEnabled,
+      });
+
+      if (!res.ok) {
+        setErrorMessage(res.reason || "Không thể xuất file Master WAV.");
+        return;
+      }
+
+      if (res.resolvedSegments && res.resolvedOverflow) {
+        setAudioSegments(res.resolvedSegments);
+        setOverflowAnalysis(res.resolvedOverflow);
+      }
+
+      if (res.blob) {
+        const filename = `${baseStem}_master.wav`;
+        const url = URL.createObjectURL(res.blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (err: any) {
+      console.error("Master WAV export error:", err);
+      setErrorMessage(err?.message || "Lỗi khi xuất tệp Master Audio.");
     }
   };
 
@@ -719,7 +950,8 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const isProviderUnconfigured = Boolean(
     (currentProvider?.type === "gemini" && !currentProvider.apiKey) ||
     (currentProvider?.type === "deepseek" && !currentProvider.apiKey) ||
-    (currentProvider?.type === "lmstudio" && !currentProvider.endpoint)
+    (currentProvider?.type === "lmstudio" && !currentProvider.endpoint) ||
+    (currentProvider?.type === "ollama" && !currentProvider.endpoint)
   );
 
   // Check if any collision exists

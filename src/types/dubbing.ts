@@ -52,6 +52,7 @@ export interface DubAudioSegment {
   audioStartSec: number;     // Absolute audio start on dub timeline (= OriginalCue.startSec)
   audioEndSec: number;       // Absolute audio end on dub timeline (= audioStartSec + fittedDurationSec)
   status: DubAudioStatus;    // Current state of synthesis / fitting
+  audioFilePath?: string;    // Local path to WAV file on disk (for Master Audio assembly)
   errorMessage?: string;
 }
 

@@ -3,7 +3,9 @@ import {
   TranslatedCue,
   DubAudioSegment,
 } from "../../types/dubbing";
+import { EffectiveVoiceSnapshot } from "../../types/ui";
 import { calculateTimingFit } from "./timingFit";
+import { synthesizeSpeechCore } from "../providers/unifiedSynthesis";
 
 export interface DubbingSynthesisJob {
   originalCue: OriginalCue;
@@ -16,6 +18,13 @@ export interface DubbingSynthesisJob {
     pitch?: number;
     volume?: number;
   };
+  voiceSnapshot?: EffectiveVoiceSnapshot;
+  advancedSettings?: Record<string, unknown>;
+  synthesizer?: (
+    text: string,
+    cueIndex: number,
+    speed?: number
+  ) => Promise<{ durationSec: number; outputPath: string; blobUrl: string }>;
 }
 
 export type QueueState = "idle" | "running" | "paused" | "cancelled" | "completed";
@@ -99,36 +108,64 @@ export class DubbingSynthesisQueue {
     }
   }
 
+  private isCancelled(): boolean {
+    return this.state === "cancelled";
+  }
+
   private async executeJob(job: DubbingSynthesisJob): Promise<void> {
     const { originalCue, translatedCue } = job;
     this.callbacks.onJobStarted?.(originalCue.index);
 
     try {
-      if (typeof window !== "undefined") {
-        const simulatedDelay = Math.max(80, Math.floor(220 / this.concurrency));
-        await new Promise((resolve) => setTimeout(resolve, simulatedDelay));
-      }
+      if (this.isCancelled()) return;
 
-      // Check if queue was paused or cancelled while waiting
-      if (this.state === "cancelled") return;
-
-      // Simulate/execute TTS synthesis for translated text:
-      // Estimated word rate ~ 3 words / sec or 15 chars / sec
-      const charCount = translatedCue.text.trim().length;
       const speedMultiplier =
         job.voiceSettings?.speed && job.voiceSettings.speed > 0
           ? job.voiceSettings.speed
           : 1.0;
-      const estimatedRawSec = Math.max(
-        0.8,
-        Number((charCount / 14 / speedMultiplier).toFixed(3))
-      );
+
+      let realResult: { durationSec: number; outputPath: string; blobUrl: string } | null = null;
+
+      // 1. Synthesize real audio if backend is available
+      if (job.synthesizer) {
+        realResult = await job.synthesizer(translatedCue.text, originalCue.index, speedMultiplier);
+      } else if (job.voiceSnapshot) {
+        realResult = await synthesizeSpeechCore(translatedCue.text, job.voiceSnapshot, {
+          scope: "dubbing",
+          id: `cue_${originalCue.index}`,
+          advancedSettings: job.advancedSettings,
+        });
+      }
+
+      if (this.isCancelled()) return;
 
       const cueSpanSec = Number(
         (originalCue.endSec - originalCue.startSec).toFixed(3)
       );
-
       const isAutoFit = job.autoFit !== false;
+
+      let rawDurationSec: number;
+      let finalAudioUrl: string | undefined;
+      let finalFilePath: string | undefined;
+
+      if (realResult) {
+        rawDurationSec = realResult.durationSec;
+        finalAudioUrl = realResult.blobUrl;
+        finalFilePath = realResult.outputPath;
+      } else {
+        // Fallback simulation for tests or headless environments without provider
+        if (typeof window !== "undefined") {
+          const simulatedDelay = Math.max(80, Math.floor(220 / this.concurrency));
+          await new Promise((resolve) => setTimeout(resolve, simulatedDelay));
+        }
+        if (this.isCancelled()) return;
+
+        const charCount = translatedCue.text.trim().length;
+        rawDurationSec = Math.max(
+          0.8,
+          Number((charCount / 14 / speedMultiplier).toFixed(3))
+        );
+      }
 
       // When autoFit is enabled and nextCue exists, effective limit extends into the silence gap before next cue
       const effectiveLimitSec =
@@ -142,8 +179,33 @@ export class DubbingSynthesisQueue {
       const maxSpeedup = isAutoFit ? 1.45 : undefined;
 
       // Apply WSOLA Timing Fit Semantics (TASK-14)
-      const fit = calculateTimingFit(estimatedRawSec, effectiveLimitSec, maxSpeedup);
+      const fit = calculateTimingFit(rawDurationSec, effectiveLimitSec, maxSpeedup);
       let fittedSec = fit.fittedDurationSec;
+
+      // If auto-fit needs speedup (>1.02x) and we have real synthesis available:
+      if (isAutoFit && fit.speedFactor > 1.02 && (job.voiceSnapshot || job.synthesizer)) {
+        const speedAdjusted = Number((speedMultiplier * fit.speedFactor).toFixed(2));
+        try {
+          let reSynth: { durationSec: number; outputPath: string; blobUrl: string } | null = null;
+          if (job.synthesizer) {
+            reSynth = await job.synthesizer(translatedCue.text, originalCue.index, speedAdjusted);
+          } else if (job.voiceSnapshot) {
+            const speedSnapshot = { ...job.voiceSnapshot, speed: speedAdjusted };
+            reSynth = await synthesizeSpeechCore(translatedCue.text, speedSnapshot, {
+              scope: "dubbing",
+              id: `cue_${originalCue.index}_fitted`,
+              advancedSettings: job.advancedSettings,
+            });
+          }
+          if (reSynth) {
+            finalAudioUrl = reSynth.blobUrl;
+            finalFilePath = reSynth.outputPath;
+            fittedSec = reSynth.durationSec;
+          }
+        } catch (fitErr) {
+          console.warn(`[DubbingQueue] Speed fit re-synthesis failed for cue ${originalCue.index}:`, fitErr);
+        }
+      }
 
       // Safety check: ensure speech never extends past subsequent cue's startSec
       if (
@@ -159,6 +221,9 @@ export class DubbingSynthesisQueue {
 
       const segment: DubAudioSegment = {
         cueIndex: originalCue.index,
+        audioUrl: finalAudioUrl,
+        audioFilePath: finalFilePath,
+        fittedAudioUrl: finalAudioUrl,
         rawDurationSec: fit.rawDurationSec,
         targetDurationSec: cueSpanSec,
         fittedDurationSec: fittedSec,
