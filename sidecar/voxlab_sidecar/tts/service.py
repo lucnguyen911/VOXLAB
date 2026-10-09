@@ -121,7 +121,6 @@ class TtsService:
             "subtalker_temperature", "subtalkerTemperature",
             "max_new_tokens", "maxNewTokens",
             "non_streaming_mode", "nonStreamingMode",
-            "optimize_clarity", "optimizeClarity",
         )
         for k in allowed_direct_keys:
             if k in params and params[k] is not None:
@@ -180,16 +179,6 @@ class TtsService:
         # Master WAV Canonical Invariant: strictly MONO (1 channel)
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
-
-        optimize_clarity = bool(
-            params.get("optimizeClarity")
-            or params.get("optimize_clarity")
-            or extra.get("optimizeClarity")
-            or extra.get("optimize_clarity")
-        )
-        if optimize_clarity:
-            from ..audio_ops import apply_clarity_time_stretch
-            audio = apply_clarity_time_stretch(audio, sr=sr, rate=0.95)
 
         ctx.progress(90, "writing_audio")
         import soundfile as sf

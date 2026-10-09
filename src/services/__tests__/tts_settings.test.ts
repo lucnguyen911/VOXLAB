@@ -57,18 +57,10 @@ describe("TTS Settings Storage & Speed Range Suite", () => {
     assert.equal(settings.speed, 1.15);
   });
 
-  it("defaults optimizeClarity to false when storage is empty", () => {
+  it("safely ignores legacy optimizeClarity in storage and loads defaults cleanly", () => {
+    mockStorage["voxlab_tts_settings"] = JSON.stringify({ optimizeClarity: true, speed: 1.1 });
     const settings = loadStoredTtsSettings();
-    assert.equal(settings.optimizeClarity, false);
-  });
-
-  it("saves and reloads optimizeClarity setting correctly", () => {
-    saveStoredTtsSettings({ optimizeClarity: true });
-    const settings = loadStoredTtsSettings();
-    assert.equal(settings.optimizeClarity, true);
-
-    saveStoredTtsSettings({ optimizeClarity: false });
-    const settingsOff = loadStoredTtsSettings();
-    assert.equal(settingsOff.optimizeClarity, false);
+    assert.equal(settings.speed, 1.1);
+    assert.equal(settings.concurrency, 1);
   });
 });

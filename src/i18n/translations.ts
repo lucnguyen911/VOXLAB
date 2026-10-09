@@ -101,8 +101,6 @@ export interface Translations {
     resetSettingsTooltip: string;
     exportSrt: string;
     exportSrtDesc: string;
-    optimizeClarity: string;
-    optimizeClarityDesc: string;
     batchConcurrency: string;
     batchConcurrencyHelper: string;
     emotion: string;
@@ -503,8 +501,6 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       resetSettingsTooltip: "Đặt lại cài đặt giọng",
       exportSrt: "Tạo phụ đề SRT",
       exportSrtDesc: "Tạo file .srt cùng với file âm thanh.",
-      optimizeClarity: "Tối ưu độ rõ giọng đọc",
-      optimizeClarityDesc: "Áp dụng thuật toán vi giãn nhịp đọc có bảo toàn cao độ nhằm giảm hiện tượng dính chữ khi mô hình đọc quá nhanh.",
       batchConcurrency: "Xử lý song song (Batch)",
       batchConcurrencyHelper: "Số luồng render audio đồng thời. Khuyên dùng 2-4 luồng cho máy có GPU rời.",
       emotion: "Sắc thái",
@@ -904,8 +900,6 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       resetSettingsTooltip: "Reset voice settings",
       exportSrt: "Generate SRT subtitles",
       exportSrtDesc: "Generate a .srt file alongside the audio file.",
-      optimizeClarity: "Optimize Speech Clarity",
-      optimizeClarityDesc: "Applies pitch-preserving micro time-stretch to reduce crowded words when models speak too rapidly.",
       batchConcurrency: "Parallel Batches",
       batchConcurrencyHelper: "Concurrent audio render threads. 2-4 threads recommended for dedicated GPU.",
       emotion: "Emotion",
@@ -1305,8 +1299,6 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       resetSettingsTooltip: "音声設定をリセット",
       exportSrt: "SRT字幕を生成",
       exportSrtDesc: "音声ファイルと一緒に.srtファイルを生成します。",
-      optimizeClarity: "音声の明瞭さを最適化",
-      optimizeClarityDesc: "話速が速すぎる場合の単語の重なりを軽減するため、ピッチを保持したままテンポを微調整します。",
       batchConcurrency: "並列バッチ処理",
       batchConcurrencyHelper: "同時にレンダリングするスレッド数。GPU搭載環境では2〜4スレッドを推奨します。",
       emotion: "感情",
@@ -1706,8 +1698,6 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       resetSettingsTooltip: "重置语音设置",
       exportSrt: "生成SRT字幕",
       exportSrtDesc: "与音频文件一同生成.srt文件。",
-      optimizeClarity: "优化语音清晰度",
-      optimizeClarityDesc: "应用保调微拉伸算法，在模型语速过快时减少字词黏连现象。",
       batchConcurrency: "并发批处理",
       batchConcurrencyHelper: "同时渲染的音频线程数。配备独立显卡推荐 2-4 线程。",
       emotion: "情绪",

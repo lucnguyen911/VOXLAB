@@ -328,12 +328,10 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       });
     }
 
-    const storedSettings = loadStoredTtsSettings();
     return await synthesizeSpeechCore(targetChunk.text, snapshot, {
       scope: "tts",
       id: targetChunk.id,
       advancedSettings,
-      optimizeClarity: storedSettings.optimizeClarity,
       onProgress: (pct, stage) => {
         onStage?.(`${stage} (${pct}%)`);
         setProgressStage(`${stage} (${pct}%)`);

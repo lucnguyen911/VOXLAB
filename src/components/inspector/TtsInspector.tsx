@@ -52,7 +52,6 @@ const DEFAULT_TTS_SETTINGS: PersistedTtsSettings = {
   },
   concurrency: 1, // Section 20: default is 1x · Mặc định
   exportSrt: false,
-  optimizeClarity: false,
 };
 
 const STORAGE_KEY = "voxlab_tts_settings";
@@ -107,7 +106,6 @@ export const loadStoredTtsSettings = (): PersistedTtsSettings => {
             : undefined,
         concurrency,
         exportSrt: typeof parsed.exportSrt === "boolean" ? parsed.exportSrt : false,
-        optimizeClarity: typeof parsed.optimizeClarity === "boolean" ? parsed.optimizeClarity : false,
       };
     }
   } catch (e) {
@@ -149,8 +147,6 @@ interface TtsInspectorProps {
   onChangeConcurrency?: (concurrency: number) => void;
   exportSrt?: boolean;
   onChangeExportSrt?: (enabled: boolean) => void;
-  optimizeClarity?: boolean;
-  onChangeOptimizeClarity?: (enabled: boolean) => void;
   onGenerateAudio?: () => void;
   isGenerating?: boolean;
   canGenerate?: boolean;
@@ -179,8 +175,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   onChangeConcurrency,
   exportSrt: propExportSrt,
   onChangeExportSrt,
-  optimizeClarity: propOptimizeClarity,
-  onChangeOptimizeClarity,
   onGenerateAudio,
   isGenerating = false,
   canGenerate = true,
@@ -220,9 +214,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   const [localExportSrt, setLocalExportSrt] = useState<boolean>(
     propExportSrt ?? initialSettings.exportSrt ?? false
   );
-  const [localOptimizeClarity, setLocalOptimizeClarity] = useState<boolean>(
-    propOptimizeClarity ?? initialSettings.optimizeClarity ?? false
-  );
 
   // Punctuation pauses configuration (in seconds)
   const [pauses, setPauses] = useState<PunctuationPauses>(initialSettings.pauses);
@@ -245,21 +236,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
     }
   }, [propExportSrt]);
 
-  // Sync propOptimizeClarity with localOptimizeClarity if passed
-  useEffect(() => {
-    if (propOptimizeClarity !== undefined && propOptimizeClarity !== localOptimizeClarity) {
-      setLocalOptimizeClarity(propOptimizeClarity);
-    }
-  }, [propOptimizeClarity]);
-
   const effectiveExportSrt = propExportSrt ?? localExportSrt;
-  const effectiveOptimizeClarity = propOptimizeClarity ?? localOptimizeClarity;
-
-  const handleToggleOptimizeClarity = (enabled: boolean) => {
-    setLocalOptimizeClarity(enabled);
-    saveStoredTtsSettings({ optimizeClarity: enabled });
-    onChangeOptimizeClarity?.(enabled);
-  };
 
   const [subtitleSettings, setSubtitleSettings] = useState(() => loadSubtitleSettings());
 
@@ -816,39 +793,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                     </div>
                   </div>
                 )}
-              </div>
-
-              {/* Clarity Optimization Toggle (Tối ưu độ rõ giọng đọc) */}
-              <div className="pt-2 border-t border-borderDefault/40">
-                <div
-                  className="flex items-center justify-between"
-                  title={t.inspector.optimizeClarityDesc}
-                >
-                  <div className="pr-2">
-                    <span className="text-xs text-textSecondary font-medium select-none block">
-                      {t.inspector.optimizeClarity}
-                    </span>
-                    <span className="text-[10px] text-textMuted leading-tight block mt-0.5">
-                      {t.inspector.optimizeClarityDesc}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={effectiveOptimizeClarity}
-                    onClick={() => handleToggleOptimizeClarity(!effectiveOptimizeClarity)}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                      effectiveOptimizeClarity ? "bg-accent" : "bg-surface3"
-                    }`}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                        effectiveOptimizeClarity ? "translate-x-4" : "translate-x-0"
-                      }`}
-                    />
-                  </button>
-                </div>
               </div>
             </div>
           )}

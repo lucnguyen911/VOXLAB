@@ -130,7 +130,6 @@ function loadInitialVoices(): VoiceProfile[] {
   const [isPaused, setIsPaused] = useState(false);
   const [concurrency, setConcurrency] = useState<number>(() => loadStoredTtsSettings().concurrency);
   const [exportSrt, setExportSrt] = useState<boolean>(() => !!loadStoredTtsSettings().exportSrt);
-  const [optimizeClarity, setOptimizeClarity] = useState<boolean>(() => !!loadStoredTtsSettings().optimizeClarity);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [totalChunks, setTotalChunks] = useState(7);
 
@@ -352,8 +351,6 @@ function loadInitialVoices(): VoiceProfile[] {
                       onChangeConcurrency={setConcurrency}
                       exportSrt={exportSrt}
                       onChangeExportSrt={setExportSrt}
-                      optimizeClarity={optimizeClarity}
-                      onChangeOptimizeClarity={setOptimizeClarity}
                     />
                   }
                   bottomPlayer={

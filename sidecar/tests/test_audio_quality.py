@@ -343,6 +343,87 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
         self.assertEqual(len(issues), 0)
 
+    def test_rapid_response_mobile_service_swallowed(self):
+        """Mandatory requirement from SPEC: 'rapid response mobile service' where 'mobile'
+        is swallowed/merged with 'response' into ASR 'responsible' must flag SUSPECTED_SWALLOWED."""
+        text = "Tesla cannot scale home robotics without building a vast nationwide rapid response mobile service network across North America."
+        mock_words = [
+            {"word": "Tesla", "startSec": 0.1, "endSec": 0.5, "probability": 0.95},
+            {"word": "cannot", "startSec": 0.52, "endSec": 0.9, "probability": 0.95},
+            {"word": "scale", "startSec": 0.92, "endSec": 1.25, "probability": 0.95},
+            {"word": "home", "startSec": 1.28, "endSec": 1.55, "probability": 0.95},
+            {"word": "robotics", "startSec": 1.58, "endSec": 2.1, "probability": 0.95},
+            {"word": "without", "startSec": 2.15, "endSec": 2.45, "probability": 0.95},
+            {"word": "building", "startSec": 2.48, "endSec": 2.85, "probability": 0.95},
+            {"word": "a", "startSec": 2.88, "endSec": 2.95, "probability": 0.95},
+            {"word": "vast", "startSec": 2.98, "endSec": 3.3, "probability": 0.95},
+            {"word": "nationwide", "startSec": 3.35, "endSec": 3.85, "probability": 0.95},
+            {"word": "rapid", "startSec": 3.9, "endSec": 4.25, "probability": 0.95},
+            # Here: 'response mobile' was pronounced dính/nuốt and ASR returns 'responsible' at 4.28-4.85
+            {"word": "responsible", "startSec": 4.28, "endSec": 4.85, "probability": 0.92},
+            {"word": "service", "startSec": 4.88, "endSec": 5.25, "probability": 0.95},
+            {"word": "network", "startSec": 5.28, "endSec": 5.7, "probability": 0.95},
+            {"word": "across", "startSec": 5.72, "endSec": 6.05, "probability": 0.95},
+            {"word": "North", "startSec": 6.1, "endSec": 6.4, "probability": 0.95},
+            {"word": "America.", "startSec": 6.42, "endSec": 6.9, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 1)
+        swallowed = issues[0]
+        self.assertEqual(swallowed["severity"], "warning")
+        self.assertEqual(swallowed["code"], "SUSPECTED_SWALLOWED")
+        self.assertIn("response mobile service", swallowed["message"])
+        self.assertIn("00:04", swallowed["message"])
+        self.assertIn("Vui lòng nghe lại", swallowed["message"])
+
+    def test_partial_syllable_truncation(self):
+        """Mandatory requirement: Incomplete pronunciation / truncated syllable like 'mobile' -> 'mo' flags PARTIAL_PRONUNCIATION."""
+        text = "rapid response mobile service"
+        mock_words = [
+            {"word": "rapid", "startSec": 0.1, "endSec": 0.4, "probability": 0.95},
+            {"word": "response", "startSec": 0.45, "endSec": 0.85, "probability": 0.95},
+            # Truncated syllable: 'mo' instead of 'mobile'
+            {"word": "mo", "startSec": 0.88, "endSec": 1.05, "probability": 0.88},
+            {"word": "service", "startSec": 1.08, "endSec": 1.5, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 1)
+        trunc = issues[0]
+        self.assertEqual(trunc["severity"], "warning")
+        self.assertEqual(trunc["code"], "PARTIAL_PRONUNCIATION")
+        self.assertIn("mo", trunc["message"])
+        self.assertIn("00:00", trunc["message"])
+
+    def test_proper_nouns_not_falsely_flagged(self):
+        """Proper nouns with slight phonetic transliteration differences must not be flagged as swallowed words."""
+        text = "Visiting Nevada and Tokyo with Elon."
+        mock_words = [
+            {"word": "Visiting", "startSec": 0.1, "endSec": 0.5, "probability": 0.95},
+            {"word": "Navada", "startSec": 0.55, "endSec": 0.95, "probability": 0.95},
+            {"word": "and", "startSec": 0.98, "endSec": 1.1, "probability": 0.95},
+            {"word": "Tokyo", "startSec": 1.15, "endSec": 1.5, "probability": 0.95},
+            {"word": "with", "startSec": 1.52, "endSec": 1.7, "probability": 0.95},
+            {"word": "Elon.", "startSec": 1.75, "endSec": 2.1, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
+
+    def test_vietnamese_diacritics_not_falsely_flagged(self):
+        """Vietnamese unaccented ASR variations (tieng Viet vs tiếng Việt) must not be flagged as swallowed words."""
+        text = "Hệ thống nhận diện giọng nói tiếng Việt."
+        mock_words = [
+            {"word": "Hệ", "startSec": 0.1, "endSec": 0.3, "probability": 0.95},
+            {"word": "thống", "startSec": 0.32, "endSec": 0.6, "probability": 0.95},
+            {"word": "nhận", "startSec": 0.62, "endSec": 0.85, "probability": 0.95},
+            {"word": "diện", "startSec": 0.88, "endSec": 1.1, "probability": 0.95},
+            {"word": "giọng", "startSec": 1.12, "endSec": 1.35, "probability": 0.95},
+            {"word": "nói", "startSec": 1.38, "endSec": 1.6, "probability": 0.95},
+            {"word": "tieng", "startSec": 1.62, "endSec": 1.9, "probability": 0.95},
+            {"word": "Viet.", "startSec": 1.92, "endSec": 2.2, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="vi")
+        self.assertEqual(len(issues), 0)
+
     def test_clarity_time_stretch(self):
         from voxlab_sidecar.audio_ops import apply_clarity_time_stretch
         # Create 1 second of 440Hz test sine tone

@@ -110,6 +110,51 @@ def levenshtein_dist(s1: str, s2: str) -> int:
     return prev[-1]
 
 
+def strip_diacritics(text: str) -> str:
+    """Strips Vietnamese and Latin accents/diacritics for phonetic and root comparison."""
+    import unicodedata
+    normalized = unicodedata.normalize("NFD", text)
+    stripped = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    return stripped.replace("đ", "d").replace("Đ", "d").lower()
+
+
+def is_likely_proper_noun(source_words: list[str], delimiters: list[str], idx: int) -> bool:
+    """Checks if the word at idx is likely a proper noun (capitalized, not at sentence start)."""
+    if idx < 0 or idx >= len(source_words):
+        return False
+    w = source_words[idx]
+    if not w or not w[0].isupper():
+        return False
+    if idx == 0:
+        return False
+    prev_delim = delimiters[idx] if idx < len(delimiters) else ""
+    if any(c in ".!?:;" for c in prev_delim):
+        return False
+    return True
+
+
+def extract_context_span(source_words: list[str], i1: int, i2: int) -> str:
+    """Extracts a natural context span around the suspicious word indices [i1, i2).
+    For a single word (i2 - i1 == 1), includes 1 word before and 1 word after.
+    For multiple words (i2 - i1 >= 2), includes the suspicious words plus 1 word after for natural phrasing.
+    Example:
+    source: ["rapid", "response", "mobile", "service"] with i1=1, i2=3
+    returns: "response mobile service"
+    """
+    n = len(source_words)
+    if n == 0:
+        return ""
+    if i2 - i1 <= 1:
+        s = max(0, i1 - 1)
+        e = min(n, i2 + 1)
+    else:
+        s = i1
+        e = min(n, i2 + 1)
+        if e == n and s > 0:
+            s = max(0, s - 1)
+    return " ".join(source_words[s:e])
+
+
 def are_words_equivalent(w1: str, w2: str) -> bool:
     """Checks whether two words are orthographically, phonetically, or numerically equivalent."""
     if w1 == w2:
@@ -124,6 +169,8 @@ def are_words_equivalent(w1: str, w2: str) -> bool:
         if w1 in words and w2 in words:
             return True
     if phonetic_key(w1) == phonetic_key(w2):
+        return True
+    if strip_diacritics(w1) == strip_diacritics(w2):
         return True
     if len(w1) >= 4 and len(w2) >= 4 and levenshtein_dist(w1, w2) <= 1:
         return True
@@ -314,7 +361,7 @@ def analyze_word_alignment_issues(
             "code": "RAPID_PACE",
             "message": (
                 f"Cảnh báo: Tốc độ đọc dồn dập bất thường ({int(round(effective_wpm))} từ/phút). "
-                f"Vui lòng nghe lại hoặc bật Tối ưu độ rõ giọng đọc."
+                f"Vui lòng nghe lại."
             ),
             "wpm": round(effective_wpm, 1),
             "timeRange": [0.0, round(total_dur, 3)],
@@ -419,7 +466,29 @@ def analyze_word_alignment_issues(
                     })
 
         elif tag == "delete":
-            # Meaningful words in source text swallowed/missing in ASR bounded by spoken words
+            # Meaningful words in source text swallowed/missing in ASR
+            content_indices = [
+                i for i in range(i1, i2)
+                if source_words_clean[i]
+                and len(source_words_clean[i]) >= 3
+                and source_words_clean[i] not in IGNORED_OMISSION_WORDS
+            ]
+            if not content_indices:
+                continue
+
+            # Check if merged with adjacent spoken words (e.g. ice cream -> icecream)
+            unmerged_indices = []
+            for i in content_indices:
+                sc = source_words_clean[i]
+                if i > 0 and j1 > 0 and (source_words_clean[i - 1] + sc == asr_words_clean[j1 - 1]):
+                    continue
+                if i + 1 < len(source_words_clean) and j1 < len(asr_words_clean) and (sc + source_words_clean[i + 1] == asr_words_clean[j1]):
+                    continue
+                unmerged_indices.append(i)
+
+            if not unmerged_indices:
+                continue
+
             if j1 > 0 and j1 < len(asr_words):
                 w_prev = asr_words[j1 - 1]
                 w_next = asr_words[j1]
@@ -430,26 +499,108 @@ def analyze_word_alignment_issues(
                 p_next = float(w_next.get("probability", 1.0))
                 ts = format_timestamp(t_end_prev)
 
-                for i in range(i1, i2):
-                    src_clean = source_words_clean[i]
-                    if not src_clean or len(src_clean) < 3 or src_clean in IGNORED_OMISSION_WORDS:
-                        continue
+                # Single missing word bounded by spoken words with gap too narrow (< 0.25s)
+                if len(unmerged_indices) == 1 and gap < 0.25 and p_prev >= 0.50 and p_next >= 0.50:
+                    src_clean = source_words_clean[unmerged_indices[0]]
+                    issues.append({
+                        "severity": "warning",
+                        "code": "MISSING_WORD",
+                        "message": f'Nghi vấn nuốt chữ tại từ "{src_clean}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                        "words": [src_clean],
+                        "timeRange": [round(t_end_prev, 3), round(t_start_next, 3)],
+                    })
+                elif len(unmerged_indices) >= 2 or gap < 0.40:
+                    ctx_span = extract_context_span(source_words, i1, i2)
+                    issues.append({
+                        "severity": "warning",
+                        "code": "SUSPECTED_SWALLOWED",
+                        "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm thiếu hoặc không rõ — khoảng {ts}. Vui lòng nghe lại.",
+                        "words": [source_words_clean[idx] for idx in unmerged_indices],
+                        "timeRange": [round(t_end_prev, 3), round(t_start_next, 3)],
+                    })
 
-                    # Check if it was merged with an adjacent word (e.g. ice cream -> icecream)
-                    if i > 0 and (source_words_clean[i - 1] + src_clean == asr_words_clean[j1 - 1]):
-                        continue
-                    if i + 1 < len(source_words_clean) and (src_clean + source_words_clean[i + 1] == asr_words_clean[j1]):
-                        continue
+        elif tag == "replace":
+            src_slice_clean = [source_words_clean[k] for k in range(i1, i2)]
+            asr_slice_clean = [asr_words_clean[k] for k in range(j1, j2)]
 
-                    # If surrounding words are clear and gap is too narrow to pronounce the word (< 0.18s)
-                    if p_prev >= 0.55 and p_next >= 0.55 and gap < 0.18:
-                        issues.append({
-                            "severity": "warning",
-                            "code": "MISSING_WORD",
-                            "message": f'Nghi vấn nuốt chữ tại từ "{src_clean}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
-                            "words": [src_clean],
-                            "timeRange": [round(t_end_prev, 3), round(t_start_next, 3)],
-                        })
+            # Check if all words are equivalent (e.g. Sysco vs Cisco, 10 vs ten, cannot vs can't)
+            if len(src_slice_clean) == len(asr_slice_clean) and all(
+                are_words_equivalent(s, a) for s, a in zip(src_slice_clean, asr_slice_clean)
+            ):
+                continue
+
+            # Check if concatenated string matches (e.g. database vs data base, icecream vs ice cream)
+            if "".join(src_slice_clean) == "".join(asr_slice_clean):
+                continue
+
+            # Find unrepresented content words in source
+            unrepresented_content_indices = []
+            for idx in range(i1, i2):
+                sw = source_words_clean[idx]
+                if not sw or len(sw) < 3 or sw in IGNORED_OMISSION_WORDS:
+                    continue
+                # If matched any ASR word in the replace range, it's represented
+                if any(are_words_equivalent(sw, aw) for aw in asr_slice_clean):
+                    continue
+                # Check if it's a proper noun that might have been phonetically varied
+                if is_likely_proper_noun(source_words, delimiters, idx):
+                    if any(levenshtein_dist(phonetic_key(sw), phonetic_key(aw)) <= 2 for aw in asr_slice_clean):
+                        continue
+                unrepresented_content_indices.append(idx)
+
+            t_start = float(asr_words[j1].get("startSec", 0.0)) if j1 < len(asr_words) else 0.0
+            t_end = float(asr_words[min(len(asr_words) - 1, j2 - 1)].get("endSec", 0.0)) if asr_words else 0.0
+            ts = format_timestamp(t_start)
+
+            # Case 1: Many-to-one / Many-to-few mismatch (e.g. "response mobile" -> "responsible")
+            if (i2 - i1) > (j2 - j1) and unrepresented_content_indices:
+                ctx_span = extract_context_span(source_words, i1, i2)
+                issues.append({
+                    "severity": "warning",
+                    "code": "SUSPECTED_SWALLOWED",
+                    "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm thiếu hoặc không rõ — khoảng {ts}. Vui lòng nghe lại.",
+                    "words": [source_words_clean[idx] for idx in unrepresented_content_indices],
+                    "timeRange": [round(t_start, 3), round(t_end, 3)],
+                })
+                continue
+
+            # Case 2: Partial syllable truncation (e.g. "mobile" -> "mo", "building" -> "build")
+            if (i2 - i1) == 1 and (j2 - j1) == 1:
+                sw = src_slice_clean[0]
+                aw = asr_slice_clean[0]
+                w_prob = float(asr_words[j1].get("probability", 1.0))
+                is_pn = is_likely_proper_noun(source_words, delimiters, i1)
+
+                if (
+                    not is_pn
+                    and len(sw) >= 4
+                    and len(aw) >= 2
+                    and len(sw) >= len(aw) + 2
+                    and (sw.startswith(aw) or phonetic_key(sw).startswith(phonetic_key(aw)))
+                    and w_prob >= 0.40
+                ):
+                    ctx_span = extract_context_span(source_words, i1, i2)
+                    issues.append({
+                        "severity": "warning",
+                        "code": "PARTIAL_PRONUNCIATION",
+                        "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm dở dang hoặc thiếu âm tiết ('{aw}') — khoảng {ts}. Vui lòng nghe lại.",
+                        "words": [sw, aw],
+                        "timeRange": [round(t_start, 3), round(t_end, 3)],
+                    })
+                    continue
+
+            # Case 3: Other non-equivalent content word substitution with clear ASR confidence
+            if unrepresented_content_indices:
+                max_prob = max((float(asr_words[k].get("probability", 0.0)) for k in range(j1, min(j2, len(asr_words)))), default=1.0)
+                if max_prob >= 0.55:
+                    ctx_span = extract_context_span(source_words, i1, i2)
+                    issues.append({
+                        "severity": "warning",
+                        "code": "SUSPECTED_SWALLOWED",
+                        "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm thiếu hoặc không rõ — khoảng {ts}. Vui lòng nghe lại.",
+                        "words": [source_words_clean[idx] for idx in unrepresented_content_indices],
+                        "timeRange": [round(t_start, 3), round(t_end, 3)],
+                    })
 
     # 3. Check for crowded/merged words (CROWDED_WORDS: 3+ consecutive words with gap <= 0.02s and dur < 0.09s)
     crowded_group: list[int] = []
@@ -475,7 +626,7 @@ def analyze_word_alignment_issues(
             "code": "CROWDED_WORDS",
             "message": (
                 f"Cảnh báo: Phát hiện các từ bị dính vào nhau không có khoảng chuyển tiếp tự nhiên ('{joined_words}') "
-                f"— khoảng {ts}. Vui lòng nghe lại hoặc bật Tối ưu độ rõ giọng đọc."
+                f"— khoảng {ts}. Vui lòng nghe lại."
             ),
             "words": [clean_word(words_text[0]), clean_word(words_text[-1])],
             "timeRange": [round(t_start, 3), round(t_end, 3)],

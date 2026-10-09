@@ -357,4 +357,65 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(isChunkError(chunks[1]), false);
     assert.equal(isChunkWarning(chunks[1]), true);
   });
+
+  it("V11: recognizes SUSPECTED_SWALLOWED and PARTIAL_PRONUNCIATION as yellow warnings with span quotes", () => {
+    const chunks: ChunkItem[] = [
+      {
+        id: "chunk_swallowed",
+        index: 1,
+        text: "Tesla cannot scale home robotics without building a vast nationwide rapid response mobile service network across North America.",
+        originalText: "Tesla cannot scale home robotics without building a vast nationwide rapid response mobile service network across North America.",
+        status: "ready",
+        durationSec: 6.9,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "SUSPECTED_SWALLOWED",
+              message: "Vùng 'response mobile service' có dấu hiệu phát âm thiếu hoặc không rõ — khoảng 00:04. Vui lòng nghe lại.",
+              words: ["response", "mobile"],
+              timeRange: [4.28, 4.85],
+            },
+          ],
+          summary: "Vùng 'response mobile service' có dấu hiệu phát âm thiếu hoặc không rõ — khoảng 00:04. Vui lòng nghe lại.",
+          checkedAt: Date.now(),
+        },
+      },
+      {
+        id: "chunk_partial",
+        index: 2,
+        text: "rapid response mobile service",
+        originalText: "rapid response mobile service",
+        status: "ready",
+        durationSec: 2.5,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "PARTIAL_PRONUNCIATION",
+              message: "Vùng 'response mobile service' có dấu hiệu phát âm dở dang hoặc thiếu âm tiết ('mo') — khoảng 00:00. Vui lòng nghe lại.",
+              words: ["mobile", "mo"],
+              timeRange: [0.88, 1.05],
+            },
+          ],
+          summary: "Vùng 'response mobile service' có dấu hiệu phát âm dở dang hoặc thiếu âm tiết ('mo') — khoảng 00:00. Vui lòng nghe lại.",
+          checkedAt: Date.now(),
+        },
+      },
+    ];
+
+    const stats = countChunkQualityIssues(chunks);
+    assert.equal(stats.errorCount, 0);
+    assert.equal(stats.warningCount, 2);
+    assert.equal(isChunkError(chunks[0]), false);
+    assert.equal(isChunkWarning(chunks[0]), true);
+    assert.equal(isChunkError(chunks[1]), false);
+    assert.equal(isChunkWarning(chunks[1]), true);
+    assert.equal(chunks[0].qualityReview?.issues[0].code, "SUSPECTED_SWALLOWED");
+    assert.equal(chunks[1].qualityReview?.issues[0].code, "PARTIAL_PRONUNCIATION");
+  });
 });

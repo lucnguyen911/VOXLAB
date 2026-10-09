@@ -46,7 +46,6 @@ export interface SynthesizeRequest {
   speed?: number;
   sampleRate?: number;
   advancedSettings?: Record<string, unknown>;
-  optimizeClarity?: boolean;
   onProgress?: (pct: number, stage: string) => void;
 }
 
@@ -223,7 +222,6 @@ export class LocalAiServices {
     if (ref?.refText) params.refText = ref.refText;
     if (req.speed !== undefined && caps.supportsSpeed) params.speed = req.speed;
     if (req.sampleRate !== undefined) params.sampleRate = req.sampleRate;
-    if (req.optimizeClarity !== undefined) params.optimizeClarity = req.optimizeClarity;
 
     const advanced = req.advancedSettings || getEngineAdvancedSettings(caps.engine);
     if (advanced && Object.keys(advanced).length > 0) {
