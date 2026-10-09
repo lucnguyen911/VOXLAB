@@ -438,6 +438,144 @@ class AudioQualityTest(unittest.TestCase):
         self.assertLess(ratio, 1.07)
         self.assertLessEqual(float(np.max(np.abs(stretched))), 1.0)
 
+    def test_case_a_extra_word_carrier_hallucination(self):
+        """Case A: ASR has 'It's inside an industrial plant' when text is 'Inside an industrial plant...'."""
+        text = "Inside an industrial plant, hazards are governed by corporate insurance policies and clear workers compensation statutes."
+        mock_words = [
+            {"word": "It's", "startSec": 0.05, "endSec": 0.25, "probability": 0.88},
+            {"word": "inside", "startSec": 0.28, "endSec": 0.65, "probability": 0.95},
+            {"word": "an", "startSec": 0.68, "endSec": 0.80, "probability": 0.95},
+            {"word": "industrial", "startSec": 0.85, "endSec": 1.40, "probability": 0.95},
+            {"word": "plant,", "startSec": 1.45, "endSec": 1.85, "probability": 0.95},
+            {"word": "hazards", "startSec": 1.95, "endSec": 2.45, "probability": 0.95},
+            {"word": "are", "startSec": 2.50, "endSec": 2.65, "probability": 0.95},
+            {"word": "governed", "startSec": 2.70, "endSec": 3.10, "probability": 0.95},
+            {"word": "by", "startSec": 3.15, "endSec": 3.30, "probability": 0.95},
+            {"word": "corporate", "startSec": 3.35, "endSec": 3.85, "probability": 0.95},
+            {"word": "insurance", "startSec": 3.90, "endSec": 4.40, "probability": 0.95},
+            {"word": "policies", "startSec": 4.45, "endSec": 4.95, "probability": 0.95},
+            {"word": "and", "startSec": 5.00, "endSec": 5.15, "probability": 0.95},
+            {"word": "clear", "startSec": 5.20, "endSec": 5.55, "probability": 0.95},
+            {"word": "workers", "startSec": 5.60, "endSec": 6.00, "probability": 0.95},
+            {"word": "compensation", "startSec": 6.05, "endSec": 6.75, "probability": 0.95},
+            {"word": "statutes.", "startSec": 6.80, "endSec": 7.40, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, audio_duration_sec=7.5)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["severity"], "warning")
+        self.assertEqual(issues[0]["code"], "EXTRA_WORD")
+        self.assertIn("Nghi vấn phát âm thừa từ 'It's' trước 'Inside'", issues[0]["message"])
+        self.assertIn("00:00", issues[0]["message"])
+
+    def test_case_a_exact_match_clean(self):
+        """Case A clean: When script contains 'It's inside an industrial plant', no extra word warning is flagged."""
+        text = "It's inside an industrial plant, hazards are governed by corporate insurance policies."
+        mock_words = [
+            {"word": "It's", "startSec": 0.05, "endSec": 0.25, "probability": 0.95},
+            {"word": "inside", "startSec": 0.28, "endSec": 0.65, "probability": 0.95},
+            {"word": "an", "startSec": 0.68, "endSec": 0.80, "probability": 0.95},
+            {"word": "industrial", "startSec": 0.85, "endSec": 1.40, "probability": 0.95},
+            {"word": "plant,", "startSec": 1.45, "endSec": 1.85, "probability": 0.95},
+            {"word": "hazards", "startSec": 1.95, "endSec": 2.45, "probability": 0.95},
+            {"word": "are", "startSec": 2.50, "endSec": 2.65, "probability": 0.95},
+            {"word": "governed", "startSec": 2.70, "endSec": 3.10, "probability": 0.95},
+            {"word": "by", "startSec": 3.15, "endSec": 3.30, "probability": 0.95},
+            {"word": "corporate", "startSec": 3.35, "endSec": 3.85, "probability": 0.95},
+            {"word": "insurance", "startSec": 3.90, "endSec": 4.40, "probability": 0.95},
+            {"word": "policies.", "startSec": 4.45, "endSec": 4.95, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, audio_duration_sec=5.0)
+        self.assertEqual(len(issues), 0)
+
+    def test_case_b_unexpected_letter_spelling_bot_t(self):
+        """Case B: 'Comment BOT if' vs ASR 'Comment Bot T if' flags UNEXPECTED_LETTER_SPELLING."""
+        text = "Comment BOT if you would trust a twenty five thousand dollar Tesla Optimus robot in your home."
+        mock_words = [
+            {"word": "Comment", "startSec": 0.10, "endSec": 0.50, "probability": 0.95},
+            {"word": "Bot", "startSec": 0.55, "endSec": 0.90, "probability": 0.95},
+            # Extra single letter 'T' detected after 'BOT'
+            {"word": "T", "startSec": 0.95, "endSec": 1.15, "probability": 0.85},
+            {"word": "if", "startSec": 1.20, "endSec": 1.35, "probability": 0.95},
+            {"word": "you", "startSec": 1.40, "endSec": 1.55, "probability": 0.95},
+            {"word": "would", "startSec": 1.60, "endSec": 1.80, "probability": 0.95},
+            {"word": "trust", "startSec": 1.85, "endSec": 2.20, "probability": 0.95},
+            {"word": "a", "startSec": 2.25, "endSec": 2.35, "probability": 0.95},
+            {"word": "twenty", "startSec": 2.40, "endSec": 2.75, "probability": 0.95},
+            {"word": "five", "startSec": 2.80, "endSec": 3.10, "probability": 0.95},
+            {"word": "thousand", "startSec": 3.15, "endSec": 3.55, "probability": 0.95},
+            {"word": "dollar", "startSec": 3.60, "endSec": 3.95, "probability": 0.95},
+            {"word": "Tesla", "startSec": 4.00, "endSec": 4.35, "probability": 0.95},
+            {"word": "Optimus", "startSec": 4.40, "endSec": 4.85, "probability": 0.95},
+            {"word": "robot", "startSec": 4.90, "endSec": 5.25, "probability": 0.95},
+            {"word": "in", "startSec": 5.30, "endSec": 5.45, "probability": 0.95},
+            {"word": "your", "startSec": 5.50, "endSec": 5.65, "probability": 0.95},
+            {"word": "home.", "startSec": 5.70, "endSec": 6.10, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, audio_duration_sec=6.2)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["severity"], "warning")
+        self.assertEqual(issues[0]["code"], "UNEXPECTED_LETTER_SPELLING")
+        self.assertIn("Nghi vấn sinh thêm chữ cái 'T' sau 'BOT'", issues[0]["message"])
+        self.assertIn("00:00", issues[0]["message"])
+
+    def test_case_b_exact_match_clean(self):
+        """Case B clean: When BOT is pronounced cleanly as a word, no warning is flagged."""
+        text = "Comment BOT if you would trust a robot in your home."
+        mock_words = [
+            {"word": "Comment", "startSec": 0.10, "endSec": 0.50, "probability": 0.95},
+            {"word": "BOT", "startSec": 0.55, "endSec": 0.90, "probability": 0.95},
+            {"word": "if", "startSec": 0.95, "endSec": 1.15, "probability": 0.95},
+            {"word": "you", "startSec": 1.20, "endSec": 1.35, "probability": 0.95},
+            {"word": "would", "startSec": 1.40, "endSec": 1.60, "probability": 0.95},
+            {"word": "trust", "startSec": 1.65, "endSec": 2.00, "probability": 0.95},
+            {"word": "a", "startSec": 2.05, "endSec": 2.15, "probability": 0.95},
+            {"word": "robot", "startSec": 2.20, "endSec": 2.55, "probability": 0.95},
+            {"word": "in", "startSec": 2.60, "endSec": 2.75, "probability": 0.95},
+            {"word": "your", "startSec": 2.80, "endSec": 2.95, "probability": 0.95},
+            {"word": "home.", "startSec": 3.00, "endSec": 3.40, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, audio_duration_sec=3.5)
+        self.assertEqual(len(issues), 0)
+
+    def test_case_b_human_exact_match_clean(self):
+        """Common uppercase words like 'HUMAN' are read normally and not flagged."""
+        text = "Comment HUMAN if you agree with this statement."
+        mock_words = [
+            {"word": "Comment", "startSec": 0.10, "endSec": 0.50, "probability": 0.95},
+            {"word": "HUMAN", "startSec": 0.55, "endSec": 0.95, "probability": 0.95},
+            {"word": "if", "startSec": 1.00, "endSec": 1.20, "probability": 0.95},
+            {"word": "you", "startSec": 1.25, "endSec": 1.40, "probability": 0.95},
+            {"word": "agree", "startSec": 1.45, "endSec": 1.80, "probability": 0.95},
+            {"word": "with", "startSec": 1.85, "endSec": 2.00, "probability": 0.95},
+            {"word": "this", "startSec": 2.05, "endSec": 2.25, "probability": 0.95},
+            {"word": "statement.", "startSec": 2.30, "endSec": 2.85, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, audio_duration_sec=3.0)
+        self.assertEqual(len(issues), 0)
+
+    def test_real_acronyms_spelled_clean(self):
+        """Real acronyms like USA, FBI, AI spelled out by TTS/ASR do not trigger false warnings."""
+        text = "The USA and FBI utilize advanced AI models for safety."
+        mock_words = [
+            {"word": "The", "startSec": 0.1, "endSec": 0.25, "probability": 0.95},
+            {"word": "U", "startSec": 0.3, "endSec": 0.45, "probability": 0.95},
+            {"word": "S", "startSec": 0.5, "endSec": 0.65, "probability": 0.95},
+            {"word": "A", "startSec": 0.7, "endSec": 0.85, "probability": 0.95},
+            {"word": "and", "startSec": 0.9, "endSec": 1.05, "probability": 0.95},
+            {"word": "F", "startSec": 1.1, "endSec": 1.25, "probability": 0.95},
+            {"word": "B", "startSec": 1.3, "endSec": 1.45, "probability": 0.95},
+            {"word": "I", "startSec": 1.5, "endSec": 1.65, "probability": 0.95},
+            {"word": "utilize", "startSec": 1.7, "endSec": 2.10, "probability": 0.95},
+            {"word": "advanced", "startSec": 2.15, "endSec": 2.60, "probability": 0.95},
+            {"word": "A", "startSec": 2.65, "endSec": 2.80, "probability": 0.95},
+            {"word": "I", "startSec": 2.85, "endSec": 3.00, "probability": 0.95},
+            {"word": "models", "startSec": 3.05, "endSec": 3.45, "probability": 0.95},
+            {"word": "for", "startSec": 3.50, "endSec": 3.65, "probability": 0.95},
+            {"word": "safety.", "startSec": 3.70, "endSec": 4.10, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, audio_duration_sec=4.2)
+        self.assertEqual(len(issues), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

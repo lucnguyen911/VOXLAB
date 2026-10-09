@@ -418,4 +418,67 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(chunks[0].qualityReview?.issues[0].code, "SUSPECTED_SWALLOWED");
     assert.equal(chunks[1].qualityReview?.issues[0].code, "PARTIAL_PRONUNCIATION");
   });
+
+  it("V12: recognizes EXTRA_WORD and UNEXPECTED_LETTER_SPELLING as yellow warnings with contextual messages", () => {
+    const chunks: ChunkItem[] = [
+      {
+        id: "chunk_extra",
+        index: 1,
+        text: "Inside an industrial plant, hazards are governed by corporate insurance policies.",
+        originalText: "Inside an industrial plant, hazards are governed by corporate insurance policies.",
+        status: "ready",
+        durationSec: 5.5,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "EXTRA_WORD",
+              message: "Nghi vấn phát âm thừa từ 'It's' trước 'Inside' — khoảng 00:00. Vui lòng nghe lại.",
+              words: ["its"],
+              timeRange: [0.05, 0.25],
+            },
+          ],
+          summary: "Nghi vấn phát âm thừa từ 'It's' trước 'Inside' — khoảng 00:00. Vui lòng nghe lại.",
+          checkedAt: Date.now(),
+        },
+      },
+      {
+        id: "chunk_spelling",
+        index: 2,
+        text: "Comment BOT if you would trust a robot in your home.",
+        originalText: "Comment BOT if you would trust a robot in your home.",
+        status: "ready",
+        durationSec: 4.2,
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "UNEXPECTED_LETTER_SPELLING",
+              message: "Nghi vấn sinh thêm chữ cái 'T' sau 'BOT' — khoảng 00:01. Vui lòng nghe lại.",
+              words: ["t"],
+              timeRange: [0.95, 1.15],
+            },
+          ],
+          summary: "Nghi vấn sinh thêm chữ cái 'T' sau 'BOT' — khoảng 00:01. Vui lòng nghe lại.",
+          checkedAt: Date.now(),
+        },
+      },
+    ];
+
+    const stats = countChunkQualityIssues(chunks);
+    assert.equal(stats.errorCount, 0);
+    assert.equal(stats.warningCount, 2);
+    assert.equal(isChunkError(chunks[0]), false);
+    assert.equal(isChunkWarning(chunks[0]), true);
+    assert.equal(isChunkError(chunks[1]), false);
+    assert.equal(isChunkWarning(chunks[1]), true);
+    assert.equal(chunks[0].qualityReview?.issues[0].code, "EXTRA_WORD");
+    assert.equal(chunks[1].qualityReview?.issues[0].code, "UNEXPECTED_LETTER_SPELLING");
+    assert.ok(chunks[0].qualityReview?.issues[0].message.includes("Nghi vấn phát âm thừa từ 'It's' trước 'Inside'"));
+    assert.ok(chunks[1].qualityReview?.issues[0].message.includes("Nghi vấn sinh thêm chữ cái 'T' sau 'BOT'"));
+  });
 });

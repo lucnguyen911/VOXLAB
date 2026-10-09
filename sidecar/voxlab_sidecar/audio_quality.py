@@ -456,14 +456,52 @@ def analyze_word_alignment_issues(
                             "words": [w_clean],
                             "timeRange": [round(t_start, 3), round(t_end, 3)],
                         })
-                elif p >= 0.65 and len(w_clean) >= 3 and w_clean not in IGNORED_OMISSION_WORDS:
-                    issues.append({
-                        "severity": "warning",
-                        "code": "EXTRA_WORD",
-                        "message": f'Nghi vấn thừa từ "{w_clean}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
-                        "words": [w_clean],
-                        "timeRange": [round(t_start, 3), round(t_end, 3)],
-                    })
+                else:
+                    w_raw = w_obj.get("word", "").strip()
+                    w_raw = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", w_raw)
+                    if not w_raw:
+                        w_raw = w_clean
+
+                    prev_src_raw = source_words[i1 - 1] if i1 > 0 else ""
+                    prev_src_clean = source_words_clean[i1 - 1] if i1 > 0 else ""
+                    next_src_raw = source_words[i1] if i1 < len(source_words) else ""
+                    next_src_clean = source_words_clean[i1] if i1 < len(source_words) else ""
+
+                    is_letter = (len(w_clean) == 1 and w_clean.isalpha())
+                    is_letter_spelling = is_letter and (
+                        (prev_src_clean and prev_src_clean.endswith(w_clean))
+                        or (prev_src_raw and prev_src_raw.isupper() and len(prev_src_raw) > 1 and w_clean not in ("a", "i"))
+                        or (w_clean not in ("a", "i") and p >= 0.40)
+                    )
+
+                    if is_letter_spelling:
+                        if prev_src_raw:
+                            msg = f"Nghi vấn sinh thêm chữ cái '{w_raw}' sau '{prev_src_raw}' — khoảng {ts}. Vui lòng nghe lại."
+                        elif next_src_raw:
+                            msg = f"Nghi vấn sinh thêm chữ cái '{w_raw}' trước '{next_src_raw}' — khoảng {ts}. Vui lòng nghe lại."
+                        else:
+                            msg = f"Nghi vấn sinh thêm chữ cái '{w_raw}' — khoảng {ts}. Vui lòng nghe lại."
+                        issues.append({
+                            "severity": "warning",
+                            "code": "UNEXPECTED_LETTER_SPELLING",
+                            "message": msg,
+                            "words": [w_clean],
+                            "timeRange": [round(t_start, 3), round(t_end, 3)],
+                        })
+                    elif p >= 0.40 and (len(w_clean) >= 2 or w_clean in ("a", "i")):
+                        if next_src_raw:
+                            msg = f"Nghi vấn phát âm thừa từ '{w_raw}' trước '{next_src_raw}' — khoảng {ts}. Vui lòng nghe lại."
+                        elif prev_src_raw:
+                            msg = f"Nghi vấn phát âm thừa từ '{w_raw}' sau '{prev_src_raw}' — khoảng {ts}. Vui lòng nghe lại."
+                        else:
+                            msg = f"Nghi vấn phát âm thừa từ '{w_raw}' — khoảng {ts}. Vui lòng nghe lại."
+                        issues.append({
+                            "severity": "warning",
+                            "code": "EXTRA_WORD",
+                            "message": msg,
+                            "words": [w_clean],
+                            "timeRange": [round(t_start, 3), round(t_end, 3)],
+                        })
 
         elif tag == "delete":
             # Meaningful words in source text swallowed/missing in ASR

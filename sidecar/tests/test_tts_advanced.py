@@ -1,9 +1,13 @@
 """Unit tests for Global Advanced TTS Settings in sidecar and TTS adapters."""
 from __future__ import annotations
 
+import os
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from voxlab_sidecar.tts.base import Capabilities, SynthesisRequest
 from voxlab_sidecar.tts.service import TtsService
@@ -62,6 +66,51 @@ class TestTtsServiceAdvancedSettings(unittest.TestCase):
         self.assertEqual(req.extra.get("num_step"), 48)
         self.assertEqual(req.extra.get("guidance_scale"), 3.0)
         self.assertEqual(req.extra.get("denoise"), True)
+
+    def test_spoken_text_bot_normalization_preserves_acronyms_and_script(self):
+        mock_adapter = MagicMock()
+        mock_adapter.capabilities = Capabilities(
+            engine="test_engine",
+            display_name="Test Engine",
+            model_id="test-model",
+            supported_languages=("*",),
+            supports_vietnamese=True,
+            supports_voice_clone=False,
+            reference_audio_required=False,
+            reference_text_required=False,
+            supports_cuda=True,
+            supports_cpu=True,
+            supports_speed=True,
+            model_size_mb=100,
+            sample_rate=24000,
+        )
+        mock_adapter.loaded = True
+        mock_adapter.synthesize.return_value = (np.zeros(24000, dtype=np.float32), 24000)
+
+        svc = TtsService([mock_adapter])
+        svc._active = mock_adapter
+
+        mock_ctx = MagicMock()
+        mock_ctx.cancelled = False
+
+        cases = [
+            ("Comment BOT if you trust robots", "Comment bot if you trust robots"),
+            ("Comment HUMAN if you trust robots", "Comment HUMAN if you trust robots"),
+            ("The USA and FBI utilize AI models", "The USA and FBI utilize AI models"),
+            ("ROBOT and BOTTOM are unaffected", "ROBOT and BOTTOM are unaffected"),
+        ]
+
+        with patch("soundfile.write"), patch("os.replace"), patch("os.path.isdir", return_value=True):
+            for original_text, expected_spoken_text in cases:
+                params = {
+                    "engine": "test_engine",
+                    "text": original_text,
+                    "outputPath": "test_output.wav",
+                }
+                res = svc.synthesize("tts.synthesize", params, mock_ctx)
+                req: SynthesisRequest = mock_adapter.synthesize.call_args[0][0]
+                self.assertEqual(req.text, expected_spoken_text)
+
 
 
 class TestOmniVoiceAdapterAdvancedSettings(unittest.TestCase):

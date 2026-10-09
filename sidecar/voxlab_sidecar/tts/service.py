@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any
 
@@ -158,7 +159,13 @@ class TtsService:
         elif caps.reference_audio_required:
             raise SidecarError("INVALID_REQUEST", f"{caps.display_name} requires a reference audio (refAudioPath)")
 
-        req = SynthesisRequest(text=text, language=language, ref_audio_path=ref_audio, ref_text=ref_text,
+        # Internal spoken text normalization for TTS engine:
+        # Prevents common uppercase words (e.g. 'BOT') from being letter-spelled or aspirated abnormally,
+        # while strictly preserving user's script text, project state, and subtitles.
+        # Acronyms ('USA', 'FBI', 'AI') and normal words ('HUMAN') are untouched.
+        spoken_text = re.sub(r"\bBOT\b", "bot", text)
+
+        req = SynthesisRequest(text=spoken_text, language=language, ref_audio_path=ref_audio, ref_text=ref_text,
                                speed=float(speed) if speed is not None else None,
                                extra=extra)
         ctx.check_cancelled()

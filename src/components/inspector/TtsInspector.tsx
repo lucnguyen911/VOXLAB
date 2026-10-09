@@ -181,7 +181,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   generateTooltip,
   completedCount = 0,
   totalCount = 0,
-  progressStage,
+  progressStage: _progressStage,
   isPaused = false,
   onTogglePause,
   onCancel,
@@ -871,7 +871,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                       <Pause className="w-4 h-4 fill-textPrimary text-textPrimary absolute opacity-0 group-hover:opacity-100 transition-opacity" />
                     </span>
                     <span className="truncate">
-                      Đang tạo: {completedCount}/{totalCount} đoạn ({effectivePercent}%){progressStage ? ` · ${progressStage}` : ""}
+                      Đang tạo: {completedCount}/{totalCount} đoạn ({effectivePercent}%)
                     </span>
                   </div>
 
@@ -887,7 +887,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                       <Pause className="w-4 h-4 fill-white absolute opacity-0 group-hover:opacity-100 transition-opacity" />
                     </span>
                     <span className="truncate">
-                      Đang tạo: {completedCount}/{totalCount} đoạn ({effectivePercent}%){progressStage ? ` · ${progressStage}` : ""}
+                      Đang tạo: {completedCount}/{totalCount} đoạn ({effectivePercent}%)
                     </span>
                   </div>
                 </button>
