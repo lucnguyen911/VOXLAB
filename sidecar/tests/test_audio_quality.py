@@ -193,20 +193,22 @@ class AudioQualityTest(unittest.TestCase):
             {"word": w, "startSec": i * 0.15, "endSec": (i * 0.15) + 0.12, "probability": 0.95}
             for i, w in enumerate(text.split())
         ]
-        # At speed=1.0 -> effective WPM is ~384 > 240 threshold -> flags RAPID_PACE
-        issues = audio_quality.analyze_word_alignment_issues(
-            text, mock_words, speed=1.0, language="en", audio_duration_sec=2.5
+        # At speed=1.0 -> effective WPM is ~384 in metrics, but per requirement NO standalone RAPID_PACE warning issue is emitted
+        issues, metrics = audio_quality.analyze_word_alignment_issues(
+            text, mock_words, speed=1.0, language="en", audio_duration_sec=2.5, return_metrics=True
         )
-        self.assertTrue(any(i["code"] == "RAPID_PACE" for i in issues))
+        self.assertFalse(any(i["code"] == "RAPID_PACE" for i in issues))
+        self.assertGreater(metrics["wpm"], 300)
 
-        # When user deliberately chose speed=1.5x -> normalized effective WPM is ~256 (still slightly fast)
-        # But if speed=2.0x -> effective WPM is 192 < 240 threshold -> no RAPID_PACE warning!
-        issues_fast = audio_quality.analyze_word_alignment_issues(
-            text, mock_words, speed=2.0, language="en", audio_duration_sec=2.5
+        # When user deliberately chose speed=2.0x -> normalized effective WPM is 192
+        issues_fast, metrics_fast = audio_quality.analyze_word_alignment_issues(
+            text, mock_words, speed=2.0, language="en", audio_duration_sec=2.5, return_metrics=True
         )
         self.assertFalse(any(i["code"] == "RAPID_PACE" for i in issues_fast))
+        self.assertAlmostEqual(metrics_fast["wpm"], metrics["rawWpm"] / 2.0, places=1)
 
     def test_crowded_words_detection(self):
+        """Crowded or rushed adjacent words do not generate standalone warnings outside the 5 required groups."""
         text = "We observe rapid crowded syllables in this sentence."
         # "rapid", "crowded", "syllables" are 3 consecutive words with dur < 0.09 and gap <= 0.02
         mock_words = [
@@ -221,9 +223,7 @@ class AudioQualityTest(unittest.TestCase):
         ]
         issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
         crowded_issues = [i for i in issues if i["code"] == "CROWDED_WORDS"]
-        self.assertEqual(len(crowded_issues), 1)
-        self.assertIn("rapid", crowded_issues[0]["message"])
-        self.assertIn("syllables", crowded_issues[0]["message"])
+        self.assertEqual(len(crowded_issues), 0)
 
     def test_possible_omission_detection(self):
         text = "This algorithm delivers remarkable stability for speech."
@@ -734,6 +734,88 @@ class AudioQualityTest(unittest.TestCase):
         warnings = res.get("boundaryWarnings", [])
         self.assertTrue(any(w["type"] == "gap_too_long" for w in warnings))
         self.assertTrue(any(w["type"] == "click_pop_risk" for w in warnings))
+
+    def test_vietnamese_phonetic_equivalence_gi_d_and_tr_ch(self):
+        """Vietnamese phonetic variants (giọng vs dọng, trên vs chên) are equivalent and do not trigger swallowed/missing warnings."""
+        text = "bản nghe thử giọng đọc mẫu trên VoxLab"
+        mock_words = [
+            {"word": "bản", "startSec": 0.1, "endSec": 0.3, "probability": 0.95},
+            {"word": "nghe", "startSec": 0.35, "endSec": 0.55, "probability": 0.95},
+            {"word": "thử", "startSec": 0.6, "endSec": 0.8, "probability": 0.95},
+            {"word": "dọng", "startSec": 0.85, "endSec": 1.1, "probability": 0.95}, # giọng -> dọng
+            {"word": "đọc", "startSec": 1.15, "endSec": 1.35, "probability": 0.95},
+            {"word": "mẫu", "startSec": 1.4, "endSec": 1.6, "probability": 0.95},
+            {"word": "chên", "startSec": 1.65, "endSec": 1.85, "probability": 0.95}, # trên -> chên
+            {"word": "VoxLab", "startSec": 1.9, "endSec": 2.4, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
+
+    def test_loanword_podcast_equivalence(self):
+        """Loanword 'podcast' recognized as 'cốt các' does not trigger swallowed warnings."""
+        text = "Trong tập podcast ngày hôm nay"
+        mock_words = [
+            {"word": "Trong", "startSec": 0.1, "endSec": 0.3, "probability": 0.95},
+            {"word": "tập", "startSec": 0.35, "endSec": 0.5, "probability": 0.95},
+            {"word": "cốt", "startSec": 0.55, "endSec": 0.75, "probability": 0.95},
+            {"word": "các", "startSec": 0.8, "endSec": 0.95, "probability": 0.95},
+            {"word": "ngày", "startSec": 1.0, "endSec": 1.2, "probability": 0.95},
+            {"word": "hôm", "startSec": 1.25, "endSec": 1.45, "probability": 0.95},
+            {"word": "nay", "startSec": 1.5, "endSec": 1.7, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
+
+    def test_whisper_youtube_hallucination_filtered(self):
+        """Whisper boilerplate hallucination tokens (e.g. subscribe, ghiền mì gõ) are filtered out and not flagged as EXTRA_WORD."""
+        text = "chúng ta sẽ cùng khám phá"
+        mock_words = [
+            {"word": "subscribe", "startSec": 0.1, "endSec": 0.4, "probability": 0.95},
+            {"word": "kênh", "startSec": 0.45, "endSec": 0.7, "probability": 0.95},
+            {"word": "chúng", "startSec": 1.0, "endSec": 1.2, "probability": 0.95},
+            {"word": "ta", "startSec": 1.25, "endSec": 1.4, "probability": 0.95},
+            {"word": "sẽ", "startSec": 1.45, "endSec": 1.6, "probability": 0.95},
+            {"word": "cùng", "startSec": 1.65, "endSec": 1.85, "probability": 0.95},
+            {"word": "khám", "startSec": 1.9, "endSec": 2.1, "probability": 0.95},
+            {"word": "phá", "startSec": 2.15, "endSec": 2.35, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
+
+    def test_prosodic_conjunction_pauses_not_flagged(self):
+        """Natural pauses (<= 0.70s) before/after conjunctions like 'và' or 'that' are not flagged as abnormal pause."""
+        text_vi = "Chúng ta tiếp tục và hoàn thành nhiệm vụ"
+        mock_vi = [
+            {"word": "Chúng", "startSec": 0.1, "endSec": 0.3, "probability": 0.95},
+            {"word": "ta", "startSec": 0.35, "endSec": 0.5, "probability": 0.95},
+            {"word": "tiếp", "startSec": 0.55, "endSec": 0.75, "probability": 0.95},
+            {"word": "tục", "startSec": 0.80, "endSec": 1.0, "probability": 0.95},
+            # 0.65s natural breath before conjunction 'và'
+            {"word": "và", "startSec": 1.65, "endSec": 1.8, "probability": 0.95},
+            {"word": "hoàn", "startSec": 1.85, "endSec": 2.05, "probability": 0.95},
+            {"word": "thành", "startSec": 2.1, "endSec": 2.3, "probability": 0.95},
+            {"word": "nhiệm", "startSec": 2.35, "endSec": 2.55, "probability": 0.95},
+            {"word": "vụ", "startSec": 2.6, "endSec": 2.8, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text_vi, mock_vi)
+        self.assertEqual(len(issues), 0)
+
+    def test_two_tier_stutter_between_different_script_words_not_flagged(self):
+        """Burst candidates spanning across two different words from the script are discarded by Tier 2 verification."""
+        sr = 24000
+        # Two harmonic bursts (e.g. 100ms 440Hz), valley 50ms
+        t_burst = np.arange(int(0.10 * sr)) / sr
+        burst = (0.35 * np.sin(2 * np.pi * 440 * t_burst)).astype(np.float32)
+        valley = np.zeros(int(0.05 * sr), dtype=np.float32)
+        audio = np.concatenate([np.zeros(int(0.1 * sr), dtype=np.float32), burst, valley, burst, np.zeros(int(0.1 * sr), dtype=np.float32)])
+
+        # ASR confirms burst 1 belongs to "thử" and burst 2 belongs to "giọng"
+        mock_words = [
+            {"word": "thử", "startSec": 0.08, "endSec": 0.22, "probability": 0.95},
+            {"word": "giọng", "startSec": 0.24, "endSec": 0.38, "probability": 0.95},
+        ]
+        stutters = audio_quality.detect_acoustic_stutter(audio, sr, text="thử giọng", asr_words=mock_words)
+        self.assertEqual(len(stutters), 0)
 
 
 if __name__ == "__main__":
