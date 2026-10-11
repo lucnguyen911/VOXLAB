@@ -563,7 +563,9 @@ def analyze_word_alignment_issues(
                                 "words": [w_clean],
                                 "timeRange": [round(t_start, 3), round(t_end, 3)],
                             })
-                    elif p >= 0.65 and (len(w_clean) >= 2 or w_clean in ("a", "i")):
+                    # Extra spoken word (e.g. Test 11 "should", Test 10 "Eat")
+                    # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+                    elif p >= 0.60 and (len(w_clean) >= 2 or w_clean in ("a", "i")):
                         if next_src_raw:
                             msg = f"Nghi vấn phát âm thừa từ '{w_raw}' trước '{next_src_raw}' — khoảng {ts}. Vui lòng nghe lại."
                         elif prev_src_raw:
@@ -708,6 +710,34 @@ def analyze_word_alignment_issues(
                         "severity": "warning",
                         "code": "PARTIAL_PRONUNCIATION",
                         "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm dở dang hoặc thiếu âm tiết ('{aw}') — khoảng {ts}. Vui lòng nghe lại.",
+                        "words": [sw, aw],
+                        "timeRange": [round(t_start, 3), round(t_end, 3)],
+                    })
+                    continue
+
+                # Case 2b: Intrusive syllable / mispronunciation (e.g. "steering" -> "steelering")
+                # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+                dist = levenshtein_dist(sw, aw)
+                ratio = difflib.SequenceMatcher(None, sw, aw).ratio()
+                pk_sw = phonetic_key(sw)
+                pk_aw = phonetic_key(aw)
+                has_common_stem = (
+                    (sw[:2] == aw[:2] or pk_sw[:2] == pk_aw[:2])
+                    and (sw[-2:] == aw[-2:] or pk_sw[-2:] == pk_aw[-2:])
+                )
+                if (
+                    not is_pn
+                    and len(sw) >= 4
+                    and len(aw) >= 4
+                    and dist in (2, 3)
+                    and ratio >= 0.68
+                    and has_common_stem
+                    and w_prob >= 0.50
+                ):
+                    issues.append({
+                        "severity": "warning",
+                        "code": "SUSPECTED_MISPRONUNCIATION",
+                        "message": f"Nghi vấn phát âm sai từ '{sw}' (ASR ghi nhận '{aw}') — khoảng {ts}. Vui lòng nghe lại.",
                         "words": [sw, aw],
                         "timeRange": [round(t_start, 3), round(t_end, 3)],
                     })

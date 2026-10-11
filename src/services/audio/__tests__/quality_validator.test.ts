@@ -9,6 +9,8 @@ import {
   isChunkPass,
   isReviewCurrent,
   validateChunkAudioQuality,
+  getIssueShortLabel,
+  getChunkBadgeInfo,
 } from "../qualityValidator";
 import { validateMasterBoundaries } from "../masterExport";
 
@@ -576,5 +578,224 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(warnings[0].type, "gap_too_long");
     assert.equal(warnings[0].chunkIndex, 0);
     assert.ok(warnings[0].message.includes("5.0s > 4.0s"));
+  });
+
+  it("V15: getIssueShortLabel maps all quality error and warning codes to ultra-short categories", () => {
+    // 5 core groups
+    assert.equal(getIssueShortLabel("SUSPECTED_STUTTER"), "Vấp từ");
+    assert.equal(getIssueShortLabel("REPEATED_WORD"), "Lặp từ");
+    assert.equal(getIssueShortLabel("REPEATED_WORDS"), "Lặp từ");
+    assert.equal(getIssueShortLabel("MISSING_WORD"), "Thiếu từ");
+    assert.equal(getIssueShortLabel("SUSPECTED_SWALLOWED"), "Thiếu từ");
+    assert.equal(getIssueShortLabel("PARTIAL_PRONUNCIATION"), "Phát âm sai");
+    assert.equal(getIssueShortLabel("SUSPECTED_MISPRONUNCIATION"), "Phát âm sai");
+    assert.equal(getIssueShortLabel("EXTRA_WORD"), "Đọc thừa");
+    assert.equal(getIssueShortLabel("UNEXPECTED_LETTER_SPELLING"), "Đọc thừa");
+    assert.equal(getIssueShortLabel("ABNORMAL_PAUSE"), "Nghỉ bất thường");
+    assert.equal(getIssueShortLabel("suspicious_intra_pause"), "Nghỉ bất thường");
+
+    // Technical / error codes
+    assert.equal(getIssueShortLabel("DURATION_TOO_SHORT"), "Audio quá ngắn");
+    assert.equal(getIssueShortLabel("too_short"), "Audio quá ngắn");
+    assert.equal(getIssueShortLabel("AUDIO_SILENT"), "Audio im lặng");
+    assert.equal(getIssueShortLabel("FILE_CORRUPTED"), "File audio lỗi");
+
+    // Fallbacks
+    assert.equal(getIssueShortLabel("UNKNOWN_NEW_CODE"), "Cần kiểm tra");
+    assert.equal(getIssueShortLabel(undefined), "Cần kiểm tra");
+    assert.equal(getIssueShortLabel(""), "Cần kiểm tra");
+  });
+
+  it("V16: getChunkBadgeInfo deduplicates issues of same category and handles multi-category chunks", () => {
+    // Case 1: 3 stutter warnings on the same chunk -> deduplicated to 1 label "Vấp từ"
+    const chunk3Stutters: ChunkItem = {
+      id: "c_stutter",
+      index: 1,
+      text: "Test text",
+      originalText: "Test text",
+      status: "ready",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "warning",
+        summary: "Nghi vấn vấp âm",
+        checkedAt: Date.now(),
+        issues: [
+          { severity: "warning", code: "SUSPECTED_STUTTER", message: "Vấp 1" },
+          { severity: "warning", code: "SUSPECTED_STUTTER", message: "Vấp 2" },
+          { severity: "warning", code: "SUSPECTED_STUTTER", message: "Vấp 3" },
+        ],
+      },
+    };
+    const badge1 = getChunkBadgeInfo(chunk3Stutters);
+    assert.ok(badge1);
+    assert.equal(badge1.status, "warning");
+    assert.equal(badge1.uniqueLabels.length, 1);
+    assert.equal(badge1.fullBadgeText, "Vấp từ");
+    assert.equal(badge1.compactBadgeText, "Vấp từ");
+    assert.equal(badge1.issuesCount, 3);
+
+    // Case 2: 3 stutters + 1 extra word -> "Vấp từ · Đọc thừa" (full) or "Vấp từ · +1" (compact)
+    const chunkMulti: ChunkItem = {
+      id: "c_multi",
+      index: 2,
+      text: "Test text multi",
+      originalText: "Test text multi",
+      status: "ready",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "warning",
+        summary: "Nghi vấn vấp âm và đọc thừa",
+        checkedAt: Date.now(),
+        issues: [
+          { severity: "warning", code: "SUSPECTED_STUTTER", message: "Vấp 1" },
+          { severity: "warning", code: "SUSPECTED_STUTTER", message: "Vấp 2" },
+          { severity: "warning", code: "SUSPECTED_STUTTER", message: "Vấp 3" },
+          { severity: "warning", code: "EXTRA_WORD", message: "Thừa từ" },
+        ],
+      },
+    };
+    const badge2 = getChunkBadgeInfo(chunkMulti);
+    assert.ok(badge2);
+    assert.equal(badge2.status, "warning");
+    assert.deepEqual(badge2.uniqueLabels, ["Vấp từ", "Đọc thừa"]);
+    assert.equal(badge2.fullBadgeText, "Vấp từ · Đọc thừa");
+    assert.equal(badge2.compactBadgeText, "Vấp từ · +1");
+    assert.equal(badge2.issuesCount, 4);
+
+    // Case 3: 3 distinct categories -> "Vấp từ · Đọc thừa · Nghỉ bất thường" (full) or "Vấp từ · +2" (compact)
+    const chunk3Categories: ChunkItem = {
+      id: "c_tri",
+      index: 3,
+      text: "Test text tri",
+      originalText: "Test text tri",
+      status: "ready",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "warning",
+        summary: "Nhiều cảnh báo",
+        checkedAt: Date.now(),
+        issues: [
+          { severity: "warning", code: "SUSPECTED_STUTTER", message: "Vấp" },
+          { severity: "warning", code: "EXTRA_WORD", message: "Thừa" },
+          { severity: "warning", code: "ABNORMAL_PAUSE", message: "Nghỉ" },
+        ],
+      },
+    };
+    const badge3 = getChunkBadgeInfo(chunk3Categories);
+    assert.ok(badge3);
+    assert.equal(badge3.fullBadgeText, "Vấp từ · Đọc thừa · Nghỉ bất thường");
+    assert.equal(badge3.compactBadgeText, "Vấp từ · +2");
+  });
+
+  it("V17: getChunkBadgeInfo formats error and unverified chunks properly and returns null for pass", () => {
+    // Chunk 03: 0.1s WAV error -> "Audio quá ngắn"
+    const chunk03: ChunkItem = {
+      id: "chunk_03",
+      index: 3,
+      text: "Too short",
+      originalText: "Too short",
+      status: "failed",
+      durationSec: 0.1,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "error",
+        summary: "Thời lượng âm thanh quá ngắn (< 0.2s)",
+        checkedAt: Date.now(),
+        issues: [{ severity: "error", code: "DURATION_TOO_SHORT", message: "Quá ngắn" }],
+      },
+    };
+    const badge03 = getChunkBadgeInfo(chunk03);
+    assert.ok(badge03);
+    assert.equal(badge03.status, "error");
+    assert.equal(badge03.fullBadgeText, "Audio quá ngắn");
+
+    // Unverified chunk -> "Chưa kiểm chứng"
+    const chunkUnverified: ChunkItem = {
+      id: "chunk_unv",
+      index: 4,
+      text: "Unverified text",
+      originalText: "Unverified text",
+      status: "ready",
+      durationSec: 3.0,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "unverified",
+        summary: "Chưa kiểm chứng (ASR không khả dụng)",
+        checkedAt: Date.now(),
+        issues: [],
+      },
+    };
+    const badgeUnv = getChunkBadgeInfo(chunkUnverified);
+    assert.ok(badgeUnv);
+    assert.equal(badgeUnv.status, "unverified");
+    assert.equal(badgeUnv.fullBadgeText, "Chưa kiểm chứng");
+    assert.equal(badgeUnv.compactBadgeText, "Chưa kiểm chứng");
+
+    // Pass chunk -> null (no badge)
+    const chunkPass: ChunkItem = {
+      id: "chunk_01",
+      index: 1,
+      text: "Clean",
+      originalText: "Clean",
+      status: "ready",
+      durationSec: 4.2,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "pass",
+        summary: "Đạt",
+        checkedAt: Date.now(),
+        issues: [],
+      },
+    };
+    assert.equal(getChunkBadgeInfo(chunkPass), null);
+
+    // Pending chunk -> null (no badge)
+    const chunkPending: ChunkItem = {
+      id: "chunk_05",
+      index: 5,
+      text: "Pending",
+      originalText: "Pending",
+      status: "pending",
+      pauseAfterMs: "auto",
+    };
+    assert.equal(getChunkBadgeInfo(chunkPending), null);
+  });
+
+  it("V18: backend retains technical data (code, message, words, timeRange) while UI badge is concise", () => {
+    const chunk: ChunkItem = {
+      id: "c_detail",
+      index: 1,
+      text: "The steering wheel provides accurate feedback.",
+      originalText: "The steering wheel provides accurate feedback.",
+      status: "ready",
+      durationSec: 3.5,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "warning",
+        summary: "Nghi vấn phát âm sai",
+        checkedAt: Date.now(),
+        issues: [
+          {
+            severity: "warning",
+            code: "SUSPECTED_MISPRONUNCIATION",
+            message: "Nghi vấn phát âm sai từ 'steering' (ASR ghi nhận 'steelering') — khoảng 00:01. Vui lòng nghe lại.",
+            words: ["steering", "steelering"],
+            timeRange: [1.2, 1.85],
+          },
+        ],
+      },
+    };
+
+    // UI badge is strictly short
+    const badge = getChunkBadgeInfo(chunk);
+    assert.ok(badge);
+    assert.equal(badge.fullBadgeText, "Phát âm sai");
+
+    // Underlying technical data is completely preserved
+    const issue = chunk.qualityReview!.issues[0];
+    assert.equal(issue.code, "SUSPECTED_MISPRONUNCIATION");
+    assert.deepEqual(issue.words, ["steering", "steelering"]);
+    assert.deepEqual(issue.timeRange, [1.2, 1.85]);
+    assert.ok(issue.message.includes("steelering"));
   });
 });

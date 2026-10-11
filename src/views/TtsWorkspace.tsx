@@ -52,6 +52,8 @@ import {
   isChunkWarning,
   isChunkUnverified,
   validateChunkAudioQuality,
+  getChunkBadgeInfo,
+  getIssueShortLabel,
 } from "../services/audio/qualityValidator";
 
 
@@ -1492,6 +1494,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                   : playingChunkId === chunk.id;
                 const chunkIsError = isChunkError(chunk);
                 const chunkIsWarning = isChunkWarning(chunk);
+                const badgeInfo = getChunkBadgeInfo(chunk);
 
                 return (
                   <div
@@ -1541,36 +1544,40 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                           </span>
                         )}
 
-                        {chunkIsError && chunk.status !== "generating" && (
-                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-danger/15 text-danger border border-danger/30 flex items-center gap-1.5 shrink-0" title={chunk.errorMessage || chunk.qualityReview?.summary}>
-                            <AlertCircle className="w-3.5 h-3.5" />
-                            <span>{t.tts.failed}</span>
-                            {(chunk.errorMessage || chunk.qualityReview?.summary) && (
-                              <span className="font-normal opacity-90 max-w-[280px] truncate">· {chunk.errorMessage || chunk.qualityReview?.summary}</span>
-                            )}
+                        {chunkIsError && chunk.status !== "generating" && badgeInfo && (
+                          <span
+                            className="text-xs font-semibold px-2 py-0.5 rounded-md bg-danger/15 text-danger border border-danger/30 flex items-center gap-1.5 shrink-0"
+                            title={chunk.errorMessage || chunk.qualityReview?.summary || badgeInfo.fullBadgeText}
+                          >
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span className="hidden sm:inline">{badgeInfo.fullBadgeText}</span>
+                            <span className="inline sm:hidden">{badgeInfo.compactBadgeText}</span>
                           </span>
                         )}
 
-                        {chunkIsWarning && chunk.status !== "generating" && (
-                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 border border-amber-500/30 flex items-center gap-1.5 shrink-0" title={chunk.qualityReview?.summary}>
-                            <AlertTriangle className="w-3.5 h-3.5" />
-                            <span>Cảnh báo</span>
-                            {chunk.qualityReview?.summary && (
-                              <span className="font-normal opacity-90 max-w-[280px] truncate">· {chunk.qualityReview.summary}</span>
-                            )}
-                          </span>
+                        {chunkIsWarning && chunk.status !== "generating" && badgeInfo && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedIssuesChunks((prev) => ({ ...prev, [chunk.id]: !prev[chunk.id] }));
+                            }}
+                            className="text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 border border-amber-500/30 flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+                            title="Bấm để xem chi tiết vấn đề"
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            <span className="hidden sm:inline">{badgeInfo.fullBadgeText}</span>
+                            <span className="inline sm:hidden">{badgeInfo.compactBadgeText}</span>
+                          </button>
                         )}
 
                         {isChunkUnverified(chunk) && chunk.status !== "generating" && (
                           <span
                             className="text-xs font-medium px-2 py-0.5 rounded-md bg-surface3 text-textSecondary border border-borderDefault flex items-center gap-1.5 shrink-0"
-                            title={chunk.qualityReview?.summary}
+                            title="Đoạn âm thanh chưa được kiểm chứng qua ASR"
                           >
-                            <span className="w-1.5 h-1.5 rounded-full bg-textMuted" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-textMuted shrink-0" />
                             <span>Chưa kiểm chứng</span>
-                            {chunk.qualityReview?.summary && (
-                              <span className="font-normal opacity-80 max-w-[260px] truncate">· {chunk.qualityReview.summary}</span>
-                            )}
                           </span>
                         )}
                       </div>
@@ -1673,8 +1680,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                       />
                     </div>
 
-                    {/* Multi-issue expandable breakdown if more than 1 issue */}
-                    {chunk.qualityReview?.issues && chunk.qualityReview.issues.length > 1 && (
+                    {/* Expandable breakdown for detected issues */}
+                    {chunk.qualityReview?.issues && chunk.qualityReview.issues.length > 0 && (
                       <div className="pt-1.5 border-t border-borderDefault/40 text-xs" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
@@ -1683,21 +1690,67 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                           }}
                           className="text-textSecondary hover:text-accent font-medium flex items-center gap-1 cursor-pointer transition-colors"
                         >
-                          <AlertTriangle className="w-3 h-3 text-amber-500" />
-                          <span>{expandedIssuesChunks[chunk.id] ? "Thu gọn chi tiết vấn đề" : `Xem tất cả ${chunk.qualityReview.issues.length} vấn đề phát hiện`}</span>
+                          <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                          <span>
+                            {expandedIssuesChunks[chunk.id]
+                              ? "Thu gọn chi tiết"
+                              : chunk.qualityReview.issues.length === 1
+                              ? "Xem chi tiết vấn đề"
+                              : `Xem tất cả ${chunk.qualityReview.issues.length} vấn đề phát hiện`}
+                          </span>
                           <ChevronDown className={`w-3 h-3 transition-transform ${expandedIssuesChunks[chunk.id] ? "rotate-180" : ""}`} />
                         </button>
                         {expandedIssuesChunks[chunk.id] && (
-                          <div className="mt-1.5 space-y-1 pl-2 border-l-2 border-amber-500/40">
-                            {chunk.qualityReview.issues.map((iss, idx) => (
-                              <div key={idx} className="text-textSecondary leading-tight flex items-start gap-1.5 py-0.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0 mt-1" />
-                                <div className="flex-1 min-w-0">
-                                  <span className="font-semibold text-textPrimary">[{iss.code}] </span>
-                                  <span>{iss.message}</span>
+                          <div className="mt-2 space-y-2 pl-2 border-l-2 border-amber-500/40">
+                            {chunk.qualityReview.issues.map((iss, idx) => {
+                              const shortLabel = getIssueShortLabel(iss.code);
+                              const hasTime = Array.isArray(iss.timeRange) && iss.timeRange.length === 2;
+                              const timeStr = hasTime
+                                ? `${Math.floor(iss.timeRange![0] / 60).toString().padStart(2, "0")}:${Math.floor(iss.timeRange![0] % 60).toString().padStart(2, "0")}`
+                                : "";
+                              return (
+                                <div key={idx} className="text-textSecondary leading-snug flex items-start justify-between gap-2 py-0.5">
+                                  <div className="flex items-start gap-1.5 min-w-0 flex-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0 mt-1.5" />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded text-[11px]">
+                                          {shortLabel}
+                                        </span>
+                                        {timeStr && (
+                                          <span className="text-[11px] font-mono text-textMuted bg-surface2 px-1 py-0.5 rounded">
+                                            {timeStr}
+                                          </span>
+                                        )}
+                                        {iss.words && iss.words.length > 0 && (
+                                          <span className="text-[11px] text-textSecondary italic">
+                                            (Từ: {iss.words.join(", ")})
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="mt-0.5 text-textPrimary text-xs">{iss.message}</p>
+                                    </div>
+                                  </div>
+                                  {chunk.status === "ready" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (onPlayChunk) {
+                                          onPlayChunk(chunk);
+                                        } else {
+                                          handlePlayToggle(chunk.id);
+                                        }
+                                      }}
+                                      className="px-2 py-0.5 rounded bg-surface2 hover:bg-surface3 text-[11px] text-textPrimary font-medium border border-borderDefault shrink-0 transition-colors flex items-center gap-1 cursor-pointer"
+                                      title="Nghe lại đoạn này"
+                                    >
+                                      <Play className="w-2.5 h-2.5 fill-current text-accent" />
+                                      <span>Nghe lại</span>
+                                    </button>
+                                  )}
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
                       </div>

@@ -817,6 +817,77 @@ class AudioQualityTest(unittest.TestCase):
         stutters = audio_quality.detect_acoustic_stutter(audio, sr, text="thử giọng", asr_words=mock_words)
         self.assertEqual(len(stutters), 0)
 
+    def test_mispronunciation_detection_steering_vs_steelering(self):
+        """Test 11 case: 'steering' pronounced with intrusive syllable as 'steelering' is detected as SUSPECTED_MISPRONUNCIATION."""
+        text = "The steering wheel provides accurate feedback."
+        mock_words = [
+            {"word": "The", "startSec": 0.1, "endSec": 0.25, "probability": 0.95},
+            {"word": "steelering", "startSec": 0.3, "endSec": 0.85, "probability": 0.92},
+            {"word": "wheel", "startSec": 0.9, "endSec": 1.15, "probability": 0.95},
+            {"word": "provides", "startSec": 1.2, "endSec": 1.55, "probability": 0.95},
+            {"word": "accurate", "startSec": 1.6, "endSec": 1.95, "probability": 0.95},
+            {"word": "feedback.", "startSec": 2.0, "endSec": 2.45, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+        self.assertIn("steering", issues[0]["words"])
+        self.assertIn("steelering", issues[0]["words"])
+
+    def test_extra_word_detection_should_test_11(self):
+        """Test 11 case: extra spoken word 'should' in 'so you never miss a single update' is detected as EXTRA_WORD."""
+        text = "so you never miss a single update"
+        mock_words = [
+            {"word": "so", "startSec": 0.1, "endSec": 0.25, "probability": 0.95},
+            {"word": "you", "startSec": 0.26, "endSec": 0.40, "probability": 0.95},
+            {"word": "should", "startSec": 0.45, "endSec": 0.70, "probability": 0.88},
+            {"word": "never", "startSec": 0.75, "endSec": 1.00, "probability": 0.95},
+            {"word": "miss", "startSec": 1.05, "endSec": 1.25, "probability": 0.95},
+            {"word": "a", "startSec": 1.26, "endSec": 1.35, "probability": 0.95},
+            {"word": "single", "startSec": 1.40, "endSec": 1.70, "probability": 0.95},
+            {"word": "update", "startSec": 1.75, "endSec": 2.10, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "EXTRA_WORD")
+        self.assertEqual(issues[0]["words"], ["should"])
+
+    def test_extra_word_detection_eat_test_10(self):
+        """Test 10 case: extra spoken word 'Eat' outside script is detected as EXTRA_WORD."""
+        text = "Inside an industrial plant, hazards are governed by policies."
+        mock_words = [
+            {"word": "Inside", "startSec": 0.1, "endSec": 0.4, "probability": 0.95},
+            {"word": "Eat", "startSec": 0.45, "endSec": 0.75, "probability": 0.85},
+            {"word": "an", "startSec": 0.8, "endSec": 0.95, "probability": 0.95},
+            {"word": "industrial", "startSec": 1.0, "endSec": 1.5, "probability": 0.95},
+            {"word": "plant,", "startSec": 1.55, "endSec": 1.9, "probability": 0.95},
+            {"word": "hazards", "startSec": 2.0, "endSec": 2.4, "probability": 0.95},
+            {"word": "are", "startSec": 2.45, "endSec": 2.6, "probability": 0.95},
+            {"word": "governed", "startSec": 2.65, "endSec": 3.0, "probability": 0.95},
+            {"word": "by", "startSec": 3.05, "endSec": 3.2, "probability": 0.95},
+            {"word": "policies.", "startSec": 3.25, "endSec": 3.7, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "EXTRA_WORD")
+        self.assertEqual(issues[0]["words"], ["eat"])
+
+    def test_intentional_repetition_in_script_not_flagged(self):
+        """Intentional repeat in script (e.g. 'that that') is not flagged as stutter or duplicate."""
+        text = "He knew that that was the right answer."
+        mock_words = [
+            {"word": "He", "startSec": 0.1, "endSec": 0.3, "probability": 0.95},
+            {"word": "knew", "startSec": 0.35, "endSec": 0.6, "probability": 0.95},
+            {"word": "that", "startSec": 0.65, "endSec": 0.85, "probability": 0.95},
+            {"word": "that", "startSec": 0.9, "endSec": 1.1, "probability": 0.95},
+            {"word": "was", "startSec": 1.15, "endSec": 1.3, "probability": 0.95},
+            {"word": "the", "startSec": 1.35, "endSec": 1.45, "probability": 0.95},
+            {"word": "right", "startSec": 1.5, "endSec": 1.75, "probability": 0.95},
+            {"word": "answer.", "startSec": 1.8, "endSec": 2.2, "probability": 0.95},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
+        self.assertEqual(len(issues), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

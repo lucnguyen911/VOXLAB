@@ -437,10 +437,11 @@ export const MOCK_CHUNKS: ChunkItem[] = [
       text: "Trong tập podcast ngày hôm nay, chúng ta sẽ cùng khám phá một chủ đề vô cùng hấp dẫn: Tương lai của Trí tuệ Nhân tạo trong việc sản xuất nội dung âm thanh dài tập.",
       issues: [
         {
-          code: "suspicious_intra_pause",
+          code: "ABNORMAL_PAUSE",
           severity: "warning",
           message: "Phát hiện khoảng ngắt có thể bất thường giữa 'podcast' và 'ngày' (0.58s). Vui lòng nghe lại đoạn này.",
           words: ["podcast", "ngày"],
+          timeRange: [1.2, 1.78],
         },
       ],
     },
@@ -461,7 +462,7 @@ export const MOCK_CHUNKS: ChunkItem[] = [
       text: "Với sự bùng nổ của các mô hình học sâu tại phiên bản v2.0, việc tạo ra giọng nói tự nhiên, giàu cảm xúc đã không còn là đặc quyền của các phòng thu chuyên nghiệp.",
       issues: [
         {
-          code: "too_short",
+          code: "DURATION_TOO_SHORT",
           severity: "error",
           message: "Thời lượng âm thanh quá ngắn (< 0.2s)",
         },

@@ -1,4 +1,4 @@
-import { AudioQualityReview, ChunkItem } from "../../types/ui";
+import { AudioQualityReview, AudioQualityStatus, ChunkItem } from "../../types/ui";
 import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
 
@@ -101,6 +101,155 @@ export function countChunkQualityIssues(chunks: ChunkItem[]): ChunkQualityStats 
     unverifiedChunks,
     passChunks,
   };
+}
+
+/**
+ * Maps a quality issue code to a concise, human-friendly short category label.
+ *
+ * Mappings:
+ * - SUSPECTED_STUTTER -> Vấp từ
+ * - REPEATED_WORD, REPEATED_WORDS -> Lặp từ
+ * - MISSING_WORD, SUSPECTED_SWALLOWED -> Thiếu từ
+ * - PARTIAL_PRONUNCIATION, SUSPECTED_MISPRONUNCIATION -> Phát âm sai
+ * - EXTRA_WORD, UNEXPECTED_LETTER_SPELLING -> Đọc thừa
+ * - ABNORMAL_PAUSE, SUSPICIOUS_INTRA_PAUSE -> Nghỉ bất thường
+ * - DURATION_TOO_SHORT, TOO_SHORT -> Audio quá ngắn
+ * - AUDIO_SILENT -> Audio im lặng
+ * - FILE_CORRUPTED -> File audio lỗi
+ * - Unmapped -> Cần kiểm tra
+ */
+export function getIssueShortLabel(code?: string): string {
+  if (!code) return "Cần kiểm tra";
+  const normalized = code.toUpperCase();
+  switch (normalized) {
+    case "SUSPECTED_STUTTER":
+      return "Vấp từ";
+    case "REPEATED_WORD":
+    case "REPEATED_WORDS":
+      return "Lặp từ";
+    case "MISSING_WORD":
+    case "SUSPECTED_SWALLOWED":
+      return "Thiếu từ";
+    case "PARTIAL_PRONUNCIATION":
+    case "SUSPECTED_MISPRONUNCIATION":
+      return "Phát âm sai";
+    case "EXTRA_WORD":
+    case "UNEXPECTED_LETTER_SPELLING":
+      return "Đọc thừa";
+    case "ABNORMAL_PAUSE":
+    case "SUSPICIOUS_INTRA_PAUSE":
+      return "Nghỉ bất thường";
+    case "DURATION_TOO_SHORT":
+    case "TOO_SHORT":
+      return "Audio quá ngắn";
+    case "AUDIO_SILENT":
+      return "Audio im lặng";
+    case "FILE_CORRUPTED":
+      return "File audio lỗi";
+    default:
+      return "Cần kiểm tra";
+  }
+}
+
+export interface ChunkBadgeInfo {
+  status: AudioQualityStatus;
+  primaryLabel: string;
+  fullBadgeText: string;
+  compactBadgeText: string;
+  uniqueLabels: string[];
+  issuesCount: number;
+}
+
+/**
+ * Computes ultra-short, human-friendly badge information for a chunk.
+ * Guarantees:
+ * - Deduplicates issues of the same group to show only one label.
+ * - For warnings: returns concise category names, e.g. "Vấp từ · Đọc thừa" (full) or "Vấp từ · +1" (compact).
+ * - For errors: returns clear short error name, e.g. "Audio quá ngắn".
+ * - For unverified: returns "Chưa kiểm chứng".
+ * - For pass / pending: returns null (no badge).
+ */
+export function getChunkBadgeInfo(chunk: ChunkItem): ChunkBadgeInfo | null {
+  if (isChunkError(chunk)) {
+    const issues = chunk.qualityReview?.issues || [];
+    const uniqueLabels: string[] = [];
+    for (const iss of issues) {
+      const label = getIssueShortLabel(iss.code);
+      if (!uniqueLabels.includes(label)) {
+        uniqueLabels.push(label);
+      }
+    }
+
+    let primaryLabel = uniqueLabels[0];
+    if (!primaryLabel) {
+      const errMsg = (chunk.errorMessage || chunk.qualityReview?.summary || "").toLowerCase();
+      if (errMsg.includes("quá ngắn") || errMsg.includes("short")) {
+        primaryLabel = "Audio quá ngắn";
+      } else if (errMsg.includes("im lặng") || errMsg.includes("silent")) {
+        primaryLabel = "Audio im lặng";
+      } else if (errMsg.includes("lỗi") || errMsg.includes("corrupt")) {
+        primaryLabel = "File audio lỗi";
+      } else {
+        primaryLabel = "Thất bại";
+      }
+      uniqueLabels.push(primaryLabel);
+    }
+
+    const fullBadgeText = uniqueLabels.join(" · ");
+    const compactBadgeText =
+      uniqueLabels.length > 1 ? `${uniqueLabels[0]} · +${uniqueLabels.length - 1}` : uniqueLabels[0];
+
+    return {
+      status: "error",
+      primaryLabel,
+      fullBadgeText,
+      compactBadgeText,
+      uniqueLabels,
+      issuesCount: issues.length || 1,
+    };
+  }
+
+  if (isChunkWarning(chunk)) {
+    const issues = chunk.qualityReview?.issues || [];
+    const uniqueLabels: string[] = [];
+    for (const iss of issues) {
+      const label = getIssueShortLabel(iss.code);
+      if (!uniqueLabels.includes(label)) {
+        uniqueLabels.push(label);
+      }
+    }
+
+    if (uniqueLabels.length === 0) {
+      uniqueLabels.push("Cần kiểm tra");
+    }
+
+    const primaryLabel = uniqueLabels[0];
+    const fullBadgeText = uniqueLabels.join(" · ");
+    const compactBadgeText =
+      uniqueLabels.length > 1 ? `${uniqueLabels[0]} · +${uniqueLabels.length - 1}` : uniqueLabels[0];
+
+    return {
+      status: "warning",
+      primaryLabel,
+      fullBadgeText,
+      compactBadgeText,
+      uniqueLabels,
+      issuesCount: issues.length,
+    };
+  }
+
+  if (isChunkUnverified(chunk)) {
+    return {
+      status: "unverified",
+      primaryLabel: "Chưa kiểm chứng",
+      fullBadgeText: "Chưa kiểm chứng",
+      compactBadgeText: "Chưa kiểm chứng",
+      uniqueLabels: ["Chưa kiểm chứng"],
+      issuesCount: 0,
+    };
+  }
+
+  return null;
 }
 
 /**
