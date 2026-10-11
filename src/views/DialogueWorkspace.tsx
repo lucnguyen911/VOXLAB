@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
-  Download,
-  FileText,
   ArrowRight,
   FileAudio,
+  Play,
+  Pause,
+  RefreshCw,
 } from "lucide-react";
+import { useI18n } from "../i18n/context";
 import { VoiceProfile } from "../types/ui";
 import {
   DialogueCharacter,
@@ -52,6 +54,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
   voices,
   onNavigateToClone,
 }) => {
+  const { t } = useI18n();
+
   // Stage management: "prep" (Soạn thảo) vs "studio" (Tạo giọng)
   const [stage, setStage] = useState<"prep" | "studio">("prep");
 
@@ -133,7 +137,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
   const [masterAudioUrl, setMasterAudioUrl] = useState<string | null>(null);
   const [masterDurationSec, setMasterDurationSec] = useState<number>(0);
   const [isPlayingMaster, setIsPlayingMaster] = useState(false);
-  const [masterSrtContent, setMasterSrtContent] = useState<string | null>(null);
+  const [isAssemblingMaster, setIsAssemblingMaster] = useState(false);
+  const lastSegmentsSignatureRef = useRef<string>("");
 
   // Individual segment playback state
   const [activePlayingSegmentId, setActivePlayingSegmentId] = useState<string | null>(null);
@@ -348,13 +353,15 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 
   // Reassembles master audio from current ready segments
   const updateMasterAssembly = async (currentSegments: DialogueSegment[]) => {
-    const readySegs = currentSegments.filter((s) => s.status === "ready" && s.audioFilePath);
+    const readySegs = currentSegments.filter(
+      (s) => s.status === "ready" && (!!s.audioFilePath || !!s.audioBlobUrl || !!s.audioBuffer)
+    );
     if (readySegs.length === 0) return;
 
     const plan = calculateDialogueTimeline(currentSegments, settings);
     const ai = await getSharedAiServices();
 
-    if (ai && readySegs.length === currentSegments.length) {
+    if (ai && readySegs.length === currentSegments.length && readySegs.every((s) => !!s.audioFilePath)) {
       try {
         const masterPath = await ai.scratchPath("dialogue", "dialogue_master_preview.wav");
         const inputs = currentSegments.map((seg, i) => ({
@@ -382,18 +389,6 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       const url = URL.createObjectURL(assembly.blob);
       setMasterAudioUrl(url);
       setMasterDurationSec(assembly.totalDurationSec);
-    }
-
-    if (settings.exportSrt) {
-      const subtitleSettings = loadSubtitleSettings();
-      setMasterSrtContent(
-        generateDialogueSrt(plan.timeline, {
-          aspectRatio: subtitleSettings.aspectRatio,
-          maxLines: subtitleSettings.maxLines,
-        })
-      );
-    } else {
-      setMasterSrtContent(null);
     }
   };
 
@@ -754,44 +749,49 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     }
   };
 
-  // Download SRT
-  const handleDownloadSrt = async () => {
-    const readySegs = segments.filter((s) => s.status === "ready");
-    if (readySegs.length === 0 && !masterSrtContent) {
-      alert("Chưa có lượt thoại nào để xuất phụ đề.");
+  // Master audio full preview handler (stitched continuous dialogue across all segments)
+  const handlePreviewMasterAudio = async () => {
+    if (isConverting || isAssemblingMaster) return;
+
+    if (isPlayingMaster) {
+      setIsPlayingMaster(false);
       return;
     }
-    const subtitleSettings = loadSubtitleSettings();
-    const plan = calculateDialogueTimeline(readySegs, settings);
-    const content = generateDialogueSrt(plan.timeline, {
-      aspectRatio: subtitleSettings.aspectRatio,
-      maxLines: subtitleSettings.maxLines,
-    });
-    setMasterSrtContent(content);
 
-    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-      try {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const chosenPath = await save({
-          defaultPath: "VoxLab_HoiThoai_PhuDe.srt",
-          filters: [
-            { name: "SubRip Subtitle (*.srt)", extensions: ["srt"] },
-            { name: "Tất cả các tệp (*.*)", extensions: ["*"] },
-          ],
-        });
-        if (chosenPath) {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("fs_write_text", { path: chosenPath, content });
-          await invoke("fs_show_in_folder", { path: chosenPath });
-          alert(`Đã lưu tệp phụ đề SRT thành công:\n${chosenPath}`);
-          return;
-        }
-      } catch (err: any) {
-        console.warn("Tauri save SRT error:", err);
-      }
+    // Stop single segment audio playback if active
+    stopSegmentAudio();
+    setActiveSegmentTrack(null);
+
+    const readySegs = segments.filter(
+      (s) => s.status === "ready" && (!!s.audioFilePath || !!s.audioBlobUrl || !!s.audioBuffer)
+    );
+    if (readySegs.length === 0) {
+      alert("Chưa có lượt thoại nào hoàn thành để nghe thử. Vui lòng bấm 'Tạo Audio Hội Thoại' trước.");
+      return;
     }
 
-    downloadTextFile(content, "VoxLab_HoiThoai_PhuDe.srt");
+    // Invalidate cached master audio if ready segments changed
+    const currentSig = readySegs
+      .map((s) => `${s.id}_${s.status}_${s.audioFilePath || s.audioBlobUrl || ""}_${s.durationSec}`)
+      .join("|");
+    if (lastSegmentsSignatureRef.current !== currentSig) {
+      lastSegmentsSignatureRef.current = currentSig;
+      setMasterAudioUrl(null);
+    }
+
+    try {
+      setIsAssemblingMaster(true);
+      if (!masterAudioUrl || lastSegmentsSignatureRef.current !== currentSig) {
+        lastSegmentsSignatureRef.current = currentSig;
+        await updateMasterAssembly(segments);
+      }
+      setIsPlayingMaster(true);
+    } catch (err: any) {
+      console.error("Preview dialogue master audio error:", err);
+      alert(`Lỗi khi ghép audio nghe thử: ${err?.message || err}`);
+    } finally {
+      setIsAssemblingMaster(false);
+    }
   };
 
   // Calculate stats for editor
@@ -805,14 +805,20 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
   // Master audio track for BottomAudioPlayer
   const masterTrack = useMemo(() => {
     if (!masterAudioUrl) return null;
+    const readySegs = segments.filter((s) => s.status === "ready");
+    const isAllReady = readySegs.length === segments.length && segments.length > 0;
+    const title = isAllReady
+      ? "Toàn bộ bài hội thoại (Master)"
+      : `Toàn bộ đoạn đã tạo (${readySegs.length}/${segments.length})`;
+
     return {
       id: "dialogue_master_track",
-      title: "Hội Thoại Đa Nhân Vật (Master)",
+      title,
       voiceName: `${characters.length} nhân vật`,
       durationSec: masterDurationSec,
       audioUrl: masterAudioUrl,
     };
-  }, [masterAudioUrl, masterDurationSec, characters.length]);
+  }, [masterAudioUrl, masterDurationSec, characters.length, segments]);
 
   return (
     <div
@@ -871,7 +877,37 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
             )
           ) : (
             <div className="flex items-center gap-2 flex-shrink-0">
-              {/* Permanent Top-Right CTA: Ghép & Xuất file master */}
+              {/* Preview Master Audio Button */}
+              <button
+                type="button"
+                onClick={handlePreviewMasterAudio}
+                disabled={segments.length === 0 || isConverting || isAssemblingMaster}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors whitespace-nowrap cursor-pointer ${
+                  isPlayingMaster
+                    ? "bg-accent text-white shadow-2xs"
+                    : "bg-surface2 hover:bg-surface3 text-textPrimary hover:text-accent border border-borderDefault hover:border-accent/40"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                title="Nghe thử toàn bộ các đoạn hội thoại ghép lại thành một bản thu hoàn chỉnh"
+              >
+                {isAssemblingMaster ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent" />
+                    <span>Đang ghép...</span>
+                  </>
+                ) : isPlayingMaster ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5 fill-current" />
+                    <span>Tạm dừng</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-accent" />
+                    <span>Nghe toàn bộ</span>
+                  </>
+                )}
+              </button>
+
+              {/* PERMANENT TOP-RIGHT CTA: Ghép & xuất */}
               <button
                 type="button"
                 disabled={isConverting || segments.length === 0}
@@ -884,29 +920,15 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
                 title={
                   isConverting
                     ? "Đang tạo audio, vui lòng chờ hoàn tất để ghép & xuất"
-                    : "Xuất file âm thanh Master (.wav)"
+                    : "Chọn vị trí lưu và xuất file audio master"
                 }
               >
                 <FileAudio className="w-3.5 h-3.5 text-accent" />
-                <span>Xuất audio</span>
+                <span>{t.tts.exportAudio || "Ghép & xuất"}</span>
                 {invalidSegments.length > 0 && !isConverting && (
                   <span className="w-1.5 h-1.5 rounded-full bg-warning ml-0.5" title="Có đoạn cần tạo lại trước khi xuất" />
                 )}
               </button>
-
-              {/* Export SRT */}
-              {masterSrtContent && (
-                <button
-                  type="button"
-                  onClick={handleDownloadSrt}
-                  disabled={isConverting}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary border border-borderDefault rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-                  title="Tải tệp phụ đề (.srt)"
-                >
-                  <FileText className="w-3.5 h-3.5 text-textMuted" />
-                  <span>Tải SRT</span>
-                </button>
-              )}
             </div>
           )}
         </div>
@@ -965,42 +987,16 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
                     className="mx-0 mb-0"
                   />
                 ) : masterTrack ? (
-                  <div className="shrink-0 flex flex-col gap-2 p-3 bg-surface1 border border-borderDefault rounded-xl shadow-2xs">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-textSecondary text-[11px]">
-                        Bản thu Master hoàn chỉnh · {Math.floor(masterTrack.durationSec / 60)}:{String(Math.floor(masterTrack.durationSec % 60)).padStart(2, "0")}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleExportDialogueAudio}
-                          className="flex items-center gap-1.5 px-3 py-1 bg-surface2 hover:bg-surface3 text-textPrimary border border-borderDefault rounded-md text-xs font-medium transition-colors cursor-pointer"
-                          title="Tải tệp âm thanh Master (.wav)"
-                        >
-                          <Download className="w-3.5 h-3.5 text-accent" />
-                          <span>Tải Audio (WAV)</span>
-                        </button>
-                        {masterSrtContent && (
-                          <button
-                            type="button"
-                            onClick={handleDownloadSrt}
-                            className="flex items-center gap-1.5 px-3 py-1 bg-surface2 hover:bg-surface3 text-textPrimary border border-borderDefault rounded-md text-xs font-medium transition-colors cursor-pointer"
-                            title="Tải tệp phụ đề (.srt)"
-                          >
-                            <FileText className="w-3.5 h-3.5 text-accent" />
-                            <span>Tải Phụ đề (SRT)</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <BottomAudioPlayer
-                      track={masterTrack}
-                      isPlaying={isPlayingMaster}
-                      onTogglePlay={() => setIsPlayingMaster((p) => !p)}
-                      onClose={() => setMasterAudioUrl(null)}
-                      className="mx-0 mb-0"
-                    />
-                  </div>
+                  <BottomAudioPlayer
+                    track={masterTrack}
+                    isPlaying={isPlayingMaster}
+                    onTogglePlay={() => setIsPlayingMaster((p) => !p)}
+                    onClose={() => {
+                      setIsPlayingMaster(false);
+                      setMasterAudioUrl(null);
+                    }}
+                    className="mx-0 mb-0"
+                  />
                 ) : null
               }
             />
