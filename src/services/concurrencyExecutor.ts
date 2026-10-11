@@ -23,7 +23,7 @@ export interface ConcurrencyRunTelemetry {
 }
 
 export interface RunBatchOptions<T> {
-  concurrency: number;
+  concurrency?: number; // Optional, defaults to 1 (safe sequential inference)
   processItem: (item: T, index: number) => Promise<void>;
   onWorkerChange?: (activeCount: number, pendingCount?: number) => void;
   onItemCompleted?: (item: T, index: number, completedCount: number, totalCount: number) => void;
@@ -122,7 +122,7 @@ export class BatchConcurrencyQueue {
       processItem = processItemLegacy!;
       onWorkerChange = onWorkerChangeLegacy;
     } else {
-      concurrency = concurrencyOrOptions.concurrency;
+      concurrency = concurrencyOrOptions.concurrency ?? 1;
       processItem = concurrencyOrOptions.processItem;
       onWorkerChange = concurrencyOrOptions.onWorkerChange;
       onItemCompleted = concurrencyOrOptions.onItemCompleted;

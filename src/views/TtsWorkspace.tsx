@@ -136,7 +136,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   isPaused = false,
   onTogglePause,
   onCancel,
-  concurrency = 1,
+  concurrency: _concurrency = 1,
   onJobComplete,
   onChunkProgress,
   currentChunkIndex: _currentChunkIndex = 5,
@@ -501,7 +501,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency,
+          concurrency: 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -599,7 +599,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency,
+          concurrency: 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -697,7 +697,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency,
+          concurrency: 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -803,7 +803,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
       targetIds,
       {
-        concurrency,
+        concurrency: 1,
         onWorkerChange: (_active, pending) => {
           setPendingItems(pending ?? 0);
         },

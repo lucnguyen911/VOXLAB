@@ -61,7 +61,8 @@ export const loadStoredTtsSettings = (): PersistedTtsSettings => {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      // Legacy configuration is retained but always normalized for safe inference.
+      // Processing Speed 1x-4x has been removed. Concurrency is fixed to 1 across VoxLab.
+      // Legacy settings with concurrency > 1 are safely sanitized to 1.
       const concurrency = 1;
 
       return {
@@ -652,7 +653,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
           {isAdvancedOpen && (
             <div className="space-y-3.5 pt-2">
               {/* SRT Subtitle Switch (Simple OFF / ON) */}
-              <div className="pt-2 border-t border-borderDefault/40">
+              <div>
                 <div
                   className="flex items-center justify-between"
                   title={t.inspector.exportSrtDesc}

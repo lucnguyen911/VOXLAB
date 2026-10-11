@@ -176,7 +176,8 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     } catch {}
     return { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 };
   });
-  const concurrency = 1; // Sidecar supports only one heavy request.
+  // Concurrency is fixed to 1 across VoxLab
+  const concurrency = 1;
   const [isPausesOpen, setIsPausesOpen] = useState<boolean>(false);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState<boolean>(false);
 
@@ -185,10 +186,10 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     try {
       localStorage.setItem(
         "voxlab_dubbing_voice_settings",
-        JSON.stringify({ speed, pitch, volume, pauses, concurrency })
+        JSON.stringify({ speed, pitch, volume, pauses, concurrency: 1 })
       );
     } catch {}
-  }, [speed, pitch, volume, pauses, concurrency]);
+  }, [speed, pitch, volume, pauses]);
 
   const handleResetSettings = () => {
     setSpeed(1.0);
@@ -1616,7 +1617,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 {isAdvancedOpen && (
                   <div className="space-y-3 pt-2">
                     {/* Khớp thời gian file gốc toggle */}
-                    <div className="pt-2 border-t border-borderDefault/40">
+                    <div>
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-textSecondary font-medium select-none flex items-center gap-1.5">
                           <Zap className={`w-3.5 h-3.5 ${autoFitEnabled ? "text-accent" : "text-textMuted"}`} />

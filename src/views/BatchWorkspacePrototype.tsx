@@ -542,8 +542,8 @@ export function loadStoredDialogueSettings(): DialogueGlobalSettings {
     return {
       ...DEFAULT_DIALOGUE_SETTINGS,
       ...parsed,
-      model,
       concurrency: 1,
+      model,
       pauses: {
         ...DEFAULT_DIALOGUE_SETTINGS.pauses,
         ...(parsed.pauses || {}),
@@ -5001,7 +5001,6 @@ export const BatchWorkspacePrototype: React.FC = () => {
                       </select>
                     </div>
                   </div>
-
                 </div>
               )}
 

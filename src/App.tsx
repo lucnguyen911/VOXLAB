@@ -348,7 +348,6 @@ function loadInitialVoices(): VoiceProfile[] {
                       inspectorWidth={inspectorWidth}
                       onWidthChange={(w) => setInspectorWidth(w)}
                       onOpenVoiceModal={() => setVoiceModalOpen(true)}
-                      concurrency={concurrency}
                       exportSrt={exportSrt}
                       onChangeExportSrt={setExportSrt}
                     />

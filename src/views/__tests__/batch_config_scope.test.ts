@@ -482,7 +482,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
     assert.equal(restored.collisionPolicy, "skip");
     assert.equal(restored.outputAudioFormat, "mp3");
     assert.equal(restored.outputSubtitleFormat, "vtt");
-    assert.equal(restored.concurrency, 3);
+    assert.equal(restored.concurrency, 1, "Concurrency is unified to 1 across VoxLab");
 
     // 4. Persistence serves only as defaults for next jobs; in-flight/failed jobs are strictly unaffected
     const existingJob = createFailedJob("job-frozen", "old_job.mp4");
@@ -549,7 +549,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
     assert.equal(stored.pitch, 0.95);
     assert.equal(stored.volume, 1.5);
     assert.equal(stored.pauses.comma, 0.4);
-    assert.equal(stored.concurrency, 3);
+    assert.equal(stored.concurrency, 1, "Legacy concurrency in localStorage is safely sanitized to 1");
     assert.equal(stored.exportSrt, true);
 
     // Save updated settings
@@ -636,7 +636,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
     assert.equal(stored.pitch, 0.90);
     assert.equal(stored.volume, 1.25);
     assert.equal(stored.pauses.comma, 0.4);
-    assert.equal(stored.concurrency, 2);
+    assert.equal(stored.concurrency, 1, "Legacy concurrency in localStorage is safely sanitized to 1");
     assert.equal(stored.autoFit, false);
 
     // Save updated settings
@@ -652,7 +652,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
     assert.equal(updated.speed, 1.05);
     assert.equal(updated.pitch, 1.0);
     assert.equal(updated.autoFit, true);
-    assert.equal(updated.concurrency, 3);
+    assert.equal(updated.concurrency, 1, "Saved concurrency is fixed to 1");
 
     // Clean up
     delete (globalThis as any).localStorage;
@@ -739,7 +739,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
     assert.equal(stored.pauses.period, 0.7);
     assert.equal(stored.pauses.questionExclamation, 1.1);
     assert.equal(stored.pauses.colonSemicolon, 0.5);
-    assert.equal(stored.concurrency, 2);
+    assert.equal(stored.concurrency, 1, "Legacy concurrency in localStorage is safely sanitized to 1");
     assert.equal(stored.exportSrt, true);
 
     // Save updated settings (e.g. from Batch Global Config Modal)
@@ -754,7 +754,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
     assert.equal(updated.model, "Omni Voice");
     assert.equal(updated.masterVolume, 1.0);
     assert.equal(updated.pauses.comma, 0.5);
-    assert.equal(updated.concurrency, 3);
+    assert.equal(updated.concurrency, 1, "Saved concurrency is fixed to 1");
     assert.equal(updated.exportSrt, false);
 
     // Verify localStorage was updated
@@ -762,7 +762,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
     assert.equal(rawSaved.model, "Omni Voice");
     assert.equal(rawSaved.masterVolume, 1.0);
     assert.equal(rawSaved.pauses.comma, 0.5);
-    assert.equal(rawSaved.concurrency, 3);
+    assert.equal(rawSaved.concurrency, 1, "Raw persisted concurrency is clamped to 1");
     assert.equal(rawSaved.exportSrt, false);
 
     // Verify per-character data is excluded from global dialogue settings (general scope only)
