@@ -19,6 +19,7 @@ import { SettingsWorkspace } from "./views/SettingsWorkspace";
 import { WorkspaceId, ChunkItem, VoiceProfile, SettingsGroup } from "./types/ui";
 import { DubbingHandoffSnapshot } from "./types/dubbing";
 import { migrateSubtitleAndTranslationSettings } from "./services/translation";
+import { migratePunctuationPauseDefaults } from "./services/pause/punctuationPause";
 import { MOCK_VOICES, MOCK_CHUNKS } from "./mock/data";
 import { I18nProvider, useI18n } from "./i18n/context";
 import { migrateLegacyVoice } from "./constants/voiceFilters";
@@ -26,11 +27,15 @@ import { LicenseModal } from "./components/modals/LicenseModal";
 import { LicenseSummary } from "./services/license/licenseService";
 import { CheckCircle2, X } from "lucide-react";
 
+// Run synchronous migrations before components mount and read localStorage
+migratePunctuationPauseDefaults();
+
 function AppContent() {
   const { t: _t } = useI18n();
 
   // Run settings schema migration once on startup
   useEffect(() => {
+    migratePunctuationPauseDefaults();
     migrateSubtitleAndTranslationSettings();
   }, []);
 

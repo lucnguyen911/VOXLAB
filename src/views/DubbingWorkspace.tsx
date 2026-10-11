@@ -19,7 +19,11 @@ import {
   ChevronRight,
   Settings2,
 } from "lucide-react";
-import { VoiceProfile, SettingsGroup } from "../types/ui";
+import { VoiceProfile, SettingsGroup, PunctuationPauses } from "../types/ui";
+import {
+  DEFAULT_PUNCTUATION_PAUSES,
+  sanitizePunctuationPauses,
+} from "../services/pause/punctuationPause";
 import {
   OriginalCue,
   TranslatedCue,
@@ -161,20 +165,15 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     } catch {}
     return 1.0;
   });
-  const [pauses, setPauses] = useState<{
-    comma: number;
-    period: number;
-    questionExclamation: number;
-    colonSemicolon: number;
-  }>(() => {
+  const [pauses, setPauses] = useState<PunctuationPauses>(() => {
     try {
       const saved = localStorage.getItem("voxlab_dubbing_voice_settings");
       if (saved) {
         const p = JSON.parse(saved).pauses;
-        if (p) return p;
+        return sanitizePunctuationPauses(p);
       }
     } catch {}
-    return { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 };
+    return { ...DEFAULT_PUNCTUATION_PAUSES };
   });
   // Concurrency is fixed to 1 across VoxLab
   const concurrency = 1;
@@ -195,12 +194,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setSpeed(1.0);
     setPitch(1.0);
     setVolume(1.0);
-    setPauses({
-      comma: 0.3,
-      period: 0.6,
-      questionExclamation: 0.7,
-      colonSemicolon: 0.4,
-    });
+    setPauses({ ...DEFAULT_PUNCTUATION_PAUSES });
   };
 
   const handlePauseChange = (key: keyof typeof pauses, value: number) => {

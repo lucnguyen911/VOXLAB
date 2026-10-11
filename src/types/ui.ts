@@ -125,10 +125,10 @@ export interface VoiceProfile {
 }
 
 export interface PunctuationPauses {
-  comma: number; // in seconds, e.g. 0.5
-  period: number; // in seconds, e.g. 1.0
-  questionExclamation: number; // in seconds, e.g. 1.0
-  colonSemicolon: number; // in seconds, e.g. 0.6
+  comma: number; // in seconds, default: 0.3s (matching TTS)
+  period: number; // in seconds, default: 0.6s (matching TTS)
+  questionExclamation: number; // in seconds, default: 0.7s (matching TTS)
+  colonSemicolon: number; // in seconds, default: 0.4s (matching TTS)
 }
 
 export interface TtsAudioConfig {

@@ -201,3 +201,123 @@ export function detectLeadingSilenceMs(
   return Math.round((silentSamples / sampleRate) * 1000);
 }
 
+/**
+ * Checks if a pauses object matches known legacy default configurations.
+ * In early VoxLab builds, Dialogue had:
+ * { comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 }
+ * or early drafts had { comma: 0.5, period: 1.0, questionExclamation: 1.0, colonSemicolon: 0.6 }.
+ */
+export function isLegacyPunctuationPauses(p: unknown): boolean {
+  if (!p || typeof p !== "object") return false;
+  const pauses = p as Record<string, unknown>;
+  const isLegacyDialogue =
+    pauses.comma === 0.5 &&
+    pauses.period === 0.5 &&
+    (pauses.questionExclamation === 1 || pauses.questionExclamation === 1.0) &&
+    pauses.colonSemicolon === 0.6;
+  const isLegacyUiSample =
+    pauses.comma === 0.5 &&
+    (pauses.period === 1 || pauses.period === 1.0) &&
+    (pauses.questionExclamation === 1 || pauses.questionExclamation === 1.0) &&
+    pauses.colonSemicolon === 0.6;
+  return Boolean(isLegacyDialogue || isLegacyUiSample);
+}
+
+/**
+ * Synchronizes and sanitizes punctuation pauses to match canonical TTS defaults
+ * (comma: 0.3s, period: 0.6s, questionExclamation: 0.7s, colonSemicolon: 0.4s).
+ * If the object matches legacy defaults, it replaces them with the standard TTS defaults.
+ * If custom user overrides are present, it preserves them while filling any missing keys with TTS defaults.
+ */
+export function sanitizePunctuationPauses(rawPauses: unknown): PunctuationPauses {
+  if (!rawPauses || typeof rawPauses !== "object" || isLegacyPunctuationPauses(rawPauses)) {
+    return { ...DEFAULT_PUNCTUATION_PAUSES };
+  }
+  const p = rawPauses as Record<string, unknown>;
+  return {
+    comma: typeof p.comma === "number" && !isNaN(p.comma) ? p.comma : DEFAULT_PUNCTUATION_PAUSES.comma,
+    period: typeof p.period === "number" && !isNaN(p.period) ? p.period : DEFAULT_PUNCTUATION_PAUSES.period,
+    questionExclamation:
+      typeof p.questionExclamation === "number" && !isNaN(p.questionExclamation)
+        ? p.questionExclamation
+        : DEFAULT_PUNCTUATION_PAUSES.questionExclamation,
+    colonSemicolon:
+      typeof p.colonSemicolon === "number" && !isNaN(p.colonSemicolon)
+        ? p.colonSemicolon
+        : DEFAULT_PUNCTUATION_PAUSES.colonSemicolon,
+  };
+}
+
+/**
+ * Idempotent migration that synchronizes legacy default punctuation pauses across
+ * all workspaces in localStorage (Dialogue, Dubbing, Batch, TTS) to the standard TTS defaults.
+ */
+export function migratePunctuationPauseDefaults(): void {
+  if (typeof localStorage === "undefined") return;
+
+  try {
+    // 1. Dialogue settings
+    const rawDialogue = localStorage.getItem("voxlab_dialogue_settings");
+    if (rawDialogue) {
+      try {
+        const parsed = JSON.parse(rawDialogue);
+        if (parsed && parsed.pauses && isLegacyPunctuationPauses(parsed.pauses)) {
+          parsed.pauses = { ...DEFAULT_PUNCTUATION_PAUSES };
+          localStorage.setItem("voxlab_dialogue_settings", JSON.stringify(parsed));
+        }
+      } catch {}
+    }
+
+    // 2. Dubbing voice settings
+    const rawDubbing = localStorage.getItem("voxlab_dubbing_voice_settings");
+    if (rawDubbing) {
+      try {
+        const parsed = JSON.parse(rawDubbing);
+        if (parsed && parsed.pauses && isLegacyPunctuationPauses(parsed.pauses)) {
+          parsed.pauses = { ...DEFAULT_PUNCTUATION_PAUSES };
+          localStorage.setItem("voxlab_dubbing_voice_settings", JSON.stringify(parsed));
+        }
+      } catch {}
+    }
+
+    // 3. Batch global defaults
+    const rawBatch = localStorage.getItem("voxlab_batch_global_defaults");
+    if (rawBatch) {
+      try {
+        const parsed = JSON.parse(rawBatch);
+        let batchUpdated = false;
+        if (parsed.dialogue?.pauses && isLegacyPunctuationPauses(parsed.dialogue.pauses)) {
+          parsed.dialogue.pauses = { ...DEFAULT_PUNCTUATION_PAUSES };
+          batchUpdated = true;
+        }
+        if (parsed.dubbing?.pauses && isLegacyPunctuationPauses(parsed.dubbing.pauses)) {
+          parsed.dubbing.pauses = { ...DEFAULT_PUNCTUATION_PAUSES };
+          batchUpdated = true;
+        }
+        if (parsed.tts?.pauses && isLegacyPunctuationPauses(parsed.tts.pauses)) {
+          parsed.tts.pauses = { ...DEFAULT_PUNCTUATION_PAUSES };
+          batchUpdated = true;
+        }
+        if (batchUpdated) {
+          localStorage.setItem("voxlab_batch_global_defaults", JSON.stringify(parsed));
+        }
+      } catch {}
+    }
+
+    // 4. TTS settings
+    const rawTts = localStorage.getItem("voxlab_tts_settings");
+    if (rawTts) {
+      try {
+        const parsed = JSON.parse(rawTts);
+        if (parsed && parsed.pauses && isLegacyPunctuationPauses(parsed.pauses)) {
+          parsed.pauses = { ...DEFAULT_PUNCTUATION_PAUSES };
+          localStorage.setItem("voxlab_tts_settings", JSON.stringify(parsed));
+        }
+      } catch {}
+    }
+  } catch (err) {
+    console.warn("Failed to migrate punctuation pause defaults:", err);
+  }
+}
+
+

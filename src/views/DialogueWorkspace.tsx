@@ -37,6 +37,7 @@ import { PronunciationManagerModal } from "../components/modals/PronunciationMan
 import { BottomAudioPlayer, ActiveAudioTrack } from "../components/layout/BottomAudioPlayer";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { stripPauseTokens } from "../services/pause";
+import { sanitizePunctuationPauses } from "../services/pause/punctuationPause";
 import { createEffectiveVoiceSnapshot } from "../services/providers";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
@@ -100,10 +101,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
           concurrency: 1, // Override hidden legacy parallel settings.
           turnPauseMinSec,
           turnPauseMaxSec,
-          pauses: {
-            ...DEFAULT_DIALOGUE_SETTINGS.pauses,
-            ...(parsed.pauses || {}),
-          },
+          pauses: sanitizePunctuationPauses(parsed.pauses),
         };
 
         try {

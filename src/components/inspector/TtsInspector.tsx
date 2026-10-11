@@ -40,7 +40,7 @@ export interface PersistedTtsSettings {
   optimizeClarity?: boolean;
 }
 
-const DEFAULT_TTS_SETTINGS: PersistedTtsSettings = {
+export const DEFAULT_TTS_SETTINGS: PersistedTtsSettings = {
   speed: 1.0,
   pitch: 1.0,
   volume: 1.0,
