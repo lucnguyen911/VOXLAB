@@ -54,6 +54,7 @@ export interface AudioQualityReview {
   checkedAt: number;
   audioPath?: string;
   text?: string;
+  validatorVersion?: string;
 }
 
 export interface ChunkItem {

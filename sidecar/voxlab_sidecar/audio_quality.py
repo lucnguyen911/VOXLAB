@@ -436,7 +436,7 @@ def analyze_word_alignment_issues(
     asr_words_clean = [clean_word(w.get("word", "")) for w in asr_words]
 
     # Normalize compound and digit number expressions into canonical spans
-    src_spans = collapse_number_tokens(source_words, language)
+    src_spans = collapse_number_tokens(source_words, language, delimiters=delimiters)
     asr_spans = collapse_number_tokens([w.get("word", "") for w in asr_words], language)
     src_canonical = [s.canonical for s in src_spans]
     asr_canonical = [a.canonical for a in asr_spans]
@@ -522,8 +522,10 @@ def analyze_word_alignment_issues(
                 )
 
                 if is_repeat or is_prefix_stutter:
-                    # Ignore intentional script repetition
-                    if w_clean in intentional_repeats:
+                    # Check whether count in ASR exceeds count in source script
+                    src_count = source_words_clean.count(w_clean)
+                    asr_count = asr_words_clean.count(w_clean)
+                    if asr_count <= src_count:
                         continue
 
                     if j > 0 and w_clean == prev_w:
@@ -878,6 +880,7 @@ def detect_acoustic_stutter(
     sample_rate: int,
     text: str = "",
     asr_words: list[dict[str, Any]] | None = None,
+    language: str | None = None,
 ) -> list[dict[str, Any]]:
     """Detects suspected acoustic stutter / syllable repetition (e.g. 'mo-mo-mobile')
     directly from the audio waveform using two-tier verification:
@@ -892,8 +895,28 @@ def detect_acoustic_stutter(
     if mono.ndim > 1:
         mono = mono.mean(axis=1)
 
-    # Check if intentional repetition exists in text (e.g. "rất rất", "that that", "càng ngày càng")
+    # Word counts and intentional repetition check
     text_words = [clean_word(w) for w in text.split()] if text else []
+    src_word_counts: dict[str, int] = {}
+    for w in text_words:
+        if w:
+            src_word_counts[w] = src_word_counts.get(w, 0) + 1
+
+    asr_words_clean = [clean_word(w.get("word", "")) for w in asr_words] if asr_words else []
+    asr_word_counts: dict[str, int] = {}
+    for w in asr_words_clean:
+        if w:
+            asr_word_counts[w] = asr_word_counts.get(w, 0) + 1
+
+    equal_asr_indices: set[int] = set()
+    if text_words and asr_words_clean:
+        s_tokens = [s.canonical for s in collapse_number_tokens(text.split(), language)]
+        a_tokens = [a.canonical for a in collapse_number_tokens([w.get("word", "") for w in (asr_words or [])], language)]
+        matcher = difflib.SequenceMatcher(None, s_tokens, a_tokens)
+        for tag, s_i1, s_i2, a_j1, a_j2 in matcher.get_opcodes():
+            if tag == "equal":
+                equal_asr_indices.update(range(a_j1, a_j2))
+
     intentional_repeats = set()
     for idx in range(len(text_words) - 1):
         if text_words[idx] and text_words[idx] == text_words[idx + 1]:
@@ -1042,16 +1065,28 @@ def detect_acoustic_stutter(
 
             # If bursts span across two DIFFERENT words in ASR:
             if w_idx1 is not None and w_idx2 is not None and w_idx1 != w_idx2:
+                # 1. Bursts must be immediate consecutive words in ASR.
+                # If separated by intervening words (e.g. 'after' in 'row after row'),
+                # they belong to distinct script words and cannot be a syllable stutter burst pair!
+                if abs(w_idx2 - w_idx1) != 1:
+                    continue
+
                 word1_clean = clean_word(asr_words[w_idx1].get("word", ""))
                 word2_clean = clean_word(asr_words[w_idx2].get("word", ""))
                 # If they are different words, this is legitimate sequential speech, NOT a stutter!
                 if word1_clean != word2_clean:
                     continue
                 else:
-                    # Duplicate word in ASR confirms stutter!
-                    if word1_clean not in intentional_repeats:
-                        is_verified_stutter = True
-                        stutter_word = word1_clean
+                    # 2. Both bursts map to consecutive duplicate words in ASR (e.g. 'row row' or 'that that').
+                    # Check whether both occurrences correspond to intentional duplicate words in the script:
+                    if equal_asr_indices and w_idx1 in equal_asr_indices and w_idx2 in equal_asr_indices:
+                        continue
+                    if word1_clean in intentional_repeats and (asr_word_counts.get(word1_clean, 0) <= src_word_counts.get(word1_clean, 0)):
+                        continue
+
+                    # Otherwise, at least one word was an unwanted repetition/stutter!
+                    is_verified_stutter = True
+                    stutter_word = word1_clean
 
             # If both bursts fall within the same word in ASR (intra-word repetition):
             elif w_idx1 is not None and w_idx2 is not None and w_idx1 == w_idx2:
@@ -1426,7 +1461,7 @@ def validate_audio_quality(
         # Step 3: Acoustic Stutter Check (waveform + ASR corroboration)
         if data_wave is not None and sr_wave > 0:
             try:
-                acoustic_stutters = detect_acoustic_stutter(data_wave, sr_wave, text=text, asr_words=detected_words)
+                acoustic_stutters = detect_acoustic_stutter(data_wave, sr_wave, text=text, asr_words=detected_words, language=language)
                 for ast in acoustic_stutters:
                     if not any(
                         iss["code"] == "SUSPECTED_STUTTER"

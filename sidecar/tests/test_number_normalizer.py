@@ -98,6 +98,62 @@ class NumberNormalizerTest(unittest.TestCase):
         self.assertEqual(span_300.orig_end, 3)
         self.assertEqual(words[span_300.orig_start:span_300.orig_end], ["three", "hundred"])
 
+    def test_english_ordinals_and_hyphenated(self):
+        cases = [
+            ("first", "1st"),
+            ("second", "2nd"),
+            ("third", "3rd"),
+            ("fourth", "4th"),
+            ("eighth", "8th"),
+            ("twelfth", "12th"),
+            ("twentieth", "20th"),
+            ("twenty third", "23rd"),
+            ("twenty eighth", "28th"),
+            ("one hundred twenty third", "123rd"),
+            ("twenty-third", "23rd"),
+            ("sixty-nine", "69"),
+            ("fifty-five", "55"),
+        ]
+        for phrase, expected in cases:
+            spans = collapse_number_tokens(phrase.split(), language="en")
+            self.assertEqual(len(spans), 1, f"Expected 1 span for '{phrase}', got {spans}")
+            self.assertTrue(spans[0].is_number)
+            self.assertEqual(spans[0].canonical, expected)
+
+    def test_comma_separated_number_sequences(self):
+        sentence = "sixty nine, one hundred twenty six, one hundred fifty eight"
+        spans = collapse_number_tokens(sentence.split(), language="en")
+        canonicals = [s.canonical for s in spans]
+        self.assertEqual(canonicals, ["69", "126", "158"])
+
+    def test_vietnamese_ordinals(self):
+        cases = [
+            ("thứ nhất", "thứ 1"),
+            ("thứ hai", "thứ 2"),
+            ("thứ ba", "thứ 3"),
+            ("thứ tư", "thứ 4"),
+            ("thứ hai mươi ba", "thứ 23"),
+        ]
+        for phrase, expected in cases:
+            spans = collapse_number_tokens(phrase.split(), language="vi")
+            self.assertEqual(len(spans), 1, f"Expected 1 span for '{phrase}', got {spans}")
+            self.assertTrue(spans[0].is_number)
+            self.assertEqual(spans[0].canonical, expected)
+
+    def test_ordinal_number_equivalence(self):
+        self.assertTrue(are_number_expressions_equivalent("twenty third", "23"))
+        self.assertTrue(are_number_expressions_equivalent("twenty third", "23rd"))
+        self.assertTrue(are_number_expressions_equivalent("twenty eighth", "28"))
+        self.assertTrue(are_number_expressions_equivalent("twenty eighth", "28th"))
+        self.assertTrue(are_number_expressions_equivalent("first", "1st"))
+        self.assertTrue(are_number_expressions_equivalent("first", "1"))
+        self.assertTrue(are_number_expressions_equivalent("thứ nhất", "1"))
+        self.assertTrue(are_number_expressions_equivalent("thứ 23", "23"))
+
+        self.assertFalse(are_number_expressions_equivalent("twenty third", "24"))
+        self.assertFalse(are_number_expressions_equivalent("twenty eighth", "27"))
+        self.assertFalse(are_number_expressions_equivalent("first", "2"))
+
 
 if __name__ == "__main__":
     unittest.main()

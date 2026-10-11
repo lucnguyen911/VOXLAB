@@ -21,6 +21,16 @@ EN_SCALES = {
     "billion": 1_000_000_000,
 }
 
+EN_ORDINALS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "eleventh": 11, "twelfth": 12, "thirteenth": 13, "fourteenth": 14, "fifteenth": 15,
+    "sixteenth": 16, "seventeenth": 17, "eighteenth": 18, "nineteenth": 19,
+    "twentieth": 20, "thirtieth": 30, "fortieth": 40, "fiftieth": 50,
+    "sixtieth": 60, "seventieth": 70, "eightieth": 80, "ninetieth": 90,
+    "hundredth": 100, "thousandth": 1000, "millionth": 1000000, "billionth": 1000000000,
+}
+
 VI_ONES = {
     "không": 0, "khong": 0,
     "một": 1, "mot": 1, "mốt": 1,
@@ -43,6 +53,32 @@ VI_SCALES = {
     "triệu": 1_000_000, "trieu": 1_000_000,
     "tỷ": 1_000_000_000, "ty": 1_000_000_000
 }
+VI_ORDINALS = {
+    "nhất": 1, "nhat": 1, "nhì": 2, "nhi": 2, "tư": 4, "tu": 4,
+}
+
+
+def format_ordinal(num: int) -> str:
+    """Formats an integer into an English ordinal string: e.g. 1 -> '1st', 2 -> '2nd', 23 -> '23rd'."""
+    val = abs(num)
+    if 11 <= (val % 100) <= 13:
+        suffix = "th"
+    else:
+        last = val % 10
+        if last == 1:
+            suffix = "st"
+        elif last == 2:
+            suffix = "nd"
+        elif last == 3:
+            suffix = "rd"
+        else:
+            suffix = "th"
+    return f"{num}{suffix}"
+
+
+def has_trailing_boundary(s: str) -> bool:
+    """Checks whether token ends with a clause boundary punctuation mark."""
+    return bool(re.search(r"[,;:.!?—–\)\]]+$", s))
 
 
 class NormalizedSpan(NamedTuple):
@@ -94,6 +130,10 @@ def normalize_digit_string(token: str) -> str:
     if re.fullmatch(r"-?\d+%", cleaned):
         return cleaned
 
+    # Ordinal digit format: e.g. 1st, 2nd, 3rd, 23rd, 28th
+    if re.fullmatch(r"-?\d+(st|nd|rd|th)", cleaned):
+        return cleaned
+
     # Standard integer
     if re.fullmatch(r"-?\d+", cleaned):
         return cleaned
@@ -101,13 +141,25 @@ def normalize_digit_string(token: str) -> str:
     return cleaned
 
 
-def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str | None, int]:
+def parse_english_number_phrase(
+    words: list[str],
+    start_idx: int,
+    delimiters: list[str] | None = None,
+) -> tuple[str | None, int]:
     """Tries to parse an English number expression starting at start_idx.
     Returns (canonical_string, count_of_words_consumed).
     """
     n = len(words)
     if start_idx >= n:
         return None, 0
+
+    def is_word_boundary(w_idx: int) -> bool:
+        if delimiters is not None and w_idx + 1 < len(delimiters):
+            if any(c in ",;:.!?—–()[]\"'“”\n\r" for c in delimiters[w_idx + 1]):
+                return True
+        if w_idx < len(words) and has_trailing_boundary(words[w_idx]):
+            return True
+        return False
 
     w0 = clean_token(words[start_idx])
     is_neg = False
@@ -129,12 +181,13 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
             break
 
     if point_idx != -1 and point_idx > idx:
-        whole_str, whole_consumed = parse_english_number_phrase(words[:point_idx], idx)
+        whole_str, whole_consumed = parse_english_number_phrase(words[:point_idx], idx, delimiters)
         if whole_str is not None and (idx + whole_consumed == point_idx):
             frac_digits = []
             f_idx = point_idx + 1
             while f_idx < n:
                 fw = clean_token(words[f_idx])
+                hit_f_bound = is_word_boundary(f_idx)
                 if fw in EN_ONES and EN_ONES[fw] < 10:
                     frac_digits.append(str(EN_ONES[fw]))
                     f_idx += 1
@@ -145,6 +198,8 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
                     frac_digits.append(fw)
                     f_idx += 1
                 else:
+                    break
+                if hit_f_bound:
                     break
             if frac_digits:
                 total_consumed = (f_idx - start_idx)
@@ -158,7 +213,7 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
         w_h = clean_token(words[idx])
         w_m = clean_token(words[idx + 1])
         h_val = EN_ONES.get(w_h) or (int(w_h) if w_h.isdigit() and 1 <= int(w_h) <= 12 else None)
-        if h_val is not None and 1 <= h_val <= 12:
+        if h_val is not None and 1 <= h_val <= 12 and not is_word_boundary(idx):
             m_val = None
             m_consumed = 0
             if w_m in EN_ONES and 10 <= EN_ONES[w_m] <= 19:
@@ -167,7 +222,7 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
             elif w_m in EN_TENS:
                 m_val = EN_TENS[w_m]
                 m_consumed = 1
-                if idx + 2 < n:
+                if idx + 2 < n and not is_word_boundary(idx + 1):
                     w_m2 = clean_token(words[idx + 2])
                     if w_m2 in EN_ONES and 1 <= EN_ONES[w_m2] <= 9:
                         m_val += EN_ONES[w_m2]
@@ -180,7 +235,7 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
                 return time_str, offset + 1 + m_consumed
 
     # 3. Year format: e.g. "twenty twenty six" -> "2026", "nineteen ninety five" -> "1995"
-    if idx + 1 < n:
+    if idx + 1 < n and not is_word_boundary(idx):
         w1 = clean_token(words[idx])
         c_val = None
         if w1 in ("nineteen", "twenty"):
@@ -189,7 +244,7 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
             w2 = clean_token(words[idx + 1])
             y_val = None
             y_consumed = 0
-            if w2 in ("oh", "zero") and idx + 2 < n:
+            if w2 in ("oh", "zero") and idx + 2 < n and not is_word_boundary(idx + 1):
                 w3 = clean_token(words[idx + 2])
                 if w3 in EN_ONES and 1 <= EN_ONES[w3] <= 9:
                     y_val = EN_ONES[w3]
@@ -200,7 +255,7 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
             elif w2 in EN_TENS:
                 y_val = EN_TENS[w2]
                 y_consumed = 1
-                if idx + 2 < n:
+                if idx + 2 < n and not is_word_boundary(idx + 1):
                     w3 = clean_token(words[idx + 2])
                     if w3 in EN_ONES and 1 <= EN_ONES[w3] <= 9:
                         y_val += EN_ONES[w3]
@@ -209,32 +264,59 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
                 year_str = str(c_val * 100 + y_val)
                 return year_str, offset + 1 + y_consumed
 
-    # 4. Standard Integer: hundreds, thousands, millions
+    # 4. Standard Integer and Ordinal: hundreds, thousands, millions
     current = 0
     total = 0
     words_consumed = 0
     valid_number_found = False
+    is_ordinal = False
 
     while idx < n:
         w = clean_token(words[idx])
+        hit_boundary = is_word_boundary(idx)
+
         if w in EN_ONES:
             current += EN_ONES[w]
             words_consumed += 1
             valid_number_found = True
             idx += 1
+            if hit_boundary:
+                break
         elif w in EN_TENS:
             t_val = EN_TENS[w]
             words_consumed += 1
             valid_number_found = True
             idx += 1
-            # Check trailing ones (e.g. fifty five -> 55)
+            if hit_boundary:
+                current += t_val
+                break
+            # Check trailing ones or ordinals (e.g. fifty five -> 55, twenty third -> 23rd)
             if idx < n:
                 next_w = clean_token(words[idx])
+                next_boundary = is_word_boundary(idx)
                 if next_w in EN_ONES and 1 <= EN_ONES[next_w] <= 9:
                     t_val += EN_ONES[next_w]
                     words_consumed += 1
                     idx += 1
+                    current += t_val
+                    if next_boundary:
+                        break
+                    continue
+                elif next_w in EN_ORDINALS and 1 <= EN_ORDINALS[next_w] <= 9:
+                    t_val += EN_ORDINALS[next_w]
+                    words_consumed += 1
+                    idx += 1
+                    current += t_val
+                    is_ordinal = True
+                    break
             current += t_val
+        elif w in EN_ORDINALS:
+            current += EN_ORDINALS[w]
+            words_consumed += 1
+            valid_number_found = True
+            is_ordinal = True
+            idx += 1
+            break
         elif w == "hundred":
             if current == 0:
                 current = 1
@@ -242,6 +324,8 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
             words_consumed += 1
             valid_number_found = True
             idx += 1
+            if hit_boundary:
+                break
         elif w in ("thousand", "million", "billion"):
             scale = EN_SCALES[w]
             if current == 0:
@@ -251,7 +335,9 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
             words_consumed += 1
             valid_number_found = True
             idx += 1
-        elif w == "and" and valid_number_found and idx + 1 < n and clean_token(words[idx + 1]) in (EN_ONES | EN_TENS):
+            if hit_boundary:
+                break
+        elif w == "and" and valid_number_found and idx + 1 < n and clean_token(words[idx + 1]) in (EN_ONES | EN_TENS | EN_ORDINALS):
             words_consumed += 1
             idx += 1
         else:
@@ -259,6 +345,9 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
 
     if valid_number_found:
         total += current
+        if is_ordinal:
+            res = format_ordinal(total)
+            return f"-{res}" if is_neg else res, offset + words_consumed
         if idx < n and clean_token(words[idx]) in ("percent", "%"):
             return f"{total}%", offset + words_consumed + 1
         res = f"-{total}" if is_neg else str(total)
@@ -267,7 +356,11 @@ def parse_english_number_phrase(words: list[str], start_idx: int) -> tuple[str |
     return None, 0
 
 
-def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[str | None, int]:
+def parse_vietnamese_number_phrase(
+    words: list[str],
+    start_idx: int,
+    delimiters: list[str] | None = None,
+) -> tuple[str | None, int]:
     """Tries to parse a Vietnamese number expression starting at start_idx.
     Returns (canonical_string, count_of_words_consumed).
     """
@@ -275,7 +368,28 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
     if start_idx >= n:
         return None, 0
 
+    def is_word_boundary(w_idx: int) -> bool:
+        if delimiters is not None and w_idx + 1 < len(delimiters):
+            if any(c in ",;:.!?—–()[]\"'“”\n\r" for c in delimiters[w_idx + 1]):
+                return True
+        if w_idx < len(words) and has_trailing_boundary(words[w_idx]):
+            return True
+        return False
+
     w0 = clean_token(words[start_idx])
+
+    # Ordinal format: e.g. "thứ nhất", "thứ hai", "thứ ba", "thứ 23"
+    if w0 in ("thứ", "thu") and start_idx + 1 < n and not is_word_boundary(start_idx):
+        next_w = clean_token(words[start_idx + 1])
+        if next_w in VI_ORDINALS:
+            return f"thứ {VI_ORDINALS[next_w]}", 2
+        norm_next = normalize_digit_string(words[start_idx + 1])
+        if norm_next.isdigit() or re.fullmatch(r"-?\d+", norm_next):
+            return f"thứ {norm_next}", 2
+        sub_str, sub_consumed = parse_vietnamese_number_phrase(words, start_idx + 1, delimiters)
+        if sub_str is not None and sub_consumed > 0:
+            return f"thứ {sub_str}", 1 + sub_consumed
+
     is_neg = False
     offset = 0
     if w0 in ("âm", "am", "trừ", "tru"):
@@ -295,12 +409,13 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
             break
 
     if point_idx != -1 and point_idx > idx:
-        whole_str, whole_consumed = parse_vietnamese_number_phrase(words[:point_idx], idx)
+        whole_str, whole_consumed = parse_vietnamese_number_phrase(words[:point_idx], idx, delimiters)
         if whole_str is not None and (idx + whole_consumed == point_idx):
             frac_digits = []
             f_idx = point_idx + 1
             while f_idx < n:
                 fw = clean_token(words[f_idx])
+                hit_f_bound = is_word_boundary(f_idx)
                 if fw in VI_ONES:
                     frac_digits.append(str(VI_ONES[fw]))
                     f_idx += 1
@@ -308,6 +423,8 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
                     frac_digits.append(fw)
                     f_idx += 1
                 else:
+                    break
+                if hit_f_bound:
                     break
             if frac_digits:
                 total_consumed = (f_idx - start_idx)
@@ -317,11 +434,11 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
                 return canonical, total_consumed
 
     # 2. Time format: e.g. "mười giờ ba mươi" -> "10:30"
-    if idx + 2 < n and clean_token(words[idx + 1]) in ("giờ", "gio"):
+    if idx + 2 < n and clean_token(words[idx + 1]) in ("giờ", "gio") and not is_word_boundary(idx) and not is_word_boundary(idx + 1):
         w_h = clean_token(words[idx])
         h_val = VI_ONES.get(w_h) or VI_TENS.get(w_h) or (int(w_h) if w_h.isdigit() and 0 <= int(w_h) <= 23 else None)
         if h_val is not None:
-            m_str, m_consumed = parse_vietnamese_number_phrase(words, idx + 2)
+            m_str, m_consumed = parse_vietnamese_number_phrase(words, idx + 2, delimiters)
             if m_str is not None and m_str.isdigit() and 0 <= int(m_str) <= 59:
                 return f"{h_val}:{int(m_str):02d}", offset + 2 + m_consumed
 
@@ -333,40 +450,61 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
 
     while idx < n:
         w = clean_token(words[idx])
+        hit_boundary = is_word_boundary(idx)
+
         if w in VI_ONES:
             digit = VI_ONES[w]
             words_consumed += 1
             valid_number_found = True
             idx += 1
+            if hit_boundary:
+                current += digit
+                break
             # Check if followed by "mươi" / "chục" (e.g. năm mươi lăm -> 55)
             if idx < n and clean_token(words[idx]) in ("mươi", "muoi", "chục", "chuc"):
+                hit_muoi_bound = is_word_boundary(idx)
                 words_consumed += 1
                 idx += 1
                 t_val = digit * 10
-                if idx < n and clean_token(words[idx]) in VI_ONES:
+                if not hit_muoi_bound and idx < n and clean_token(words[idx]) in VI_ONES:
+                    hit_sub_bound = is_word_boundary(idx)
                     t_val += VI_ONES[clean_token(words[idx])]
                     words_consumed += 1
                     idx += 1
+                    current += t_val
+                    if hit_sub_bound:
+                        break
+                    continue
                 current += t_val
+                if hit_muoi_bound:
+                    break
             elif idx < n and clean_token(words[idx]) in ("trăm", "tram"):
                 words_consumed += 1
                 idx += 1
                 current += digit * 100
+                if is_word_boundary(idx - 1):
+                    break
             elif idx < n and clean_token(words[idx]) in ("nghìn", "nghin", "ngàn", "ngan"):
                 words_consumed += 1
                 idx += 1
                 total += (current + digit) * 1000
                 current = 0
+                if is_word_boundary(idx - 1):
+                    break
             elif idx < n and clean_token(words[idx]) in ("triệu", "trieu"):
                 words_consumed += 1
                 idx += 1
                 total += (current + digit) * 1_000_000
                 current = 0
+                if is_word_boundary(idx - 1):
+                    break
             elif idx < n and clean_token(words[idx]) in ("tỷ", "ty"):
                 words_consumed += 1
                 idx += 1
                 total += (current + digit) * 1_000_000_000
                 current = 0
+                if is_word_boundary(idx - 1):
+                    break
             else:
                 current += digit
         elif w in ("mười", "muoi"):
@@ -374,11 +512,18 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
             valid_number_found = True
             idx += 1
             m_val = 10
-            if idx < n and clean_token(words[idx]) in VI_ONES and 1 <= VI_ONES[clean_token(words[idx])] <= 9:
+            if not hit_boundary and idx < n and clean_token(words[idx]) in VI_ONES and 1 <= VI_ONES[clean_token(words[idx])] <= 9:
+                hit_ones_bound = is_word_boundary(idx)
                 m_val += VI_ONES[clean_token(words[idx])]
                 words_consumed += 1
                 idx += 1
+                current += m_val
+                if hit_ones_bound:
+                    break
+                continue
             current += m_val
+            if hit_boundary:
+                break
         elif w in ("trăm", "tram"):
             if current == 0:
                 current = 1
@@ -386,6 +531,8 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
             words_consumed += 1
             valid_number_found = True
             idx += 1
+            if hit_boundary:
+                break
         elif w in ("nghìn", "nghin", "ngàn", "ngan"):
             if current == 0:
                 current = 1
@@ -394,6 +541,8 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
             words_consumed += 1
             valid_number_found = True
             idx += 1
+            if hit_boundary:
+                break
         elif w in ("triệu", "trieu"):
             if current == 0:
                 current = 1
@@ -402,6 +551,8 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
             words_consumed += 1
             valid_number_found = True
             idx += 1
+            if hit_boundary:
+                break
         elif w in ("tỷ", "ty"):
             if current == 0:
                 current = 1
@@ -410,10 +561,14 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
             words_consumed += 1
             valid_number_found = True
             idx += 1
+            if hit_boundary:
+                break
         elif w in ("linh", "lẻ", "le") and valid_number_found and idx + 1 < n and clean_token(words[idx + 1]) in VI_ONES:
             words_consumed += 2
             current += VI_ONES[clean_token(words[idx + 1])]
             idx += 2
+            if is_word_boundary(idx - 1):
+                break
         else:
             break
 
@@ -427,7 +582,11 @@ def parse_vietnamese_number_phrase(words: list[str], start_idx: int) -> tuple[st
     return None, 0
 
 
-def collapse_number_tokens(words: list[str], language: str | None = None) -> list[NormalizedSpan]:
+def collapse_number_tokens(
+    words: list[str],
+    language: str | None = None,
+    delimiters: list[str] | None = None,
+) -> list[NormalizedSpan]:
     """Collapses multi-word number expressions into normalized canonical tokens.
     Preserves exact original index bounds [orig_start, orig_end).
     """
@@ -441,7 +600,7 @@ def collapse_number_tokens(words: list[str], language: str | None = None) -> lis
         raw_w = words[idx]
         cleaned = clean_token(raw_w)
 
-        # Check if already a numeric token (e.g. '300', '1,000', '3.14', '127.0.0.1')
+        # Check if already a numeric token (e.g. '300', '1,000', '3.14', '127.0.0.1', '23rd')
         norm_digit = normalize_digit_string(raw_w)
         if norm_digit != cleaned or re.search(r"\d", cleaned):
             spans.append(NormalizedSpan(
@@ -453,16 +612,35 @@ def collapse_number_tokens(words: list[str], language: str | None = None) -> lis
             idx += 1
             continue
 
+        # Check hyphenated compound numbers (e.g. 'twenty-third', 'sixty-nine', 'fifty-five')
+        if "-" in cleaned and not is_ip_address(cleaned):
+            sub_parts = [p for p in cleaned.split("-") if p]
+            if len(sub_parts) > 1:
+                val_hyphen, consumed_hyphen = (
+                    parse_vietnamese_number_phrase(sub_parts, 0)
+                    if is_vi
+                    else parse_english_number_phrase(sub_parts, 0)
+                )
+                if val_hyphen is not None and consumed_hyphen == len(sub_parts):
+                    spans.append(NormalizedSpan(
+                        canonical=val_hyphen,
+                        orig_start=idx,
+                        orig_end=idx + 1,
+                        is_number=True,
+                    ))
+                    idx += 1
+                    continue
+
         # Try parsing multi-word number phrase
         val = None
         consumed = 0
         if is_vi:
-            val, consumed = parse_vietnamese_number_phrase(words, idx)
+            val, consumed = parse_vietnamese_number_phrase(words, idx, delimiters)
         else:
-            val, consumed = parse_english_number_phrase(words, idx)
+            val, consumed = parse_english_number_phrase(words, idx, delimiters)
             # If English failed but text might be VN, try VN as fallback
             if val is None:
-                val, consumed = parse_vietnamese_number_phrase(words, idx)
+                val, consumed = parse_vietnamese_number_phrase(words, idx, delimiters)
 
         if val is not None and consumed > 0:
             spans.append(NormalizedSpan(
@@ -490,5 +668,15 @@ def are_number_expressions_equivalent(expr1: str, expr2: str, language: str | No
     s1 = collapse_number_tokens(expr1.split(), language)
     s2 = collapse_number_tokens(expr2.split(), language)
     if len(s1) == 1 and len(s2) == 1 and s1[0].is_number and s2[0].is_number:
-        return s1[0].canonical == s2[0].canonical
+        c1 = s1[0].canonical
+        c2 = s2[0].canonical
+        if c1 == c2:
+            return True
+        # Check ordinal to cardinal equivalence: e.g. '23rd' == '23', 'thứ 1' == '1'
+        base1 = re.sub(r"^(thứ\s+|thu\s+)", "", c1)
+        base2 = re.sub(r"^(thứ\s+|thu\s+)", "", c2)
+        base1 = re.sub(r"(st|nd|rd|th)$", "", base1)
+        base2 = re.sub(r"(st|nd|rd|th)$", "", base2)
+        if base1 and base1 == base2:
+            return True
     return False

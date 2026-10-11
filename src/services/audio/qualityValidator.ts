@@ -2,6 +2,8 @@ import { AudioQualityReview, AudioQualityStatus, ChunkItem } from "../../types/u
 import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
 
+export const QUALITY_VALIDATOR_VERSION = "2.2.0";
+
 /**
  * Returns true if the chunk has a definitive error (status is 'failed' or review is 'error').
  */
@@ -31,6 +33,19 @@ export function isReviewCurrent(chunk: ChunkItem): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Returns true if the chunk's quality review is missing, stale (text changed),
+ * or evaluated with an older version of the validator.
+ */
+export function isReviewOutdated(chunk: ChunkItem): boolean {
+  if (!chunk.qualityReview) return true;
+  if (!isReviewCurrent(chunk)) return true;
+  if (chunk.qualityReview.validatorVersion !== QUALITY_VALIDATOR_VERSION) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -279,6 +294,7 @@ export async function validateChunkAudioQuality(
       summary: "Chưa có âm thanh",
       checkedAt: now,
       text: chunk.text,
+      validatorVersion: QUALITY_VALIDATOR_VERSION,
     };
   }
 
@@ -295,6 +311,7 @@ export async function validateChunkAudioQuality(
         checkedAt: now,
         audioPath: chunk.audioFilePath,
         text: chunk.text,
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
       };
     }
   } catch (err: any) {
@@ -307,6 +324,7 @@ export async function validateChunkAudioQuality(
       checkedAt: now,
       audioPath: chunk.audioFilePath,
       text: chunk.text,
+      validatorVersion: QUALITY_VALIDATOR_VERSION,
     };
   }
 
@@ -324,6 +342,7 @@ export async function validateChunkAudioQuality(
       summary: "Thời lượng âm thanh quá ngắn",
       checkedAt: now,
       text: chunk.text,
+      validatorVersion: QUALITY_VALIDATOR_VERSION,
     };
   }
 
@@ -334,5 +353,6 @@ export async function validateChunkAudioQuality(
     checkedAt: now,
     audioPath: chunk.audioFilePath,
     text: chunk.text,
+    validatorVersion: QUALITY_VALIDATOR_VERSION,
   };
 }

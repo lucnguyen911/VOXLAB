@@ -1004,7 +1004,95 @@ class AudioQualityTest(unittest.TestCase):
             f"Expected issue for 300 vs 50, got: {issues}",
         )
 
+    def test_row_after_row_no_false_stutter(self):
+        """Valid repetitions with intervening words like 'row after row' are not flagged as stutter."""
+        text = "Picture roughly three hundred cars filling it, row after row, and not one of them has a steering wheel."
+        sr = 24000
+        t_burst = np.arange(int(0.12 * sr)) / sr
+        burst = (0.35 * np.sin(2 * np.pi * 300 * t_burst)).astype(np.float32)
+
+        audio = np.concatenate([
+            np.zeros(int(0.05 * sr), dtype=np.float32),
+            burst,
+            np.zeros(int(0.10 * sr), dtype=np.float32),
+            burst,
+            np.zeros(int(0.1 * sr), dtype=np.float32)
+        ])
+
+        asr_words = [
+            {"word": "Picture", "startSec": 0.0, "endSec": 0.3, "probability": 0.98},
+            {"word": "roughly", "startSec": 0.35, "endSec": 0.6, "probability": 0.98},
+            {"word": "300", "startSec": 0.65, "endSec": 0.9, "probability": 0.98},
+            {"word": "cars", "startSec": 0.95, "endSec": 1.2, "probability": 0.98},
+            {"word": "filling", "startSec": 1.25, "endSec": 1.5, "probability": 0.98},
+            {"word": "it,", "startSec": 1.55, "endSec": 1.7, "probability": 0.98},
+            {"word": "row", "startSec": 1.75, "endSec": 1.95, "probability": 0.98},
+            {"word": "after", "startSec": 2.0, "endSec": 2.2, "probability": 0.98},
+            {"word": "row,", "startSec": 2.25, "endSec": 2.45, "probability": 0.98},
+            {"word": "and", "startSec": 2.5, "endSec": 2.6, "probability": 0.98},
+            {"word": "not", "startSec": 2.65, "endSec": 2.8, "probability": 0.98},
+            {"word": "one", "startSec": 2.85, "endSec": 3.0, "probability": 0.98},
+            {"word": "of", "startSec": 3.05, "endSec": 3.15, "probability": 0.98},
+            {"word": "them", "startSec": 3.2, "endSec": 3.35, "probability": 0.98},
+            {"word": "has", "startSec": 3.4, "endSec": 3.55, "probability": 0.98},
+            {"word": "a", "startSec": 3.6, "endSec": 3.65, "probability": 0.98},
+            {"word": "steering", "startSec": 3.7, "endSec": 4.0, "probability": 0.98},
+            {"word": "wheel.", "startSec": 4.05, "endSec": 4.3, "probability": 0.98},
+        ]
+        # Alignment check
+        align_issues = audio_quality.analyze_word_alignment_issues(text, asr_words, language="en")
+        self.assertEqual(len(align_issues), 0, f"Expected 0 alignment issues for row after row, got: {align_issues}")
+
+        # Acoustic stutter check
+        stutter_issues = audio_quality.detect_acoustic_stutter(audio, sr, text=text, asr_words=asr_words, language="en")
+        self.assertEqual(len(stutter_issues), 0, f"Expected 0 stutter issues for row after row, got: {stutter_issues}")
+
+    def test_row_row_after_row_flags_stutter(self):
+        """Unintended consecutive repetition 'row row after row' flags warning."""
+        text = "Picture roughly three hundred cars filling it, row after row, and not one of them has a steering wheel."
+        asr_words_repeat = [
+            {"word": "row", "startSec": 0.1, "endSec": 0.3, "probability": 0.98},
+            {"word": "row", "startSec": 0.35, "endSec": 0.55, "probability": 0.98},
+            {"word": "after", "startSec": 0.6, "endSec": 0.8, "probability": 0.98},
+            {"word": "row,", "startSec": 0.85, "endSec": 1.05, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues("row after row", asr_words_repeat, language="en")
+        self.assertTrue(
+            any(i["code"] in ("REPEATED_WORD", "SUSPECTED_STUTTER") and "row" in i.get("words", []) for i in issues),
+            f"Expected repeated row detected, got: {issues}",
+        )
+
+    def test_excessive_repeat_that_that_that_flags_repetition(self):
+        """When text has 'that that' (2x) but ASR has 'that that that' (3x), the extra repeat is flagged."""
+        text = "I know that that is true."
+        mock_words = [
+            {"word": "I", "startSec": 0.1, "endSec": 0.3, "probability": 0.98},
+            {"word": "know", "startSec": 0.35, "endSec": 0.6, "probability": 0.98},
+            {"word": "that", "startSec": 0.65, "endSec": 0.85, "probability": 0.98},
+            {"word": "that", "startSec": 0.9, "endSec": 1.1, "probability": 0.98},
+            {"word": "that", "startSec": 1.15, "endSec": 1.35, "probability": 0.98},
+            {"word": "is", "startSec": 1.4, "endSec": 1.55, "probability": 0.98},
+            {"word": "true.", "startSec": 1.6, "endSec": 1.9, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en")
+        self.assertTrue(
+            any(i["code"] in ("REPEATED_WORD", "SUSPECTED_STUTTER") and "that" in i.get("words", []) for i in issues),
+            f"Expected repeated that detected for 3x, got: {issues}",
+        )
+
+    def test_comma_number_sequence_alignment(self):
+        """Comma-separated numbers like 'sixty nine, one hundred twenty six, one hundred fifty eight' align cleanly."""
+        text = "sixty nine, one hundred twenty six, one hundred fifty eight"
+        asr_words = [
+            {"word": "69,", "startSec": 0.1, "endSec": 0.5, "probability": 0.99},
+            {"word": "126,", "startSec": 0.6, "endSec": 1.1, "probability": 0.99},
+            {"word": "158", "startSec": 1.2, "endSec": 1.8, "probability": 0.99},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, asr_words, language="en")
+        self.assertEqual(len(issues), 0, f"Expected 0 issues for comma number sequence, got: {issues}")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

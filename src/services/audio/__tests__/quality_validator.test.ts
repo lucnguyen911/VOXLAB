@@ -8,6 +8,8 @@ import {
   isChunkUnverified,
   isChunkPass,
   isReviewCurrent,
+  isReviewOutdated,
+  QUALITY_VALIDATOR_VERSION,
   validateChunkAudioQuality,
   getIssueShortLabel,
   getChunkBadgeInfo,
@@ -797,5 +799,46 @@ describe("Audio Quality Validator Tests", () => {
     assert.deepEqual(issue.words, ["steering", "steelering"]);
     assert.deepEqual(issue.timeRange, [1.2, 1.85]);
     assert.ok(issue.message.includes("steelering"));
+  });
+
+  it("V19: detects outdated quality reviews and associates validatorVersion", async () => {
+    assert.equal(QUALITY_VALIDATOR_VERSION, "2.2.0");
+
+    const chunkNoAudio: ChunkItem = {
+      id: "c_v19",
+      index: 1,
+      text: "Testing versioning",
+      originalText: "Testing versioning",
+      status: "pending",
+      pauseAfterMs: "auto",
+    };
+
+    const review = await validateChunkAudioQuality(chunkNoAudio);
+    assert.equal(review.validatorVersion, "2.2.0");
+
+    const chunkWithCurrentReview: ChunkItem = {
+      ...chunkNoAudio,
+      status: "ready",
+      audioUrl: "blob:mock",
+      qualityReview: review,
+    };
+    assert.equal(isReviewOutdated(chunkWithCurrentReview), false);
+
+    // Stale review due to text modification
+    const chunkModifiedText: ChunkItem = {
+      ...chunkWithCurrentReview,
+      text: "Testing versioning modified",
+    };
+    assert.equal(isReviewOutdated(chunkModifiedText), true);
+
+    // Stale review due to older validator version
+    const chunkOlderVersion: ChunkItem = {
+      ...chunkWithCurrentReview,
+      qualityReview: {
+        ...review,
+        validatorVersion: "1.0.0",
+      },
+    };
+    assert.equal(isReviewOutdated(chunkOlderVersion), true);
   });
 });

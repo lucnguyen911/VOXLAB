@@ -54,6 +54,8 @@ import {
   validateChunkAudioQuality,
   getChunkBadgeInfo,
   getIssueShortLabel,
+  QUALITY_VALIDATOR_VERSION,
+  isReviewOutdated,
 } from "../services/audio/qualityValidator";
 
 
@@ -211,6 +213,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isAssemblingMaster, setIsAssemblingMaster] = useState(false);
   const [expandedIssuesChunks, setExpandedIssuesChunks] = useState<Record<string, boolean>>({});
+  const [revalidatingChunkIds, setRevalidatingChunkIds] = useState<Record<string, boolean>>({});
   const masterBlobUrlRef = useRef<string | null>(null);
   const lastChunksSignatureRef = useRef<string>("");
 
@@ -404,6 +407,25 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     } finally {
       setProgressStage("");
       onJobComplete?.();
+    }
+  };
+
+  const handleRevalidateChunk = async (chunkId: string) => {
+    const chunk = chunks.find((c) => c.id === chunkId);
+    if (!chunk || (!chunk.audioFilePath && !chunk.audioUrl)) return;
+
+    setRevalidatingChunkIds((prev) => ({ ...prev, [chunkId]: true }));
+    try {
+      const lang = chunk.effectiveVoiceSnapshot?.language;
+      const speed = chunk.effectiveVoiceSnapshot?.speed;
+      const review = await validateChunkAudioQuality(chunk, lang, undefined, speed);
+      setChunks((prev) =>
+        prev.map((c) => (c.id === chunkId ? { ...c, qualityReview: review } : c))
+      );
+    } catch (err) {
+      console.warn(`[TtsWorkspace] Revalidation failed for chunk ${chunkId}:`, err);
+    } finally {
+      setRevalidatingChunkIds((prev) => ({ ...prev, [chunkId]: false }));
     }
   };
 
@@ -1683,23 +1705,40 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                     {/* Expandable breakdown for detected issues */}
                     {chunk.qualityReview?.issues && chunk.qualityReview.issues.length > 0 && (
                       <div className="pt-1.5 border-t border-borderDefault/40 text-xs" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setExpandedIssuesChunks((prev) => ({ ...prev, [chunk.id]: !prev[chunk.id] }));
-                          }}
-                          className="text-textSecondary hover:text-accent font-medium flex items-center gap-1 cursor-pointer transition-colors"
-                        >
-                          <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
-                          <span>
-                            {expandedIssuesChunks[chunk.id]
-                              ? "Thu gọn chi tiết"
-                              : chunk.qualityReview.issues.length === 1
-                              ? "Xem chi tiết vấn đề"
-                              : `Xem tất cả ${chunk.qualityReview.issues.length} vấn đề phát hiện`}
-                          </span>
-                          <ChevronDown className={`w-3 h-3 transition-transform ${expandedIssuesChunks[chunk.id] ? "rotate-180" : ""}`} />
-                        </button>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpandedIssuesChunks((prev) => ({ ...prev, [chunk.id]: !prev[chunk.id] }));
+                            }}
+                            className="text-textSecondary hover:text-accent font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                            <span>
+                              {expandedIssuesChunks[chunk.id]
+                                ? "Thu gọn chi tiết"
+                                : chunk.qualityReview.issues.length === 1
+                                ? "Xem chi tiết vấn đề"
+                                : `Xem tất cả ${chunk.qualityReview.issues.length} vấn đề phát hiện`}
+                            </span>
+                            <ChevronDown className={`w-3 h-3 transition-transform ${expandedIssuesChunks[chunk.id] ? "rotate-180" : ""}`} />
+                          </button>
+                          {chunk.status === "ready" && (chunk.audioFilePath || chunk.audioUrl) && (
+                            <button
+                              type="button"
+                              disabled={revalidatingChunkIds[chunk.id]}
+                              onClick={() => handleRevalidateChunk(chunk.id)}
+                              className="px-2 py-0.5 rounded bg-surface2 hover:bg-surface3 text-[11px] text-textSecondary hover:text-textPrimary font-medium border border-borderDefault shrink-0 transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                              title={isReviewOutdated(chunk) ? `Cần kiểm tra lại (phiên bản hiện tại: v${QUALITY_VALIDATOR_VERSION})` : "Kiểm tra lại chất lượng mà không tạo lại audio"}
+                            >
+                              <RefreshCw className={`w-2.5 h-2.5 ${revalidatingChunkIds[chunk.id] ? "animate-spin text-accent" : "text-textMuted"}`} />
+                              <span>{revalidatingChunkIds[chunk.id] ? "Đang kiểm tra..." : "Kiểm tra lại"}</span>
+                              {isReviewOutdated(chunk) && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" title="Đánh giá cũ" />
+                              )}
+                            </button>
+                          )}
+                        </div>
                         {expandedIssuesChunks[chunk.id] && (
                           <div className="mt-2 space-y-2 pl-2 border-l-2 border-amber-500/40">
                             {chunk.qualityReview.issues.map((iss, idx) => {
