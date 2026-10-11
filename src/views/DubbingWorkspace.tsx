@@ -139,7 +139,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     onChangeModel?.(m);
   };
 
-  // Dubbing Voice Settings (Speed, Pitch, Volume, Pauses, Concurrency)
+  // Dubbing voice settings (speed, pitch, volume, pauses). Concurrency fixed at 1.
   const [speed, setSpeed] = useState<number>(() => {
     try {
       const saved = localStorage.getItem("voxlab_dubbing_voice_settings");
@@ -176,13 +176,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     } catch {}
     return { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 };
   });
-  const [concurrency, setConcurrency] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("voxlab_dubbing_voice_settings");
-      if (saved) return JSON.parse(saved).concurrency ?? 1;
-    } catch {}
-    return 1;
-  });
+  const concurrency = 1; // Sidecar supports only one heavy request.
   const [isPausesOpen, setIsPausesOpen] = useState<boolean>(false);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState<boolean>(false);
 
@@ -206,7 +200,6 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       questionExclamation: 0.7,
       colonSemicolon: 0.4,
     });
-    setConcurrency(1);
   };
 
   const handlePauseChange = (key: keyof typeof pauses, value: number) => {
@@ -1622,23 +1615,6 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
 
                 {isAdvancedOpen && (
                   <div className="space-y-3 pt-2">
-                    {/* Tốc độ xử lý */}
-                    <div className="space-y-1.5">
-                      <label className="block text-xs text-textSecondary font-medium">
-                        {t.inspector.processingSpeed}
-                      </label>
-                      <select
-                        value={concurrency}
-                        onChange={(e) => setConcurrency(parseInt(e.target.value, 10) || 1)}
-                        className="w-full h-[34px] bg-surface1 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
-                      >
-                        <option value={1}>{t.inspector.speed1x}</option>
-                        <option value={2}>{t.inspector.speed2x}</option>
-                        <option value={3}>{t.inspector.speed3x}</option>
-                        <option value={4}>{t.inspector.speed4x}</option>
-                      </select>
-                    </div>
-
                     {/* Khớp thời gian file gốc toggle */}
                     <div className="pt-2 border-t border-borderDefault/40">
                       <div className="flex items-center justify-between">

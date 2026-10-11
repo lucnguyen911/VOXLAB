@@ -128,7 +128,8 @@ function loadInitialVoices(): VoiceProfile[] {
   const [selectedChunk, setSelectedChunk] = useState<ChunkItem | null>(MOCK_CHUNKS[0]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [concurrency, setConcurrency] = useState<number>(() => loadStoredTtsSettings().concurrency);
+  // One heavy inference at a time. Sidecar returns BUSY for overlapping requests.
+  const concurrency = 1;
   const [exportSrt, setExportSrt] = useState<boolean>(() => !!loadStoredTtsSettings().exportSrt);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [totalChunks, setTotalChunks] = useState(7);
@@ -348,7 +349,6 @@ function loadInitialVoices(): VoiceProfile[] {
                       onWidthChange={(w) => setInspectorWidth(w)}
                       onOpenVoiceModal={() => setVoiceModalOpen(true)}
                       concurrency={concurrency}
-                      onChangeConcurrency={setConcurrency}
                       exportSrt={exportSrt}
                       onChangeExportSrt={setExportSrt}
                     />

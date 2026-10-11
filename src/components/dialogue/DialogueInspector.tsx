@@ -409,7 +409,7 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
             )}
           </div>
 
-          {/* Collapsible: NÂNG CAO (Advanced: Processing Speed, SRT Export, Inter-Speaker Pause) */}
+          {/* Collapsible: NÂNG CAO (Advanced: SRT Export, Inter-Speaker Pause) */}
           <div className="pt-1.5 border-t border-borderDefault/60">
             <button
               type="button"
@@ -431,27 +431,6 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
 
             {isAdvancedOpen && (
               <div className="space-y-3 pt-2">
-                {/* Processing Speed (Concurrency) */}
-                <div className="space-y-1">
-                  <label className="text-[11px] text-textSecondary font-medium block">
-                    {t.inspector.processingSpeed}
-                  </label>
-                  <select
-                    value={settings.concurrency ?? 1}
-                    onChange={(e) =>
-                      onUpdateSettings({
-                        concurrency: parseInt(e.target.value, 10) || 1,
-                      })
-                    }
-                    className="w-full h-[32px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
-                  >
-                    <option value={1}>{t.inspector.speed1x}</option>
-                    <option value={2}>{t.inspector.speed2x}</option>
-                    <option value={3}>{t.inspector.speed3x}</option>
-                    <option value={4}>{t.inspector.speed4x}</option>
-                  </select>
-                </div>
-
                 {/* Export SRT Switch */}
                 <div className="flex items-center justify-between py-0.5">
                   <span className="text-[11px] text-textSecondary font-medium">

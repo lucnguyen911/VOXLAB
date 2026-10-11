@@ -55,7 +55,6 @@ import {
   saveSubtitleSettings,
   WHISPER_AUDIO_LANGUAGES,
   SubtitleSpeechSpeed,
-  SubtitleProcessingSpeed,
   SubtitleAspectRatio,
   SubtitleMaxLines,
 } from "../services/subtitle";
@@ -406,7 +405,7 @@ export function loadBatchOutputSettings(): BatchOutputSettings {
       collisionPolicy: ["auto_rename", "overwrite", "skip"].includes(parsed.collisionPolicy) ? parsed.collisionPolicy : fallback.collisionPolicy,
       outputAudioFormat: parsed.outputAudioFormat === "mp3" ? "mp3" : "wav",
       outputSubtitleFormat: parsed.outputSubtitleFormat === "vtt" ? "vtt" : "srt",
-      concurrency: typeof parsed.concurrency === "number" ? parsed.concurrency : fallback.concurrency,
+      concurrency: 1,
     };
   } catch {
     return fallback;
@@ -424,7 +423,7 @@ export function saveBatchOutputSettings(settings: Partial<BatchOutputSettings>):
       collisionPolicy: settings.collisionPolicy || current.collisionPolicy,
       outputAudioFormat: settings.outputAudioFormat || current.outputAudioFormat,
       outputSubtitleFormat: settings.outputSubtitleFormat || current.outputSubtitleFormat,
-      concurrency: settings.concurrency !== undefined ? settings.concurrency : (current.concurrency ?? 1),
+      concurrency: 1,
     };
     storage.setItem(BATCH_OUTPUT_SETTINGS_STORAGE_KEY, JSON.stringify(merged));
   } catch {
@@ -498,7 +497,7 @@ export function loadStoredDubbingSettings(): StoredDubbingSettings {
         questionExclamation: typeof parsed.pauses.questionExclamation === "number" ? parsed.pauses.questionExclamation : 0.7,
         colonSemicolon: typeof parsed.pauses.colonSemicolon === "number" ? parsed.pauses.colonSemicolon : 0.4,
       } : fallback.pauses,
-      concurrency: typeof parsed.concurrency === "number" ? parsed.concurrency : fallback.concurrency,
+      concurrency: 1,
       autoFit: typeof parsed.autoFit === "boolean" ? parsed.autoFit : fallback.autoFit,
     };
   } catch {
@@ -522,7 +521,7 @@ export function saveStoredDubbingSettings(settings: Partial<StoredDubbingSetting
       pitch: settings.pitch ?? current.pitch,
       volume: settings.volume ?? current.volume,
       pauses: settings.pauses ?? current.pauses,
-      concurrency: settings.concurrency ?? current.concurrency,
+      concurrency: 1,
       autoFit: settings.autoFit ?? current.autoFit,
     };
     storage.setItem(DUBBING_VOICE_SETTINGS_KEY, JSON.stringify(updated));
@@ -544,6 +543,7 @@ export function loadStoredDialogueSettings(): DialogueGlobalSettings {
       ...DEFAULT_DIALOGUE_SETTINGS,
       ...parsed,
       model,
+      concurrency: 1,
       pauses: {
         ...DEFAULT_DIALOGUE_SETTINGS.pauses,
         ...(parsed.pauses || {}),
@@ -562,6 +562,7 @@ export function saveStoredDialogueSettings(settings: Partial<DialogueGlobalSetti
     const updated: DialogueGlobalSettings = {
       ...current,
       ...settings,
+      concurrency: 1,
       pauses: {
         ...current.pauses,
         ...(settings.pauses || {}),
@@ -5001,32 +5002,6 @@ export const BatchWorkspacePrototype: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Processing Speed (Tốc độ xử lý) */}
-                  <div className="p-3.5 bg-surface1 rounded-xl border border-borderDefault space-y-2">
-                    <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-                      Tốc độ xử lý
-                    </label>
-                    <select
-                      value={globalDefaults.concurrency ?? 1}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value, 10) || 1;
-                        setGlobalDefaults((prev) => ({
-                          ...prev,
-                          concurrency: val,
-                          tts: { ...prev.tts, concurrency: val },
-                          dialogue: { ...prev.dialogue, concurrency: val },
-                          dubbing: { ...prev.dubbing, concurrency: val },
-                        }));
-                        saveBatchOutputSettings({ concurrency: val });
-                      }}
-                      className="w-full px-3 py-2 bg-surface2 border border-borderDefault rounded-lg text-textPrimary focus:outline-none focus:border-borderHighlight cursor-pointer"
-                    >
-                      <option value={1}>1x · Mặc định</option>
-                      <option value={2}>2x · Nhanh</option>
-                      <option value={3}>3x · Rất nhanh</option>
-                      <option value={4}>4x · Tối đa</option>
-                    </select>
-                  </div>
                 </div>
               )}
 
@@ -5859,26 +5834,6 @@ export const BatchWorkspacePrototype: React.FC = () => {
                       </select>
                     </div>
 
-                    <div className="space-y-1">
-                      <label className="block text-textSecondary font-medium text-[11px]">
-                        {t.transcription.processingSpeedLabel}
-                      </label>
-                      <select
-                        value={globalDefaults.transcription.processingSpeed}
-                        onChange={(e) =>
-                          handleUpdateGlobalTranscription({
-                            processingSpeed: e.target.value as SubtitleProcessingSpeed,
-                          })
-                        }
-                        className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
-                      >
-                        <option value="auto">Tự động</option>
-                        <option value="1x">1x</option>
-                        <option value="2x">2x</option>
-                        <option value="4x">4x</option>
-                        <option value="8x">8x</option>
-                      </select>
-                    </div>
                   </div>
 
                   {/* Group 2: Hiển thị */}

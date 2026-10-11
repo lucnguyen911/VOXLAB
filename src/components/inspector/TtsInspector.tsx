@@ -61,13 +61,8 @@ export const loadStoredTtsSettings = (): PersistedTtsSettings => {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      let concurrency = parsed.concurrency;
-      // Section 20: Legacy 8 workers safety clamp to 4
-      if (concurrency === 8) {
-        concurrency = 4;
-      } else if (![1, 2, 3, 4].includes(concurrency)) {
-        concurrency = 1;
-      }
+      // Legacy configuration is retained but always normalized for safe inference.
+      const concurrency = 1;
 
       return {
         speed:
@@ -117,7 +112,7 @@ export const loadStoredTtsSettings = (): PersistedTtsSettings => {
 export const saveStoredTtsSettings = (settings: Partial<PersistedTtsSettings>) => {
   try {
     const current = loadStoredTtsSettings();
-    const next = { ...current, ...settings };
+    const next = { ...current, ...settings, concurrency: 1 };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch (e) {
     // Ignore storage errors
@@ -143,8 +138,6 @@ interface TtsInspectorProps {
   onWidthChange?: (width: number) => void;
   onOpenVoiceModal?: () => void;
   lang?: string;
-  concurrency?: number;
-  onChangeConcurrency?: (concurrency: number) => void;
   exportSrt?: boolean;
   onChangeExportSrt?: (enabled: boolean) => void;
   onGenerateAudio?: () => void;
@@ -171,8 +164,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   inspectorWidth = 340,
   onWidthChange: _onWidthChange,
   onOpenVoiceModal,
-  concurrency: propConcurrency,
-  onChangeConcurrency,
   exportSrt: propExportSrt,
   onChangeExportSrt,
   onGenerateAudio,
@@ -208,9 +199,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   const [speed, setSpeed] = useState<number>(initialSettings.speed);
   const [pitch, setPitch] = useState<number>(initialSettings.pitch);
   const [volume, setVolume] = useState<number>(initialSettings.volume);
-  const [localConcurrency, setLocalConcurrency] = useState<number>(
-    propConcurrency ?? initialSettings.concurrency
-  );
   const [localExportSrt, setLocalExportSrt] = useState<boolean>(
     propExportSrt ?? initialSettings.exportSrt ?? false
   );
@@ -221,13 +209,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   // Accordion states - NÂNG CAO collapsed by default (Section 11)
   const [isPausesOpen, setIsPausesOpen] = useState(false);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
-
-  // Sync propConcurrency with localConcurrency if passed
-  useEffect(() => {
-    if (propConcurrency !== undefined && propConcurrency !== localConcurrency) {
-      setLocalConcurrency(propConcurrency);
-    }
-  }, [propConcurrency]);
 
   // Sync propExportSrt with localExportSrt if passed
   useEffect(() => {
@@ -295,14 +276,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
     setPauses(updated);
     saveStoredTtsSettings({ pauses: updated });
   };
-
-  const handleConcurrencyChange = (val: number) => {
-    setLocalConcurrency(val);
-    saveStoredTtsSettings({ concurrency: val });
-    onChangeConcurrency?.(val);
-  };
-
-  const effectiveConcurrency = propConcurrency ?? localConcurrency;
 
   return (
     <aside
@@ -656,7 +629,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
           )}
         </div>
 
-        {/* Section 11-24: COLLAPSIBLE NÂNG CAO (Default Collapsed, Processing Speed, No Duplicate Badge, No Fake VRAM) */}
+        {/* Section 11-24: COLLAPSIBLE NÂNG CAO (Default Collapsed, SRT Export) */}
         <div className="pt-2 border-t border-borderDefault/60">
           <button
             type="button"
@@ -678,25 +651,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
 
           {isAdvancedOpen && (
             <div className="space-y-3.5 pt-2">
-              {/* Processing Speed Section */}
-              <div className="space-y-1.5">
-                <label className="block text-xs text-textSecondary font-medium">
-                  {t.inspector.processingSpeed}
-                </label>
-                <select
-                  value={effectiveConcurrency}
-                  onChange={(e) =>
-                    handleConcurrencyChange(parseInt(e.target.value, 10) || 1)
-                  }
-                  className="w-full h-[34px] bg-surface1 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none transition-colors cursor-pointer"
-                >
-                  <option value={1}>{t.inspector.speed1x}</option>
-                  <option value={2}>{t.inspector.speed2x}</option>
-                  <option value={3}>{t.inspector.speed3x}</option>
-                  <option value={4}>{t.inspector.speed4x}</option>
-                </select>
-              </div>
-
               {/* SRT Subtitle Switch (Simple OFF / ON) */}
               <div className="pt-2 border-t border-borderDefault/40">
                 <div

@@ -57,6 +57,21 @@ describe("TTS Settings Storage & Speed Range Suite", () => {
     assert.equal(settings.speed, 1.15);
   });
 
+  it("normalizes legacy parallel setting to 1x while preserving voice and SRT settings", () => {
+    mockStorage["voxlab_tts_settings"] = JSON.stringify({ concurrency: 4, speed: 1.25, exportSrt: true });
+    const settings = loadStoredTtsSettings();
+    assert.equal(settings.concurrency, 1);
+    assert.equal(settings.speed, 1.25);
+    assert.equal(settings.exportSrt, true);
+  });
+
+  it("prevents hidden callers from re-enabling parallel TTS", () => {
+    saveStoredTtsSettings({ concurrency: 3, speed: 1.1 });
+    assert.equal(loadStoredTtsSettings().concurrency, 1);
+    assert.equal(JSON.parse(mockStorage["voxlab_tts_settings"]).concurrency, 1);
+    assert.equal(loadStoredTtsSettings().speed, 1.1);
+  });
+
   it("safely ignores legacy optimizeClarity in storage and loads defaults cleanly", () => {
     mockStorage["voxlab_tts_settings"] = JSON.stringify({ optimizeClarity: true, speed: 1.1 });
     const settings = loadStoredTtsSettings();

@@ -32,7 +32,6 @@ import {
   saveSubtitleSettings,
   SubtitleSettings,
   SubtitleSpeechSpeed,
-  SubtitleProcessingSpeed,
   SubtitleAspectRatio,
   SubtitleMaxLines,
   WhisperSegment,
@@ -1207,26 +1206,6 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
                 </select>
               </div>
 
-              <div className="space-y-1">
-                <label className="block text-textSecondary font-medium text-[11px]">
-                  {t.transcription.processingSpeedLabel}
-                </label>
-                <select
-                  value={subtitleSettings.processingSpeed}
-                  onChange={(e) =>
-                    handleUpdateRecognition({
-                      processingSpeed: e.target.value as SubtitleProcessingSpeed,
-                    })
-                  }
-                  className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
-                >
-                  <option value="auto">Tự động</option>
-                  <option value="1x">1x</option>
-                  <option value="2x">2x</option>
-                  <option value="4x">4x</option>
-                  <option value="8x">8x</option>
-                </select>
-              </div>
             </div>
 
             {/* Group 2: Hiển thị */}

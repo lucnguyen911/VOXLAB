@@ -97,6 +97,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
           ...DEFAULT_DIALOGUE_SETTINGS,
           ...parsed,
           model,
+          concurrency: 1, // Override hidden legacy parallel settings.
           turnPauseMinSec,
           turnPauseMaxSec,
           pauses: {
@@ -276,7 +277,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 
   // Update global settings
   const handleUpdateSettings = (partial: Partial<DialogueGlobalSettings>) => {
-    setSettings((prev) => ({ ...prev, ...partial }));
+    setSettings((prev) => ({ ...prev, ...partial, concurrency: 1 }));
   };
 
   // Character voice selection
