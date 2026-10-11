@@ -14,9 +14,9 @@ export type PunctuationType =
  * Production audio should tune these via user inspector settings (TtsInspector).
  */
 export const DEFAULT_PUNCTUATION_PAUSES: PunctuationPauses = {
-  comma: 0.3, // 0.3s - Tránh đọc ngắt quãng
+  comma: 0.2, // 0.2s - Chuẩn Text-to-Speech
   period: 0.6, // 0.6s - Tách câu tự nhiên
-  questionExclamation: 0.7, // 0.7s - Tránh ngắt quá dài
+  questionExclamation: 0.5, // 0.5s - Chuẩn Text-to-Speech
   colonSemicolon: 0.4, // 0.4s - Giữ mạch nội dung
 };
 
@@ -220,12 +220,17 @@ export function isLegacyPunctuationPauses(p: unknown): boolean {
     (pauses.period === 1 || pauses.period === 1.0) &&
     (pauses.questionExclamation === 1 || pauses.questionExclamation === 1.0) &&
     pauses.colonSemicolon === 0.6;
-  return Boolean(isLegacyDialogue || isLegacyUiSample);
+  const isPreviousIntermediate =
+    (pauses.comma === 0.3 || pauses.comma === 0.30) &&
+    (pauses.period === 0.6 || pauses.period === 0.60) &&
+    (pauses.questionExclamation === 0.7 || pauses.questionExclamation === 0.70) &&
+    (pauses.colonSemicolon === 0.4 || pauses.colonSemicolon === 0.40);
+  return Boolean(isLegacyDialogue || isLegacyUiSample || isPreviousIntermediate);
 }
 
 /**
  * Synchronizes and sanitizes punctuation pauses to match canonical TTS defaults
- * (comma: 0.3s, period: 0.6s, questionExclamation: 0.7s, colonSemicolon: 0.4s).
+ * (comma: 0.2s, period: 0.6s, questionExclamation: 0.5s, colonSemicolon: 0.4s).
  * If the object matches legacy defaults, it replaces them with the standard TTS defaults.
  * If custom user overrides are present, it preserves them while filling any missing keys with TTS defaults.
  */

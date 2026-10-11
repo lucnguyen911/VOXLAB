@@ -45,9 +45,9 @@ export const DEFAULT_TTS_SETTINGS: PersistedTtsSettings = {
   pitch: 1.0,
   volume: 1.0,
   pauses: {
-    comma: 0.3,
+    comma: 0.2,
     period: 0.6,
-    questionExclamation: 0.7,
+    questionExclamation: 0.5,
     colonSemicolon: 0.4,
   },
   concurrency: 1, // Section 20: default is 1x · Mặc định

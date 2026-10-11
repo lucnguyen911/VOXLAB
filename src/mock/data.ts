@@ -7,9 +7,9 @@ export const DEFAULT_TTS_CONFIG: TtsAudioConfig = {
   volume: 1.0,
   sentencePauseMs: 400,
   punctuationPauses: {
-    comma: 0.3,
+    comma: 0.2,
     period: 0.6,
-    questionExclamation: 0.7,
+    questionExclamation: 0.5,
     colonSemicolon: 0.4,
   },
   emotion: "Tự nhiên",

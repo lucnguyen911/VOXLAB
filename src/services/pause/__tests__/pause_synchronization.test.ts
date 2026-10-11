@@ -12,9 +12,9 @@ import { DEFAULT_GLOBAL_SETTINGS } from "../../../views/BatchWorkspacePrototype"
 
 describe("Gate Pause Sync: Canonical Punctuation Pause Alignment Across All Tabs", () => {
   it("CANONICAL DEFAULTS: Baseline punctuation pauses match the Text-to-Speech gold standard", () => {
-    assert.equal(DEFAULT_PUNCTUATION_PAUSES.comma, 0.3, "Dấu phẩy ( , ) phải là 0.3s");
+    assert.equal(DEFAULT_PUNCTUATION_PAUSES.comma, 0.2, "Dấu phẩy ( , ) phải là 0.2s");
     assert.equal(DEFAULT_PUNCTUATION_PAUSES.period, 0.6, "Dấu chấm ( . ) phải là 0.6s");
-    assert.equal(DEFAULT_PUNCTUATION_PAUSES.questionExclamation, 0.7, "Hỏi / Than ( ? ! ) phải là 0.7s");
+    assert.equal(DEFAULT_PUNCTUATION_PAUSES.questionExclamation, 0.5, "Hỏi / Than ( ? ! ) phải là 0.5s");
     assert.equal(DEFAULT_PUNCTUATION_PAUSES.colonSemicolon, 0.4, "Hai chấm ( : ; ) phải là 0.4s");
   });
 
@@ -51,7 +51,7 @@ describe("Gate Pause Sync: Canonical Punctuation Pause Alignment Across All Tabs
     );
   });
 
-  it("LEGACY DETECTION: isLegacyPunctuationPauses accurately identifies early placeholder pauses", () => {
+  it("LEGACY DETECTION: isLegacyPunctuationPauses accurately identifies early placeholder pauses and intermediate defaults", () => {
     // Legacy Dialogue default (comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6)
     assert.equal(
       isLegacyPunctuationPauses({ comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 }),
@@ -67,6 +67,13 @@ describe("Gate Pause Sync: Canonical Punctuation Pause Alignment Across All Tabs
       isLegacyPunctuationPauses({ comma: 0.5, period: 1.0, questionExclamation: 1.0, colonSemicolon: 0.6 }),
       true,
       "Identifies legacy UI sample comment values"
+    );
+
+    // Previous intermediate default (0.3, 0.6, 0.7, 0.4) is also upgraded to match current TTS (0.2, 0.6, 0.5, 0.4)
+    assert.equal(
+      isLegacyPunctuationPauses({ comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 }),
+      true,
+      "Identifies previous intermediate default as requiring upgrade to current TTS default"
     );
 
     // Modern TTS canonical default is not legacy
@@ -98,6 +105,19 @@ describe("Gate Pause Sync: Canonical Punctuation Pause Alignment Across All Tabs
       "Legacy pauses must be cleanly sanitized to TTS standard"
     );
 
+    // Intermediate defaults replaced by canonical values
+    const fromIntermediate = sanitizePunctuationPauses({
+      comma: 0.3,
+      period: 0.6,
+      questionExclamation: 0.7,
+      colonSemicolon: 0.4,
+    });
+    assert.deepEqual(
+      fromIntermediate,
+      DEFAULT_PUNCTUATION_PAUSES,
+      "Intermediate pauses must be cleanly sanitized to TTS standard"
+    );
+
     // Null or undefined replaced by canonical values
     assert.deepEqual(sanitizePunctuationPauses(null), DEFAULT_PUNCTUATION_PAUSES);
     assert.deepEqual(sanitizePunctuationPauses(undefined), DEFAULT_PUNCTUATION_PAUSES);
@@ -106,17 +126,17 @@ describe("Gate Pause Sync: Canonical Punctuation Pause Alignment Across All Tabs
     const partialCustom = sanitizePunctuationPauses({ comma: 0.45 });
     assert.equal(partialCustom.comma, 0.45, "Preserves custom comma override");
     assert.equal(partialCustom.period, 0.6, "Fills period with TTS default");
-    assert.equal(partialCustom.questionExclamation, 0.7, "Fills questionExclamation with TTS default");
+    assert.equal(partialCustom.questionExclamation, 0.5, "Fills questionExclamation with TTS default");
     assert.equal(partialCustom.colonSemicolon, 0.4, "Fills colonSemicolon with TTS default");
   });
 
   it("MIGRATION: migratePunctuationPauseDefaults safely upgrades stored localStorage entries across all workspaces", () => {
     const mockStorage: Record<string, string> = {
-      // Legacy dialogue settings from old user session
+      // Legacy dialogue settings from old user session (e.g. 0.3, 0.6, 0.7, 0.4)
       voxlab_dialogue_settings: JSON.stringify({
         model: "Omni Voice",
         masterVolume: 1.0,
-        pauses: { comma: 0.5, period: 0.5, questionExclamation: 1.0, colonSemicolon: 0.6 },
+        pauses: { comma: 0.3, period: 0.6, questionExclamation: 0.7, colonSemicolon: 0.4 },
         concurrency: 1,
       }),
       // Legacy dubbing settings

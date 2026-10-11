@@ -125,9 +125,9 @@ export interface VoiceProfile {
 }
 
 export interface PunctuationPauses {
-  comma: number; // in seconds, default: 0.3s (matching TTS)
+  comma: number; // in seconds, default: 0.2s (matching TTS)
   period: number; // in seconds, default: 0.6s (matching TTS)
-  questionExclamation: number; // in seconds, default: 0.7s (matching TTS)
+  questionExclamation: number; // in seconds, default: 0.5s (matching TTS)
   colonSemicolon: number; // in seconds, default: 0.4s (matching TTS)
 }
 
