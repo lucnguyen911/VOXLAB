@@ -10,7 +10,7 @@
 ## A. PHIÊN BẢN MÃ NGUỒN
 
 - **Commit bắt đầu:** `a052d35` (`fix(quality): eliminate false alarms with 2-tier validation and hallucination filters`)
-- **Commit kết thúc:** *(Ghi nhận sau khi commit)*
+- **Commit kết thúc:** `18a3a57` (`feat(quality): ultra-short warning badges, mispronunciation detection, and issue drawer`)
 - **Danh sách file thay đổi:**
   1. `sidecar/voxlab_sidecar/audio_quality.py`:
      - Bổ sung phát hiện phát âm sai / vấp âm tiết lồng ghép (`SUSPECTED_MISPRONUNCIATION`) trong nhánh `replace` của bộ căn chỉnh (xử lý case thực tế `steering` $\rightarrow$ `steelering`).
