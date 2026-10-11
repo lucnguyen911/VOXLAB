@@ -888,6 +888,123 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.analyze_word_alignment_issues(text, mock_words)
         self.assertEqual(len(issues), 0)
 
+    def test_compound_numbers_three_hundred_and_fifty_five_not_flagged(self):
+        """Verifies that compound number words matching digit representations are not flagged as swallowed."""
+        # English: 'three hundred' vs '300'
+        text_en = "Now picture roughly three hundred cars filling it row after row."
+        asr_en = [
+            {"word": "Now", "startSec": 0.1, "endSec": 0.3, "probability": 0.98},
+            {"word": "picture", "startSec": 0.35, "endSec": 0.7, "probability": 0.98},
+            {"word": "roughly", "startSec": 0.75, "endSec": 1.1, "probability": 0.98},
+            {"word": "300", "startSec": 1.15, "endSec": 1.6, "probability": 0.98},
+            {"word": "cars", "startSec": 1.65, "endSec": 1.95, "probability": 0.98},
+            {"word": "filling", "startSec": 2.0, "endSec": 2.3, "probability": 0.98},
+            {"word": "it", "startSec": 2.35, "endSec": 2.45, "probability": 0.98},
+            {"word": "row", "startSec": 2.5, "endSec": 2.7, "probability": 0.98},
+            {"word": "after", "startSec": 2.75, "endSec": 2.95, "probability": 0.98},
+            {"word": "row.", "startSec": 3.0, "endSec": 3.3, "probability": 0.98},
+        ]
+        issues_en = audio_quality.analyze_word_alignment_issues(text_en, asr_en, language="en")
+        self.assertEqual(len(issues_en), 0, f"Expected 0 issues for three hundred -> 300, got: {issues_en}")
+
+        # English: 'fifty five' vs '55'
+        text_55 = "every American over fifty five should answer before these cars arrive."
+        asr_55 = [
+            {"word": "every", "startSec": 0.1, "endSec": 0.35, "probability": 0.98},
+            {"word": "American", "startSec": 0.4, "endSec": 0.8, "probability": 0.98},
+            {"word": "over", "startSec": 0.85, "endSec": 1.1, "probability": 0.98},
+            {"word": "55", "startSec": 1.15, "endSec": 1.5, "probability": 0.98},
+            {"word": "should", "startSec": 1.55, "endSec": 1.75, "probability": 0.98},
+            {"word": "answer", "startSec": 1.8, "endSec": 2.1, "probability": 0.98},
+            {"word": "before", "startSec": 2.15, "endSec": 2.4, "probability": 0.98},
+            {"word": "these", "startSec": 2.45, "endSec": 2.65, "probability": 0.98},
+            {"word": "cars", "startSec": 2.7, "endSec": 2.95, "probability": 0.98},
+            {"word": "arrive.", "startSec": 3.0, "endSec": 3.4, "probability": 0.98},
+        ]
+        issues_55 = audio_quality.analyze_word_alignment_issues(text_55, asr_55, language="en")
+        self.assertEqual(len(issues_55), 0, f"Expected 0 issues for fifty five -> 55, got: {issues_55}")
+
+        # Vietnamese: 'ba trăm' vs '300'
+        text_vi = "khoảng ba trăm chiếc xe xếp hàng."
+        asr_vi = [
+            {"word": "khoảng", "startSec": 0.1, "endSec": 0.4, "probability": 0.98},
+            {"word": "300", "startSec": 0.45, "endSec": 0.85, "probability": 0.98},
+            {"word": "chiếc", "startSec": 0.9, "endSec": 1.15, "probability": 0.98},
+            {"word": "xe", "startSec": 1.2, "endSec": 1.45, "probability": 0.98},
+            {"word": "xếp", "startSec": 1.5, "endSec": 1.75, "probability": 0.98},
+            {"word": "hàng.", "startSec": 1.8, "endSec": 2.1, "probability": 0.98},
+        ]
+        issues_vi = audio_quality.analyze_word_alignment_issues(text_vi, asr_vi, language="vi")
+        self.assertEqual(len(issues_vi), 0, f"Expected 0 issues for ba trăm -> 300, got: {issues_vi}")
+
+    def test_multisyllabic_words_children_and_over_no_false_stutter(self):
+        """Clean multisyllabic words (children, over) with natural syllable bursts do not trigger stutter warnings."""
+        sr = 24000
+        # Create audio with two bursts simulating syllables of 'children'
+        t_burst = np.arange(int(0.10 * sr)) / sr
+        burst = (0.35 * np.sin(2 * np.pi * 440 * t_burst)).astype(np.float32)
+        gap = np.zeros(int(0.04 * sr), dtype=np.float32)
+        audio = np.concatenate([np.zeros(int(0.1 * sr), dtype=np.float32), burst, gap, burst, np.zeros(int(0.1 * sr), dtype=np.float32)])
+
+        # ASR recognizes a single multisyllabic word 'children' spanning the duration
+        mock_words = [
+            {"word": "children", "startSec": 0.08, "endSec": 0.36, "probability": 0.99},
+        ]
+        issues = audio_quality.detect_acoustic_stutter(audio, sr, text="children", asr_words=mock_words)
+        self.assertEqual(len(issues), 0, f"Expected 0 issues for multisyllabic 'children', got: {issues}")
+
+        # ASR recognizes 'over'
+        mock_words_over = [
+            {"word": "over", "startSec": 0.08, "endSec": 0.36, "probability": 0.97},
+        ]
+        issues_over = audio_quality.detect_acoustic_stutter(audio, sr, text="over", asr_words=mock_words_over)
+        self.assertEqual(len(issues_over), 0, f"Expected 0 issues for multisyllabic 'over', got: {issues_over}")
+
+    def test_swallowed_number_part_detected(self):
+        """When a word of a compound number is swallowed, SUSPECTED_SWALLOWED is correctly raised."""
+        # 'three hundred' in text, but ASR only captured 'three' (omitted 'hundred')
+        text = "roughly three hundred cars"
+        mock_words = [
+            {"word": "roughly", "startSec": 0.1, "endSec": 0.4, "probability": 0.98},
+            {"word": "three", "startSec": 0.45, "endSec": 0.75, "probability": 0.98},
+            {"word": "cars", "startSec": 0.8, "endSec": 1.1, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en")
+        self.assertTrue(
+            any(i["code"] in ("SUSPECTED_SWALLOWED", "MISSING_WORD") and "hundred" in i.get("words", []) for i in issues),
+            f"Expected swallowed hundred, got: {issues}",
+        )
+
+        # 'fifty five' in text, but ASR only captured '50' (omitted 'five')
+        text_55 = "American over fifty five should answer"
+        mock_words_50 = [
+            {"word": "American", "startSec": 0.1, "endSec": 0.5, "probability": 0.98},
+            {"word": "over", "startSec": 0.55, "endSec": 0.8, "probability": 0.98},
+            {"word": "50", "startSec": 0.85, "endSec": 1.1, "probability": 0.98},
+            {"word": "should", "startSec": 1.15, "endSec": 1.45, "probability": 0.98},
+            {"word": "answer", "startSec": 1.5, "endSec": 1.85, "probability": 0.98},
+        ]
+        issues_50 = audio_quality.analyze_word_alignment_issues(text_55, mock_words_50, language="en")
+        self.assertTrue(
+            any(i["code"] in ("SUSPECTED_SWALLOWED", "MISSING_WORD") and "five" in i.get("words", []) for i in issues_50),
+            f"Expected swallowed five, got: {issues_50}",
+        )
+
+    def test_non_equivalent_numbers_detected(self):
+        """Non-equivalent numbers (300 vs 50) are not marked equivalent and trigger warning."""
+        text = "roughly three hundred cars"
+        mock_words = [
+            {"word": "roughly", "startSec": 0.1, "endSec": 0.4, "probability": 0.98},
+            {"word": "50", "startSec": 0.45, "endSec": 0.75, "probability": 0.98},
+            {"word": "cars", "startSec": 0.8, "endSec": 1.1, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en")
+        self.assertTrue(
+            any(i["code"] in ("SUSPECTED_SWALLOWED", "SUSPECTED_MISPRONUNCIATION") for i in issues),
+            f"Expected issue for 300 vs 50, got: {issues}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+

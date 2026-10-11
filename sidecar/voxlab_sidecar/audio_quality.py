@@ -17,6 +17,10 @@ from typing import Any
 
 import numpy as np
 
+from .number_normalizer import (
+    are_number_expressions_equivalent,
+    collapse_number_tokens,
+)
 from .protocol import log
 
 
@@ -218,6 +222,8 @@ def is_whisper_hallucination(text: str) -> bool:
 def are_words_equivalent(w1: str, w2: str) -> bool:
     """Checks whether two words are orthographically, phonetically, or numerically equivalent."""
     if w1 == w2:
+        return True
+    if are_number_expressions_equivalent(w1, w2):
         return True
     c1 = CONTRACTIONS.get(w1, w1)
     c2 = CONTRACTIONS.get(w2, w2)
@@ -429,23 +435,37 @@ def analyze_word_alignment_issues(
     source_words_clean = [clean_word(w) for w in source_words]
     asr_words_clean = [clean_word(w.get("word", "")) for w in asr_words]
 
-    matcher = difflib.SequenceMatcher(None, source_words_clean, asr_words_clean)
-    opcodes = matcher.get_opcodes()
+    # Normalize compound and digit number expressions into canonical spans
+    src_spans = collapse_number_tokens(source_words, language)
+    asr_spans = collapse_number_tokens([w.get("word", "") for w in asr_words], language)
+    src_canonical = [s.canonical for s in src_spans]
+    asr_canonical = [a.canonical for a in asr_spans]
+
+    matcher = difflib.SequenceMatcher(None, src_canonical, asr_canonical)
+    span_opcodes = matcher.get_opcodes()
 
     # Track ASR to source alignment for delimiter & pause checks
     asr_to_source: dict[int, int] = {}
-    for tag, i1, i2, j1, j2 in opcodes:
+    for tag, s_i1, s_i2, a_j1, a_j2 in span_opcodes:
         if tag == "equal":
-            for offset in range(i2 - i1):
-                asr_to_source[j1 + offset] = i1 + offset
+            for offset in range(s_i2 - s_i1):
+                s_span = src_spans[s_i1 + offset]
+                a_span = asr_spans[a_j1 + offset]
+                for j in range(a_span.orig_start, a_span.orig_end):
+                    src_offset = min(j - a_span.orig_start, (s_span.orig_end - s_span.orig_start) - 1)
+                    asr_to_source[j] = s_span.orig_start + src_offset
         elif tag == "replace":
             # If phonetically / semantically equivalent, map them
-            if (i2 - i1) == (j2 - j1):
-                for offset in range(i2 - i1):
-                    s_w = source_words_clean[i1 + offset]
-                    a_w = asr_words_clean[j1 + offset]
+            if (s_i2 - s_i1) == (a_j2 - a_j1):
+                for offset in range(s_i2 - s_i1):
+                    s_span = src_spans[s_i1 + offset]
+                    a_span = asr_spans[a_j1 + offset]
+                    s_w = s_span.canonical
+                    a_w = a_span.canonical
                     if are_words_equivalent(s_w, a_w):
-                        asr_to_source[j1 + offset] = i1 + offset
+                        for j in range(a_span.orig_start, a_span.orig_end):
+                            src_offset = min(j - a_span.orig_start, (s_span.orig_end - s_span.orig_start) - 1)
+                            asr_to_source[j] = s_span.orig_start + src_offset
 
     # Check intentional repetition in script (e.g. "that that", "rất rất")
     intentional_repeats: set[str] = set()
@@ -454,7 +474,15 @@ def analyze_word_alignment_issues(
             intentional_repeats.add(source_words_clean[idx])
 
     # Check opcodes for Stutter, Repetition, Missing Word, and Extra Word
-    for tag, i1, i2, j1, j2 in opcodes:
+    for tag, s_i1, s_i2, a_j1, a_j2 in span_opcodes:
+        if tag == "equal":
+            continue
+
+        i1 = src_spans[s_i1].orig_start if s_i1 < len(src_spans) else len(source_words)
+        i2 = src_spans[s_i2 - 1].orig_end if s_i2 > s_i1 else i1
+        j1 = asr_spans[a_j1].orig_start if a_j1 < len(asr_spans) else len(asr_words)
+        j2 = asr_spans[a_j2 - 1].orig_end if a_j2 > a_j1 else j1
+
         if tag == "insert":
             # Extra words in ASR not present in source text
             for j in range(j1, j2):
@@ -645,6 +673,13 @@ def analyze_word_alignment_issues(
                     })
 
         elif tag == "replace":
+            # If all spans in the replace opcode are pairwise equivalent, skip
+            if (s_i2 - s_i1) == (a_j2 - a_j1) and all(
+                are_words_equivalent(src_spans[s_i1 + k].canonical, asr_spans[a_j1 + k].canonical)
+                for k in range(s_i2 - s_i1)
+            ):
+                continue
+
             src_slice_clean = [source_words_clean[k] for k in range(i1, i2)]
             asr_slice_clean = [asr_words_clean[k] for k in range(j1, j2)]
 
@@ -1021,16 +1056,23 @@ def detect_acoustic_stutter(
             # If both bursts fall within the same word in ASR (intra-word repetition):
             elif w_idx1 is not None and w_idx2 is not None and w_idx1 == w_idx2:
                 word_clean = clean_word(asr_words[w_idx1].get("word", ""))
+                word_raw = asr_words[w_idx1].get("word", "").strip()
                 if word_clean in intentional_repeats:
                     continue
-                # Intra-word repetition requires very high cosine similarity and deep dip
+                # Multisyllabic words (e.g. "children", "over") naturally contain multiple syllable
+                # bursts and consonant dips. Spectral similarity alone between normal syllables does NOT
+                # constitute stuttering without corroborating textual/lexical repetition evidence.
+                is_stutter_text = bool(
+                    re.search(r"(\b\w{1,4})[-_]\1", word_raw, re.IGNORECASE)
+                    or re.search(r"^(\w{1,3})\1+", word_clean)
+                )
                 # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
-                if cos_sim >= 0.90 and min_gap_rms <= 0.20 * min_burst_peak:
+                if is_stutter_text and cos_sim >= 0.90 and min_gap_rms <= 0.20 * min_burst_peak:
                     is_verified_stutter = True
                     stutter_word = word_clean
             elif w_idx1 is None or w_idx2 is None:
-                if cos_sim >= 0.92 and min_gap_rms <= 0.20 * min_burst_peak:
-                    is_verified_stutter = True
+                # In presence of ASR words, unaligned non-speech bursts must not trigger stutter false alarms
+                pass
         else:
             # Standalone acoustic check without ASR words (e.g. synthetic test)
             # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
