@@ -154,6 +154,40 @@ class NumberNormalizerTest(unittest.TestCase):
         self.assertFalse(are_number_expressions_equivalent("twenty eighth", "27"))
         self.assertFalse(are_number_expressions_equivalent("first", "2"))
 
+    def test_decimal_comma_normalization_and_equivalences(self):
+        # Normalization with comma
+        self.assertEqual(normalize_digit_string("0,8"), "0.8")
+        self.assertEqual(normalize_digit_string("13,5"), "13.5")
+        self.assertEqual(normalize_digit_string("3,14"), "3.14")
+        self.assertEqual(normalize_digit_string("-0,05"), "-0.05")
+
+        # Thousands comma should NOT be converted to decimal dot
+        self.assertEqual(normalize_digit_string("1,000"), "1000")
+        self.assertEqual(normalize_digit_string("10,000"), "10000")
+
+        # Decimal equivalences in English
+        self.assertTrue(are_number_expressions_equivalent("zero point eight", "0.8"))
+        self.assertTrue(are_number_expressions_equivalent("two point eight", "2.8"))
+        self.assertTrue(are_number_expressions_equivalent("one point four", "1.4"))
+        self.assertTrue(are_number_expressions_equivalent("four point two", "4.2"))
+        self.assertTrue(are_number_expressions_equivalent("thirteen point five", "13.5"))
+        self.assertTrue(are_number_expressions_equivalent("three point one four", "3.14"))
+        self.assertTrue(are_number_expressions_equivalent("zero point zero five", "0.05"))
+
+        # Decimal equivalences in Vietnamese
+        self.assertTrue(are_number_expressions_equivalent("không phẩy tám", "0.8", language="vi"))
+        self.assertTrue(are_number_expressions_equivalent("không phẩy tám", "0,8", language="vi"))
+        self.assertTrue(are_number_expressions_equivalent("hai phẩy tám", "2.8", language="vi"))
+        self.assertTrue(are_number_expressions_equivalent("mười ba phẩy năm", "13.5", language="vi"))
+        self.assertTrue(are_number_expressions_equivalent("ba phẩy một bốn", "3.14", language="vi"))
+
+        # Non-equivalent numbers MUST return False
+        self.assertFalse(are_number_expressions_equivalent("two point eight", "two point four"))
+        self.assertFalse(are_number_expressions_equivalent("2.8", "2.4"))
+        self.assertFalse(are_number_expressions_equivalent("0.8", "0.9"))
+        self.assertFalse(are_number_expressions_equivalent("13.5", "13.8"))
+        self.assertFalse(are_number_expressions_equivalent("300", "500"))
+
 
 if __name__ == "__main__":
     unittest.main()

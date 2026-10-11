@@ -13,6 +13,9 @@ import {
   validateChunkAudioQuality,
   getIssueShortLabel,
   getChunkBadgeInfo,
+  getChunkAudioSignature,
+  isChunkConfirmed,
+  hasChunkQualityWarningReview,
 } from "../qualityValidator";
 import { validateMasterBoundaries } from "../masterExport";
 
@@ -802,7 +805,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "2.2.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "2.3.0");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -814,7 +817,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio);
-    assert.equal(review.validatorVersion, "2.2.0");
+    assert.equal(review.validatorVersion, "2.3.0");
 
     const chunkWithCurrentReview: ChunkItem = {
       ...chunkNoAudio,
@@ -840,5 +843,107 @@ describe("Audio Quality Validator Tests", () => {
       },
     };
     assert.equal(isReviewOutdated(chunkOlderVersion), true);
+  });
+
+  it("V20: getChunkAudioSignature generates deterministic signature and detects audio changes", () => {
+    const chunkA: ChunkItem = {
+      id: "c_v20_a",
+      index: 1,
+      text: "Testing signature",
+      originalText: "Testing signature",
+      status: "ready",
+      durationSec: 2.5,
+      audioUrl: "blob:http://localhost/1234",
+      pauseAfterMs: "auto",
+    };
+
+    const sigA = getChunkAudioSignature(chunkA);
+    assert.equal(sigA, "blob:http://localhost/1234::2.5");
+
+    // Audio file path fallback
+    const chunkB: ChunkItem = {
+      ...chunkA,
+      audioUrl: undefined,
+      audioFilePath: "C:\\audio\\chunk_1.wav",
+    };
+    assert.equal(getChunkAudioSignature(chunkB), "C:\\audio\\chunk_1.wav::2.5");
+
+    // Missing audio
+    const chunkEmpty: ChunkItem = {
+      ...chunkA,
+      audioUrl: undefined,
+      audioFilePath: undefined,
+    };
+    assert.equal(getChunkAudioSignature(chunkEmpty), "");
+  });
+
+  it("V21: confirmation ('Xác nhận đọc đúng') suppresses warnings without deleting review and invalidates on regenerate", () => {
+    const warningChunk: ChunkItem = {
+      id: "c_v21",
+      index: 1,
+      text: "zero point eight",
+      originalText: "zero point eight",
+      status: "ready",
+      durationSec: 1.1,
+      audioUrl: "blob:http://localhost/initial_audio",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "warning",
+        issues: [
+          {
+            severity: "warning",
+            code: "SUSPECTED_SWALLOWED",
+            message: "Nghi vấn nuốt chữ tại từ point",
+            words: ["point"],
+          },
+        ],
+        summary: "Nghi vấn nuốt chữ tại từ point",
+        checkedAt: Date.now(),
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+      },
+    };
+
+    // Before confirmation: active warning
+    assert.equal(isChunkConfirmed(warningChunk), false);
+    assert.equal(isChunkWarning(warningChunk), true);
+    assert.equal(hasChunkQualityWarningReview(warningChunk), true);
+    let stats = countChunkQualityIssues([warningChunk]);
+    assert.equal(stats.warningCount, 1);
+    assert.equal(stats.passCount, 0);
+
+    // Confirm audio as correct
+    const confirmedChunk: ChunkItem = {
+      ...warningChunk,
+      acknowledgedAt: Date.now(),
+      acknowledgedAudioSignature: getChunkAudioSignature(warningChunk),
+    };
+
+    // After confirmation: warning is acknowledged, does not block export or count as warning
+    assert.equal(isChunkConfirmed(confirmedChunk), true);
+    assert.equal(isChunkWarning(confirmedChunk), false);
+    // Original review data is preserved!
+    assert.equal(hasChunkQualityWarningReview(confirmedChunk), true);
+    assert.equal(confirmedChunk.qualityReview?.issues.length, 1);
+    stats = countChunkQualityIssues([confirmedChunk]);
+    assert.equal(stats.warningCount, 0);
+
+    // Regenerating chunk (new audio URL and new duration) automatically invalidates confirmation!
+    const regeneratedChunk: ChunkItem = {
+      ...confirmedChunk,
+      audioUrl: "blob:http://localhost/new_audio_regenerated",
+      durationSec: 1.25,
+    };
+    assert.equal(isChunkConfirmed(regeneratedChunk), false);
+    assert.equal(isChunkWarning(regeneratedChunk), true);
+    stats = countChunkQualityIssues([regeneratedChunk]);
+    assert.equal(stats.warningCount, 1);
+
+    // Error chunks cannot have errors silenced by warning confirmation
+    const errorChunk: ChunkItem = {
+      ...confirmedChunk,
+      status: "failed",
+    };
+    assert.equal(isChunkError(errorChunk), true);
+    assert.equal(isChunkWarning(errorChunk), false);
   });
 });

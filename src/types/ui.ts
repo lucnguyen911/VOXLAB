@@ -72,6 +72,8 @@ export interface ChunkItem {
   trailingSilenceMs?: number;
   effectiveVoiceSnapshot?: EffectiveVoiceSnapshot;
   qualityReview?: AudioQualityReview;
+  acknowledgedAt?: number;
+  acknowledgedAudioSignature?: string;
 }
 
 export type VoiceSource = "edge" | "google" | "local" | "local_clone" | "preset_local" | "online";

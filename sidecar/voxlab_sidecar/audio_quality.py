@@ -20,6 +20,8 @@ import numpy as np
 from .number_normalizer import (
     are_number_expressions_equivalent,
     collapse_number_tokens,
+    is_decimal_number_string,
+    split_decimal_parts,
 )
 from .protocol import log
 
@@ -225,6 +227,10 @@ def are_words_equivalent(w1: str, w2: str) -> bool:
         return True
     if are_number_expressions_equivalent(w1, w2):
         return True
+    # CRITICAL: Numbers must NOT be matched via phonetic or Levenshtein fuzzy approximation!
+    # (e.g. '2.8' and '2.4', '300' and '500' must NEVER match)
+    if re.search(r"\d", w1) or re.search(r"\d", w2):
+        return False
     c1 = CONTRACTIONS.get(w1, w1)
     c2 = CONTRACTIONS.get(w2, w2)
     if c1 == c2:
@@ -237,8 +243,12 @@ def are_words_equivalent(w1: str, w2: str) -> bool:
     # Loanwords and domain equivalents
     w1_clean = clean_word(w1)
     w2_clean = clean_word(w2)
+    w1_strip = strip_diacritics(w1)
+    w2_strip = strip_diacritics(w2)
     for root, equivs in COMMON_EQUIVALENTS.items():
-        if (w1_clean == root or w1_clean in equivs) and (w2_clean == root or w2_clean in equivs):
+        m1 = (w1_clean == root or w1_clean in equivs or w1_strip == root or w1_strip in equivs)
+        m2 = (w2_clean == root or w2_clean in equivs or w2_strip == root or w2_strip in equivs)
+        if m1 and m2:
             return True
     if phonetic_key(w1) == phonetic_key(w2):
         return True
@@ -353,17 +363,22 @@ def validate_audio_file(audio_path: str, expected_text: str | None = None) -> tu
     return True, issues, info
 
 
+TOKEN_PATTERN = re.compile(
+    r"(?:\d+(?:[.,:]\d+)+|[\w\u00C0-\u1EF9]+(?:-[\w\u00C0-\u1EF9]+)*)"
+)
+
+
 def tokenize_text_with_delimiters(text: str) -> tuple[list[str], list[str]]:
     """Extract words and the delimiters between them.
     delimiters[i] contains characters between words[i-1] and words[i].
     delimiters[0] is text before words[0].
+    Preserves decimals (e.g. '0.8', '13,5'), ratios/time ('10:30'), and hyphenated compounds.
     """
     words: list[str] = []
     delimiters: list[str] = []
     last_end = 0
 
-    # Match letters, digits, accents
-    for m in re.finditer(r"[\w\u00C0-\u1EF9]+", text):
+    for m in TOKEN_PATTERN.finditer(text):
         delimiters.append(text[last_end:m.start()])
         words.append(m.group(0))
         last_end = m.end()
@@ -378,8 +393,13 @@ def has_punctuation_boundary(delimiter: str) -> bool:
 
 
 def clean_word(word: str) -> str:
-    """Strip whitespace and punctuation for string comparison."""
-    return re.sub(r"[^\w\u00C0-\u1EF9]", "", word).lower()
+    """Strip whitespace and punctuation for string comparison.
+    Preserves decimal notation (e.g. '0.8', '13,5' -> '13.5').
+    """
+    cleaned = word.strip(" .,!?;:—–-…()[]\"'“”„«»¿¡").lower()
+    if re.fullmatch(r"-?\d+(?:[.,]\d+)+", cleaned):
+        return cleaned.replace(",", ".")
+    return re.sub(r"[^\w\u00C0-\u1EF9]", "", cleaned)
 
 
 def analyze_word_alignment_issues(
@@ -466,6 +486,16 @@ def analyze_word_alignment_issues(
                         for j in range(a_span.orig_start, a_span.orig_end):
                             src_offset = min(j - a_span.orig_start, (s_span.orig_end - s_span.orig_start) - 1)
                             asr_to_source[j] = s_span.orig_start + src_offset
+            elif (s_i2 - s_i1) == 1 and (a_j2 - a_j1) >= 2:
+                s_span = src_spans[s_i1]
+                if is_decimal_number_string(s_span.canonical):
+                    whole_exp, frac_exp = split_decimal_parts(s_span.canonical) or ("", "")
+                    asr_sub_spans = asr_spans[a_j1:a_j2]
+                    asr_canonicals = [a.canonical for a in asr_sub_spans]
+                    if asr_canonicals and asr_canonicals[0] == whole_exp and "".join(asr_canonicals[1:]) == frac_exp:
+                        for a_s in asr_sub_spans:
+                            for j in range(a_s.orig_start, a_s.orig_end):
+                                asr_to_source[j] = s_span.orig_start
 
     # Check intentional repetition in script (e.g. "that that", "rất rất")
     intentional_repeats: set[str] = set()
@@ -682,6 +712,98 @@ def analyze_word_alignment_issues(
             ):
                 continue
 
+            # Special Decimal Number Matching & Verification (e.g. '0.8' <=> '0 8', '13.5' <=> '13 5')
+            if (s_i2 - s_i1) == 1:
+                s_span = src_spans[s_i1]
+                if is_decimal_number_string(s_span.canonical):
+                    whole_exp, frac_exp = split_decimal_parts(s_span.canonical) or ("", "")
+                    asr_sub_spans = asr_spans[a_j1:a_j2]
+                    asr_canonicals = [a.canonical for a in asr_sub_spans]
+                    # Check if ASR tokens are numbers forming separated digits
+                    if len(asr_canonicals) >= 2 and all(
+                        a.is_number or re.fullmatch(r"-?\d+", a.canonical) for a in asr_sub_spans
+                    ):
+                        t_start_whole = float(asr_words[j1].get("startSec", 0.0)) if j1 < len(asr_words) else 0.0
+                        t_end_whole = float(asr_words[j1].get("endSec", 0.0)) if j1 < len(asr_words) else 0.0
+                        t_start_frac = float(asr_words[j1 + 1].get("startSec", 0.0)) if j1 + 1 < len(asr_words) else t_end_whole
+                        t_end_frac = float(asr_words[min(len(asr_words) - 1, j2 - 1)].get("endSec", 0.0)) if asr_words else 0.0
+                        total_dec_dur = t_end_frac - t_start_whole
+                        inter_digit_gap = t_start_frac - t_end_whole
+
+                        # Case A: Digits match candidate decimal
+                        if asr_canonicals[0] == whole_exp and "".join(asr_canonicals[1:]) == frac_exp:
+                            src_dec_words = source_words[s_span.orig_start : s_span.orig_end]
+                            num_src_words = max(1, len(src_dec_words))
+                            min_full_dur = max(0.45, num_src_words * 0.18) / eff_speed
+
+                            has_separator_speech = False
+                            # 1. Acoustic gap check between whole and fraction
+                            if inter_digit_gap >= 0.12:
+                                if audio_data is not None and sample_rate > 0:
+                                    s1 = int(round(t_end_whole * sample_rate))
+                                    s2 = int(round(t_start_frac * sample_rate))
+                                    if s2 > s1:
+                                        gap_slice = audio_data[s1:s2]
+                                        gap_rms = float(np.sqrt(np.mean(gap_slice ** 2))) if gap_slice.size > 0 else 0.0
+                                        if gap_rms >= 0.018:
+                                            has_separator_speech = True
+                                else:
+                                    has_separator_speech = True
+                            # 2. Total duration check (articulating whole + point + fraction)
+                            if total_dec_dur >= min_full_dur:
+                                has_separator_speech = True
+                            # 3. Definite omission: very short total duration and tight gap
+                            if total_dec_dur < (0.40 / eff_speed) and inter_digit_gap < 0.08:
+                                has_separator_speech = False
+
+                            if has_separator_speech:
+                                for j in range(j1, j2):
+                                    asr_to_source[j] = s_span.orig_start
+                                continue
+                            else:
+                                # TTS omitted the separator ("point" / "phẩy")
+                                sep_word = next(
+                                    (w for w in src_dec_words if clean_word(w) in ("point", "phẩy", "phay", "chấm", "cham")),
+                                    "point"
+                                )
+                                ts = format_timestamp(t_end_whole)
+                                issues.append({
+                                    "severity": "warning",
+                                    "code": "MISSING_WORD",
+                                    "message": f'Nghi vấn nuốt chữ tại từ "{sep_word}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                                    "words": [sep_word],
+                                    "timeRange": [round(t_end_whole, 3), round(t_start_frac, 3)],
+                                })
+                                continue
+
+                        # Case B: ASR numbers differ from script decimal (Mispronunciation / Wrong Number)
+                        else:
+                            asr_num_str = " ".join(asr_canonicals)
+                            ts = format_timestamp(t_start_whole)
+                            issues.append({
+                                "severity": "warning",
+                                "code": "SUSPECTED_MISPRONUNCIATION",
+                                "message": f"Nghi vấn đọc sai số '{s_span.canonical}' (ASR ghi nhận '{asr_num_str}') — khoảng {ts}. Vui lòng nghe lại.",
+                                "words": [s_span.canonical, asr_num_str],
+                                "timeRange": [round(t_start_whole, 3), round(t_end_frac, 3)],
+                            })
+                            continue
+
+                    # Single ASR decimal token that does not match (e.g. '2.8' vs '2.4')
+                    elif len(asr_canonicals) == 1 and is_decimal_number_string(asr_canonicals[0]):
+                        if not are_number_expressions_equivalent(s_span.canonical, asr_canonicals[0]):
+                            t_start_w = float(asr_words[j1].get("startSec", 0.0)) if j1 < len(asr_words) else 0.0
+                            t_end_w = float(asr_words[j1].get("endSec", 0.0)) if j1 < len(asr_words) else 0.0
+                            ts = format_timestamp(t_start_w)
+                            issues.append({
+                                "severity": "warning",
+                                "code": "SUSPECTED_MISPRONUNCIATION",
+                                "message": f"Nghi vấn đọc sai số '{s_span.canonical}' (ASR ghi nhận '{asr_canonicals[0]}') — khoảng {ts}. Vui lòng nghe lại.",
+                                "words": [s_span.canonical, asr_canonicals[0]],
+                                "timeRange": [round(t_start_w, 3), round(t_end_w, 3)],
+                            })
+                            continue
+
             src_slice_clean = [source_words_clean[k] for k in range(i1, i2)]
             asr_slice_clean = [asr_words_clean[k] for k in range(j1, j2)]
 
@@ -793,6 +915,78 @@ def analyze_word_alignment_issues(
                         "words": [source_words_clean[idx] for idx in unrepresented_content_indices],
                         "timeRange": [round(t_start, 3), round(t_end, 3)],
                     })
+
+            # Case 4: More words in ASR than in source (e.g. repetition or extra words inside replacement span)
+            if (j2 - j1) > (i2 - i1):
+                for j in range(j1, j2):
+                    w_obj = asr_words[j]
+                    w_clean = asr_words_clean[j]
+                    if not w_clean:
+                        continue
+                    w_raw = w_obj.get("word", "").strip()
+                    w_raw = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", w_raw) or w_clean
+                    if is_whisper_hallucination(w_raw) or is_whisper_hallucination(w_clean):
+                        continue
+
+                    p = float(w_obj.get("probability", 1.0))
+                    t_start_w = float(w_obj.get("startSec", 0.0))
+                    t_end_w = float(w_obj.get("endSec", 0.0))
+                    ts_w = format_timestamp(t_start_w)
+
+                    prev_w = asr_words_clean[j - 1] if j > 0 else ""
+                    next_w = asr_words_clean[j + 1] if (j + 1 < len(asr_words_clean)) else ""
+
+                    is_repeat = (w_clean == prev_w) or (w_clean == next_w)
+                    is_prefix_stutter = (
+                        bool(next_w and len(w_clean) >= 1 and next_w.startswith(w_clean) and len(next_w) > len(w_clean))
+                        or bool(prev_w and len(w_clean) >= 1 and prev_w.startswith(w_clean) and len(prev_w) > len(w_clean))
+                    )
+
+                    if is_repeat or is_prefix_stutter:
+                        src_count = source_words_clean.count(w_clean)
+                        asr_count = asr_words_clean.count(w_clean)
+                        if asr_count <= src_count:
+                            continue
+
+                        rep_start = float(asr_words[j - 1].get("startSec", 0.0)) if (j > 0 and w_clean == prev_w) else t_start_w
+                        ts_rep = format_timestamp(rep_start)
+                        ctx_words = f"{w_clean} {next_w}" if next_w else (f"{prev_w} {w_clean}" if prev_w else w_clean)
+
+                        # Deduplicate if this exact issue already added
+                        if issues and issues[-1]["code"] in ("SUSPECTED_STUTTER", "REPEATED_WORD") and w_clean in issues[-1].get("words", []):
+                            issues[-1]["timeRange"][1] = round(t_end_w, 3)
+                            continue
+
+                        if is_prefix_stutter or (len(w_clean) <= 4 and not (j > 1 and w_clean == asr_words_clean[j - 2])):
+                            issues.append({
+                                "severity": "warning",
+                                "code": "SUSPECTED_STUTTER",
+                                "message": f'Nghi vấn vấp âm gần từ "{ctx_words}" — khoảng {ts_rep}. Vui lòng nghe kiểm tra.',
+                                "words": [w_clean, next_w or prev_w],
+                                "timeRange": [round(rep_start, 3), round(t_end_w, 3)],
+                            })
+                        else:
+                            issues.append({
+                                "severity": "warning",
+                                "code": "REPEATED_WORD",
+                                "message": f'Nghi vấn lặp từ gần từ "{ctx_words}" — khoảng {ts_rep}. Vui lòng nghe kiểm tra.',
+                                "words": [w_clean],
+                                "timeRange": [round(rep_start, 3), round(t_end_w, 3)],
+                            })
+                    elif (
+                        source_words_clean.count(w_clean) == 0
+                        and p >= 0.60
+                        and (len(w_clean) >= 2 or w_clean in ("a", "i"))
+                        and not any(are_words_equivalent(w_clean, sw) for sw in src_slice_clean)
+                    ):
+                        msg = f"Nghi vấn phát âm thừa từ '{w_raw}' — khoảng {ts_w}. Vui lòng nghe lại."
+                        issues.append({
+                            "severity": "warning",
+                            "code": "EXTRA_WORD",
+                            "message": msg,
+                            "words": [w_clean],
+                            "timeRange": [round(t_start_w, 3), round(t_end_w, 3)],
+                        })
 
     # Check for abnormal pauses between consecutive ASR words
     # Pause threshold scaled inversely with playback speed

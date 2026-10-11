@@ -15,6 +15,7 @@ import {
   Clock,
   UploadCloud,
   ChevronDown,
+  CheckCircle2,
 } from "lucide-react";
 import { ChunkItem, VoiceProfile, EffectiveVoiceSnapshot } from "../types/ui";
 import { INITIAL_SCRIPT, MOCK_CHUNKS, MOCK_VOICES } from "../mock/data";
@@ -51,6 +52,8 @@ import {
   isChunkError,
   isChunkWarning,
   isChunkUnverified,
+  isChunkConfirmed,
+  getChunkAudioSignature,
   validateChunkAudioQuality,
   getChunkBadgeInfo,
   getIssueShortLabel,
@@ -385,6 +388,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         audioFilePath: res.outputPath,
         effectiveVoiceSnapshot: snapshotToUse,
         qualityReview: undefined,
+        acknowledgedAt: undefined,
+        acknowledgedAudioSignature: undefined,
       };
 
       try {
@@ -408,6 +413,26 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       setProgressStage("");
       onJobComplete?.();
     }
+  };
+
+  const handleToggleConfirmChunk = (id: string) => {
+    setChunks((prev) =>
+      prev.map((c) => {
+        if (c.id !== id) return c;
+        if (isChunkConfirmed(c)) {
+          return {
+            ...c,
+            acknowledgedAt: undefined,
+            acknowledgedAudioSignature: undefined,
+          };
+        }
+        return {
+          ...c,
+          acknowledgedAt: Date.now(),
+          acknowledgedAudioSignature: getChunkAudioSignature(c),
+        };
+      })
+    );
   };
 
   const handleRevalidateChunk = async (chunkId: string) => {
@@ -1593,6 +1618,21 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                           </button>
                         )}
 
+                        {isChunkConfirmed(chunk) && chunk.status !== "generating" && !chunkIsError && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedIssuesChunks((prev) => ({ ...prev, [chunk.id]: !prev[chunk.id] }));
+                            }}
+                            className="text-xs font-semibold px-2 py-0.5 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+                            title="Đã xác nhận đọc đúng — Bấm để xem chi tiết"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
+                            <span>Đã xác nhận</span>
+                          </button>
+                        )}
+
                         {isChunkUnverified(chunk) && chunk.status !== "generating" && (
                           <span
                             className="text-xs font-medium px-2 py-0.5 rounded-md bg-surface3 text-textSecondary border border-borderDefault flex items-center gap-1.5 shrink-0"
@@ -1705,7 +1745,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                     {/* Expandable breakdown for detected issues */}
                     {chunk.qualityReview?.issues && chunk.qualityReview.issues.length > 0 && (
                       <div className="pt-1.5 border-t border-borderDefault/40 text-xs" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
                           <button
                             type="button"
                             onClick={() => {
@@ -1713,34 +1753,67 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                             }}
                             className="text-textSecondary hover:text-accent font-medium flex items-center gap-1 cursor-pointer transition-colors"
                           >
-                            <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                            {isChunkConfirmed(chunk) ? (
+                              <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                            ) : (
+                              <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                            )}
                             <span>
                               {expandedIssuesChunks[chunk.id]
                                 ? "Thu gọn chi tiết"
+                                : isChunkConfirmed(chunk)
+                                ? "Đã xác nhận — Bấm để xem chi tiết vấn đề"
                                 : chunk.qualityReview.issues.length === 1
                                 ? "Xem chi tiết vấn đề"
                                 : `Xem tất cả ${chunk.qualityReview.issues.length} vấn đề phát hiện`}
                             </span>
                             <ChevronDown className={`w-3 h-3 transition-transform ${expandedIssuesChunks[chunk.id] ? "rotate-180" : ""}`} />
                           </button>
-                          {chunk.status === "ready" && (chunk.audioFilePath || chunk.audioUrl) && (
-                            <button
-                              type="button"
-                              disabled={revalidatingChunkIds[chunk.id]}
-                              onClick={() => handleRevalidateChunk(chunk.id)}
-                              className="px-2 py-0.5 rounded bg-surface2 hover:bg-surface3 text-[11px] text-textSecondary hover:text-textPrimary font-medium border border-borderDefault shrink-0 transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                              title={isReviewOutdated(chunk) ? `Cần kiểm tra lại (phiên bản hiện tại: v${QUALITY_VALIDATOR_VERSION})` : "Kiểm tra lại chất lượng mà không tạo lại audio"}
-                            >
-                              <RefreshCw className={`w-2.5 h-2.5 ${revalidatingChunkIds[chunk.id] ? "animate-spin text-accent" : "text-textMuted"}`} />
-                              <span>{revalidatingChunkIds[chunk.id] ? "Đang kiểm tra..." : "Kiểm tra lại"}</span>
-                              {isReviewOutdated(chunk) && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" title="Đánh giá cũ" />
-                              )}
-                            </button>
-                          )}
+                          <div className="flex items-center gap-1.5">
+                            {chunk.status === "ready" && (
+                              <button
+                                type="button"
+                                onClick={() => handleToggleConfirmChunk(chunk.id)}
+                                className={`px-2 py-0.5 rounded text-[11px] font-medium border shrink-0 transition-colors flex items-center gap-1 cursor-pointer ${
+                                  isChunkConfirmed(chunk)
+                                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25"
+                                    : "bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary border-borderDefault"
+                                }`}
+                                title={
+                                  isChunkConfirmed(chunk)
+                                    ? "Bấm để hủy xác nhận (trở lại trạng thái cảnh báo)"
+                                    : "Xác nhận đoạn âm thanh này đọc đúng (không chặn xuất Master)"
+                                }
+                              >
+                                <CheckCircle2 className={`w-3 h-3 ${isChunkConfirmed(chunk) ? "text-emerald-500" : "text-textMuted"}`} />
+                                <span>{isChunkConfirmed(chunk) ? "Đã xác nhận đọc đúng" : "Xác nhận đọc đúng"}</span>
+                              </button>
+                            )}
+                            {chunk.status === "ready" && (chunk.audioFilePath || chunk.audioUrl) && (
+                              <button
+                                type="button"
+                                disabled={revalidatingChunkIds[chunk.id]}
+                                onClick={() => handleRevalidateChunk(chunk.id)}
+                                className="px-2 py-0.5 rounded bg-surface2 hover:bg-surface3 text-[11px] text-textSecondary hover:text-textPrimary font-medium border border-borderDefault shrink-0 transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                title={isReviewOutdated(chunk) ? `Cần kiểm tra lại (phiên bản hiện tại: v${QUALITY_VALIDATOR_VERSION})` : "Kiểm tra lại chất lượng mà không tạo lại audio"}
+                              >
+                                <RefreshCw className={`w-2.5 h-2.5 ${revalidatingChunkIds[chunk.id] ? "animate-spin text-accent" : "text-textMuted"}`} />
+                                <span>{revalidatingChunkIds[chunk.id] ? "Đang kiểm tra..." : "Kiểm tra lại"}</span>
+                                {isReviewOutdated(chunk) && (
+                                  <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" title="Đánh giá cũ" />
+                                )}
+                              </button>
+                            )}
+                          </div>
                         </div>
                         {expandedIssuesChunks[chunk.id] && (
-                          <div className="mt-2 space-y-2 pl-2 border-l-2 border-amber-500/40">
+                          <div className={`mt-2 space-y-2 pl-2 border-l-2 ${isChunkConfirmed(chunk) ? "border-emerald-500/40" : "border-amber-500/40"}`}>
+                            {isChunkConfirmed(chunk) && (
+                              <div className="text-emerald-600 dark:text-emerald-400 text-[11px] bg-emerald-500/10 px-2 py-1 rounded border border-emerald-500/20 flex items-center gap-1.5 mb-1.5">
+                                <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
+                                <span>Đoạn này đã được bạn xác nhận đọc đúng. Hệ thống cho phép ghép Master bình thường.</span>
+                              </div>
+                            )}
                             {chunk.qualityReview.issues.map((iss, idx) => {
                               const shortLabel = getIssueShortLabel(iss.code);
                               const hasTime = Array.isArray(iss.timeRange) && iss.timeRange.length === 2;

@@ -2,7 +2,33 @@ import { AudioQualityReview, AudioQualityStatus, ChunkItem } from "../../types/u
 import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
 
-export const QUALITY_VALIDATOR_VERSION = "2.2.0";
+export const QUALITY_VALIDATOR_VERSION = "2.3.0";
+
+/**
+ * Helper to get the unique audio signature of a chunk's generated audio.
+ */
+export function getChunkAudioSignature(chunk: ChunkItem): string {
+  const pathOrUrl = chunk.audioUrl || chunk.audioFilePath || "";
+  if (!pathOrUrl) return "";
+  return `${pathOrUrl}::${chunk.durationSec ?? 0}`;
+}
+
+/**
+ * Returns true if the chunk has been confirmed by the user as having correct audio.
+ * The confirmation is only valid if the audio signature matches the current chunk audio.
+ */
+export function isChunkConfirmed(chunk: ChunkItem): boolean {
+  if (!chunk.acknowledgedAudioSignature) return false;
+  const sig = getChunkAudioSignature(chunk);
+  return Boolean(sig && chunk.acknowledgedAudioSignature === sig);
+}
+
+/**
+ * Returns true if the chunk has a quality warning review, regardless of whether it is confirmed.
+ */
+export function hasChunkQualityWarningReview(chunk: ChunkItem): boolean {
+  return chunk.qualityReview?.status === "warning";
+}
 
 /**
  * Returns true if the chunk has a definitive error (status is 'failed' or review is 'error').
@@ -14,12 +40,14 @@ export function isChunkError(chunk: ChunkItem): boolean {
 }
 
 /**
- * Returns true if the chunk is in 'ready' status and has a quality warning review.
+ * Returns true if the chunk is in 'ready' status and has an active (unconfirmed) quality warning review.
  * Errors take precedence over warnings.
+ * Confirmed chunks do not count as active warnings.
  */
 export function isChunkWarning(chunk: ChunkItem): boolean {
   if (isChunkError(chunk)) return false;
   if (chunk.status !== "ready") return false;
+  if (isChunkConfirmed(chunk)) return false;
   return chunk.qualityReview?.status === "warning";
 }
 

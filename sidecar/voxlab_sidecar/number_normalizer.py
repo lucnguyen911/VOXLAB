@@ -89,9 +89,12 @@ class NormalizedSpan(NamedTuple):
 
 
 def clean_token(s: str) -> str:
-    """Strips leading/trailing punctuation except internal numeric characters."""
-    t = s.strip(" .,!?;:—–-…()[]\"'“”„«»¿¡")
-    return t.lower()
+    """Strips leading/trailing punctuation except internal numeric characters and negative signs."""
+    is_neg_number = bool(re.match(r"^-\d", s.strip()))
+    t = s.strip(" .,!?;:—–-…()[]\"'“”„«»¿¡").lower()
+    if is_neg_number and not t.startswith("-"):
+        t = f"-{t}"
+    return t
 
 
 def is_ip_address(s: str) -> bool:
@@ -122,6 +125,10 @@ def normalize_digit_string(token: str) -> str:
     if re.fullmatch(r"\d{1,3}(\.\d{3})+", cleaned):
         return cleaned.replace(".", "")
 
+    # Decimals with comma: e.g. 0,8 or 13,5 or 3,14 (not thousands like 1,000 or 10,000)
+    if re.fullmatch(r"-?\d+,\d+", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+", cleaned):
+        return cleaned.replace(",", ".")
+
     # Decimals: e.g. 3.14 or -3.14
     if re.fullmatch(r"-?\d+\.\d+", cleaned):
         return cleaned
@@ -139,6 +146,25 @@ def normalize_digit_string(token: str) -> str:
         return cleaned
 
     return cleaned
+
+
+def is_decimal_number_string(s: str) -> bool:
+    """Checks whether token represents a decimal number string like '3.14' or '-0.8'."""
+    cleaned = clean_token(s)
+    if re.fullmatch(r"-?\d+,\d+", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+", cleaned):
+        cleaned = cleaned.replace(",", ".")
+    return bool(re.fullmatch(r"-?\d+\.\d+", cleaned))
+
+
+def split_decimal_parts(s: str) -> tuple[str, str] | None:
+    """Splits decimal string into (whole_part, frac_part), e.g. '0.8' -> ('0', '8')."""
+    cleaned = clean_token(s)
+    if re.fullmatch(r"-?\d+,\d+", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+", cleaned):
+        cleaned = cleaned.replace(",", ".")
+    if not re.fullmatch(r"-?\d+\.\d+", cleaned):
+        return None
+    whole, frac = cleaned.split(".", 1)
+    return whole, frac
 
 
 def parse_english_number_phrase(

@@ -1091,8 +1091,118 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.analyze_word_alignment_issues(text, asr_words, language="en")
         self.assertEqual(len(issues), 0, f"Expected 0 issues for comma number sequence, got: {issues}")
 
+    def test_chunk_30_decimal_separated_numbers_no_false_warning(self):
+        """Chunk 30 scenario: TTS speaks all 5 decimal numbers correctly, ASR transcribes as separated numbers.
+        Zero false 'Thiếu từ' (MISSING_WORD/SUSPECTED_SWALLOWED) warnings must be generated.
+        """
+        text = "zero point eight and two point eight plus one point four then four point two and thirteen point five"
+        mock_words = [
+            {"word": "0", "startSec": 0.1, "endSec": 0.40, "probability": 0.98},
+            {"word": "8", "startSec": 0.55, "endSec": 0.85, "probability": 0.98},
+            {"word": "and", "startSec": 0.90, "endSec": 1.05, "probability": 0.98},
+            {"word": "2", "startSec": 1.15, "endSec": 1.45, "probability": 0.98},
+            {"word": "8", "startSec": 1.60, "endSec": 1.90, "probability": 0.98},
+            {"word": "plus", "startSec": 1.95, "endSec": 2.20, "probability": 0.98},
+            {"word": "1", "startSec": 2.30, "endSec": 2.55, "probability": 0.98},
+            {"word": "4", "startSec": 2.70, "endSec": 2.95, "probability": 0.98},
+            {"word": "then", "startSec": 3.00, "endSec": 3.20, "probability": 0.98},
+            {"word": "4", "startSec": 3.30, "endSec": 3.55, "probability": 0.98},
+            {"word": "2", "startSec": 3.70, "endSec": 3.95, "probability": 0.98},
+            {"word": "and", "startSec": 4.00, "endSec": 4.15, "probability": 0.98},
+            {"word": "13", "startSec": 4.25, "endSec": 4.65, "probability": 0.98},
+            {"word": "5", "startSec": 4.80, "endSec": 5.15, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en", audio_duration_sec=5.3)
+        self.assertEqual(len(issues), 0, f"Expected 0 issues for Chunk 30 decimals, got: {issues}")
+
+    def test_single_decimals_separated_asr_no_false_warning(self):
+        """Single decimal expressions in English and Vietnamese matching separated ASR output."""
+        cases = [
+            ("zero point eight", [{"word": "0", "startSec": 0.1, "endSec": 0.4, "probability": 0.98}, {"word": "8", "startSec": 0.55, "endSec": 0.85, "probability": 0.98}], "en"),
+            ("two point eight", [{"word": "2", "startSec": 0.1, "endSec": 0.35, "probability": 0.98}, {"word": "8", "startSec": 0.5, "endSec": 0.8, "probability": 0.98}], "en"),
+            ("thirteen point five", [{"word": "13", "startSec": 0.1, "endSec": 0.45, "probability": 0.98}, {"word": "5", "startSec": 0.6, "endSec": 0.9, "probability": 0.98}], "en"),
+            ("không phẩy tám", [{"word": "0", "startSec": 0.1, "endSec": 0.35, "probability": 0.98}, {"word": "8", "startSec": 0.5, "endSec": 0.8, "probability": 0.98}], "vi"),
+            ("0.8", [{"word": "0", "startSec": 0.1, "endSec": 0.35, "probability": 0.98}, {"word": "8", "startSec": 0.5, "endSec": 0.8, "probability": 0.98}], "en"),
+            ("0,8", [{"word": "0", "startSec": 0.1, "endSec": 0.35, "probability": 0.98}, {"word": "8", "startSec": 0.5, "endSec": 0.8, "probability": 0.98}], "vi"),
+        ]
+        for phrase, asr_w, lang in cases:
+            issues = audio_quality.analyze_word_alignment_issues(phrase, asr_w, language=lang, audio_duration_sec=1.0)
+            self.assertEqual(len(issues), 0, f"Expected 0 issues for '{phrase}', got: {issues}")
+
+    def test_decimal_actual_swallowed_point_flags_missing_word(self):
+        """When TTS actually swallows or omits 'point' (says 'zero eight' with tight gap and short duration),
+        a MISSING_WORD or SUSPECTED_SWALLOWED warning must be emitted.
+        """
+        text = "zero point eight"
+        mock_words = [
+            {"word": "0", "startSec": 0.1, "endSec": 0.25, "probability": 0.98},
+            {"word": "8", "startSec": 0.28, "endSec": 0.42, "probability": 0.98},  # gap 0.03s, total 0.32s!
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en", audio_duration_sec=0.5)
+        self.assertTrue(
+            any(i["code"] in ("MISSING_WORD", "SUSPECTED_SWALLOWED") and "point" in i.get("words", []) for i in issues),
+            f"Expected missing point detected for swallowed audio, got: {issues}",
+        )
+
+    def test_decimal_mispronunciation_wrong_numbers_flagged(self):
+        """When digits differ (e.g. 'two point eight' but ASR transcribes '2 4' or '2.4'),
+        SUSPECTED_MISPRONUNCIATION must be flagged.
+        """
+        text = "two point eight"
+        # Case A: Separated wrong digits '2 4'
+        asr_separated = [
+            {"word": "2", "startSec": 0.1, "endSec": 0.35, "probability": 0.98},
+            {"word": "4", "startSec": 0.5, "endSec": 0.8, "probability": 0.98},
+        ]
+        issues_a = audio_quality.analyze_word_alignment_issues(text, asr_separated, language="en")
+        self.assertTrue(
+            any(i["code"] == "SUSPECTED_MISPRONUNCIATION" for i in issues_a),
+            f"Expected mispronunciation for 2.8 vs 2 4, got: {issues_a}",
+        )
+
+        # Case B: Single token wrong decimal '2.4'
+        asr_single = [
+            {"word": "2.4", "startSec": 0.1, "endSec": 0.6, "probability": 0.98},
+        ]
+        issues_b = audio_quality.analyze_word_alignment_issues(text, asr_single, language="en")
+        self.assertTrue(
+            any(i["code"] == "SUSPECTED_MISPRONUNCIATION" for i in issues_b),
+            f"Expected mispronunciation for 2.8 vs 2.4, got: {issues_b}",
+        )
+
+    def test_decimal_repetition_and_extra_word_flagged(self):
+        """When ASR transcribes repetition or extra word inside decimal expression, warnings must be emitted."""
+        # Repetition 'zero point point eight'
+        text_rep = "zero point eight"
+        asr_rep = [
+            {"word": "zero", "startSec": 0.1, "endSec": 0.3, "probability": 0.98},
+            {"word": "point", "startSec": 0.35, "endSec": 0.55, "probability": 0.98},
+            {"word": "point", "startSec": 0.6, "endSec": 0.8, "probability": 0.98},
+            {"word": "eight", "startSec": 0.85, "endSec": 1.1, "probability": 0.98},
+        ]
+        issues_rep = audio_quality.analyze_word_alignment_issues(text_rep, asr_rep, language="en")
+        self.assertTrue(
+            any(i["code"] in ("REPEATED_WORD", "SUSPECTED_STUTTER") and "point" in i.get("words", []) for i in issues_rep),
+            f"Expected repeated point detected, got: {issues_rep}",
+        )
+
+        # Extra word 'zero should point eight'
+        text_extra = "zero point eight"
+        asr_extra = [
+            {"word": "zero", "startSec": 0.1, "endSec": 0.3, "probability": 0.98},
+            {"word": "should", "startSec": 0.35, "endSec": 0.6, "probability": 0.98},
+            {"word": "point", "startSec": 0.65, "endSec": 0.85, "probability": 0.98},
+            {"word": "eight", "startSec": 0.9, "endSec": 1.15, "probability": 0.98},
+        ]
+        issues_extra = audio_quality.analyze_word_alignment_issues(text_extra, asr_extra, language="en")
+        self.assertTrue(
+            any(i["code"] == "EXTRA_WORD" and "should" in i.get("words", []) for i in issues_extra),
+            f"Expected extra word 'should' detected, got: {issues_extra}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
