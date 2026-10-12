@@ -17,7 +17,7 @@ import {
   isChunkConfirmed,
   hasChunkQualityWarningReview,
 } from "../qualityValidator";
-import { validateMasterBoundaries } from "../masterExport";
+import { validateMasterBoundaries, validateChunksForExport } from "../masterExport";
 
 describe("Audio Quality Validator Tests", () => {
   it("V1: countChunkQualityIssues returns 0 for clean ready chunks", () => {
@@ -805,7 +805,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "2.3.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "2.4.0");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -817,7 +817,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio);
-    assert.equal(review.validatorVersion, "2.3.0");
+    assert.equal(review.validatorVersion, "2.4.0");
 
     const chunkWithCurrentReview: ChunkItem = {
       ...chunkNoAudio,
@@ -945,5 +945,86 @@ describe("Audio Quality Validator Tests", () => {
     };
     assert.equal(isChunkError(errorChunk), true);
     assert.equal(isChunkWarning(errorChunk), false);
+  });
+
+  it("V22: automated v2.4.0 QC pipeline: yellow warnings do NOT block Master Export, red errors DO block", () => {
+    // Case 1: Chunks with yellow warnings (e.g. SUSPECTED_SWALLOWED, MISSING_WORD)
+    const warningChunks: ChunkItem[] = [
+      {
+        id: "c_warn_1",
+        index: 1,
+        text: "zero point eight",
+        originalText: "zero point eight",
+        status: "ready",
+        durationSec: 1.5,
+        audioUrl: "blob:http://localhost/audio1",
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "warning",
+          issues: [
+            {
+              severity: "warning",
+              code: "MISSING_WORD",
+              message: "Nghi vấn nuốt chữ tại từ point",
+              words: ["point"],
+            },
+          ],
+          summary: "Nghi vấn nuốt chữ tại từ point",
+          checkedAt: Date.now(),
+          validatorVersion: QUALITY_VALIDATOR_VERSION,
+        },
+      },
+    ];
+
+    // Warning chunks are identified as warnings for listening review
+    assert.equal(isChunkWarning(warningChunks[0]), true);
+    assert.equal(isChunkError(warningChunks[0]), false);
+
+    // CRITICAL REQUIREMENT (User Prompt Section 1):
+    // Yellow warnings NEVER block Master Export!
+    const exportResultWarning = validateChunksForExport(warningChunks);
+    assert.equal(exportResultWarning.canExport, true, "Yellow warning must NOT block Master Export");
+    assert.equal(exportResultWarning.invalidChunks.length, 0);
+
+    // Case 2: Outdated review from v2.3.0 is recognized as outdated for automatic revalidation
+    const outdatedChunk: ChunkItem = {
+      ...warningChunks[0],
+      qualityReview: {
+        ...warningChunks[0].qualityReview!,
+        validatorVersion: "2.3.0",
+      },
+    };
+    assert.equal(isReviewOutdated(outdatedChunk), true, "Review from v2.3.0 must be detected as outdated");
+
+    // Case 3: Chunks with red errors DO block Master Export
+    const errorChunks: ChunkItem[] = [
+      {
+        id: "c_err_1",
+        index: 1,
+        text: "corrupted audio",
+        originalText: "corrupted audio",
+        status: "ready",
+        durationSec: 0.1,
+        audioUrl: "blob:http://localhost/audio_err",
+        pauseAfterMs: "auto",
+        qualityReview: {
+          status: "error",
+          issues: [
+            {
+              severity: "error",
+              code: "DURATION_TOO_SHORT",
+              message: "Thời lượng âm thanh quá ngắn",
+            },
+          ],
+          summary: "Thời lượng âm thanh quá ngắn",
+          checkedAt: Date.now(),
+          validatorVersion: QUALITY_VALIDATOR_VERSION,
+        },
+      },
+    ];
+    assert.equal(isChunkError(errorChunks[0]), true);
+    const exportResultError = validateChunksForExport(errorChunks);
+    assert.equal(exportResultError.canExport, false, "Red error MUST block Master Export");
+    assert.equal(exportResultError.invalidChunks.length, 1);
   });
 });

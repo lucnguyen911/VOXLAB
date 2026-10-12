@@ -1200,6 +1200,187 @@ class AudioQualityTest(unittest.TestCase):
             f"Expected extra word 'should' detected, got: {issues_extra}",
         )
 
+    def test_slow_reading_swallowed_point_flagged_with_audio_waveform(self):
+        """CRITICAL TEST (User Prompt Section 10 - Group B):
+        When TTS says 'zero eight' SLOWLY (e.g. total duration 1.0s, gap 0.25s with silence/pause),
+        it must NEVER falsely pass as 'Đạt' merely because duration is long!
+        Hypothesis B (omission) must be confirmed and MISSING_WORD must be emitted.
+        """
+        text = "zero point eight"
+        sr = 16000
+        # 1.1s total audio:
+        # 0.0 - 0.1s: lead-in
+        # 0.1 - 0.45s: speech for "0"
+        # 0.45 - 0.70s: silent pause between "0" and "8" (RMS ~ 0.0)
+        # 0.70 - 1.05s: speech for "8"
+        total_samples = int(1.15 * sr)
+        audio = np.zeros(total_samples, dtype=np.float32)
+        # Add tone for "0"
+        t_zero = np.arange(int(0.35 * sr)) / sr
+        audio[int(0.1 * sr) : int(0.45 * sr)] = (0.3 * np.sin(2 * np.pi * 300 * t_zero)).astype(np.float32)
+        # Silent gap: int(0.45 * sr) to int(0.70 * sr) is 0.0
+        # Add tone for "8"
+        t_eight = np.arange(int(0.35 * sr)) / sr
+        audio[int(0.70 * sr) : int(1.05 * sr)] = (0.3 * np.sin(2 * np.pi * 350 * t_eight)).astype(np.float32)
+
+        mock_words = [
+            {"word": "0", "startSec": 0.10, "endSec": 0.45, "probability": 0.98},
+            {"word": "8", "startSec": 0.70, "endSec": 1.05, "probability": 0.98},
+        ]
+        # In commit bb4e813, total_dec_dur = 0.95s >= 0.54s and gap = 0.25s >= 0.12s caused false pass!
+        # With new Two-Hypothesis logic, silent gap without separator audio MUST flag MISSING_WORD:
+        issues = audio_quality.analyze_word_alignment_issues(
+            text,
+            mock_words,
+            language="en",
+            audio_duration_sec=1.15,
+            audio_data=audio,
+            sample_rate=sr,
+        )
+        self.assertTrue(
+            any(i["code"] in ("MISSING_WORD", "SUSPECTED_SWALLOWED") and "point" in i.get("words", []) for i in issues),
+            f"Expected missing point detected on slow reading with silent pause, got: {issues}",
+        )
+
+    def test_two_hypothesis_slice_transcription_evaluation(self):
+        """Simulate second-pass whisper transcription on audio slice:
+        - When slice transcription detects 'point' or '0.8': Hypothesis A confirmed -> PASS.
+        - When slice transcription detects 'zero eight' without separator (even slow): Hypothesis B confirmed -> MISSING_WORD.
+        """
+        text = "zero point eight"
+        sr = 16000
+        audio = np.zeros(int(1.2 * sr), dtype=np.float32)
+
+        # Mock whisper segment and result helper
+        class MockWord:
+            def __init__(self, w):
+                self.word = w
+
+        class MockSeg:
+            def __init__(self, text, words):
+                self.text = text
+                self.words = [MockWord(w) for w in words]
+
+        class MockWhisperFull:
+            def transcribe(self, audio_file, **kwargs):
+                return [MockSeg("0.8", ["0.8"])], {}
+
+        class MockWhisperOmission:
+            def transcribe(self, audio_file, **kwargs):
+                return [MockSeg("zero eight", ["zero", "eight"])], {}
+
+        mock_words = [
+            {"word": "0", "startSec": 0.10, "endSec": 0.40, "probability": 0.98},
+            {"word": "8", "startSec": 0.65, "endSec": 0.95, "probability": 0.98},
+        ]
+
+        # Case 1: Slice re-transcription proves Hypothesis A (0.8 / point pronounced) -> PASS
+        issues_pass = audio_quality.analyze_word_alignment_issues(
+            text,
+            mock_words,
+            language="en",
+            audio_duration_sec=1.2,
+            audio_data=audio,
+            sample_rate=sr,
+            whisper_model=MockWhisperFull(),
+        )
+        self.assertEqual(len(issues_pass), 0, f"Expected 0 issues when slice proves Hypothesis A, got: {issues_pass}")
+
+        # Case 2: Slice re-transcription proves Hypothesis B (only 'zero eight' pronounced) -> MISSING_WORD
+        issues_fail = audio_quality.analyze_word_alignment_issues(
+            text,
+            mock_words,
+            language="en",
+            audio_duration_sec=1.2,
+            audio_data=audio,
+            sample_rate=sr,
+            whisper_model=MockWhisperOmission(),
+        )
+        self.assertTrue(
+            any(i["code"] in ("MISSING_WORD", "SUSPECTED_SWALLOWED") and "point" in i.get("words", []) for i in issues_fail),
+            f"Expected missing point when slice proves omission, got: {issues_fail}",
+        )
+
+    def test_group_b_all_swallowed_decimals_flagged_both_fast_and_slow(self):
+        """User Prompt Section 10 - Group B:
+        - zero point eight -> zero eight (fast & slow)
+        - two point eight -> two eight (fast & slow)
+        - thirteen point five -> thirteen five (fast & slow)
+        All must be flagged as MISSING_WORD.
+        """
+        cases = [
+            ("zero point eight", "0", "8", "point"),
+            ("two point eight", "2", "8", "point"),
+            ("thirteen point five", "13", "5", "point"),
+        ]
+        sr = 16000
+
+        class MockWhisperOmission:
+            def transcribe(self, audio_file, **kwargs):
+                return [], {}
+
+        for phrase, w_num, f_num, sep in cases:
+            # Sub-case: Fast reading (tight gap 0.04s, total 0.30s)
+            mock_fast = [
+                {"word": w_num, "startSec": 0.10, "endSec": 0.22, "probability": 0.98},
+                {"word": f_num, "startSec": 0.26, "endSec": 0.40, "probability": 0.98},
+            ]
+            issues_fast = audio_quality.analyze_word_alignment_issues(
+                phrase, mock_fast, language="en", audio_duration_sec=0.5
+            )
+            self.assertTrue(
+                any(i["code"] in ("MISSING_WORD", "SUSPECTED_SWALLOWED") and sep in i.get("words", []) for i in issues_fast),
+                f"Fast omitted '{phrase}' must flag missing separator, got: {issues_fast}",
+            )
+
+            # Sub-case: Slow reading (gap 0.25s silence, total 1.0s)
+            audio_slow = np.zeros(int(1.2 * sr), dtype=np.float32)
+            mock_slow = [
+                {"word": w_num, "startSec": 0.10, "endSec": 0.45, "probability": 0.98},
+                {"word": f_num, "startSec": 0.70, "endSec": 1.05, "probability": 0.98},
+            ]
+            issues_slow = audio_quality.analyze_word_alignment_issues(
+                phrase,
+                mock_slow,
+                language="en",
+                audio_duration_sec=1.2,
+                audio_data=audio_slow,
+                sample_rate=sr,
+            )
+            self.assertTrue(
+                any(i["code"] in ("MISSING_WORD", "SUSPECTED_SWALLOWED") and sep in i.get("words", []) for i in issues_slow),
+                f"Slow omitted '{phrase}' must flag missing separator, got: {issues_slow}",
+            )
+
+    def test_unverified_status_hierarchy_when_ambiguous(self):
+        """When evidence cannot verify separator and model is missing with acoustic energy present,
+        status must be 'unverified', never falsely 'pass'.
+        """
+        text = "zero point eight"
+        sr = 16000
+        # Audio with non-zero noise in the gap, but no whisper model to verify:
+        audio = np.zeros(int(1.2 * sr), dtype=np.float32)
+        # Put moderate noise in the gap:
+        audio[int(0.45 * sr) : int(0.65 * sr)] = (0.05 * np.random.randn(int(0.20 * sr))).astype(np.float32)
+
+        mock_words = [
+            {"word": "0", "startSec": 0.10, "endSec": 0.45, "probability": 0.98},
+            {"word": "8", "startSec": 0.65, "endSec": 1.00, "probability": 0.98},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(
+            text,
+            mock_words,
+            language="en",
+            audio_duration_sec=1.2,
+            audio_data=audio,
+            sample_rate=sr,
+            whisper_model=None,  # No model available to verify
+        )
+        self.assertTrue(
+            any(i.get("severity") == "unverified" for i in issues),
+            f"Expected unverified status when ambiguous without model, got: {issues}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

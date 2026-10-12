@@ -402,6 +402,160 @@ def clean_word(word: str) -> str:
     return re.sub(r"[^\w\u00C0-\u1EF9]", "", cleaned)
 
 
+def verify_decimal_separator_hypothesis(
+    audio_path: str | None,
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    t_start_whole: float,
+    t_end_whole: float,
+    t_start_frac: float,
+    t_end_frac: float,
+    whole_exp: str,
+    frac_exp: str,
+    src_dec_words: list[str],
+    whisper_model: Any | None = None,
+    language: str | None = None,
+    eff_speed: float = 1.0,
+    total_audio_duration: float = 0.0,
+) -> tuple[str, str]:
+    """Rigorous Two-Hypothesis Audio Verification for Decimal Separators.
+    Evaluates:
+      Hypothesis A: TTS pronounced both digits AND the separator ('point', 'phẩy', 'chấm', 'dot').
+                    ASR merely split the formatted number into separated tokens ('0 8').
+      Hypothesis B: TTS omitted / swallowed the separator, pronouncing only whole and fraction
+                    ('zero eight', 'hai tám'). This is a true TTS synthesis defect.
+
+    Returns:
+      (verdict, explanation)
+      verdict in ("pass", "missing", "unverified")
+    """
+    inter_digit_gap = t_start_frac - t_end_whole
+    total_dec_dur = t_end_frac - t_start_whole
+
+    # 1. Definite Fast Omission:
+    # If the digits are spoken consecutively with no gap and very short duration,
+    # there is physically no acoustic space for 'point' or 'phẩy'.
+    if inter_digit_gap < 0.06 and total_dec_dur < (0.35 / eff_speed):
+        return "missing", "Khoảng cách giữa hai số quá ngắn, không có âm thanh từ ngắt"
+
+    # 2. Targeted Audio Slice Second-Pass Transcription:
+    # Extract audio slice around [t_start_whole - 0.06, t_end_frac + 0.06]
+    # This evaluates actual phonetic content of the audio slice without guessing from duration alone.
+    if whisper_model is not None and (audio_path is not None or audio_data is not None):
+        t_slice_start = max(0.0, t_start_whole - 0.06)
+        max_dur = total_audio_duration if total_audio_duration > 0 else (t_end_frac + 0.06)
+        t_slice_end = min(max_dur, t_end_frac + 0.06)
+
+        slice_mono: np.ndarray | None = None
+        sr_used = sample_rate if sample_rate > 0 else 16000
+
+        if audio_data is not None and sample_rate > 0:
+            s1 = int(round(t_slice_start * sample_rate))
+            s2 = min(audio_data.size, int(round(t_slice_end * sample_rate)))
+            if s2 > s1:
+                slice_mono = audio_data[s1:s2]
+                sr_used = sample_rate
+        elif audio_path and os.path.exists(audio_path):
+            try:
+                import soundfile as sf
+                info = sf.info(audio_path)
+                sr_used = int(info.samplerate)
+                s1 = int(round(t_slice_start * sr_used))
+                frames_to_read = int(round((t_slice_end - t_slice_start) * sr_used))
+                data, _ = sf.read(audio_path, start=s1, stop=s1 + frames_to_read, dtype="float32", always_2d=True)
+                slice_mono = data.mean(axis=1)
+            except Exception as rd_err:
+                log(f"[audio_quality] Error reading slice from audio_path: {rd_err}")
+
+        if slice_mono is not None and slice_mono.size >= int(0.10 * sr_used):
+            import tempfile
+            tmp_slice = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp_slice_name = tmp_slice.name
+            tmp_slice.close()
+            try:
+                import soundfile as sf
+                sf.write(tmp_slice_name, slice_mono, sr_used, subtype="PCM_16")
+                lang_code = None if not language or language == "auto" else language
+                segments_iter, _ = whisper_model.transcribe(
+                    tmp_slice_name,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=False,
+                )
+                slice_segments = list(segments_iter)
+
+                slice_text = " ".join((seg.text or "") for seg in slice_segments).strip().lower()
+                slice_words = [clean_word(w.word) for seg in slice_segments for w in (seg.words or []) if w.word]
+
+                sep_tokens = {"point", "dot", "phẩy", "phay", "chấm", "cham"}
+                has_separator_word = any(w in sep_tokens for w in slice_words) or any(
+                    t in sep_tokens for t in re.findall(r"\w+", slice_text)
+                )
+                has_decimal_notation = bool(
+                    re.search(rf"\b{re.escape(whole_exp)}[.,]{re.escape(frac_exp)}\b", slice_text)
+                ) or bool(re.search(r"\b\d+[.,]\d+\b", slice_text))
+
+                if has_separator_word or has_decimal_notation:
+                    # Hypothesis A confirmed: Separator was articulated and recognized
+                    return "pass", "Xác nhận phát âm từ ngắt qua nhận dạng lát cắt âm thanh"
+
+                # Check gap acoustic energy between digits
+                gap_rms = 0.0
+                gap_zcr = 0.0
+                if audio_data is not None and sample_rate > 0:
+                    g1 = int(round(t_end_whole * sample_rate))
+                    g2 = int(round(t_start_frac * sample_rate))
+                    if g2 > g1 and g1 < audio_data.size:
+                        gap_slice = audio_data[g1:min(audio_data.size, g2)]
+                        if gap_slice.size > 0:
+                            gap_rms = float(np.sqrt(np.mean(gap_slice ** 2)))
+                            gap_zcr = float(np.mean(np.abs(np.diff(np.signbit(gap_slice)))))
+
+                # If the slice transcript produced digits without separator:
+                # E.g. "zero eight", "0 8", "không tám", or digits matching whole & frac
+                if gap_rms < 0.015 or inter_digit_gap < 0.10:
+                    # Hypothesis B confirmed: The gap is pure silence / pause, even if slow!
+                    return "missing", "Xác nhận nuốt từ ngắt: âm thanh chỉ đọc hai chữ số kèm khoảng lặng"
+
+                if gap_zcr < 0.08:
+                    # Low frequency ambient noise / rumble, no consonant articulation
+                    return "missing", "Khoảng cách giữa hai chữ số chỉ là tạp âm tần số thấp, không chứa từ ngắt"
+
+                # If slice transcript explicitly gave words without separator:
+                return "missing", "Nhận dạng lát cắt xác nhận chỉ phát âm các chữ số, không phát âm từ ngắt"
+            except Exception as e:
+                log(f"[audio_quality] Error in targeted slice transcription: {e}")
+            finally:
+                if os.path.exists(tmp_slice_name):
+                    try:
+                        os.remove(tmp_slice_name)
+                    except Exception:
+                        pass
+
+    # 3. Fallback when whisper_model is not available:
+    if audio_data is not None and sample_rate > 0:
+        if inter_digit_gap < 0.08:
+            return "missing", "Khoảng cách giữa hai chữ số quá ngắn, nuốt từ ngắt"
+        g1 = int(round(t_end_whole * sample_rate))
+        g2 = int(round(t_start_frac * sample_rate))
+        if g2 > g1 and g1 < audio_data.size:
+            gap_slice = audio_data[g1:min(audio_data.size, g2)]
+            gap_rms = float(np.sqrt(np.mean(gap_slice ** 2))) if gap_slice.size > 0 else 0.0
+            if gap_rms < 0.012:
+                return "missing", "Khoảng lặng giữa hai chữ số hoàn toàn im lặng, nuốt từ ngắt"
+            else:
+                return "unverified", "Chưa kiểm chứng: có năng lượng âm thanh trong khoảng cách nhưng chưa có mô hình nhận dạng để xác minh"
+        else:
+            return "missing", "Không có khoảng cách giữa hai chữ số"
+
+    # Pure synthetic mock word list without waveform:
+    if inter_digit_gap < 0.08 or total_dec_dur < 0.40:
+        return "missing", "Thời lượng hoặc khoảng cách quá ngắn"
+
+    return "pass", "Dữ liệu ASR mô phỏng"
+
+
 def analyze_word_alignment_issues(
     text: str,
     asr_words: list[dict[str, Any]],
@@ -412,6 +566,8 @@ def analyze_word_alignment_issues(
     return_metrics: bool = False,
     audio_data: np.ndarray | None = None,
     sample_rate: int = 16000,
+    audio_path: str | None = None,
+    whisper_model: Any | None = None,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
     """Analyzes ASR words with timestamps against source text to identify:
     1. Suspected stutter or syllable repetition (SUSPECTED_STUTTER, PARTIAL_PRONUNCIATION)
@@ -733,37 +889,31 @@ def analyze_word_alignment_issues(
                         # Case A: Digits match candidate decimal
                         if asr_canonicals[0] == whole_exp and "".join(asr_canonicals[1:]) == frac_exp:
                             src_dec_words = source_words[s_span.orig_start : s_span.orig_end]
-                            num_src_words = max(1, len(src_dec_words))
-                            min_full_dur = max(0.45, num_src_words * 0.18) / eff_speed
+                            verdict, reason = verify_decimal_separator_hypothesis(
+                                audio_path=audio_path,
+                                audio_data=audio_data,
+                                sample_rate=sample_rate,
+                                t_start_whole=t_start_whole,
+                                t_end_whole=t_end_whole,
+                                t_start_frac=t_start_frac,
+                                t_end_frac=t_end_frac,
+                                whole_exp=whole_exp,
+                                frac_exp=frac_exp,
+                                src_dec_words=src_dec_words,
+                                whisper_model=whisper_model,
+                                language=language,
+                                eff_speed=eff_speed,
+                                total_audio_duration=total_dur,
+                            )
 
-                            has_separator_speech = False
-                            # 1. Acoustic gap check between whole and fraction
-                            if inter_digit_gap >= 0.12:
-                                if audio_data is not None and sample_rate > 0:
-                                    s1 = int(round(t_end_whole * sample_rate))
-                                    s2 = int(round(t_start_frac * sample_rate))
-                                    if s2 > s1:
-                                        gap_slice = audio_data[s1:s2]
-                                        gap_rms = float(np.sqrt(np.mean(gap_slice ** 2))) if gap_slice.size > 0 else 0.0
-                                        if gap_rms >= 0.018:
-                                            has_separator_speech = True
-                                else:
-                                    has_separator_speech = True
-                            # 2. Total duration check (articulating whole + point + fraction)
-                            if total_dec_dur >= min_full_dur:
-                                has_separator_speech = True
-                            # 3. Definite omission: very short total duration and tight gap
-                            if total_dec_dur < (0.40 / eff_speed) and inter_digit_gap < 0.08:
-                                has_separator_speech = False
-
-                            if has_separator_speech:
+                            if verdict == "pass":
                                 for j in range(j1, j2):
                                     asr_to_source[j] = s_span.orig_start
                                 continue
-                            else:
-                                # TTS omitted the separator ("point" / "phẩy")
+                            elif verdict == "missing":
+                                # TTS omitted or swallowed the separator ("point" / "phẩy")
                                 sep_word = next(
-                                    (w for w in src_dec_words if clean_word(w) in ("point", "phẩy", "phay", "chấm", "cham")),
+                                    (w for w in src_dec_words if clean_word(w) in ("point", "phẩy", "phay", "chấm", "cham", "dot")),
                                     "point"
                                 )
                                 ts = format_timestamp(t_end_whole)
@@ -771,6 +921,21 @@ def analyze_word_alignment_issues(
                                     "severity": "warning",
                                     "code": "MISSING_WORD",
                                     "message": f'Nghi vấn nuốt chữ tại từ "{sep_word}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                                    "words": [sep_word],
+                                    "timeRange": [round(t_end_whole, 3), round(t_start_frac, 3)],
+                                })
+                                continue
+                            elif verdict == "unverified":
+                                # Inconclusive acoustic evidence without model confirmation: never falsely pass!
+                                sep_word = next(
+                                    (w for w in src_dec_words if clean_word(w) in ("point", "phẩy", "phay", "chấm", "cham", "dot")),
+                                    "point"
+                                )
+                                ts = format_timestamp(t_end_whole)
+                                issues.append({
+                                    "severity": "unverified",
+                                    "code": "UNVERIFIED_SEPARATOR",
+                                    "message": f'Chưa thể xác minh phát âm từ ngắt "{sep_word}" ({reason}) — khoảng {ts}.',
                                     "words": [sep_word],
                                     "timeRange": [round(t_end_whole, 3), round(t_start_frac, 3)],
                                 })
@@ -1650,6 +1815,8 @@ def validate_audio_quality(
             return_metrics=True,
             audio_data=data_wave,
             sample_rate=sr_wave,
+            audio_path=audio_path,
+            whisper_model=whisper_model,
         )
 
         # Step 3: Acoustic Stutter Check (waveform + ASR corroboration)
@@ -1668,9 +1835,35 @@ def validate_audio_quality(
 
         alignment_issues.sort(key=lambda x: float(x.get("timeRange", [0.0])[0]))
 
-        if alignment_issues:
+        has_errors = any(i.get("severity") == "error" for i in alignment_issues)
+        has_warnings = any(i.get("severity") == "warning" for i in alignment_issues)
+        has_unverified = any(i.get("severity") == "unverified" for i in alignment_issues)
+
+        if has_errors:
+            return {
+                "status": "error",
+                "issues": alignment_issues,
+                "metrics": metrics,
+                "summary": alignment_issues[0]["message"],
+                "durationSec": dur,
+                "sampleRate": info.get("sampleRate", 0),
+                "checkedAt": checked_at,
+                "audioPath": audio_path,
+            }
+        elif has_warnings:
             return {
                 "status": "warning",
+                "issues": alignment_issues,
+                "metrics": metrics,
+                "summary": alignment_issues[0]["message"],
+                "durationSec": dur,
+                "sampleRate": info.get("sampleRate", 0),
+                "checkedAt": checked_at,
+                "audioPath": audio_path,
+            }
+        elif has_unverified:
+            return {
+                "status": "unverified",
                 "issues": alignment_issues,
                 "metrics": metrics,
                 "summary": alignment_issues[0]["message"],

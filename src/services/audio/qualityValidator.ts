@@ -2,7 +2,7 @@ import { AudioQualityReview, AudioQualityStatus, ChunkItem } from "../../types/u
 import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
 
-export const QUALITY_VALIDATOR_VERSION = "2.3.0";
+export const QUALITY_VALIDATOR_VERSION = "2.4.0";
 
 /**
  * Helper to get the unique audio signature of a chunk's generated audio.
