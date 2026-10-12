@@ -468,4 +468,62 @@ describe("Locale-Aware Normalization & Token Classification Regression Tests", (
       assert.ok(!res.normalizedText.includes("16: 9"));
     });
   });
+
+  // --- 7. SCRIPT LANGUAGE ALIGNMENT (USER ISSUE FIX) ---
+  describe("Script Language Alignment (English script MUST normalize in English)", () => {
+    const userEnglishScript =
+      "The Cost Shockwave: The Brutal Math of $2,200 Autonomy. Now, let us strip away the science fiction and examine the brutal ledger of unit economics. Between $35,000 and $50,000 per car. Paying the 60% gross profit margins demanded by the semiconductor cartel. Below $2,200. Threshold of $850. At $850, an artificial mind capable of operating power tools.";
+
+    it("auto-detects English script and verbalizes numbers/currency/percent in English", () => {
+      const res = normalizeText(userEnglishScript, [...ALL_GROUPS]);
+
+      // $2,200 -> two thousand two hundred dollars (NOT hai nghìn hai trăm đô la)
+      assert.ok(res.normalizedText.includes("two thousand two hundred dollars"));
+      assert.ok(!res.normalizedText.includes("hai nghìn hai trăm đô la"));
+
+      // $35,000 -> thirty five thousand dollars (NOT ba mươi lăm nghìn đô la)
+      assert.ok(res.normalizedText.includes("thirty five thousand dollars"));
+      assert.ok(!res.normalizedText.includes("ba mươi lăm nghìn đô la"));
+
+      // $50,000 -> fifty thousand dollars (NOT năm mươi nghìn đô la)
+      assert.ok(res.normalizedText.includes("fifty thousand dollars"));
+      assert.ok(!res.normalizedText.includes("năm mươi nghìn đô la"));
+
+      // 60% -> sixty percent (NOT sáu mươi phần trăm)
+      assert.ok(res.normalizedText.includes("sixty percent"));
+      assert.ok(!res.normalizedText.includes("sáu mươi phần trăm"));
+
+      // $850 -> eight hundred fifty dollars (NOT tám trăm năm mươi đô la)
+      assert.ok(res.normalizedText.includes("eight hundred fifty dollars"));
+      assert.ok(!res.normalizedText.includes("tám trăm năm mươi đô la"));
+    });
+
+    it("protects English script from accidental Vietnamese UI language leakage hint", () => {
+      // Even if caller erroneously passed language: 'vi' (from UI lang),
+      // the script's own English language MUST take precedence!
+      const res = normalizeText(userEnglishScript, [...ALL_GROUPS], { language: "vi" });
+
+      assert.ok(res.normalizedText.includes("two thousand two hundred dollars"));
+      assert.ok(!res.normalizedText.includes("hai nghìn hai trăm đô la"));
+
+      assert.ok(res.normalizedText.includes("thirty five thousand dollars"));
+      assert.ok(!res.normalizedText.includes("ba mươi lăm nghìn đô la"));
+
+      assert.ok(res.normalizedText.includes("sixty percent"));
+      assert.ok(!res.normalizedText.includes("sáu mươi phần trăm"));
+    });
+
+    it("protects Vietnamese script from accidental English hint", () => {
+      const viScript = "Chi phí là 15,000 đô la cho mỗi dự án với tỷ lệ tăng trưởng 60%.";
+      const res = normalizeText(viScript, [...ALL_GROUPS], { language: "en" });
+
+      // Must remain in Vietnamese words
+      assert.ok(res.normalizedText.includes("mười lăm nghìn"));
+      assert.ok(!res.normalizedText.includes("fifteen thousand"));
+
+      assert.ok(res.normalizedText.includes("sáu mươi phần trăm"));
+      assert.ok(!res.normalizedText.includes("sixty percent"));
+    });
+  });
 });
+

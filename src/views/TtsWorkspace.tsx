@@ -153,7 +153,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   activeVoiceId = "voice_01",
   voices = [],
 }) => {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
   const [progressStage, setProgressStage] = useState<string>("");
   const [stage, setStage] = useState<"prep" | "studio">(() => {
     try {
@@ -1849,7 +1849,6 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         onClose={() => setIsNormalizerOpen(false)}
         originalText={workingText}
         onApply={handleApplyNormalization}
-        language={lang}
         onOpenPronunciationManager={() => {
           setIsNormalizerOpen(false);
           setIsPronunciationModalOpen(true);
