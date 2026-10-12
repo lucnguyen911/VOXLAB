@@ -55,6 +55,9 @@ export interface Translations {
     needsRegenCount: string;
     pauseOverride: string;
     exportAudio: string;
+    exportLog: string;
+    exportLogSuccess: string;
+    exportLogTooltip: string;
     chars: string;
     words: string;
     estAudio: string;
@@ -455,6 +458,9 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       needsRegenCount: "{count} đoạn cần tạo lại",
       pauseOverride: "Nghỉ: {ms}ms",
       exportAudio: "Ghép & xuất",
+      exportLog: "Xuất log",
+      exportLogSuccess: "Đã xuất file log cảnh báo & lỗi thành công",
+      exportLogTooltip: "Xuất nhật ký chi tiết các cảnh báo và lỗi sau khi tạo TTS",
       chars: "ký tự",
       words: "từ",
       estAudio: "Ước tính audio",
@@ -854,6 +860,9 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       needsRegenCount: "{count} need regeneration",
       pauseOverride: "Pause: {ms}ms",
       exportAudio: "Merge & Export",
+      exportLog: "Export Log",
+      exportLogSuccess: "TTS warnings and errors log exported successfully",
+      exportLogTooltip: "Export detailed log of quality warnings and errors after TTS generation",
       chars: "chars",
       words: "words",
       estAudio: "Estimated audio",
@@ -1253,6 +1262,9 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       needsRegenCount: "{count} 文の再生成が必要",
       pauseOverride: "ポーズ: {ms}ms",
       exportAudio: "音声を書き出す",
+      exportLog: "ログ出力",
+      exportLogSuccess: "TTS警告・エラーログが正常に出力されました",
+      exportLogTooltip: "TTS生成後の品質警告およびエラーの詳細ログを出力",
       chars: "文字",
       words: "単語",
       estAudio: "推定音声",
@@ -1652,6 +1664,9 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       needsRegenCount: "{count} 句需要重新生成",
       pauseOverride: "停顿: {ms}ms",
       exportAudio: "导出音频",
+      exportLog: "导出日志",
+      exportLogSuccess: "TTS警告和错误日志导出成功",
+      exportLogTooltip: "导出TTS生成后的质量警告与错误详细日志",
       chars: "字符",
       words: "词",
       estAudio: "预计音频",

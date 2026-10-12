@@ -12,6 +12,7 @@ import {
   Pause,
   Play,
   X,
+  FileText,
 } from "lucide-react";
 import { ChunkItem, VoiceProfile, PunctuationPauses } from "../../types/ui";
 import { useI18n } from "../../i18n/context";
@@ -151,6 +152,7 @@ interface TtsInspectorProps {
   isPaused?: boolean;
   onTogglePause?: () => void;
   onCancel?: () => void;
+  onExportLog?: () => void;
 }
 
 export const TtsInspector: React.FC<TtsInspectorProps> = ({
@@ -177,6 +179,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   isPaused = false,
   onTogglePause,
   onCancel,
+  onExportLog,
 }) => {
   const { t, lang } = useI18n();
 
@@ -749,6 +752,31 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Xuất log cảnh báo & lỗi TTS */}
+              {onExportLog && (
+                <div className="pt-3 border-t border-borderDefault/40">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <span className="text-xs text-textSecondary font-medium block">
+                        {t.tts.exportLog}
+                      </span>
+                      <span className="text-[10px] text-textMuted block truncate">
+                        {t.tts.exportLogTooltip}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onExportLog}
+                      className="px-2.5 py-1.5 rounded-lg border border-borderDefault bg-surface2 hover:bg-surface3 active:scale-95 text-xs text-textPrimary font-medium transition-all flex items-center gap-1.5 cursor-pointer shadow-xs shrink-0"
+                      title={t.tts.exportLogTooltip}
+                    >
+                      <FileText className="w-3.5 h-3.5 text-accent" />
+                      <span>{t.tts.exportLog}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

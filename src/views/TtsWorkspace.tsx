@@ -7,6 +7,7 @@ import {
   Pause,
   RefreshCw,
   FileAudio,
+  FileText,
   AlertCircle,
   AlertTriangle,
   ArrowRight,
@@ -38,6 +39,7 @@ import {
   computeChunkPausesMs,
 } from "../services/audio/masterExport";
 import { loadStoredTtsSettings } from "../components/inspector/TtsInspector";
+import { exportTtsLog } from "../services/audio/ttsLogExporter";
 import { loadSubtitleSettings } from "../services/subtitle";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { extractFilesFromDropEvent } from "../services/fileDropHelper";
@@ -1144,6 +1146,38 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     }
   };
 
+  // Export warnings and errors log after TTS creation
+  const handleExportLog = async () => {
+    if (chunks.length === 0) return;
+    try {
+      const ttsSettings = loadStoredTtsSettings();
+      const activeVoice = (voices && voices.length > 0 ? voices : MOCK_VOICES).find(
+        (v) => v.id === activeVoiceId
+      );
+
+      const result = await exportTtsLog(chunks, {
+        projectTitle: workingText.slice(0, 30).trim() || "Kịch bản TTS",
+        activeModel,
+        activeVoiceId,
+        activeVoiceName: activeVoice?.name,
+        speed: ttsSettings.speed,
+        pitch: ttsSettings.pitch,
+        volume: ttsSettings.volume,
+        punctuationPauses: ttsSettings.pauses,
+        exportSrt: ttsSettings.exportSrt,
+      });
+
+      if (result.success && result.filePath) {
+        alert(`${t.tts.exportLogSuccess}:\n${result.filePath}`);
+      } else if (result.error) {
+        alert(`Lỗi khi xuất log: ${result.error}`);
+      }
+    } catch (err: any) {
+      console.error("Export log error:", err);
+      alert(`Lỗi khi xuất log: ${err?.message || err}`);
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
       {/* Workspace Subheader & Stage Switcher */}
@@ -1259,6 +1293,36 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                     <Play className="w-3.5 h-3.5 fill-accent" />
                     <span>Nghe toàn bộ</span>
                   </>
+                )}
+              </button>
+
+              {/* Secondary Action: Xuất log cảnh báo & lỗi */}
+              <button
+                type="button"
+                onClick={handleExportLog}
+                disabled={chunks.length === 0 || isGenerating}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors whitespace-nowrap cursor-pointer ${
+                  chunks.length === 0 || isGenerating
+                    ? "bg-surface2 text-textMuted cursor-not-allowed opacity-60 border border-borderDefault"
+                    : "bg-surface2 hover:bg-surface3 text-textPrimary hover:text-accent border border-borderDefault hover:border-accent/40"
+                }`}
+                title={t.tts.exportLogTooltip}
+              >
+                <FileText className="w-3.5 h-3.5 text-accent" />
+                <span>{t.tts.exportLog}</span>
+                {(qualityStats.warningCount > 0 || qualityStats.errorCount > 0) && !isGenerating && (
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold leading-none ${
+                      qualityStats.errorCount > 0
+                        ? "bg-danger text-white shadow-2xs"
+                        : "bg-amber-500/20 text-amber-500 border border-amber-500/40"
+                    }`}
+                    title={`${qualityStats.errorCount} lỗi, ${qualityStats.warningCount} cảnh báo`}
+                  >
+                    {qualityStats.errorCount > 0
+                      ? `${qualityStats.errorCount} lỗi`
+                      : `${qualityStats.warningCount} cb`}
+                  </span>
                 )}
               </button>
 
@@ -1837,6 +1901,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 isPaused: isPaused && batchQueueExecutor.isQueuePaused(),
                 onTogglePause: onTogglePause,
                 onCancel: handleCancelGeneration,
+                onExportLog: handleExportLog,
               })
             : inspector}
         </div>
