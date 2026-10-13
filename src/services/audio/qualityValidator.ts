@@ -68,9 +68,15 @@ export function isReviewCurrent(chunk: ChunkItem): boolean {
  * Returns true if the chunk's quality review is missing, stale (text changed),
  * evaluated with an older version of the validator, evaluated with a different ASR model,
  * or evaluated on different audio (audioSignature changed).
+ * When isAsrReady is true, unverified reviews caused by previously missing models are treated as outdated for auto-recovery.
  */
-export function isReviewOutdated(chunk: ChunkItem, currentAsrModel?: string): boolean {
+export function isReviewOutdated(
+  chunk: ChunkItem,
+  currentAsrModel?: string,
+  isAsrReady: boolean = true
+): boolean {
   if (!chunk.qualityReview) return true;
+  if (chunk.qualityReview.status === "checking") return true;
   if (!isReviewCurrent(chunk)) return true;
   if (chunk.qualityReview.validatorVersion !== QUALITY_VALIDATOR_VERSION) {
     return true;
@@ -84,15 +90,36 @@ export function isReviewOutdated(chunk: ChunkItem, currentAsrModel?: string): bo
       return true;
     }
   }
+  // Auto-recovery: If review is unverified because model was missing or sidecar was down,
+  // and ASR is now confirmed ready, mark it outdated so background verification re-runs it.
+  if (isAsrReady && chunk.qualityReview.status === "unverified") {
+    const summary = chunk.qualityReview.summary || "";
+    const isModelMissingIssue =
+      summary.includes("không tìm thấy") ||
+      summary.includes("không thể khởi tạo") ||
+      summary.includes("chưa có trên máy") ||
+      summary.includes("quá thời gian");
+    if (isModelMissingIssue) {
+      return true;
+    }
+  }
   return false;
 }
 
 /**
+ * Returns true if the chunk is in 'ready' status and currently undergoing ASR inspection.
+ */
+export function isChunkChecking(chunk: ChunkItem): boolean {
+  if (chunk.status !== "ready") return false;
+  return chunk.qualityReview?.status === "checking";
+}
+
+/**
  * Returns true if the chunk is in 'ready' status and has an unverified review.
- * Errors and warnings take precedence.
+ * Errors, warnings, and checking take precedence.
  */
 export function isChunkUnverified(chunk: ChunkItem): boolean {
-  if (isChunkError(chunk) || isChunkWarning(chunk)) return false;
+  if (isChunkError(chunk) || isChunkWarning(chunk) || isChunkChecking(chunk)) return false;
   if (chunk.status !== "ready") return false;
   return chunk.qualityReview?.status === "unverified";
 }
@@ -101,7 +128,7 @@ export function isChunkUnverified(chunk: ChunkItem): boolean {
  * Returns true if the chunk is in 'ready' status and passed quality validation.
  */
 export function isChunkPass(chunk: ChunkItem): boolean {
-  if (isChunkError(chunk) || isChunkWarning(chunk) || isChunkUnverified(chunk)) return false;
+  if (isChunkError(chunk) || isChunkWarning(chunk) || isChunkUnverified(chunk) || isChunkChecking(chunk)) return false;
   if (chunk.status !== "ready") return false;
   return chunk.qualityReview?.status === "pass";
 }
@@ -110,17 +137,20 @@ export interface ChunkQualityStats {
   errorCount: number;
   warningCount: number;
   unverifiedCount: number;
+  checkingCount: number;
   passCount: number;
   errorChunks: ChunkItem[];
   warningChunks: ChunkItem[];
   unverifiedChunks: ChunkItem[];
+  checkingChunks: ChunkItem[];
   passChunks: ChunkItem[];
 }
 
 /**
- * Aggregates quality issues across chunks into 4 mutually-exclusive categories:
+ * Aggregates quality issues across chunks into 5 mutually-exclusive categories:
  * - Errors (Red)
  * - Warnings (Yellow)
+ * - Checking (Blue / Cyan Pulse)
  * - Unverified (Neutral)
  * - Pass (Green)
  * Guarantee: A chunk with multiple warnings is counted as 1 warning chunk.
@@ -130,6 +160,7 @@ export interface ChunkQualityStats {
 export function countChunkQualityIssues(chunks: ChunkItem[]): ChunkQualityStats {
   const errorChunks: ChunkItem[] = [];
   const warningChunks: ChunkItem[] = [];
+  const checkingChunks: ChunkItem[] = [];
   const unverifiedChunks: ChunkItem[] = [];
   const passChunks: ChunkItem[] = [];
 
@@ -138,6 +169,8 @@ export function countChunkQualityIssues(chunks: ChunkItem[]): ChunkQualityStats 
       errorChunks.push(chunk);
     } else if (isChunkWarning(chunk)) {
       warningChunks.push(chunk);
+    } else if (isChunkChecking(chunk)) {
+      checkingChunks.push(chunk);
     } else if (isChunkUnverified(chunk)) {
       unverifiedChunks.push(chunk);
     } else if (isChunkPass(chunk)) {
@@ -149,10 +182,12 @@ export function countChunkQualityIssues(chunks: ChunkItem[]): ChunkQualityStats 
     errorCount: errorChunks.length,
     warningCount: warningChunks.length,
     unverifiedCount: unverifiedChunks.length,
+    checkingCount: checkingChunks.length,
     passCount: passChunks.length,
     errorChunks,
     warningChunks,
     unverifiedChunks,
+    checkingChunks,
     passChunks,
   };
 }
@@ -292,6 +327,17 @@ export function getChunkBadgeInfo(chunk: ChunkItem): ChunkBadgeInfo | null {
     };
   }
 
+  if (isChunkChecking(chunk)) {
+    return {
+      status: "checking",
+      primaryLabel: "Đang kiểm tra...",
+      fullBadgeText: "Đang kiểm tra...",
+      compactBadgeText: "Đang kiểm tra...",
+      uniqueLabels: ["Đang kiểm tra..."],
+      issuesCount: 0,
+    };
+  }
+
   if (isChunkUnverified(chunk)) {
     return {
       status: "unverified",
@@ -305,6 +351,8 @@ export function getChunkBadgeInfo(chunk: ChunkItem): ChunkBadgeInfo | null {
 
   return null;
 }
+
+export const ASR_VALIDATION_TIMEOUT_MS = 25000;
 
 /**
  * Validates the synthesized audio for a chunk.
@@ -346,25 +394,39 @@ export async function validateChunkAudioQuality(
     const ai = customAi !== undefined ? customAi : await getSharedAiServices();
 
     if (ai && chunk.audioFilePath) {
-      const res = await ai.validateAudioQuality(
-        chunk.audioFilePath,
-        chunk.text,
-        language,
-        speed,
-        effectiveAsrModel
-      );
-      return {
-        status: res.status,
-        issues: res.issues || [],
-        metrics: res.metrics,
-        summary: res.summary || (res.status === "pass" ? "Đạt" : "Đã kiểm tra"),
-        checkedAt: now,
-        audioPath: chunk.audioFilePath,
-        text: chunk.text,
-        validatorVersion: QUALITY_VALIDATOR_VERSION,
-        asrModelId: res.asrModelId || effectiveAsrModel,
-        audioSignature: audioSig,
-      };
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error("Quá thời gian chờ ASR (25s)"));
+        }, ASR_VALIDATION_TIMEOUT_MS);
+      });
+
+      try {
+        const res = await Promise.race([
+          ai.validateAudioQuality(
+            chunk.audioFilePath,
+            chunk.text,
+            language,
+            speed,
+            effectiveAsrModel
+          ),
+          timeoutPromise,
+        ]);
+        return {
+          status: res.status,
+          issues: res.issues || [],
+          metrics: res.metrics,
+          summary: res.summary || (res.status === "pass" ? "Đạt" : "Đã kiểm tra"),
+          checkedAt: now,
+          audioPath: chunk.audioFilePath,
+          text: chunk.text,
+          validatorVersion: QUALITY_VALIDATOR_VERSION,
+          asrModelId: res.asrModelId || effectiveAsrModel,
+          audioSignature: audioSig,
+        };
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+      }
     }
   } catch (err: any) {
     console.warn(`[QualityValidator] Sidecar validation failed on chunk ${chunk.id}:`, err);

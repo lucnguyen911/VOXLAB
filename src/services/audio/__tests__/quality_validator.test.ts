@@ -6,6 +6,7 @@ import {
   isChunkError,
   isChunkWarning,
   isChunkUnverified,
+  isChunkChecking,
   isChunkPass,
   isReviewCurrent,
   isReviewOutdated,
@@ -1044,4 +1045,108 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(exportResultError.canExport, false, "Red error MUST block Master Export");
     assert.equal(exportResultError.invalidChunks.length, 1);
   });
+
+  it("V23: isChunkChecking and checkingCount in countChunkQualityIssues correctly partition checking chunks", () => {
+    const checkingChunk: ChunkItem = {
+      id: "chunk_checking_01",
+      index: 1,
+      text: "Testing audio speech synthesis",
+      originalText: "Testing audio speech synthesis",
+      status: "ready",
+      durationSec: 2.5,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "checking",
+        issues: [],
+        summary: "Đang kiểm tra...",
+        checkedAt: Date.now(),
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: "small",
+      },
+    };
+
+    assert.equal(isChunkChecking(checkingChunk), true);
+    assert.equal(isChunkUnverified(checkingChunk), false);
+    assert.equal(isChunkPass(checkingChunk), false);
+    assert.equal(isChunkError(checkingChunk), false);
+    assert.equal(isChunkWarning(checkingChunk), false);
+
+    const stats = countChunkQualityIssues([checkingChunk]);
+    assert.equal(stats.checkingCount, 1);
+    assert.equal(stats.unverifiedCount, 0);
+    assert.equal(stats.passCount, 0);
+    assert.equal(stats.errorCount, 0);
+    assert.equal(stats.warningCount, 0);
+    assert.equal(stats.checkingChunks[0].id, "chunk_checking_01");
+  });
+
+  it("V24: getChunkBadgeInfo formats checking status as 'Đang kiểm tra...'", () => {
+    const checkingChunk: ChunkItem = {
+      id: "chunk_checking_02",
+      index: 2,
+      text: "Checking badge text",
+      originalText: "Checking badge text",
+      status: "ready",
+      durationSec: 1.8,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "checking",
+        issues: [],
+        summary: "Đang kiểm tra...",
+        checkedAt: Date.now(),
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: "small",
+      },
+    };
+
+    const badge = getChunkBadgeInfo(checkingChunk);
+    assert.ok(badge);
+    assert.equal(badge.status, "checking");
+    assert.equal(badge.primaryLabel, "Đang kiểm tra...");
+    assert.equal(badge.fullBadgeText, "Đang kiểm tra...");
+  });
+
+  it("V25: isReviewOutdated auto-recovers unverified chunks from missing model when ASR is ready", () => {
+    const unverifiedFromMissingModel: ChunkItem = {
+      id: "chunk_unverified_01",
+      index: 1,
+      text: "Unverified because model was missing",
+      originalText: "Unverified because model was missing",
+      status: "ready",
+      durationSec: 3.0,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "unverified",
+        issues: [],
+        summary: "Chưa kiểm chứng (không tìm thấy mô hình Whisper 'large-v3-turbo' cục bộ)",
+        checkedAt: Date.now(),
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: "large-v3-turbo",
+      },
+    };
+
+    // When ASR is ready, this chunk should be marked outdated for auto-recovery
+    assert.equal(isReviewOutdated(unverifiedFromMissingModel, "large-v3-turbo", true), true);
+
+    // If ASR is not ready, do not mark outdated to avoid endless loops
+    assert.equal(isReviewOutdated(unverifiedFromMissingModel, "large-v3-turbo", false), false);
+
+    // When model changes to 'small', it is also outdated
+    assert.equal(isReviewOutdated(unverifiedFromMissingModel, "small", true), true);
+
+    // Once validated cleanly as pass with small, it is no longer outdated
+    const passedChunk: ChunkItem = {
+      ...unverifiedFromMissingModel,
+      qualityReview: {
+        status: "pass",
+        issues: [],
+        summary: "Đạt",
+        checkedAt: Date.now(),
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: "small",
+      },
+    };
+    assert.equal(isReviewOutdated(passedChunk, "small", true), false);
+  });
 });
+

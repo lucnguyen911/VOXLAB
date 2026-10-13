@@ -28,7 +28,7 @@ export interface EffectiveVoiceSnapshot {
   refText?: string;
 }
 
-export type AudioQualityStatus = "pass" | "warning" | "error" | "unverified";
+export type AudioQualityStatus = "pass" | "warning" | "error" | "unverified" | "checking";
 
 export interface AudioQualityIssue {
   severity: "error" | "warning";

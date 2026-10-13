@@ -53,16 +53,26 @@ import {
   isChunkError,
   isChunkWarning,
   isChunkUnverified,
+  isChunkChecking,
   getChunkAudioSignature,
   validateChunkAudioQuality,
   getChunkBadgeInfo,
   getIssueShortLabel,
   isReviewOutdated,
+  QUALITY_VALIDATOR_VERSION,
 } from "../services/audio/qualityValidator";
+import {
+  checkAsrReadiness,
+  applyAsrModelSwitch,
+  type AsrReadinessResult,
+} from "../services/ai/asrReadiness";
+import { AsrReadinessModal } from "../components/modals/AsrReadinessModal";
+import type { WorkspaceId } from "../types/ui";
 
 
 interface TtsWorkspaceProps {
   onOpenDiffModal?: (original: string, proposed: string) => void;
+  onNavigateToWorkspace?: (workspace: WorkspaceId) => void;
   selectedChunk: ChunkItem | null;
   onSelectChunk: (chunk: ChunkItem) => void;
   onTriggerJob: () => void;
@@ -132,6 +142,7 @@ const AutoResizeTextarea: React.FC<{
 export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   selectedChunk,
   onSelectChunk,
+  onNavigateToWorkspace,
   onTriggerJob,
   onOpenExportValidation,
   isGenerating = false,
@@ -232,6 +243,48 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       return () => window.removeEventListener("voxlab_asr_model_changed", handleAsrChange);
     }
   }, []);
+
+  const [asrReadinessPrompt, setAsrReadinessPrompt] = useState<AsrReadinessResult | null>(null);
+  const [isAsrPromptOpen, setIsAsrPromptOpen] = useState(false);
+  const [pendingGenerationAction, setPendingGenerationAction] = useState<(() => void) | null>(null);
+  const [isAsrReady, setIsAsrReady] = useState(true);
+
+  // Synchronize ASR readiness whenever currentAsrModel changes or on mount
+  useEffect(() => {
+    let cancelled = false;
+    checkAsrReadiness(currentAsrModel).then((res) => {
+      if (!cancelled) {
+        setIsAsrReady(res.ready);
+      }
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentAsrModel]);
+
+  const handleSwitchModelAndProceed = async (newModelId: string) => {
+    await applyAsrModelSwitch(newModelId);
+    setCurrentAsrModel(newModelId);
+    setIsAsrReady(true);
+    setIsAsrPromptOpen(false);
+    setAsrReadinessPrompt(null);
+    inFlightValidationsRef.current.clear();
+    if (pendingGenerationAction) {
+      const action = pendingGenerationAction;
+      setPendingGenerationAction(null);
+      setTimeout(() => action(), 50);
+    }
+  };
+
+  const handleNavigateToTranscription = () => {
+    setIsAsrPromptOpen(false);
+    setPendingGenerationAction(null);
+    if (onNavigateToWorkspace) {
+      onNavigateToWorkspace("transcription");
+    } else if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("voxlab_navigate_workspace", { detail: "transcription" }));
+    }
+  };
 
   const handleProcessScriptFile = async (file: File) => {
     try {
@@ -364,10 +417,93 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     });
   };
 
+  // Standardized quality assurance pipeline for newly synthesized or regenerated chunks
+  // Order: Technical WAV valid -> Immediate UI state: 'ready' + qualityReview: 'checking' -> ASR Validation with timeout -> Final Review
+  const processSynthesizedChunkWithQc = async (
+    target: ChunkItem,
+    res: { durationSec: number; blobUrl: string; outputPath: string },
+    voiceSnapshot: EffectiveVoiceSnapshot,
+    firstFinishedCallback?: (readyChunk: ChunkItem) => void
+  ): Promise<ChunkItem> => {
+    const audioSig = `${res.blobUrl || res.outputPath}::${res.durationSec}`;
+    const checkingChunk: ChunkItem = {
+      ...target,
+      status: "ready",
+      durationSec: res.durationSec,
+      audioUrl: res.blobUrl,
+      audioFilePath: res.outputPath,
+      effectiveVoiceSnapshot: voiceSnapshot,
+      qualityReview: {
+        status: "checking",
+        summary: "Đang kiểm tra...",
+        issues: [],
+        checkedAt: Date.now(),
+        audioPath: res.outputPath,
+        text: target.text,
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: currentAsrModel,
+        audioSignature: audioSig,
+      },
+      acknowledgedAt: undefined,
+      acknowledgedAudioSignature: undefined,
+    };
+
+    // Update chunk immediately so user sees WAV is ready and ASR inspection has started
+    setChunks((prev) =>
+      prev.map((c) => (c.id === target.id ? checkingChunk : c))
+    );
+
+    try {
+      const review = await validateChunkAudioQuality(
+        checkingChunk,
+        voiceSnapshot.language,
+        undefined,
+        voiceSnapshot.speed,
+        currentAsrModel
+      );
+      const readyChunk: ChunkItem = { ...checkingChunk, qualityReview: review };
+      setChunks((prev) =>
+        prev.map((c) => (c.id === target.id ? readyChunk : c))
+      );
+      firstFinishedCallback?.(readyChunk);
+      return readyChunk;
+    } catch (qErr: any) {
+      console.warn("Quality validation error:", qErr);
+      const fallbackChunk: ChunkItem = {
+        ...checkingChunk,
+        qualityReview: {
+          status: "unverified",
+          summary: `Chưa kiểm chứng (${qErr?.message || "lỗi hậu kiểm"})`,
+          issues: [],
+          checkedAt: Date.now(),
+          audioPath: res.outputPath,
+          text: target.text,
+          validatorVersion: QUALITY_VALIDATOR_VERSION,
+          asrModelId: currentAsrModel,
+          audioSignature: audioSig,
+        },
+      };
+      setChunks((prev) =>
+        prev.map((c) => (c.id === target.id ? fallbackChunk : c))
+      );
+      firstFinishedCallback?.(fallbackChunk);
+      return fallbackChunk;
+    }
+  };
+
   // Regenerate single chunk (Section 9: Only targets this chunk, new version becomes current)
   const handleRegenerateChunk = async (id: string) => {
     const target = chunks.find((c) => c.id === id);
     if (!target) return;
+
+    // Pre-flight ASR readiness check
+    const readiness = await checkAsrReadiness(currentAsrModel);
+    if (!readiness.ready) {
+      setAsrReadinessPrompt(readiness);
+      setIsAsrPromptOpen(true);
+      setPendingGenerationAction(() => () => handleRegenerateChunk(id));
+      return;
+    }
 
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
     const storedSettings = loadStoredTtsSettings();
@@ -393,28 +529,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     onTriggerJob();
     try {
       const res = await synthesizeChunkCore(target, snapshotToUse, (s) => setProgressStage(s), singleAdvancedSettings);
-      let readyChunk: ChunkItem = {
-        ...target,
-        status: "ready",
-        durationSec: res.durationSec,
-        audioUrl: res.blobUrl,
-        audioFilePath: res.outputPath,
-        effectiveVoiceSnapshot: snapshotToUse,
-        qualityReview: undefined,
-        acknowledgedAt: undefined,
-        acknowledgedAudioSignature: undefined,
-      };
-
-      try {
-        const review = await validateChunkAudioQuality(readyChunk, snapshotToUse.language, undefined, snapshotToUse.speed);
-        readyChunk = { ...readyChunk, qualityReview: review };
-      } catch (qErr) {
-        console.warn("Quality validation error:", qErr);
-      }
-
-      setChunks((prev) =>
-        prev.map((c) => (c.id === id ? readyChunk : c))
-      );
+      const readyChunk = await processSynthesizedChunkWithQc(target, res, snapshotToUse);
       onPlayChunk?.(readyChunk);
     } catch (err: any) {
       setChunks((prev) =>
@@ -433,13 +548,15 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   // Strictly sequential (concurrency 1), guarded against infinite loops and stale audio races.
   useEffect(() => {
     if (isGenerating) return;
+    if (!isAsrReady) return;
 
     // Find first ready chunk that has audio and an outdated review, not currently in flight
     const outdatedChunk = chunks.find(
       (c) =>
         c.status === "ready" &&
         Boolean(c.audioFilePath || c.audioUrl) &&
-        isReviewOutdated(c, currentAsrModel) &&
+        c.qualityReview?.status !== "checking" &&
+        isReviewOutdated(c, currentAsrModel, isAsrReady) &&
         !inFlightValidationsRef.current.has(`${getChunkAudioSignature(c)}::${currentAsrModel}`)
     );
 
@@ -450,6 +567,29 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     const inFlightKey = `${audioSig}::${currentAsrModel}`;
 
     inFlightValidationsRef.current.add(inFlightKey);
+
+    // Update chunk state to "checking" immediately so the UI reflects "Đang kiểm tra..."
+    setChunks((prev) =>
+      prev.map((c) =>
+        c.id === outdatedChunk.id && getChunkAudioSignature(c) === audioSig
+          ? {
+              ...c,
+              qualityReview: {
+                status: "checking",
+                issues: c.qualityReview?.issues || [],
+                metrics: c.qualityReview?.metrics,
+                summary: "Đang kiểm tra...",
+                checkedAt: Date.now(),
+                audioPath: c.audioFilePath,
+                text: c.text,
+                validatorVersion: QUALITY_VALIDATOR_VERSION,
+                asrModelId: currentAsrModel,
+                audioSignature: audioSig,
+              },
+            }
+          : c
+      )
+    );
 
     const runAutoValidation = async () => {
       try {
@@ -466,15 +606,36 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             return c;
           })
         );
-      } catch (err) {
+      } catch (err: any) {
         console.warn(`[TtsWorkspace] Auto-validation failed for chunk ${outdatedChunk.id}:`, err);
+        setChunks((prev) =>
+          prev.map((c) => {
+            if (c.id === outdatedChunk.id && getChunkAudioSignature(c) === audioSig) {
+              return {
+                ...c,
+                qualityReview: {
+                  status: "unverified",
+                  summary: `Chưa kiểm chứng (${err?.message || "lỗi kiểm tra"})`,
+                  issues: [],
+                  checkedAt: Date.now(),
+                  audioPath: c.audioFilePath,
+                  text: c.text,
+                  validatorVersion: QUALITY_VALIDATOR_VERSION,
+                  asrModelId: currentAsrModel,
+                  audioSignature: audioSig,
+                },
+              };
+            }
+            return c;
+          })
+        );
       } finally {
         inFlightValidationsRef.current.delete(inFlightKey);
       }
     };
 
     runAutoValidation();
-  }, [chunks, isGenerating, currentAsrModel]);
+  }, [chunks, isGenerating, currentAsrModel, isAsrReady]);
 
   // Audio quality and validation state
   const qualityStats = countChunkQualityIssues(chunks);
@@ -519,6 +680,16 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   // Batch regenerate all invalid chunks using real concurrency executor
   const handleRegenerateInvalidChunks = async () => {
     if (invalidChunks.length === 0 || isGenerating) return;
+
+    // Pre-flight ASR readiness check
+    const readiness = await checkAsrReadiness(currentAsrModel);
+    if (!readiness.ready) {
+      setAsrReadinessPrompt(readiness);
+      setIsAsrPromptOpen(true);
+      setPendingGenerationAction(() => () => handleRegenerateInvalidChunks());
+      return;
+    }
+
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
     const storedSettings = loadStoredTtsSettings();
 
@@ -563,28 +734,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               )
             );
             const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-            let readyChunk: ChunkItem = {
-              ...target,
-              status: "ready",
-              durationSec: res.durationSec,
-              audioUrl: res.blobUrl,
-              audioFilePath: res.outputPath,
-              effectiveVoiceSnapshot: batchVoiceSnapshot,
-              qualityReview: undefined,
-            };
-            try {
-              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language, undefined, batchVoiceSnapshot.speed);
-              readyChunk = { ...readyChunk, qualityReview: review };
-            } catch (qErr) {
-              console.warn("Quality validation error:", qErr);
-            }
-            setChunks((prev) =>
-              prev.map((c) => (c.id === chunkId ? readyChunk : c))
-            );
-            if (!firstFinishedChunk) {
-              firstFinishedChunk = readyChunk;
-              onPlayChunk?.(readyChunk);
-            }
+            await processSynthesizedChunkWithQc(target, res, batchVoiceSnapshot, (readyChunk) => {
+              if (!firstFinishedChunk) {
+                firstFinishedChunk = readyChunk;
+                onPlayChunk?.(readyChunk);
+              }
+            });
           },
           onItemCompleted: (_item, _idx, completed, total) => {
             setCompletedCount(completed);
@@ -618,6 +773,16 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   // Regenerate strictly red error chunks (Mandatory requirement: never auto-regenerates yellow warning chunks)
   const handleRegenerateErrorChunks = async () => {
     if (errorChunks.length === 0 || isGenerating) return;
+
+    // Pre-flight ASR readiness check
+    const readiness = await checkAsrReadiness(currentAsrModel);
+    if (!readiness.ready) {
+      setAsrReadinessPrompt(readiness);
+      setIsAsrPromptOpen(true);
+      setPendingGenerationAction(() => () => handleRegenerateErrorChunks());
+      return;
+    }
+
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
     const storedSettings = loadStoredTtsSettings();
 
@@ -661,28 +826,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               )
             );
             const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-            let readyChunk: ChunkItem = {
-              ...target,
-              status: "ready",
-              durationSec: res.durationSec,
-              audioUrl: res.blobUrl,
-              audioFilePath: res.outputPath,
-              effectiveVoiceSnapshot: batchVoiceSnapshot,
-              qualityReview: undefined,
-            };
-            try {
-              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language, undefined, batchVoiceSnapshot.speed);
-              readyChunk = { ...readyChunk, qualityReview: review };
-            } catch (qErr) {
-              console.warn("Quality validation error:", qErr);
-            }
-            setChunks((prev) =>
-              prev.map((c) => (c.id === chunkId ? readyChunk : c))
-            );
-            if (!firstFinishedChunk) {
-              firstFinishedChunk = readyChunk;
-              onPlayChunk?.(readyChunk);
-            }
+            await processSynthesizedChunkWithQc(target, res, batchVoiceSnapshot, (readyChunk) => {
+              if (!firstFinishedChunk) {
+                firstFinishedChunk = readyChunk;
+                onPlayChunk?.(readyChunk);
+              }
+            });
           },
           onItemCompleted: (_item, _idx, completed, total) => {
             setCompletedCount(completed);
@@ -716,6 +865,16 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   // Regenerate strictly yellow warning chunks
   const handleRegenerateWarningChunks = async () => {
     if (warningChunks.length === 0 || isGenerating) return;
+
+    // Pre-flight ASR readiness check
+    const readiness = await checkAsrReadiness(currentAsrModel);
+    if (!readiness.ready) {
+      setAsrReadinessPrompt(readiness);
+      setIsAsrPromptOpen(true);
+      setPendingGenerationAction(() => () => handleRegenerateWarningChunks());
+      return;
+    }
+
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
     const storedSettings = loadStoredTtsSettings();
 
@@ -759,28 +918,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               )
             );
             const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-            let readyChunk: ChunkItem = {
-              ...target,
-              status: "ready",
-              durationSec: res.durationSec,
-              audioUrl: res.blobUrl,
-              audioFilePath: res.outputPath,
-              effectiveVoiceSnapshot: batchVoiceSnapshot,
-              qualityReview: undefined,
-            };
-            try {
-              const review = await validateChunkAudioQuality(readyChunk, batchVoiceSnapshot.language, undefined, batchVoiceSnapshot.speed);
-              readyChunk = { ...readyChunk, qualityReview: review };
-            } catch (qErr) {
-              console.warn("Quality validation error:", qErr);
-            }
-            setChunks((prev) =>
-              prev.map((c) => (c.id === chunkId ? readyChunk : c))
-            );
-            if (!firstFinishedChunk) {
-              firstFinishedChunk = readyChunk;
-              onPlayChunk?.(readyChunk);
-            }
+            await processSynthesizedChunkWithQc(target, res, batchVoiceSnapshot, (readyChunk) => {
+              if (!firstFinishedChunk) {
+                firstFinishedChunk = readyChunk;
+                onPlayChunk?.(readyChunk);
+              }
+            });
           },
           onItemCompleted: (_item, _idx, completed, total) => {
             setCompletedCount(completed);
@@ -818,6 +961,15 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     const targetChunks = validCustom || chunks;
     if (!targetChunks || targetChunks.length === 0) return;
 
+    // Pre-flight ASR readiness check
+    const readiness = await checkAsrReadiness(currentAsrModel);
+    if (!readiness.ready) {
+      setAsrReadinessPrompt(readiness);
+      setIsAsrPromptOpen(true);
+      setPendingGenerationAction(() => () => handleGenerateAllAudio(customChunks));
+      return;
+    }
+
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
     const storedSettings = loadStoredTtsSettings();
 
@@ -848,67 +1000,51 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
     try {
       await batchQueueExecutor.runBatch(
-      targetIds,
-      {
-        concurrency: 1,
-        onWorkerChange: (_active, pending) => {
-          setPendingItems(pending ?? 0);
-        },
-        processItem: async (chunkId) => {
-          const target = targetChunks.find((c) => c.id === chunkId) || chunks.find((c) => c.id === chunkId);
-          if (!target) return;
-          setChunks((prev) =>
-            prev.map((c) =>
-              c.id === chunkId
-                ? { ...c, status: "generating", errorMessage: undefined }
-                : c
-            )
-          );
-          const res = await synthesizeChunkCore(target, generationVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-          let readyChunk: ChunkItem = {
-            ...target,
-            status: "ready",
-            durationSec: res.durationSec,
-            audioUrl: res.blobUrl,
-            audioFilePath: res.outputPath,
-            effectiveVoiceSnapshot: generationVoiceSnapshot,
-            qualityReview: undefined,
-          };
-          try {
-            const review = await validateChunkAudioQuality(readyChunk, generationVoiceSnapshot.language, undefined, generationVoiceSnapshot.speed);
-            readyChunk = { ...readyChunk, qualityReview: review };
-          } catch (qErr) {
-            console.warn("Quality validation error:", qErr);
-          }
-          setChunks((prev) =>
-            prev.map((c) => (c.id === chunkId ? readyChunk : c))
-          );
-          if (!firstFinishedChunk) {
-            firstFinishedChunk = readyChunk;
-            onPlayChunk?.(readyChunk);
-          }
-        },
-        onItemCompleted: (_item, _idx, completed, total) => {
-          setCompletedCount(completed);
-          onChunkProgress?.(completed, total);
-        },
-        onItemFailed: async (chunkId, index, err) => {
-          setChunks((prev) =>
-            prev.map((c) =>
-              c.id === chunkId
-                ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
-                : c
-            )
-          );
-          setGenerationError({
-            chunkId,
-            chunkIndex: index,
-            error: err,
-          });
-          return "skip" as const;
-        },
-      }
-    );
+        targetIds,
+        {
+          concurrency: 1,
+          onWorkerChange: (_active, pending) => {
+            setPendingItems(pending ?? 0);
+          },
+          processItem: async (chunkId) => {
+            const target = targetChunks.find((c) => c.id === chunkId) || chunks.find((c) => c.id === chunkId);
+            if (!target) return;
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.id === chunkId
+                  ? { ...c, status: "generating", errorMessage: undefined }
+                  : c
+              )
+            );
+            const res = await synthesizeChunkCore(target, generationVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
+            await processSynthesizedChunkWithQc(target, res, generationVoiceSnapshot, (readyChunk) => {
+              if (!firstFinishedChunk) {
+                firstFinishedChunk = readyChunk;
+                onPlayChunk?.(readyChunk);
+              }
+            });
+          },
+          onItemCompleted: (_item, _idx, completed, total) => {
+            setCompletedCount(completed);
+            onChunkProgress?.(completed, total);
+          },
+          onItemFailed: async (chunkId, index, err) => {
+            setChunks((prev) =>
+              prev.map((c) =>
+                c.id === chunkId
+                  ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
+                  : c
+              )
+            );
+            setGenerationError({
+              chunkId,
+              chunkIndex: index,
+              error: err,
+            });
+            return "skip" as const;
+          },
+        }
+      );
     } catch (batchErr) {
       console.error("Batch synthesis error:", batchErr);
     } finally {
@@ -1554,6 +1690,16 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                     </span>
                   )}
 
+                  {qualityStats.checkingCount > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 animate-pulse"
+                      title="Số đoạn đang được đối chiếu và phân tích chất lượng âm thanh"
+                    >
+                      <RefreshCw className="w-3 h-3 animate-spin text-cyan-400" />
+                      <span>Đang kiểm tra: {qualityStats.checkingCount}</span>
+                    </span>
+                  )}
+
                   {qualityStats.unverifiedCount > 0 && (
                     <span
                       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-surface3 text-textSecondary border border-borderDefault"
@@ -1703,10 +1849,20 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                         )}
 
 
+                        {isChunkChecking(chunk) && chunk.status !== "generating" && (
+                          <span
+                            className="text-xs font-medium px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 flex items-center gap-1.5 shrink-0 animate-pulse"
+                            title="Đang phân tích chất lượng âm thanh và đối chiếu phụ đề qua ASR..."
+                          >
+                            <RefreshCw className="w-3 h-3 animate-spin text-cyan-400" />
+                            <span>Đang kiểm tra...</span>
+                          </span>
+                        )}
+
                         {isChunkUnverified(chunk) && chunk.status !== "generating" && (
                           <span
                             className="text-xs font-medium px-2 py-0.5 rounded-md bg-surface3 text-textSecondary border border-borderDefault flex items-center gap-1.5 shrink-0"
-                            title="Đoạn âm thanh chưa được kiểm chứng qua ASR"
+                            title={chunk.qualityReview?.summary || "Đoạn âm thanh chưa được kiểm chứng qua ASR"}
                           >
                             <span className="w-1.5 h-1.5 rounded-full bg-textMuted shrink-0" />
                             <span>Chưa kiểm chứng</span>
@@ -1939,6 +2095,18 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       <PronunciationManagerModal
         isOpen={isPronunciationModalOpen}
         onClose={() => setIsPronunciationModalOpen(false)}
+      />
+
+      {/* ASR Readiness Pre-flight Modal */}
+      <AsrReadinessModal
+        isOpen={isAsrPromptOpen}
+        onClose={() => {
+          setIsAsrPromptOpen(false);
+          setPendingGenerationAction(null);
+        }}
+        readiness={asrReadinessPrompt}
+        onSwitchModelAndProceed={handleSwitchModelAndProceed}
+        onNavigateToTranscription={handleNavigateToTranscription}
       />
     </div>
   );

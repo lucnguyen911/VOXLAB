@@ -267,6 +267,19 @@ function loadInitialVoices(): VoiceProfile[] {
     } catch {}
   };
 
+  useEffect(() => {
+    const handleNav = (e: Event) => {
+      const custom = e as CustomEvent<WorkspaceId>;
+      if (custom.detail) {
+        handleSelectWorkspace(custom.detail);
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_navigate_workspace", handleNav);
+      return () => window.removeEventListener("voxlab_navigate_workspace", handleNav);
+    }
+  }, []);
+
   return (
     <div className={`h-screen w-screen flex flex-col overflow-hidden bg-background text-textPrimary ${theme}`}>
       {/* 1. Top Utility Bar */}
@@ -296,6 +309,7 @@ function loadInitialVoices(): VoiceProfile[] {
                 <TtsWorkspace
                   voices={voices}
                   selectedChunk={selectedChunk}
+                  onNavigateToWorkspace={handleSelectWorkspace}
                   onSelectChunk={(c) => {
                     setSelectedChunk(c);
                     if (!inspectorOpen) setInspectorOpen(true);
