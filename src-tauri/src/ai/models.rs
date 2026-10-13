@@ -36,7 +36,7 @@ pub const MODELS: &[ModelSpec] = &[
         engine: "faster-whisper",
         runtime: "core",
         display_name: "Whisper Large V3 Turbo (faster-whisper)",
-        source_repo: "deepdml/faster-whisper-large-v3-turbo",
+        source_repo: "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
         approx_size_mb: 1600,
         license: "MIT",
         required_files: &["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"],
@@ -136,7 +136,13 @@ pub fn scan(models_dir: &Path) -> Vec<ModelStatus> {
             let missing: Vec<String> = spec
                 .required_files
                 .iter()
-                .filter(|f| !dir.join(f).is_file())
+                .filter(|f| {
+                    if **f == "vocabulary.txt" {
+                        !dir.join("vocabulary.txt").is_file() && !dir.join("vocabulary.json").is_file()
+                    } else {
+                        !dir.join(f).is_file()
+                    }
+                })
                 .map(|f| f.to_string())
                 .collect();
             ModelStatus {
@@ -163,7 +169,15 @@ mod tests {
         for f in ["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"] {
             std::fs::write(whisper.join(f), b"x").unwrap();
         }
+        let turbo = tmp.join("faster-whisper-large-v3-turbo");
+        std::fs::create_dir_all(&turbo).unwrap();
+        for f in ["model.bin", "config.json", "tokenizer.json", "vocabulary.json"] {
+            std::fs::write(turbo.join(f), b"x").unwrap();
+        }
         let result = scan(&tmp);
+        let t = result.iter().find(|m| m.spec.id == "faster-whisper-large-v3-turbo").unwrap();
+        assert!(t.installed && t.missing_files.is_empty());
+
         let w = result.iter().find(|m| m.spec.id == "faster-whisper-small").unwrap();
         assert!(w.installed && w.missing_files.is_empty());
         let o = result.iter().find(|m| m.spec.id == "omnivoice").unwrap();
