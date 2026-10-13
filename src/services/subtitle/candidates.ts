@@ -212,7 +212,7 @@ export function splitLongSentenceIntoClauses(
     }
   }
 
-  // 3. Try splitting before conjunctions without comma
+  // 3. Try splitting before conjunctions without comma (only when connecting two clauses or when neither side is a tight 2-noun pair)
   const wordsList = maskedText.split(/\s+/);
   const midPoint = Math.floor(wordsList.length / 2);
   let bestConjIdx = -1;
@@ -225,6 +225,17 @@ export function splitLongSentenceIntoClauses(
     }
     const w = wordsList[i].toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
     if (CONJUNCTIONS.has(w)) {
+      // Do not split a short coordinate noun pair like "vegetables and eggs" or "rau và trứng" at the end of a clause
+      if (["and", "or", "và", "hay", "hoặc"].includes(w)) {
+        const rightRemaining = wordsList.length - (i + 1);
+        const nextWordClean =
+          i + 1 < wordsList.length
+            ? wordsList[i + 1].toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+            : "";
+        if (rightRemaining <= 1 && !["then", "sau", "therefore", "so"].includes(nextWordClean)) {
+          continue;
+        }
+      }
       const dist = Math.abs(i - midPoint);
       if (dist < minDistanceToCenter) {
         minDistanceToCenter = dist;
@@ -287,13 +298,14 @@ export function splitLongSentenceIntoClauses(
 }
 
 export const FORBIDDEN_ENDINGS = new Set([
-  // English determiners, prepositions, auxiliaries, conjunctions, relatives
+  // English determiners, prepositions, auxiliaries, conjunctions, relatives, subject pronouns
   "a", "an", "the", "this", "that", "these", "those", "my", "your", "his", "her", "its", "our", "their",
   "of", "to", "for", "with", "from", "by", "at", "in", "on", "as", "into", "onto", "under", "over",
   "between", "among", "about", "through", "across", "behind", "beyond", "per",
   "am", "is", "are", "was", "were", "be", "been", "being", "has", "have", "had", "do", "does", "did",
   "will", "would", "can", "could", "may", "might", "must", "should", "shall",
   "and", "but", "or", "so", "because", "although", "though", "while", "when", "if", "which", "who", "where",
+  "i", "he", "she", "we", "they",
   // Vietnamese function words
   "và", "nhưng", "hoặc", "hay", "vì", "nên", "mà", "là", "của", "cho", "với", "tại", "trong", "trên",
   "dưới", "đến", "từ", "để", "khi", "nếu", "những", "các", "một", "đang", "sẽ", "đã", "vẫn", "rất",
@@ -305,14 +317,14 @@ function cleanWord(w: string): string {
 
 /**
  * Wraps a subtitle cue text into 1 or 2 balanced lines strictly <= profile.maxWidth
- * when possible, avoiding forbidden endings and compound word splits.
+ * when possible, avoiding forbidden endings, protected spans, and compound word splits.
  */
 export function wrapCueTextBalanced(text: string, profile: SubtitleProfile): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized || profile.maxLines <= 1) return normalized;
 
   const totalWidth = getDisplayWidth(normalized);
-  if (totalWidth <= profile.maxWidth) {
+  if (totalWidth <= profile.targetWidth) {
     return normalized;
   }
 
@@ -330,30 +342,55 @@ export function wrapCueTextBalanced(text: string, profile: SubtitleProfile): str
     const w2 = getDisplayWidth(rawLine2);
 
     const overflow = Math.max(0, w1 - profile.maxWidth) + Math.max(0, w2 - profile.maxWidth);
-    let score = Math.abs(w1 - w2) * 2.5 + overflow * 200;
+    let score = Math.abs(w1 - w2) * 3.0 + overflow * 200;
 
     if (isCompoundWordSplit(words[i - 1], words[i])) {
       score += 5000;
     }
     const leftRaw = restore(words[i - 1]).trim();
-    const leftClean = cleanWord(leftRaw);
-    const rightClean = cleanWord(restore(words[i]));
+    const leftLastToken = leftRaw.split(/\s+/).pop() || leftRaw;
+    const rightFirstToken = restore(words[i]).trim().split(/\s+/)[0] || "";
+    const leftClean = cleanWord(leftLastToken);
+    const rightClean = cleanWord(rightFirstToken);
+
+    const isCopulaBeforeThat =
+      ["is", "was", "are", "were"].includes(leftClean) &&
+      ["that", "whether", "what", "why", "how", "where", "when", "who"].includes(rightClean);
 
     if (/[.,;:!?…]$/u.test(leftRaw)) {
-      score -= 35;
-    } else if (FORBIDDEN_ENDINGS.has(leftClean)) {
+      score -= 40;
+    } else if (FORBIDDEN_ENDINGS.has(leftClean) && !isCopulaBeforeThat) {
       score += 1800;
+    } else if (isCopulaBeforeThat) {
+      score -= 20;
     }
+
     if (CONJUNCTIONS.has(rightClean)) {
-      score -= 25;
+      score -= 30;
+    } else if (["from", "in", "on", "to", "for", "with", "into", "across", "through"].includes(rightClean)) {
+      score -= 20;
     }
+
+    if (["you", "it", "i", "he", "she", "we", "they", "who"].includes(leftClean)) {
+      score += 350;
+    }
+
     if (w1 < 6 || w2 < 6) {
       score += 250;
+    } else if (w1 < 11 || w2 < 11) {
+      score += 80;
     }
 
     if (score < bestScore) {
       bestScore = score;
       bestSplit = i;
+    }
+  }
+
+  if (totalWidth <= profile.maxWidth) {
+    const singleLineScore = (totalWidth - profile.targetWidth) * 4.0;
+    if (bestSplit <= 0 || singleLineScore <= bestScore) {
+      return normalized;
     }
   }
 

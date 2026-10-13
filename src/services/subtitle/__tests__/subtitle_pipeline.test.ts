@@ -10,6 +10,7 @@ import {
 } from "../protectedSpans";
 import {
   splitLongSentenceIntoClauses,
+  wrapCueTextBalanced,
 } from "../candidates";
 import { getSubtitleProfile } from "../profiles";
 import { validateSubtitles } from "../validator";
@@ -369,5 +370,76 @@ describe("Subtitle SRT System Specification Tests (Sections 1 - 20)", () => {
       assert.ok(lines.length <= 2, `Cue #${cue.index} exceeds 2 lines: ${cue.text}`);
     }
   });
+
+  // 23. PROTECTED PRODUCT, BRAND, POLICY & NUMERIC SPANS (Section 7B)
+  it("Test 23: Tesla Powerwall 3, NEM 3.0, Tesla Model 3, 1.55 kilowatt hours, 8,300 pounds, $290,000 stay intact", () => {
+    const sample =
+      "Homeowners using the Tesla Powerwall 3 under NEM 3.0 or driving a Tesla Model 3 use 1.55 kilowatt hours, haul 8,300 pounds, and save $290,000.";
+    const spans = findProtectedSpans(sample);
+    for (const expected of [
+      "Tesla Powerwall 3",
+      "NEM 3.0",
+      "Tesla Model 3",
+      "1.55 kilowatt hours",
+      "8,300 pounds",
+      "$290,000",
+    ]) {
+      assert.ok(
+        spans.some((s) => s.raw === expected),
+        `Expected "${expected}" to be detected as a protected span`
+      );
+    }
+
+    const cues = generateSubtitlesFromText(sample, { aspectRatio: "16:9", maxLines: 2 });
+    const allLines = cues.flatMap((c) => c.text.split("\n"));
+    for (const expected of [
+      "Tesla Powerwall 3",
+      "NEM 3.0",
+      "Tesla Model 3",
+      "1.55 kilowatt hours",
+      "8,300 pounds",
+      "$290,000",
+    ]) {
+      assert.ok(
+        allLines.some((line) => line.includes(expected)),
+        `Expected "${expected}" intact on a single line, got lines: ${JSON.stringify(allLines)}`
+      );
+    }
+    assert.equal(validateSubtitles(cues, sample).valid, true);
+  });
+
+  // 24. COORDINATE NOUN PHRASE VS CLAUSE CONJUNCTION (EN & VI)
+  it("Test 24: Coordinate noun phrases (vegetables and eggs / rau và trứng) are not split at conjunction", () => {
+    const enNoun = "I bought vegetables and eggs.";
+    const cuesEnNoun = generateSubtitlesFromText(enNoun, { aspectRatio: "16:9", maxLines: 2 });
+    assert.equal(cuesEnNoun.length, 1);
+    assert.ok(cuesEnNoun[0].text.includes("vegetables and eggs."));
+
+    const viNoun = "Tôi mua rau và trứng.";
+    const cuesViNoun = generateSubtitlesFromText(viNoun, { aspectRatio: "16:9", maxLines: 2 });
+    assert.equal(cuesViNoun.length, 1);
+    assert.ok(cuesViNoun[0].text.includes("rau và trứng."));
+
+    const enClause = "I went shopping at the local market and then I went home.";
+    const clausesEn = splitLongSentenceIntoClauses(enClause, profile9_16);
+    assert.ok(clausesEn.length >= 2);
+    assert.ok(clausesEn.some((c) => c.startsWith("and then")));
+
+    const viClause = "Tôi đi chợ mua thực phẩm buổi sáng và sau đó tôi đi về.";
+    const clausesVi = splitLongSentenceIntoClauses(viClause, profile9_16);
+    assert.ok(clausesVi.length >= 2);
+    assert.ok(clausesVi.some((c) => c.startsWith("và sau đó")));
+  });
+
+  // 25. SEMANTIC LINE BALANCING (Cue 4: For millions of Americans / and Europeans, & Cue 118: your Powerwall 3 / can automatically discharge)
+  it("Test 25: Semantic line balancing keeps 'millions of' and 'Powerwall 3' together across 2 balanced lines", () => {
+    const profile16_9_2 = getSubtitleProfile("16:9", 2);
+    const wrappedCue4 = wrapCueTextBalanced("For millions of Americans and Europeans,", profile16_9_2);
+    assert.equal(wrappedCue4, "For millions of Americans\nand Europeans,");
+
+    const wrappedCue118 = wrapCueTextBalanced("your Powerwall 3 can automatically discharge", profile16_9_2);
+    assert.equal(wrappedCue118, "your Powerwall 3\ncan automatically discharge");
+  });
 });
+
 

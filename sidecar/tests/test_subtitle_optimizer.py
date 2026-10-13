@@ -185,6 +185,179 @@ class SubtitleOptimizerTest(unittest.TestCase):
         self.assertFalse(report["export_allowed"])
         self.assertTrue(any(err["code"] == "CHUNK_COPY_DETECTED" for err in report["fatal_errors"]))
 
+    def test_protected_product_and_policy_designators_never_split(self):
+        cases = [
+            (
+                "When the grid goes down, your Powerwall 3 can automatically discharge to power your home.",
+                "Powerwall 3",
+            ),
+            (
+                "A battery like the Powerwall 3 is ultimately just a storage tank; it cannot lower your bills alone.",
+                "Powerwall 3",
+            ),
+            (
+                "In California, the introduction of a policy called NEM 3.0 dramatically slashed the credit value.",
+                "NEM 3.0",
+            ),
+            (
+                "Can the Tesla Powerwall 3 actually end your electric bills forever?",
+                "Tesla Powerwall 3",
+            ),
+            (
+                "Homeowners driving a Tesla Model 3 can charge directly from solar.",
+                "Tesla Model 3",
+            ),
+        ]
+        for sentence, entity in cases:
+            with self.subTest(entity=entity):
+                report = {}
+                cues = optimize_subtitles_v2(
+                    [_make_segment(sentence)],
+                    video_format="16:9",
+                    max_lines=2,
+                    debug_validation_report=report,
+                )
+                self.assertTrue(report["export_allowed"])
+                # Entity must appear intact on a single line of a single cue
+                all_lines = [line for c in cues for line in c["text"].splitlines()]
+                self.assertTrue(
+                    any(entity in line for line in all_lines),
+                    f"Expected '{entity}' intact on a single line, got lines: {all_lines}",
+                )
+
+    def test_protected_numbers_units_and_currencies_intact(self):
+        sentence = (
+            "The truck uses 1.55 kilowatt hours per mile, weighs 8,300 pounds empty, "
+            "and costs $290,000 upfront."
+        )
+        # Simulate BPE split on "$290" + ",000" and "8" + ",300"
+        seg = _make_segment(sentence)
+        report = {}
+        cues = optimize_subtitles_v2(
+            [seg],
+            video_format="16:9",
+            max_lines=2,
+            debug_validation_report=report,
+        )
+        self.assertTrue(report["export_allowed"])
+        all_lines = [line for c in cues for line in c["text"].splitlines()]
+        self.assertTrue(any("1.55 kilowatt hours" in line for line in all_lines))
+        self.assertTrue(any("8,300 pounds" in line for line in all_lines))
+        self.assertTrue(any("$290,000" in line for line in all_lines))
+
+    def test_coordinate_noun_phrase_vs_clause_conjunction_en_and_vi(self):
+        # 1. "I bought vegetables and eggs." -> must NOT split cue at "and"
+        cues_np_en = optimize_subtitles_v2([_make_segment("I bought vegetables and eggs.")])
+        self.assertEqual(len(cues_np_en), 1)
+        self.assertIn("vegetables and eggs.", cues_np_en[0]["text"])
+
+        # 2. "I went shopping and then I went home." -> CAN split at "and" when long enough
+        long_clause_en = (
+            "I went shopping at the local market this morning and then I went home to cook dinner."
+        )
+        cues_cl_en = optimize_subtitles_v2([_make_segment(long_clause_en)])
+        self.assertGreaterEqual(len(cues_cl_en), 2)
+        self.assertTrue(any(c["text"].startswith("and then") for c in cues_cl_en))
+
+        # 3. "Tôi mua rau và trứng." -> must NOT split cue at "và"
+        cues_np_vi = optimize_subtitles_v2([_make_segment("Tôi mua rau và trứng.")], language="vi")
+        self.assertEqual(len(cues_np_vi), 1)
+        self.assertIn("rau và trứng.", cues_np_vi[0]["text"])
+
+        # 4. "Tôi đi chợ và sau đó tôi đi về." -> CAN split at "và" when clauses are long
+        long_clause_vi = (
+            "Tôi đi chợ mua thực phẩm vào buổi sáng và sau đó tôi đi về nhà nấu bữa tối."
+        )
+        cues_cl_vi = optimize_subtitles_v2([_make_segment(long_clause_vi)], language="vi")
+        self.assertGreaterEqual(len(cues_cl_vi), 2)
+        self.assertTrue(any(c["text"].startswith("và sau đó") for c in cues_cl_vi))
+
+    def test_semantic_line_balancing_cue_4_and_subordinate_that_it_depends(self):
+        # Cue 4: "For millions of Americans and Europeans," -> "For millions of Americans\nand Europeans,"
+        cues_4 = optimize_subtitles_v2(
+            [_make_segment("For millions of Americans and Europeans,")],
+            video_format="16:9",
+            max_lines=2,
+        )
+        self.assertEqual(len(cues_4), 1)
+        self.assertEqual(cues_4[0]["text"], "For millions of Americans\nand Europeans,")
+
+        # Cue 423-424: "The honest answer is that it depends entirely on who you are and where you live."
+        cues_dep = optimize_subtitles_v2(
+            [_make_segment("The honest answer is that it depends entirely on who you are and where you live.")],
+            video_format="16:9",
+            max_lines=2,
+        )
+        self.assertTrue(any("that it depends" in c["text"] for c in cues_dep))
+
+    def test_asr_hallucination_verification_requires_acoustic_silence(self):
+        import tempfile
+        import wave
+
+        seg1 = {
+            "id": 1,
+            "startSec": 27.34,
+            "endSec": 29.00,
+            "text": "a quiet rebellion is happening.",
+            "words": [
+                {"word": "a", "startSec": 27.34, "endSec": 27.50, "probability": 0.99},
+                {"word": "quiet", "startSec": 27.50, "endSec": 27.88, "probability": 0.99},
+                {"word": "rebellion", "startSec": 27.88, "endSec": 28.36, "probability": 0.99},
+                {"word": "is", "startSec": 28.36, "endSec": 28.52, "probability": 0.99},
+                {"word": "happening.", "startSec": 28.52, "endSec": 29.00, "probability": 0.99},
+            ],
+        }
+        seg2 = {
+            "id": 2,
+            "startSec": 29.00,
+            "endSec": 31.20,
+            "text": "It's happening. Homeowners are seeing changes.",
+            "words": [
+                {"word": "It's", "startSec": 29.00, "endSec": 29.06, "probability": 0.41},
+                {"word": "happening.", "startSec": 29.06, "endSec": 29.06, "probability": 0.0034},
+                {"word": "Homeowners", "startSec": 29.36, "endSec": 29.96, "probability": 0.98},
+                {"word": "are", "startSec": 29.96, "endSec": 30.20, "probability": 0.99},
+                {"word": "seeing", "startSec": 30.20, "endSec": 30.60, "probability": 0.99},
+                {"word": "changes.", "startSec": 30.60, "endSec": 31.20, "probability": 0.99},
+            ],
+        }
+
+        # Case A: Without WAV file -> must NOT delete "It's happening.", must flag as kept_unverified
+        report_no_wav = {}
+        cues_no_wav = optimize_subtitles_v2(
+            [seg1, seg2],
+            wav_path=None,
+            debug_validation_report=report_no_wav,
+        )
+        records_no_wav = report_no_wav["checks"]["asr_hallucinations"]["records"]
+        self.assertEqual(len(records_no_wav), 1)
+        self.assertFalse(records_no_wav[0]["verified_silent_hallucination"])
+        self.assertEqual(records_no_wav[0]["action"], "kept_unverified")
+        self.assertTrue(any("It's happening." in c["text"] for c in cues_no_wav))
+
+        # Case B: With silent WAV file -> verified silent hallucination is removed
+        with tempfile.TemporaryDirectory() as tmpdir:
+            silent_wav = os.path.join(tmpdir, "silent.wav")
+            sr = 16000
+            with wave.open(silent_wav, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(b"\x00\x00" * (sr * 32))
+
+            report_wav = {}
+            cues_wav = optimize_subtitles_v2(
+                [seg1, seg2],
+                wav_path=silent_wav,
+                debug_validation_report=report_wav,
+            )
+            records_wav = report_wav["checks"]["asr_hallucinations"]["records"]
+            self.assertEqual(len(records_wav), 1)
+            self.assertTrue(records_wav[0]["verified_silent_hallucination"])
+            self.assertEqual(records_wav[0]["action"], "removed")
+            self.assertFalse(any("It's happening." in c["text"] for c in cues_wav))
+
 
 if __name__ == "__main__":
     unittest.main()
+
