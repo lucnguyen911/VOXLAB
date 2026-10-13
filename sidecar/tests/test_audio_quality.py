@@ -1381,6 +1381,145 @@ class AudioQualityTest(unittest.TestCase):
             f"Expected unverified status when ambiguous without model, got: {issues}",
         )
 
+    def test_phase_a_number_currency_range_unit_equivalences_no_false_warnings(self):
+        """Phase A mandatory equivalences: BPE-split thousands, ranges, currency, units, spoken digits, possessives."""
+        cases = [
+            (
+                "Up to eighty two thousand pounds",
+                [
+                    {"word": "Up", "startSec": 0.1, "endSec": 0.25, "probability": 0.99},
+                    {"word": "to", "startSec": 0.26, "endSec": 0.35, "probability": 0.99},
+                    {"word": "82", "startSec": 0.40, "endSec": 0.70, "probability": 0.99},
+                    {"word": ",000", "startSec": 0.72, "endSec": 1.05, "probability": 0.99},
+                    {"word": "pounds", "startSec": 1.10, "endSec": 1.45, "probability": 0.99},
+                ],
+            ),
+            (
+                "About two thousand eight hundred cycles",
+                [
+                    {"word": "About", "startSec": 0.1, "endSec": 0.35, "probability": 0.99},
+                    {"word": "2", "startSec": 0.40, "endSec": 0.60, "probability": 0.99},
+                    {"word": ",800", "startSec": 0.62, "endSec": 0.95, "probability": 0.99},
+                    {"word": "cycles", "startSec": 1.00, "endSec": 1.40, "probability": 0.99},
+                ],
+            ),
+            (
+                "Delivering seven to eight thousand units",
+                [
+                    {"word": "Delivering", "startSec": 0.1, "endSec": 0.5, "probability": 0.99},
+                    {"word": "7", "startSec": 0.55, "endSec": 0.70, "probability": 0.99},
+                    {"word": ",000", "startSec": 0.72, "endSec": 0.90, "probability": 0.99},
+                    {"word": "to", "startSec": 0.92, "endSec": 1.05, "probability": 0.99},
+                    {"word": "8", "startSec": 1.08, "endSec": 1.25, "probability": 0.99},
+                    {"word": ",000", "startSec": 1.27, "endSec": 1.55, "probability": 0.99},
+                    {"word": "units", "startSec": 1.60, "endSec": 1.95, "probability": 0.99},
+                ],
+            ),
+            (
+                "Slashes energy costs by sixty to seventy percent",
+                [
+                    {"word": "Slashes", "startSec": 0.1, "endSec": 0.4, "probability": 0.99},
+                    {"word": "energy", "startSec": 0.45, "endSec": 0.75, "probability": 0.99},
+                    {"word": "costs", "startSec": 0.80, "endSec": 1.05, "probability": 0.99},
+                    {"word": "by", "startSec": 1.08, "endSec": 1.20, "probability": 0.99},
+                    {"word": "60", "startSec": 1.25, "endSec": 1.55, "probability": 0.99},
+                    {"word": "-70", "startSec": 1.60, "endSec": 1.95, "probability": 0.99},
+                    {"word": "%", "startSec": 1.98, "endSec": 2.30, "probability": 0.99},
+                ],
+            ),
+            (
+                "Over seven hundred and seventy million miles",
+                [
+                    {"word": "Over", "startSec": 0.1, "endSec": 0.35, "probability": 0.99},
+                    {"word": "770", "startSec": 0.40, "endSec": 0.95, "probability": 0.99},
+                    {"word": "million", "startSec": 0.98, "endSec": 1.35, "probability": 0.99},
+                    {"word": "miles", "startSec": 1.40, "endSec": 1.75, "probability": 0.99},
+                ],
+            ),
+            (
+                "Priced at two hundred and ninety thousand dollars",
+                [
+                    {"word": "Priced", "startSec": 0.1, "endSec": 0.4, "probability": 0.99},
+                    {"word": "at", "startSec": 0.42, "endSec": 0.55, "probability": 0.99},
+                    {"word": "$290", "startSec": 0.60, "endSec": 1.10, "probability": 0.99},
+                    {"word": ",000", "startSec": 1.12, "endSec": 1.50, "probability": 0.99},
+                ],
+            ),
+            (
+                "Multiply that by one point five five kilowatt hours per unit",
+                [
+                    {"word": "Multiply", "startSec": 0.1, "endSec": 0.45, "probability": 0.99},
+                    {"word": "that", "startSec": 0.48, "endSec": 0.65, "probability": 0.99},
+                    {"word": "by", "startSec": 0.68, "endSec": 0.80, "probability": 0.99},
+                    {"word": "1", "startSec": 0.85, "endSec": 1.05, "probability": 0.99},
+                    {"word": ".55", "startSec": 1.25, "endSec": 1.65, "probability": 0.99},
+                    {"word": "kWh", "startSec": 1.70, "endSec": 2.25, "probability": 0.99},
+                    {"word": "per", "startSec": 2.30, "endSec": 2.45, "probability": 0.99},
+                    {"word": "unit", "startSec": 2.50, "endSec": 2.85, "probability": 0.99},
+                ],
+            ),
+            (
+                "Built around the four six eight zero cell architecture",
+                [
+                    {"word": "Built", "startSec": 0.1, "endSec": 0.35, "probability": 0.99},
+                    {"word": "around", "startSec": 0.38, "endSec": 0.65, "probability": 0.99},
+                    {"word": "the", "startSec": 0.68, "endSec": 0.80, "probability": 0.99},
+                    {"word": "4680", "startSec": 0.85, "endSec": 1.65, "probability": 0.99},
+                    {"word": "cell", "startSec": 1.70, "endSec": 1.95, "probability": 0.99},
+                    {"word": "architecture", "startSec": 2.00, "endSec": 2.55, "probability": 0.99},
+                ],
+            ),
+            (
+                "Supply of Tesla's fifty thousand dollar trucks",
+                [
+                    {"word": "Supply", "startSec": 0.1, "endSec": 0.45, "probability": 0.99},
+                    {"word": "of", "startSec": 0.48, "endSec": 0.60, "probability": 0.99},
+                    {"word": "Tesla's", "startSec": 0.65, "endSec": 1.05, "probability": 0.99},
+                    {"word": "50", "startSec": 1.10, "endSec": 1.35, "probability": 0.99},
+                    {"word": ",000", "startSec": 1.38, "endSec": 1.70, "probability": 0.99},
+                    {"word": "trucks", "startSec": 1.75, "endSec": 2.15, "probability": 0.99},
+                ],
+            ),
+        ]
+        for text, mock_words in cases:
+            issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en")
+            self.assertEqual(len(issues), 0, f"Expected 0 issues for '{text}', got: {issues}")
+
+    def test_repeated_digit_numbers_55_88_no_false_stutter(self):
+        """Multi-digit numbers with repeated digits like '55' and '88' must never trigger intra-word stutter."""
+        sr = 24000
+        t_burst = np.arange(int(0.10 * sr)) / sr
+        burst = (0.35 * np.sin(2 * np.pi * 440 * t_burst)).astype(np.float32)
+        valley = np.zeros(int(0.05 * sr), dtype=np.float32)
+        audio = np.concatenate([np.zeros(int(0.1 * sr), dtype=np.float32), burst, valley, burst, np.zeros(int(0.1 * sr), dtype=np.float32)])
+
+        for num_str, phrase in [("55", "fifty five"), ("88", "eighty eight")]:
+            asr_words = [{"word": num_str, "startSec": 0.08, "endSec": 0.38, "probability": 0.99}]
+            stutters = audio_quality.detect_acoustic_stutter(audio, sr, text=phrase, asr_words=asr_words, language="en")
+            self.assertEqual(len(stutters), 0, f"Expected 0 stutter issues for '{num_str}', got: {stutters}")
+
+    def test_wrong_cardinal_number_8200_vs_8300_flagged(self):
+        """Wrong cardinal numbers (e.g. 8,300 spoken instead of 8,200) must flag SUSPECTED_MISPRONUNCIATION."""
+        text = "The total weight is eight thousand two hundred pounds"
+        mock_words = [
+            {"word": "The", "startSec": 0.1, "endSec": 0.25, "probability": 0.99},
+            {"word": "total", "startSec": 0.28, "endSec": 0.55, "probability": 0.99},
+            {"word": "weight", "startSec": 0.58, "endSec": 0.85, "probability": 0.99},
+            {"word": "is", "startSec": 0.88, "endSec": 1.00, "probability": 0.99},
+            {"word": "8", "startSec": 1.05, "endSec": 1.30, "probability": 0.99},
+            {"word": ",300", "startSec": 1.32, "endSec": 1.75, "probability": 0.99},
+            {"word": "pounds", "startSec": 1.80, "endSec": 2.20, "probability": 0.99},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en")
+        self.assertEqual(len(issues), 1, f"Expected 1 issue for 8200 vs 8300, got: {issues}")
+        self.assertEqual(issues[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+        self.assertIn("8200", issues[0]["words"])
+        self.assertIn("8300", issues[0]["words"])
+        self.assertTrue(issues[0].get("sourceExcerpt"))
+        self.assertTrue(issues[0].get("asrRawExcerpt"))
+        self.assertTrue(issues[0].get("asrNormalizedExcerpt"))
+        self.assertEqual(issues[0].get("tokenSource"), "primary_asr")
+
 
 if __name__ == "__main__":
     unittest.main()

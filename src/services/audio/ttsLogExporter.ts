@@ -133,6 +133,7 @@ export function generateTtsQualityLog(
     lines.push("Không phát hiện bất kỳ cảnh báo hoặc lỗi nào sau khi tạo TTS.");
     lines.push(`Toàn bộ ${chunks.length} đoạn âm thanh đều đạt chuẩn chất lượng.`);
   } else {
+    const isZeroBased = chunks.some((c) => c.index === 0);
     for (const chunk of problematicChunks) {
       lines.push("");
       const isErr = isChunkError(chunk) || chunk.status === "failed";
@@ -142,7 +143,8 @@ export function generateTtsQualityLog(
         ? "LỖI CHẤT LƯỢNG (ERROR)"
         : "CẢNH BÁO CHẤT LƯỢNG (WARNING)";
 
-      lines.push(`[ĐOẠN ${String(chunk.index + 1).padStart(2, "0")}] (ID: ${chunk.id})`);
+      const displayIdx = isZeroBased ? chunk.index + 1 : chunk.index;
+      lines.push(`[ĐOẠN ${String(displayIdx).padStart(2, "0")}] (ID: ${chunk.id})`);
       lines.push(`Trạng thái: ${statusLabel}`);
       lines.push(`Thời lượng: ${chunk.durationSec ? `${chunk.durationSec.toFixed(2)}s` : "Chưa có"}`);
 
@@ -159,6 +161,9 @@ export function generateTtsQualityLog(
 
       const review = chunk.qualityReview;
       if (review) {
+        if (review.asrModelId) {
+          lines.push(`Mô hình ASR hậu kiểm: ${review.asrModelId}`);
+        }
         if (review.summary) {
           lines.push(`Tóm tắt hậu kiểm: ${review.summary}`);
         }
@@ -177,6 +182,16 @@ export function generateTtsQualityLog(
             lines.push(`     • Mô tả: ${iss.message}`);
             if (iss.words && iss.words.length > 0) {
               lines.push(`     • Từ ngữ liên quan: '${iss.words.join("', '")}'`);
+            }
+            if (iss.sourceExcerpt || iss.asrRawExcerpt || iss.asrNormalizedExcerpt) {
+              lines.push(
+                `     • Đối chiếu: Kịch bản="${iss.sourceExcerpt || ""}" | ASR Raw="${iss.asrRawExcerpt || ""}" | ASR Norm="${iss.asrNormalizedExcerpt || ""}"`
+              );
+            }
+            if (iss.tokenSource || iss.asrModelId || iss.evidence) {
+              lines.push(
+                `     • Bằng chứng: Nguồn=${iss.tokenSource || "primary_asr"} | Model=${iss.asrModelId || review.asrModelId || "large-v3-turbo"}${iss.evidence ? ` | ${iss.evidence}` : ""}`
+              );
             }
           });
         }

@@ -31,11 +31,17 @@ export interface EffectiveVoiceSnapshot {
 export type AudioQualityStatus = "pass" | "warning" | "error" | "unverified" | "checking";
 
 export interface AudioQualityIssue {
-  severity: "error" | "warning";
+  severity: "error" | "warning" | "unverified";
   code: string;
   message: string;
   timeRange?: [number, number];
   words?: string[];
+  sourceExcerpt?: string;
+  asrRawExcerpt?: string;
+  asrNormalizedExcerpt?: string;
+  asrModelId?: string;
+  tokenSource?: "primary_asr" | "secondary_slice";
+  evidence?: string;
 }
 
 export interface AudioQualityMetrics {

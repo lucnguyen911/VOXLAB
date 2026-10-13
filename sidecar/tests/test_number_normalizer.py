@@ -188,6 +188,35 @@ class NumberNormalizerTest(unittest.TestCase):
         self.assertFalse(are_number_expressions_equivalent("13.5", "13.8"))
         self.assertFalse(are_number_expressions_equivalent("300", "500"))
 
+    def test_bpe_split_thousands_and_mixed_scales(self):
+        self.assertEqual([s.canonical for s in collapse_number_tokens(["82", ",000"], "en")], ["82000"])
+        self.assertEqual([s.canonical for s in collapse_number_tokens(["2", ",800"], "en")], ["2800"])
+        self.assertEqual([s.canonical for s in collapse_number_tokens(["15", "400"], "en")], ["15400"])
+        self.assertEqual([s.canonical for s in collapse_number_tokens(["100", "000"], "en")], ["100000"])
+        self.assertEqual([s.canonical for s in collapse_number_tokens(["$290", ",000"], "en")], ["290000"])
+        self.assertEqual([s.canonical for s in collapse_number_tokens(["770", "million"], "en")], ["770000000"])
+
+    def test_article_a_before_scale_and_spoken_digits(self):
+        self.assertEqual([s.canonical for s in collapse_number_tokens("a hundred thousand".split(), "en")], ["100000"])
+        self.assertEqual([s.canonical for s in collapse_number_tokens("four six eight zero".split(), "en")], ["4680"])
+        self.assertEqual([s.canonical for s in collapse_number_tokens("bốn sáu tám không".split(), "vi")], ["4680"])
+
+    def test_dash_ranges_shared_scale_ranges_and_units(self):
+        src_pct = [s.canonical for s in collapse_number_tokens("sixty to seventy percent".split(), "en")]
+        asr_pct = [s.canonical for s in collapse_number_tokens(["60", "-70", "%"], "en")]
+        self.assertEqual(src_pct, ["60", "to", "70%"])
+        self.assertEqual(asr_pct, ["60", "to", "70%"])
+
+        src_rng = [s.canonical for s in collapse_number_tokens("seven to eight thousand".split(), "en")]
+        asr_rng = [s.canonical for s in collapse_number_tokens(["7", ",000", "to", "8", ",000"], "en")]
+        self.assertEqual(src_rng, ["7000", "to", "8000"])
+        self.assertEqual(asr_rng, ["7000", "to", "8000"])
+
+        src_unit = [s.canonical for s in collapse_number_tokens("one point five five kilowatt hours".split(), "en")]
+        asr_unit = [s.canonical for s in collapse_number_tokens(["1.55", "kWh"], "en")]
+        self.assertEqual(src_unit, ["1.55", "kwh"])
+        self.assertEqual(asr_unit, ["1.55", "kwh"])
+
 
 if __name__ == "__main__":
     unittest.main()

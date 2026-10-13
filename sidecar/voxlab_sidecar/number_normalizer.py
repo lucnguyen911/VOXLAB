@@ -110,6 +110,11 @@ def normalize_digit_string(token: str) -> str:
     Preserves IP addresses, version numbers like '2.0', decimals '3.14'.
     """
     cleaned = clean_token(token)
+    if re.match(r"^[$€£¥₫]-?\d", cleaned):
+        cleaned = cleaned[1:]
+    elif re.search(r"\d[$€£¥₫]$", cleaned):
+        cleaned = cleaned[:-1]
+
     if is_ip_address(cleaned):
         return cleaned
 
@@ -118,23 +123,23 @@ def normalize_digit_string(token: str) -> str:
         return cleaned
 
     # Check comma-separated thousands: e.g. 1,000 or 10,000,000
-    if re.fullmatch(r"\d{1,3}(,\d{3})+", cleaned):
+    if re.fullmatch(r"-?\d{1,3}(,\d{3})+", cleaned):
         return cleaned.replace(",", "")
 
     # Dot-separated thousands in VN: e.g. 1.000 or 10.000.000 (3 digits per group)
-    if re.fullmatch(r"\d{1,3}(\.\d{3})+", cleaned):
+    if re.fullmatch(r"-?\d{1,3}(\.\d{3})+", cleaned):
         return cleaned.replace(".", "")
 
     # Decimals with comma: e.g. 0,8 or 13,5 or 3,14 (not thousands like 1,000 or 10,000)
-    if re.fullmatch(r"-?\d+,\d+", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+", cleaned):
+    if re.fullmatch(r"-?\d+,\d+%?", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+%?", cleaned):
         return cleaned.replace(",", ".")
 
     # Decimals: e.g. 3.14 or -3.14
     if re.fullmatch(r"-?\d+\.\d+", cleaned):
         return cleaned
 
-    # Percentages: e.g. 50%
-    if re.fullmatch(r"-?\d+%", cleaned):
+    # Percentages: e.g. 50% or 13.5%
+    if re.fullmatch(r"-?\d+(?:\.\d+)?%", cleaned):
         return cleaned
 
     # Ordinal digit format: e.g. 1st, 2nd, 3rd, 23rd, 28th
@@ -290,6 +295,30 @@ def parse_english_number_phrase(
                 year_str = str(c_val * 100 + y_val)
                 return year_str, offset + 1 + y_consumed
 
+    # 3b. Spoken digit-by-digit sequence: e.g. "four six eight zero" -> "4680"
+    en_single_digits = {
+        "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    }
+    if idx + 1 < n and clean_token(words[idx]) in en_single_digits:
+        digit_run: list[str] = []
+        d_idx = idx
+        while d_idx < n:
+            dw = clean_token(words[d_idx])
+            if dw not in en_single_digits:
+                break
+            if d_idx + 1 < n and not is_word_boundary(d_idx) and clean_token(words[d_idx + 1]) in (
+                "hundred", "thousand", "million", "billion", "point", "oclock", "o'clock"
+            ):
+                break
+            digit_run.append(en_single_digits[dw])
+            d_idx += 1
+            if is_word_boundary(d_idx - 1):
+                break
+        if len(digit_run) >= 2:
+            res = "".join(digit_run)
+            return f"-{res}" if is_neg else res, offset + len(digit_run)
+
     # 4. Standard Integer and Ordinal: hundreds, thousands, millions
     current = 0
     total = 0
@@ -301,7 +330,19 @@ def parse_english_number_phrase(
         w = clean_token(words[idx])
         hit_boundary = is_word_boundary(idx)
 
-        if w in EN_ONES:
+        if (
+            w == "a"
+            and idx == start_idx + offset
+            and not hit_boundary
+            and idx + 1 < n
+            and clean_token(words[idx + 1]) in ("hundred", "thousand", "million", "billion")
+        ):
+            current += 1
+            words_consumed += 1
+            valid_number_found = True
+            idx += 1
+            continue
+        elif w in EN_ONES:
             current += EN_ONES[w]
             words_consumed += 1
             valid_number_found = True
@@ -468,6 +509,28 @@ def parse_vietnamese_number_phrase(
             if m_str is not None and m_str.isdigit() and 0 <= int(m_str) <= 59:
                 return f"{h_val}:{int(m_str):02d}", offset + 2 + m_consumed
 
+    # 2b. Spoken digit-by-digit sequence in Vietnamese: e.g. "bốn sáu tám không" -> "4680"
+    if idx + 1 < n and clean_token(words[idx]) in VI_ONES:
+        digit_run_vi: list[str] = []
+        d_idx = idx
+        while d_idx < n:
+            dw = clean_token(words[d_idx])
+            if dw not in VI_ONES:
+                break
+            if d_idx + 1 < n and not is_word_boundary(d_idx) and clean_token(words[d_idx + 1]) in (
+                "mươi", "muoi", "chục", "chuc", "trăm", "tram",
+                "nghìn", "nghin", "ngàn", "ngan", "triệu", "trieu",
+                "tỷ", "ty", "giờ", "gio", "phẩy", "phay", "chấm", "cham"
+            ):
+                break
+            digit_run_vi.append(str(VI_ONES[dw]))
+            d_idx += 1
+            if is_word_boundary(d_idx - 1):
+                break
+        if len(digit_run_vi) >= 2:
+            res = "".join(digit_run_vi)
+            return f"-{res}" if is_neg else res, offset + len(digit_run_vi)
+
     # 3. Standard Integer: trăm, nghìn, triệu, tỷ
     current = 0
     total = 0
@@ -608,6 +671,24 @@ def parse_vietnamese_number_phrase(
     return None, 0
 
 
+ALL_SCALES = {**EN_SCALES, **VI_SCALES}
+
+MULTI_WORD_UNIT_MAP = {
+    "kilowatt": "kwh",
+    "megawatt": "mwh",
+    "gigawatt": "gwh",
+}
+
+HYPHENATED_UNIT_MAP = {
+    "kilowatt-hour": "kwh",
+    "kilowatt-hours": "kwh",
+    "megawatt-hour": "mwh",
+    "megawatt-hours": "mwh",
+    "gigawatt-hour": "gwh",
+    "gigawatt-hours": "gwh",
+}
+
+
 def collapse_number_tokens(
     words: list[str],
     language: str | None = None,
@@ -622,20 +703,116 @@ def collapse_number_tokens(
 
     is_vi = language and language.startswith("vi")
 
+    def consume_trailing_modifiers() -> None:
+        nonlocal idx
+        while idx < n and spans and spans[-1].is_number:
+            next_c = clean_token(words[idx])
+            if next_c in ("percent", "%") and not spans[-1].canonical.endswith("%"):
+                spans[-1] = NormalizedSpan(
+                    canonical=f"{spans[-1].canonical}%",
+                    orig_start=spans[-1].orig_start,
+                    orig_end=idx + 1,
+                    is_number=True,
+                )
+                idx += 1
+            elif next_c in ("dollar", "dollars", "usd"):
+                spans[-1] = NormalizedSpan(
+                    canonical=spans[-1].canonical,
+                    orig_start=spans[-1].orig_start,
+                    orig_end=idx + 1,
+                    is_number=True,
+                )
+                idx += 1
+            else:
+                break
+
     while idx < n:
         raw_w = words[idx]
         cleaned = clean_token(raw_w)
 
+        # Multi-word energy units: "kilowatt hours" -> "kwh"
+        if cleaned in MULTI_WORD_UNIT_MAP and idx + 1 < n and clean_token(words[idx + 1]) in ("hour", "hours"):
+            spans.append(NormalizedSpan(
+                canonical=MULTI_WORD_UNIT_MAP[cleaned],
+                orig_start=idx,
+                orig_end=idx + 2,
+                is_number=False,
+            ))
+            idx += 2
+            continue
+
+        if cleaned in HYPHENATED_UNIT_MAP:
+            spans.append(NormalizedSpan(
+                canonical=HYPHENATED_UNIT_MAP[cleaned],
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            idx += 1
+            continue
+
+        # Dash range token immediately following a number span (e.g. ["60", "-70", "%"] -> "60", "to", "70%")
+        if spans and spans[-1].is_number and re.match(r"^[-–]\d", raw_w.strip()):
+            spans.append(NormalizedSpan(
+                canonical="to",
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            raw_w = raw_w.strip().lstrip("-–")
+            cleaned = clean_token(raw_w)
+
         # Check if already a numeric token (e.g. '300', '1,000', '3.14', '127.0.0.1', '23rd')
         norm_digit = normalize_digit_string(raw_w)
         if norm_digit != cleaned or re.search(r"\d", cleaned):
+            end_idx = idx + 1
+            combined_digit = norm_digit
+            is_leading_dot_frac = raw_w.strip().startswith(".")
+
+            # Merge BPE-split thousands/3-digit groups (e.g. ["82", ",000"], ["15", "400"], ["$290", ",000"])
+            if not is_leading_dot_frac and re.fullmatch(r"-?\d{1,3}", combined_digit):
+                while end_idx < n:
+                    prev_raw = words[end_idx - 1].strip()
+                    next_raw = words[end_idx].strip()
+                    next_clean = clean_token(next_raw)
+                    has_delim_punct = (
+                        delimiters is not None
+                        and end_idx < len(delimiters)
+                        and any(c in ",;:.!?—–()[]\n\r" for c in delimiters[end_idx])
+                    ) or has_trailing_boundary(prev_raw)
+
+                    if re.match(r"^,\d{3}(?:[,.;:!?)]|$)", next_raw) and re.fullmatch(r"\d{3}", next_clean):
+                        combined_digit = combined_digit + next_clean
+                        end_idx += 1
+                    elif not has_delim_punct and (
+                        (next_clean == "000" and re.fullmatch(r"-?\d{1,3}", combined_digit))
+                        or (re.fullmatch(r"[1-9]00", next_clean) and re.fullmatch(r"-?\d{1,2}", combined_digit))
+                    ):
+                        combined_digit = combined_digit + next_clean
+                        end_idx += 1
+                    else:
+                        break
+
+            # Combine integer digit token with immediately following scale word (e.g. ["770", "million"] -> "770000000")
+            if (
+                not is_leading_dot_frac
+                and end_idx < n
+                and not has_trailing_boundary(words[end_idx - 1])
+                and re.fullmatch(r"-?\d+", combined_digit)
+            ):
+                scale_w = clean_token(words[end_idx])
+                if scale_w in ALL_SCALES and scale_w not in ("hundred", "trăm", "tram"):
+                    combined_digit = str(int(combined_digit) * ALL_SCALES[scale_w])
+                    end_idx += 1
+
             spans.append(NormalizedSpan(
-                canonical=norm_digit,
+                canonical=combined_digit,
                 orig_start=idx,
-                orig_end=idx + 1,
+                orig_end=end_idx,
                 is_number=True,
             ))
-            idx += 1
+            idx = end_idx
+            consume_trailing_modifiers()
             continue
 
         # Check hyphenated compound numbers (e.g. 'twenty-third', 'sixty-nine', 'fifty-five')
@@ -655,6 +832,7 @@ def collapse_number_tokens(
                         is_number=True,
                     ))
                     idx += 1
+                    consume_trailing_modifiers()
                     continue
 
         # Try parsing multi-word number phrase
@@ -676,6 +854,7 @@ def collapse_number_tokens(
                 is_number=True,
             ))
             idx += consumed
+            consume_trailing_modifiers()
         else:
             # Regular word
             spans.append(NormalizedSpan(
@@ -685,6 +864,33 @@ def collapse_number_tokens(
                 is_number=False,
             ))
             idx += 1
+
+    # Shared-scale range normalization: e.g. "seven to eight thousand" -> ["7000", "to", "8000"]
+    for k in range(len(spans) - 2):
+        s1, s_mid, s2 = spans[k], spans[k + 1], spans[k + 2]
+        if (
+            s1.is_number
+            and not s_mid.is_number
+            and s_mid.canonical in ("to", "or", "đến", "den", "tới", "toi")
+            and s2.is_number
+            and re.fullmatch(r"\d+", s1.canonical)
+            and re.fullmatch(r"\d+", s2.canonical)
+        ):
+            v1 = int(s1.canonical)
+            v2 = int(s2.canonical)
+            s2_words_clean = [clean_token(w) for w in words[s2.orig_start : s2.orig_end]]
+            s1_words_clean = [clean_token(w) for w in words[s1.orig_start : s1.orig_end]]
+            s2_scale = next((ALL_SCALES[w] for w in reversed(s2_words_clean) if w in ALL_SCALES), None)
+            s1_has_scale = any(w in ALL_SCALES for w in s1_words_clean)
+            if s2_scale and not s1_has_scale and v2 >= s2_scale and v2 % s2_scale == 0:
+                v2_unscaled = v2 // s2_scale
+                if 1 <= v1 < v2_unscaled:
+                    spans[k] = NormalizedSpan(
+                        canonical=str(v1 * s2_scale),
+                        orig_start=s1.orig_start,
+                        orig_end=s1.orig_end,
+                        is_number=True,
+                    )
 
     return spans
 

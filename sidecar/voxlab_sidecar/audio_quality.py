@@ -243,6 +243,8 @@ def are_words_equivalent(w1: str, w2: str) -> bool:
     # Loanwords and domain equivalents
     w1_clean = clean_word(w1)
     w2_clean = clean_word(w2)
+    if w1_clean and w1_clean == w2_clean:
+        return True
     w1_strip = strip_diacritics(w1)
     w2_strip = strip_diacritics(w2)
     for root, equivs in COMMON_EQUIVALENTS.items():
@@ -364,7 +366,7 @@ def validate_audio_file(audio_path: str, expected_text: str | None = None) -> tu
 
 
 TOKEN_PATTERN = re.compile(
-    r"(?:\d+(?:[.,:]\d+)+|[\w\u00C0-\u1EF9]+(?:-[\w\u00C0-\u1EF9]+)*)"
+    r"(?:\d+(?:[.,:]\d+)+|[\w\u00C0-\u1EF9]+(?:[-'’][\w\u00C0-\u1EF9]+)*)"
 )
 
 
@@ -969,6 +971,33 @@ def analyze_word_alignment_issues(
                             })
                             continue
 
+                # Wrong integer / cardinal number detection (e.g. '8,200' vs '8,300', '300' vs '50')
+                if s_span.is_number and (a_j2 - a_j1) == 1 and asr_spans[a_j1].is_number:
+                    a_span_num = asr_spans[a_j1]
+                    if not are_number_expressions_equivalent(s_span.canonical, a_span_num.canonical, language):
+                        # Check if ASR number is a partial prefix/subset of multi-word source number (e.g. 'three hundred' -> 'three', 'fifty five' -> '50')
+                        is_partial_swallowed = False
+                        if (i2 - i1) >= 2:
+                            for sub_end in range(i1 + 1, i2):
+                                sub_spans = collapse_number_tokens(source_words[i1:sub_end], language)
+                                if len(sub_spans) == 1 and sub_spans[0].is_number and are_number_expressions_equivalent(
+                                    sub_spans[0].canonical, a_span_num.canonical, language
+                                ):
+                                    is_partial_swallowed = True
+                                    break
+                        if not is_partial_swallowed:
+                            t_start_w = float(asr_words[j1].get("startSec", 0.0)) if j1 < len(asr_words) else 0.0
+                            t_end_w = float(asr_words[min(len(asr_words) - 1, j2 - 1)].get("endSec", 0.0)) if asr_words else 0.0
+                            ts = format_timestamp(t_start_w)
+                            issues.append({
+                                "severity": "warning",
+                                "code": "SUSPECTED_MISPRONUNCIATION",
+                                "message": f"Nghi vấn đọc sai số '{s_span.canonical}' (ASR ghi nhận '{a_span_num.canonical}') — khoảng {ts}. Vui lòng nghe lại.",
+                                "words": [s_span.canonical, a_span_num.canonical],
+                                "timeRange": [round(t_start_w, 3), round(t_end_w, 3)],
+                            })
+                            continue
+
             src_slice_clean = [source_words_clean[k] for k in range(i1, i2)]
             asr_slice_clean = [asr_words_clean[k] for k in range(j1, j2)]
 
@@ -1200,6 +1229,18 @@ def analyze_word_alignment_issues(
             if any(c in PUNCTUATION_CHARS for c in raw_w1) or any(c in PUNCTUATION_CHARS for c in raw_w2):
                 is_natural_pause = True
 
+        # Participial clause opener allowance (e.g. "stations, guided by lasers")
+        if not is_natural_pause:
+            raw_w1 = w1.get("word", "").strip()
+            next_after_w2 = clean_word(asr_words[i + 2].get("word", "")) if (i + 2 < len(asr_words)) else ""
+            if (
+                raw_w1.endswith(",")
+                and gap < conjunction_threshold
+                and (w2_text.endswith("ed") or w2_text.endswith("ing"))
+                and next_after_w2 in ("by", "in", "with", "to", "from", "for", "on", "at")
+            ):
+                is_natural_pause = True
+
         # Tier 2: Check waveform acoustic silence if audio waveform is provided
         if not is_natural_pause and audio_data is not None and sample_rate > 0:
             s1 = int(round(end1 * sample_rate))
@@ -1211,11 +1252,11 @@ def analyze_word_alignment_issues(
                 if n_f > 0:
                     sil_count = sum(
                         1 for k in range(n_f)
-                        if np.sqrt(np.mean(slice_gap[k * frame_sz : (k + 1) * frame_sz] ** 2)) < 0.015
+                        if np.sqrt(np.mean(slice_gap[k * frame_sz : (k + 1) * frame_sz] ** 2)) < 0.012
                     )
                     actual_silence_sec = sil_count * 0.02
-                    # If actual acoustic silence is less than 0.35s, it is consonant transition / speech tail
-                    if actual_silence_sec < 0.35:
+                    # Only flag abnormal pause if actual acoustic silence meets effective_min_pause
+                    if actual_silence_sec < effective_min_pause:
                         is_natural_pause = True
 
         if not is_natural_pause:
@@ -1230,6 +1271,31 @@ def analyze_word_alignment_issues(
                 "words": [w1_text, w2_text],
                 "timeRange": [round(end1, 3), round(start2, 3)],
             })
+
+    # Enrich all alignment issues with diagnostic metadata for UI and TTS log export
+    for iss in issues:
+        tr = iss.get("timeRange", [0.0, 0.0])
+        t0 = float(tr[0]) if tr else 0.0
+        t1 = float(tr[1]) if len(tr) > 1 else t0
+        overlapping_asr = [
+            w for w in asr_words
+            if float(w.get("endSec", 0.0)) >= (t0 - 0.15) and float(w.get("startSec", 0.0)) <= (t1 + 0.15)
+        ]
+        if not overlapping_asr and asr_words:
+            overlapping_asr = [min(asr_words, key=lambda w: abs(float(w.get("startSec", 0.0)) - t0))]
+        raw_excerpt = " ".join(w.get("word", "").strip() for w in overlapping_asr).strip()
+        norm_spans = collapse_number_tokens([w.get("word", "") for w in overlapping_asr], language) if overlapping_asr else []
+        norm_excerpt = " ".join(s.canonical for s in norm_spans).strip()
+        tok_source = (
+            "secondary_slice"
+            if any(w.get("tokenSource") == "secondary_slice" for w in overlapping_asr)
+            else "primary_asr"
+        )
+        iss.setdefault("sourceExcerpt", " ".join(iss.get("words", [])) or text[:80])
+        iss.setdefault("asrRawExcerpt", raw_excerpt)
+        iss.setdefault("asrNormalizedExcerpt", norm_excerpt)
+        iss.setdefault("tokenSource", tok_source)
+        iss.setdefault("evidence", f"code={iss.get('code')} time={t0:.2f}-{t1:.2f}s source={tok_source}")
 
     return (issues, metrics) if return_metrics else issues
 
@@ -1451,14 +1517,15 @@ def detect_acoustic_stutter(
             elif w_idx1 is not None and w_idx2 is not None and w_idx1 == w_idx2:
                 word_clean = clean_word(asr_words[w_idx1].get("word", ""))
                 word_raw = asr_words[w_idx1].get("word", "").strip()
-                if word_clean in intentional_repeats:
+                # Never treat multi-digit numbers (e.g. "55", "88") as intra-word syllable stutters
+                if word_clean in intentional_repeats or re.search(r"\d", word_clean):
                     continue
                 # Multisyllabic words (e.g. "children", "over") naturally contain multiple syllable
                 # bursts and consonant dips. Spectral similarity alone between normal syllables does NOT
                 # constitute stuttering without corroborating textual/lexical repetition evidence.
                 is_stutter_text = bool(
-                    re.search(r"(\b\w{1,4})[-_]\1", word_raw, re.IGNORECASE)
-                    or re.search(r"^(\w{1,3})\1+", word_clean)
+                    re.search(r"(\b[a-zA-Z\u00C0-\u1EF9]{1,4})[-_]\1", word_raw, re.IGNORECASE)
+                    or re.search(r"^([a-zA-Z\u00C0-\u1EF9]{1,3})\1+", word_clean)
                 )
                 # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
                 if is_stutter_text and cos_sim >= 0.90 and min_gap_rms <= 0.20 * min_burst_peak:
@@ -1494,6 +1561,11 @@ def detect_acoustic_stutter(
                 "message": msg,
                 "words": [stutter_word] if stutter_word else [],
                 "timeRange": [t_start, t_end],
+                "sourceExcerpt": stutter_word,
+                "asrRawExcerpt": stutter_word,
+                "asrNormalizedExcerpt": stutter_word,
+                "tokenSource": "primary_asr",
+                "evidence": f"Acoustic burst cos_sim={cos_sim:.2f} valley={valley_sec:.2f}s",
             })
 
     return issues
@@ -1509,8 +1581,12 @@ def recover_unaligned_words(
     """Detects acoustic speech energy in gaps before first word or after last word
     (and very large middle pauses >= 1.2s) and runs targeted second-pass transcribe
     with vad_filter=False to recover unaligned spoken words (such as monosyllables like
-    'Eat' filtered by aggressive VAD). Includes strict hallucination filtering.
+    'Eat' filtered by aggressive VAD). Includes strict hallucination filtering and
+    acoustic word-completion tracking on the final word to avoid slicing mid-syllable.
     """
+    for w in detected_words:
+        w.setdefault("tokenSource", "primary_asr")
+
     if whisper_model is None or not detected_words or audio_duration_sec <= 0.3:
         return detected_words
 
@@ -1521,13 +1597,13 @@ def recover_unaligned_words(
     except Exception:
         return detected_words
 
-    candidate_gaps: list[tuple[float, float]] = []
+    candidate_gaps: list[tuple[float, float, bool]] = []
 
     # Leading gap before first word (e.g. 'Eat' prepended before main speech)
     # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
     first_start = float(detected_words[0].get("startSec", 0.0))
     if first_start >= 0.25:
-        candidate_gaps.append((0.0, first_start))
+        candidate_gaps.append((0.0, first_start, False))
 
     # Very large middle pauses (>= 1.2s) only (never slice normal phrase pauses)
     # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
@@ -1536,23 +1612,46 @@ def recover_unaligned_words(
         w_next_start = float(detected_words[i + 1].get("startSec", 0.0))
         gap = w_next_start - w_end
         if gap >= 1.20:
-            candidate_gaps.append((w_end, w_next_start))
+            candidate_gaps.append((w_end, w_next_start, False))
             if len(candidate_gaps) >= 2:
                 break
 
-    # Trailing gap after last word
-    # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+    # Trailing gap after last word: advance true_last_end across continuous vowel/syllable decay
+    # of detected_words[-1] (allowing intra-word stop closures < 0.12s) so we never slice mid-word!
     last_end = float(detected_words[-1].get("endSec", 0.0))
-    if audio_duration_sec - last_end >= 0.35:
-        candidate_gaps.append((last_end, audio_duration_sec))
+    true_last_end = last_end
+    if audio_duration_sec - last_end >= 0.30 and sr > 0:
+        frame_sz = max(1, int(round(0.02 * sr)))
+        scan_start = int(round(max(0.0, last_end - 0.02) * sr))
+        scan_limit = min(mono.size, int(round(min(audio_duration_sec, last_end + 0.65) * sr)))
+        silent_run = 0
+        last_active_sample = int(round(last_end * sr))
+        pos = scan_start
+        while pos + frame_sz <= scan_limit:
+            f_rms = float(np.sqrt(np.mean(mono[pos : pos + frame_sz] ** 2)))
+            if f_rms >= 0.015:
+                silent_run = 0
+                last_active_sample = pos + frame_sz
+            else:
+                silent_run += 1
+                if silent_run >= 6:  # 120ms continuous silence = true word completion boundary
+                    break
+            pos += frame_sz
+        true_last_end = max(last_end, round(last_active_sample / sr, 3))
+        if true_last_end > last_end:
+            detected_words[-1]["endSec"] = true_last_end
+
+    if audio_duration_sec - true_last_end >= 0.35:
+        candidate_gaps.append((true_last_end, audio_duration_sec, True))
 
     if not candidate_gaps:
         return detected_words
 
     additional_words: list[dict[str, Any]] = []
     import tempfile
+    last_word_clean = clean_word(detected_words[-1].get("word", ""))
 
-    for gap_start, gap_end in candidate_gaps:
+    for gap_start, gap_end, is_trailing in candidate_gaps:
         s_start = int(round(gap_start * sr))
         s_end = min(mono.size, int(round(gap_end * sr)))
         gap_dur = (s_end - s_start) / sr
@@ -1581,6 +1680,7 @@ def recover_unaligned_words(
                 )
                 slice_words = []
                 has_hallucination = False
+                min_prob = 0.80 if is_trailing else 0.70
                 for seg in seg_iter:
                     seg_text = seg.text or ""
                     if is_whisper_hallucination(seg_text):
@@ -1589,15 +1689,19 @@ def recover_unaligned_words(
                     if seg.words:
                         for w in seg.words:
                             w_txt = w.word.strip()
+                            w_cln = clean_word(w_txt)
                             if is_whisper_hallucination(w_txt):
                                 has_hallucination = True
                                 break
-                            if w_txt and clean_word(w_txt) and float(w.probability) >= 0.70:
+                            if is_trailing and w_cln == last_word_clean:
+                                continue
+                            if w_txt and w_cln and float(w.probability) >= min_prob:
                                 slice_words.append({
                                     "word": w.word,
                                     "startSec": round(gap_start + float(w.start), 3),
                                     "endSec": round(gap_start + float(w.end), 3),
                                     "probability": round(float(w.probability), 4),
+                                    "tokenSource": "secondary_slice",
                                 })
                 if not has_hallucination and slice_words:
                     additional_words.extend(slice_words)
@@ -1615,6 +1719,26 @@ def recover_unaligned_words(
 
     combined = sorted(detected_words + additional_words, key=lambda x: float(x.get("startSec", 0.0)))
     return combined
+
+
+def resolve_script_language(text: str, language: str | None) -> str | None:
+    """Resolves the effective language from script text to prevent mismatched voice profile defaults
+    (e.g. a cloned voice with default 'vi' reading an English script) from corrupting ASR & number normalization.
+    """
+    if not text or not text.strip():
+        return language
+    if re.search(
+        r"[ăâđêôơưĂÂĐÊÔƠƯàảãáạằẳẵắặầẩẫấậèẻẽéẹềểễếệìỉĩíịòỏõóọồổỗốộờởỡớợùủũúụừửữứựỳỷỹýỵ]",
+        text,
+        re.IGNORECASE,
+    ):
+        return "vi"
+    tokens = [clean_word(t) for t in text.split() if clean_word(t)]
+    if len(tokens) >= 4:
+        en_hits = sum(1 for t in tokens if t in EN_MINOR_STOPWORDS or t in {"you", "your", "over", "into", "across", "not", "have", "has", "their", "they", "more", "most", "every"})
+        if en_hits >= 2 or (en_hits / len(tokens)) >= 0.15:
+            return "en"
+    return language
 
 
 def validate_audio_quality(
@@ -1641,6 +1765,7 @@ def validate_audio_quality(
     }
     """
     checked_at = time.time()
+    eff_language = resolve_script_language(text, language)
     source_words, _ = tokenize_text_with_delimiters(text) if text else ([], [])
     n_src = len(source_words)
     eff_speed = float(speed) if (speed and float(speed) > 0) else 1.0
@@ -1726,7 +1851,7 @@ def validate_audio_quality(
         }
 
     try:
-        lang_code = None if not language or language == "auto" else language
+        lang_code = None if not eff_language or eff_language == "auto" else eff_language
         segments_iter, _ = whisper_model.transcribe(
             audio_path,
             language=lang_code,
@@ -1744,6 +1869,7 @@ def validate_audio_quality(
                         "startSec": round(float(w.start), 3),
                         "endSec": round(float(w.end), 3),
                         "probability": round(float(w.probability), 4),
+                        "tokenSource": "primary_asr",
                     })
 
         # If detected_words is empty with vad_filter=True, retry once with vad_filter=False
@@ -1764,6 +1890,7 @@ def validate_audio_quality(
                                 "startSec": round(float(w.start), 3),
                                 "endSec": round(float(w.end), 3),
                                 "probability": round(float(w.probability), 4),
+                                "tokenSource": "primary_asr",
                             })
             except Exception as e:
                 log(f"[audio_quality] retry transcribe error: {e}")
@@ -1802,7 +1929,7 @@ def validate_audio_quality(
             detected_words,
             dur,
             whisper_model,
-            language=language,
+            language=eff_language,
         )
 
         # Read audio waveform once for both alignment waveform checks and acoustic stutter check
@@ -1819,7 +1946,7 @@ def validate_audio_quality(
             text,
             detected_words,
             speed=speed,
-            language=language,
+            language=eff_language,
             audio_duration_sec=dur,
             return_metrics=True,
             audio_data=data_wave,
@@ -1831,7 +1958,7 @@ def validate_audio_quality(
         # Step 3: Acoustic Stutter Check (waveform + ASR corroboration)
         if data_wave is not None and sr_wave > 0:
             try:
-                acoustic_stutters = detect_acoustic_stutter(data_wave, sr_wave, text=text, asr_words=detected_words, language=language)
+                acoustic_stutters = detect_acoustic_stutter(data_wave, sr_wave, text=text, asr_words=detected_words, language=eff_language)
                 for ast in acoustic_stutters:
                     if not any(
                         iss["code"] == "SUSPECTED_STUTTER"
@@ -1841,6 +1968,9 @@ def validate_audio_quality(
                         alignment_issues.append(ast)
             except Exception as st_err:
                 log(f"[audio_quality] Acoustic stutter check error: {st_err}")
+
+        for iss in alignment_issues:
+            iss["asrModelId"] = active_model_id
 
         alignment_issues.sort(key=lambda x: float(x.get("timeRange", [0.0])[0]))
 

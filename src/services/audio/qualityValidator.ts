@@ -3,7 +3,7 @@ import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
 import { loadSubtitleSettings } from "../subtitle/profiles";
 
-export const QUALITY_VALIDATOR_VERSION = "2.5.0";
+export const QUALITY_VALIDATOR_VERSION = "2.6.0";
 
 /**
  * Helper to get the unique audio signature of a chunk's generated audio.
