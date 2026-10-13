@@ -388,11 +388,16 @@ export function generateSrtFromChunks(
     return "";
   }
 
-  if (options?.optimize) {
+  const hasLongChunks = chunks.some((c) => {
+    const t = (c.text || "").trim();
+    return t.split(/\s+/).filter(Boolean).length > 8 || t.length > 36;
+  });
+
+  if (options?.optimize || hasLongChunks) {
     const cues = generateSubtitlesFromChunks(chunks, {
-      punctuationPauses: options.punctuationPauses,
-      aspectRatio: options.aspectRatio,
-      maxLines: options.maxLines,
+      punctuationPauses: options?.punctuationPauses,
+      aspectRatio: options?.aspectRatio,
+      maxLines: options?.maxLines,
     });
     return exportToSrt(cues);
   }
@@ -451,6 +456,92 @@ export function generateSrtFromChunks(
   }
 
   return srtEntries.length > 0 ? srtEntries.join("\n\n") + "\n" : "";
+}
+
+/**
+ * Generates YouTube Cinematic SubRip (.srt) subtitles directly from a Master Audio file
+ * using the unified faster-whisper ASR model (word_timestamps=True) + Script-Assisted
+ * Orthographic Recovery + Global DP + Acoustic Onset Alignment (-30 dBFS).
+ */
+export async function generateMasterSrtWithAsr(params: {
+  audioPath?: string;
+  chunks?: ChunkItem[];
+  scriptText?: string;
+  language?: string;
+  aspectRatio?: SubtitleAspectRatio;
+  maxLines?: SubtitleMaxLines;
+  punctuationPauses?: PunctuationPauses;
+  ai?: {
+    generateMasterSubtitles?: (
+      req: {
+        audioPath: string;
+        scriptText?: string;
+        language?: string;
+        aspectRatio?: "16:9" | "9:16" | "1:1";
+        maxLines?: 1 | 2;
+        asrModelId?: string;
+        chunkCount?: number;
+      },
+      onProgress?: (pct: number, stage: string) => void
+    ) => Promise<{
+      srt: string;
+      totalCues: number;
+      asrModelId?: string;
+    }>;
+  } | null;
+  onProgress?: (pct: number, stage: string) => void;
+}): Promise<{ srt: string; totalCues: number; asrModelId?: string; usedAsr: boolean }> {
+  const { loadSubtitleSettings } = await import("../subtitle/profiles");
+  const settings = loadSubtitleSettings();
+  const aspectRatio = params.aspectRatio || settings.aspectRatio || "16:9";
+  const maxLines = (params.maxLines || settings.maxLines || 2) as 1 | 2;
+  const fullScript =
+    params.scriptText ??
+    (params.chunks
+      ? [...params.chunks]
+          .sort((a, b) => a.index - b.index)
+          .map((c) => c.text)
+          .join(" ")
+      : undefined);
+
+  if (params.audioPath && params.ai?.generateMasterSubtitles) {
+    const res = await params.ai.generateMasterSubtitles(
+      {
+        audioPath: params.audioPath,
+        scriptText: fullScript,
+        language: params.language || settings.audioLanguage || "auto",
+        aspectRatio,
+        maxLines,
+        asrModelId: settings.whisperModel,
+        chunkCount: params.chunks?.length ?? 0,
+      },
+      params.onProgress
+    );
+    if (res && res.srt && res.srt.trim().length > 0) {
+      return {
+        srt: res.srt,
+        totalCues: res.totalCues,
+        asrModelId: res.asrModelId || settings.whisperModel,
+        usedAsr: true,
+      };
+    }
+  }
+
+  if (params.chunks && params.chunks.length > 0) {
+    const cues = generateSubtitlesFromChunks(params.chunks, {
+      punctuationPauses: params.punctuationPauses,
+      aspectRatio,
+      maxLines,
+    });
+    return {
+      srt: exportToSrt(cues),
+      totalCues: cues.length,
+      asrModelId: settings.whisperModel,
+      usedAsr: false,
+    };
+  }
+
+  return { srt: "", totalCues: 0, usedAsr: false };
 }
 
 /**

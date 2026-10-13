@@ -40,37 +40,47 @@ const PROTECTED_PATTERNS: PatternDef[] = [
     type: "currency",
     regex: /\b\d+(?:[.,]\d+)*\s*(?:USD|EUR|GBP|VND|đ)\b/gi,
   },
-  // 7. Number + Unit (e.g. 3.5 GHz, 12.5 kg, 100 km/h, 25%)
+  // 7. Number + Unit (e.g. 3.5 GHz, 1.55 kWh per mile, 2 kilowatt hours per mile, 82,000 pounds, 37 tons, 12.5 kg, 100 km/h, 25%)
   {
     type: "unit",
-    regex: /\b\d+(?:[.,]\d+)?\s*(?:GHz|MHz|kHz|Hz|kg|g|mg|km|m|cm|mm|GB|MB|KB|TB|s|ms|h|min|mph|km\/h|%)\b/gi,
+    regex: /\b\d+(?:[.,]\d+)*\s*(?:kilowatt\s+hours?|GHz|MHz|kHz|Hz|kWh|MWh|GWh|kW|MW|GW|kg|g|mg|km|m|cm|mm|GB|MB|KB|TB|s|ms|h|min|mph|km\/h|pounds?|lbs?|tons?|miles?|liters?|gallons?|million|billion|trillion|thousand|hundred|%)(?:\s+per\s+(?:mile|hour|day|month|year|second|minute))?\b/gi,
   },
-  // 8. Thousands with decimal or thousand separator (e.g. 15.000, 1,500.25, 1.500,25)
+  // 8. 3-item coordinate noun lists (e.g. "cars, trucks, and robots")
+  {
+    type: "abbreviation",
+    regex: /\b[a-zA-Z]{2,12},\s+[a-zA-Z]{2,12},\s+(?:and|or)\s+[a-zA-Z]{2,12}\b/g,
+  },
+  // 9. Proper noun coordinate pairs (e.g. "PepsiCo and Sysco")
+  {
+    type: "abbreviation",
+    regex: /\b[A-Z][a-zA-Z0-9']*\s+(?:and|or)\s+[A-Z][a-zA-Z0-9']*\b/g,
+  },
+  // 10. Thousands with decimal or thousand separator (e.g. 15.000, 1,500.25, 1.500,25)
   {
     type: "number",
     regex: /\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?\b/g,
   },
-  // 9. Decimals (e.g. 0.05, 3.14)
+  // 11. Decimals (e.g. 0.05, 3.14)
   {
     type: "number",
     regex: /\b\d+\.\d+\b/g,
   },
-  // 10. Decimal with comma (Vietnamese / European convention e.g. 0,05)
+  // 12. Decimal with comma (Vietnamese / European convention e.g. 0,05)
   {
     type: "number",
     regex: /\b\d+,\d+\b/g,
   },
-  // 11. URLs
+  // 13. URLs
   {
     type: "url",
     regex: /\bhttps?:\/\/[^\s]+|\bwww\.[a-zA-Z0-9-]+\.[^\s]+/gi,
   },
-  // 12. Email addresses
+  // 14. Email addresses
   {
     type: "email",
     regex: /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/gi,
   },
-  // 13. Common abbreviations (e.g. Dr., Mr., Mrs., Ms., Prof., vs., etc., e.g., i.e.)
+  // 15. Common abbreviations (e.g. Dr., Mr., Mrs., Ms., Prof., vs., etc., e.g., i.e.)
   {
     type: "abbreviation",
     regex: /\b(?:Dr|Mr|Mrs|Ms|Prof|vs|etc|e\.g|i\.e)\./gi,

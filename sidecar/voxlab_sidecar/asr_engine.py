@@ -454,6 +454,28 @@ class AsrEngine:
             if duration > 0:
                 ctx.progress(min(99.0, seg.end / duration * 100.0), "transcribing")
         ctx.check_cancelled()
+        if word_ts and segments:
+            try:
+                from .subtitle_optimizer import _MASTER_ASR_CACHE, _compute_audio_hash, canonicalize_whisper_model_id
+            except Exception:
+                try:
+                    from .subtitle_optimizer import _MASTER_ASR_CACHE, _compute_audio_hash
+                    canonicalize_whisper_model_id = lambda x: str(x or "large-v3-turbo")
+                except Exception:
+                    _MASTER_ASR_CACHE = None  # type: ignore[assignment]
+            if _MASTER_ASR_CACHE is not None:
+                try:
+                    wav_hash = _compute_audio_hash(audio_path)
+                    model_key = canonicalize_whisper_model_id(self.mgr.current_model_id)
+                    for lang_k in {info.language or "auto", "auto", str(language)}:
+                        _MASTER_ASR_CACHE[f"{wav_hash}_{model_key}_{lang_k}"] = {
+                            "segments": segments,
+                            "language": info.language or "en",
+                            "durationSec": duration,
+                            "modelId": self.mgr.current_model_id or model_key,
+                        }
+                except Exception:
+                    pass
         return {
             "language": info.language,
             "languageProbability": round(float(info.language_probability), 4),

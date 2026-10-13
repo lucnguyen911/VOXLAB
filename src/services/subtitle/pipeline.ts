@@ -13,6 +13,8 @@ import {
   splitIntoSentences,
   splitLongSentenceIntoClauses,
   getWordCount,
+  getDisplayWidth,
+  wrapCueTextBalanced,
 } from "./candidates";
 import { optimizeSubtitles } from "./optimizer";
 import { validateSubtitles } from "./validator";
@@ -23,21 +25,36 @@ export interface SubtitlePipelineOptions {
   maxLines?: number;
   punctuationPauses?: PunctuationPauses;
   totalAudioDurationSec?: number;
+  wrapLines?: boolean;
 }
 
 /**
  * Builds precise SpeechUnits from generated TTS ChunkItems using real audio durations
  * and calculated punctuation pauses (with trailing silence deduction).
+ * Long TTS chunks (> 8 words or > 36 chars) are decomposed into natural sentence/clause
+ * sub-units with proportional timing so `generateSubtitlesFromChunks` never copies
+ * a 20-35 word TTS chunk as a single monolithic cue.
  */
 export function buildSpeechUnitsFromChunks(
   chunks: ChunkItem[],
-  punctuationPauses?: PunctuationPauses
+  punctuationPauses?: PunctuationPauses,
+  aspectRatio: SubtitleAspectRatio = "16:9"
 ): SpeechUnit[] {
   if (!chunks || chunks.length === 0) return [];
 
   const sorted = [...chunks].sort((a, b) => a.index - b.index);
   const units: SpeechUnit[] = [];
   let currentTime = 0;
+
+  const baseProfile = getSubtitleProfile(aspectRatio, 1);
+  const clauseProfile = {
+    ...baseProfile,
+    maxLines: 1,
+    targetWidth: Math.min(27, baseProfile.targetWidth),
+    maxWidth: Math.min(32, baseProfile.maxWidth),
+    targetWords: 6,
+    maxWords: 8,
+  };
 
   for (let i = 0; i < sorted.length; i++) {
     const chunk = sorted[i];
@@ -79,14 +96,68 @@ export function buildSpeechUnitsFromChunks(
       currentTime += pauseSec;
     }
 
-    units.push({
-      id: chunk.id,
-      text: chunk.text.trim(),
-      startSec,
-      endSec,
-      durationSec,
-      pauseAfterSec: pauseSec,
+    const cleanChunkText = chunk.text.replace(/\[pause[^\]]*\]/gi, " ").replace(/\s+/g, " ").trim();
+    if (!cleanChunkText) continue;
+
+    // Short chunks remain a single unit so adjacent short chunks can merge cleanly
+    if (getWordCount(cleanChunkText) <= 8 && getDisplayWidth(cleanChunkText) <= 36) {
+      units.push({
+        id: chunk.id,
+        text: cleanChunkText,
+        startSec,
+        endSec,
+        durationSec,
+        pauseAfterSec: pauseSec,
+      });
+      continue;
+    }
+
+    // Long TTS chunks: decompose into natural sentences and clauses
+    const sentences = splitIntoSentences(cleanChunkText);
+    const subClauses: string[] = [];
+    for (const s of sentences) {
+      subClauses.push(...splitLongSentenceIntoClauses(s, clauseProfile));
+    }
+
+    const validClauses = subClauses.map((c) => c.trim()).filter(Boolean);
+    if (validClauses.length <= 1) {
+      units.push({
+        id: chunk.id,
+        text: cleanChunkText,
+        startSec,
+        endSec,
+        durationSec,
+        pauseAfterSec: pauseSec,
+      });
+      continue;
+    }
+
+    const weights = validClauses.map((c) => {
+      const charWeight = Math.max(1, c.length);
+      const punctBonus = /[.!?…]$/u.test(c) ? 6 : /[,;:]$/u.test(c) ? 3 : 0;
+      return charWeight + punctBonus;
     });
+    const totalWeight = weights.reduce((acc, w) => acc + w, 0) || 1;
+    let subCursor = startSec;
+
+    for (let k = 0; k < validClauses.length; k++) {
+      const isLastSub = k === validClauses.length - 1;
+      const subDur = isLastSub
+        ? Math.max(0.05, endSec - subCursor)
+        : Math.max(0.05, Math.round((durationSec * (weights[k] / totalWeight)) * 1000) / 1000);
+      const subStart = Math.round(subCursor * 1000) / 1000;
+      const subEnd = isLastSub ? Math.round(endSec * 1000) / 1000 : Math.round((subStart + subDur) * 1000) / 1000;
+      subCursor = subEnd;
+
+      units.push({
+        id: `${chunk.id}_sub_${k + 1}`,
+        text: validClauses[k],
+        startSec: subStart,
+        endSec: Math.max(subStart + 0.05, subEnd),
+        durationSec: Math.max(0.05, subEnd - subStart),
+        pauseAfterSec: isLastSub ? pauseSec : 0,
+      });
+    }
   }
 
   return units;
@@ -94,8 +165,8 @@ export function buildSpeechUnitsFromChunks(
 
 /**
  * Generates optimized SubtitleCues from TTS ChunkItems.
- * Short adjacent chunks are intelligently merged into unified subtitle cues
- * according to the active aspect ratio profile, while respecting real audio timestamps.
+ * Long chunks are split into natural YouTube Cinematic clauses and short adjacent units
+ * are merged according to the active aspect ratio profile, while respecting audio timestamps.
  */
 export function generateSubtitlesFromChunks(
   chunks: ChunkItem[],
@@ -108,11 +179,25 @@ export function generateSubtitlesFromChunks(
   const maxLines = options?.maxLines || settings.maxLines;
   const profile = getSubtitleProfile(aspectRatio, maxLines);
 
-  const speechUnits = buildSpeechUnitsFromChunks(chunks, options?.punctuationPauses);
-  const cues = optimizeSubtitles(speechUnits, profile);
+  const speechUnits = buildSpeechUnitsFromChunks(
+    chunks,
+    options?.punctuationPauses,
+    aspectRatio
+  );
+  const rawCues = optimizeSubtitles(speechUnits, profile);
+  const shouldWrap = options?.wrapLines !== false && profile.maxLines >= 2;
+  const cues = shouldWrap
+    ? rawCues.map((c) => ({
+        ...c,
+        text: wrapCueTextBalanced(c.text, profile),
+      }))
+    : rawCues;
 
   // Validate the resulting cues against full original text
-  const originalText = chunks.map((c) => c.text).join(" ");
+  const originalText = chunks
+    .map((c) => c.text.replace(/\[pause[^\]]*\]/gi, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" ");
   const validation = validateSubtitles(cues, originalText);
   if (!validation.valid) {
     console.warn("Subtitle validation warnings/errors:", validation.errors);

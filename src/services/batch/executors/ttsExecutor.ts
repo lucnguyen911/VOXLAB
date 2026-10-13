@@ -210,17 +210,34 @@ export class TtsExecutor {
       outputArtifactPaths.push(audioResolution.resolvedPath);
     }
 
-    // 7. Text Subtitle Timing Invariant: Subtitle generated directly from chunk timing!
+    // 7. YouTube Cinematic Subtitle alignment (ASR word-timestamps on Master Audio with chunk-clause fallback)
     const needsSubtitle =
       job.selectedTasks.includes("transcription") ||
       (job.effectiveConfigSnapshot?.tasks.tts?.sentencePauseMs !== undefined);
 
     if (needsSubtitle) {
-      onProgress?.(90, "Đang tạo phụ đề đồng bộ từ thời lượng giọng đọc...");
-      const subtitleCues = generateSubtitlesFromChunks(chunks);
+      onProgress?.(88, "Đang nhận dạng & tối ưu phụ đề YouTube từ Master Audio...");
       const subFormat = job.outputSnapshot?.outputSubtitleFormat || "srt";
-      const subContent =
-        subFormat === "vtt" ? exportToVtt(subtitleCues) : exportToSrt(subtitleCues);
+      let subContent = "";
+      if (subFormat === "srt" && audioResolution.action !== "skip" && typeof ai.generateMasterSubtitles === "function") {
+        try {
+          const masterSub = await ai.generateMasterSubtitles({
+            audioPath: audioResolution.resolvedPath,
+            scriptText: sortedChunks.map((c) => c.text).join(" "),
+            chunkCount: sortedChunks.length,
+          });
+          if (masterSub?.srt?.trim()) {
+            subContent = masterSub.srt;
+          }
+        } catch {
+          // Graceful fallback when mock backend does not implement subtitle.generate_srt
+        }
+      }
+      if (!subContent) {
+        const subtitleCues = generateSubtitlesFromChunks(chunks);
+        subContent =
+          subFormat === "vtt" ? exportToVtt(subtitleCues) : exportToSrt(subtitleCues);
+      }
 
       const subResolution = resolveArtifactPath({
         outputDir,

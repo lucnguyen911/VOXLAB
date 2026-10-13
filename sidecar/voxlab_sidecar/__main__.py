@@ -170,6 +170,62 @@ def main(argv: list[str] | None = None) -> int:
         server.register_heavy("audio.assemble", audio_ops.assemble)
         server.register_light("audio.probe", audio_ops.probe)
         server.register_heavy("audio.validate_quality", validate_quality_handler)
+
+        from . import subtitle_optimizer
+
+        def generate_srt_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
+            ctx.progress(5.0, "preparing_master_subtitle")
+            return subtitle_optimizer.generate_srt_from_master_audio(
+                audio_path=str(params.get("audioPath") or ""),
+                script_text=params.get("scriptText"),
+                language=str(params.get("language") or "auto"),
+                aspect_ratio=str(params.get("aspectRatio") or "16:9"),
+                max_lines=int(params.get("maxLines") or 2),
+                models_dir=params.get("modelsDir"),
+                model_id=params.get("modelId") or params.get("asrModelId"),
+                chunk_count=int(params.get("chunkCount") or 0),
+                ctx=ctx,
+            )
+
+        def optimize_subtitle_handler(params: dict) -> dict:
+            from pathlib import Path
+
+            segments = params.get("segments") or []
+            aspect_ratio = str(params.get("aspectRatio") or "16:9")
+            max_lines = int(params.get("maxLines") or 2)
+            audio_path = params.get("audioPath")
+            script_text = params.get("scriptText")
+            language = str(params.get("language") or "en")
+            chunk_count = int(params.get("chunkCount") or 0)
+            validation_report: dict = {}
+            cues = subtitle_optimizer.optimize_subtitles_v2(
+                segments=segments,
+                video_format=aspect_ratio,
+                max_lines=max_lines,
+                wav_path=Path(audio_path) if audio_path else None,
+                script_text=script_text,
+                language=language,
+                chunk_count=chunk_count,
+                debug_validation_report=validation_report,
+            )
+            srt_content = subtitle_optimizer.export_cues_to_srt(cues)
+            return {
+                "srt": srt_content,
+                "cues": [
+                    {
+                        "index": c["index"],
+                        "startSec": c["startSec"],
+                        "endSec": c["endSec"],
+                        "text": c["text"],
+                    }
+                    for c in cues
+                ],
+                "totalCues": len(cues),
+                "validationReport": validation_report,
+            }
+
+        server.register_heavy("subtitle.generate_srt", generate_srt_handler)
+        server.register_light("subtitle.optimize", optimize_subtitle_handler)
     server.register_light("system.info", lambda _p: system_info(args.runtime, asr, tts))
     server.register_light("tts.engines", tts.engines)
     server.register_heavy("tts.load", tts.load)

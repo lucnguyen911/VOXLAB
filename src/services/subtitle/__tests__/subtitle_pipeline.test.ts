@@ -335,5 +335,39 @@ describe("Subtitle SRT System Specification Tests (Sections 1 - 20)", () => {
       `Expected natural cue count (<=8), but got fragmented count: ${cues.length}`
     );
   });
+
+  // 22. ANTI-CHUNK-COPYING: LONG TTS CHUNKS DECOMPOSE INTO YOUTUBE CINEMATIC CUES
+  it("Test 22: generateSubtitlesFromChunks splits long TTS chunks into multiple 1-2 line YouTube Cinematic cues", () => {
+    const longChunks: ChunkItem[] = [
+      {
+        id: "chunk_1",
+        index: 1,
+        text: "If you are over 55, you remember when a diesel truck meant America was working. The rumble at the truck stop. The black smoke on the interstate. The paycheck that kept your whole town alive.",
+        originalText: "",
+        status: "ready",
+        durationSec: 13.6,
+        pauseAfterMs: 400,
+      },
+      {
+        id: "chunk_2",
+        index: 2,
+        text: "Tesla's Semi pulls 82,000 pounds, about 37 tons, with a motor roughly the size of one single piston from a 15-liter diesel engine.",
+        originalText: "",
+        status: "ready",
+        durationSec: 11.2,
+        pauseAfterMs: 400,
+      },
+    ];
+
+    const cues = generateSubtitlesFromChunks(longChunks, { aspectRatio: "16:9", maxLines: 2 });
+    assert.ok(
+      cues.length >= 6,
+      `Expected 2 long TTS chunks to decompose into >= 6 cinematic cues, got ${cues.length}`
+    );
+    for (const cue of cues) {
+      const lines = cue.text.split("\n");
+      assert.ok(lines.length <= 2, `Cue #${cue.index} exceeds 2 lines: ${cue.text}`);
+    }
+  });
 });
 

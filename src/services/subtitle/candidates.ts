@@ -256,6 +256,11 @@ export function splitLongSentenceIntoClauses(
       const dist = Math.abs(i - midPoint);
       let score = 100 - dist * 15;
 
+      const prevClean = wordsList[i - 1].toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+      if (FORBIDDEN_ENDINGS.has(prevClean)) {
+        score -= 250; // Never end a cue on a forbidden function word
+      }
+
       const w = wordsList[i].toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
       if (CONJUNCTIONS.has(w) || ["để", "với", "cho", "tại", "về", "như", "trên", "khi"].includes(w)) {
         score += 50; // Bonus for conjunction/preposition boundary
@@ -279,6 +284,85 @@ export function splitLongSentenceIntoClauses(
 
   // If unbreakable, return original
   return [restore(maskedText)];
+}
+
+export const FORBIDDEN_ENDINGS = new Set([
+  // English determiners, prepositions, auxiliaries, conjunctions, relatives
+  "a", "an", "the", "this", "that", "these", "those", "my", "your", "his", "her", "its", "our", "their",
+  "of", "to", "for", "with", "from", "by", "at", "in", "on", "as", "into", "onto", "under", "over",
+  "between", "among", "about", "through", "across", "behind", "beyond", "per",
+  "am", "is", "are", "was", "were", "be", "been", "being", "has", "have", "had", "do", "does", "did",
+  "will", "would", "can", "could", "may", "might", "must", "should", "shall",
+  "and", "but", "or", "so", "because", "although", "though", "while", "when", "if", "which", "who", "where",
+  // Vietnamese function words
+  "và", "nhưng", "hoặc", "hay", "vì", "nên", "mà", "là", "của", "cho", "với", "tại", "trong", "trên",
+  "dưới", "đến", "từ", "để", "khi", "nếu", "những", "các", "một", "đang", "sẽ", "đã", "vẫn", "rất",
+]);
+
+function cleanWord(w: string): string {
+  return w.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
+/**
+ * Wraps a subtitle cue text into 1 or 2 balanced lines strictly <= profile.maxWidth
+ * when possible, avoiding forbidden endings and compound word splits.
+ */
+export function wrapCueTextBalanced(text: string, profile: SubtitleProfile): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized || profile.maxLines <= 1) return normalized;
+
+  const totalWidth = getDisplayWidth(normalized);
+  if (totalWidth <= profile.maxWidth) {
+    return normalized;
+  }
+
+  const { maskedText, restore } = maskProtectedSpans(normalized);
+  const words = maskedText.split(/\s+/).filter(Boolean);
+  if (words.length <= 1) return normalized;
+
+  let bestSplit = -1;
+  let bestScore = Infinity;
+
+  for (let i = 1; i < words.length; i++) {
+    const rawLine1 = restore(words.slice(0, i).join(" "));
+    const rawLine2 = restore(words.slice(i).join(" "));
+    const w1 = getDisplayWidth(rawLine1);
+    const w2 = getDisplayWidth(rawLine2);
+
+    const overflow = Math.max(0, w1 - profile.maxWidth) + Math.max(0, w2 - profile.maxWidth);
+    let score = Math.abs(w1 - w2) * 2.5 + overflow * 200;
+
+    if (isCompoundWordSplit(words[i - 1], words[i])) {
+      score += 5000;
+    }
+    const leftRaw = restore(words[i - 1]).trim();
+    const leftClean = cleanWord(leftRaw);
+    const rightClean = cleanWord(restore(words[i]));
+
+    if (/[.,;:!?…]$/u.test(leftRaw)) {
+      score -= 35;
+    } else if (FORBIDDEN_ENDINGS.has(leftClean)) {
+      score += 1800;
+    }
+    if (CONJUNCTIONS.has(rightClean)) {
+      score -= 25;
+    }
+    if (w1 < 6 || w2 < 6) {
+      score += 250;
+    }
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestSplit = i;
+    }
+  }
+
+  if (bestSplit > 0) {
+    const line1 = restore(words.slice(0, bestSplit).join(" "));
+    const line2 = restore(words.slice(bestSplit).join(" "));
+    return `${line1}\n${line2}`;
+  }
+  return normalized;
 }
 
 /**

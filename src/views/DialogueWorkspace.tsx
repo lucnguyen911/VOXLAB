@@ -28,7 +28,7 @@ import {
   generateDialogueSrt,
   downloadTextFile,
 } from "../services/dialogue/srtExporter";
-import { downloadAudioBlob } from "../services/audio/masterExport";
+import { downloadAudioBlob, generateMasterSrtWithAsr } from "../services/audio/masterExport";
 import { loadSubtitleSettings } from "../services/subtitle";
 import { DialogueEditor } from "../components/dialogue/DialogueEditor";
 import { DialogueStudio } from "../components/dialogue/DialogueStudio";
@@ -699,10 +699,20 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         if (settings.exportSrt) {
           try {
             const subtitleSettings = loadSubtitleSettings();
-            const srt = generateDialogueSrt(plan.timeline, {
+            const srtRes = await generateMasterSrtWithAsr({
+              audioPath: chosenPath,
+              scriptText: readySegs.map((s) => s.cleanText || s.rawText).join(" "),
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
+              ai,
             });
+            const srt =
+              srtRes.srt && srtRes.srt.trim().length > 0
+                ? srtRes.srt
+                : generateDialogueSrt(plan.timeline, {
+                    aspectRatio: subtitleSettings.aspectRatio,
+                    maxLines: subtitleSettings.maxLines,
+                  });
             const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
             const { invoke } = await import("@tauri-apps/api/core");
             await invoke("fs_write_text", {

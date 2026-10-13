@@ -45,6 +45,7 @@ import {
   queryHardwareProfile,
   evaluateRecommendedAsrModel,
 } from "../services/ai/hardwareRecommendation";
+import { getSharedAiServices } from "../services/batch/batchRuntime";
 
 export type SubtitleWorkspaceState =
   | "EMPTY"
@@ -226,6 +227,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
   const [recommendedModel, setRecommendedModel] = useState<string>("large-v3-turbo");
   const [invalidationNotice, setInvalidationNotice] = useState<string>("");
   const cachedTranscriptRef = useRef<string>(DEFAULT_TRANSCRIPT_TEXT);
+  const cachedAudioPathRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -256,12 +258,32 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
   };
 
   // Re-run Rule for Group 2: Hiển thị (Subtitle Optimizer without re-running Whisper)
-  const handleUpdateDisplay = (updates: Partial<SubtitleSettings>) => {
+  const handleUpdateDisplay = async (updates: Partial<SubtitleSettings>) => {
     const updated = { ...subtitleSettings, ...updates };
     setSubtitleSettings(updated);
     saveSubtitleSettings(updates);
 
     if (workspaceState === "RESULT") {
+      if (cachedAudioPathRef.current) {
+        try {
+          const ai = await getSharedAiServices();
+          if (ai?.generateMasterSubtitles) {
+            const res = await ai.generateMasterSubtitles({
+              audioPath: cachedAudioPathRef.current,
+              language: updated.audioLanguage,
+              aspectRatio: updated.aspectRatio,
+              maxLines: updated.maxLines,
+              asrModelId: updated.whisperModel,
+            });
+            if (res?.cues?.length) {
+              setCues(res.cues.map((c) => ({ ...c, isEdited: false })));
+              return;
+            }
+          }
+        } catch {
+          // Fallback to local text re-optimization
+        }
+      }
       const reoptimized = generateSubtitlesFromText(cachedTranscriptRef.current, {
         aspectRatio: updated.aspectRatio,
         maxLines: updated.maxLines,
@@ -471,7 +493,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     }
   };
 
-  const handleStartProcessing = () => {
+  const handleStartProcessing = async () => {
     if (!fileInfo || workspaceState === "PROCESSING") return;
     setWorkspaceState("PROCESSING");
     setIsPaused(false);
@@ -485,6 +507,51 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
 
     if (processingTimerRef.current) {
       clearInterval(processingTimerRef.current);
+    }
+
+    // In Tauri desktop runtime with a real media file, run the Sidecar YouTube Cinematic ASR + Optimizer pipeline
+    try {
+      const ai = await getSharedAiServices();
+      if (ai?.generateMasterSubtitles && fileInfo.file && typeof fileInfo.file.arrayBuffer === "function") {
+        setProgressPercent(15);
+        const core = await import("@tauri-apps/api/core");
+        const scratchDir = await core.invoke<string>("fs_scratch_dir", { name: "subtitle_tab" });
+        const safeName = (fileInfo.name || "media.wav").replace(/[^a-zA-Z0-9._-]/g, "_");
+        const audioPath = `${scratchDir.replace(/[\\/]+$/, "")}/${Date.now()}_${safeName}`;
+        const buf = new Uint8Array(await fileInfo.file.arrayBuffer());
+        await core.invoke<void>("fs_write_bytes", { path: audioPath, bytes: Array.from(buf) });
+        cachedAudioPathRef.current = audioPath;
+
+        setProgressPercent(45);
+        const res = await ai.generateMasterSubtitles({
+          audioPath,
+          language: subtitleSettings.audioLanguage,
+          aspectRatio: subtitleSettings.aspectRatio,
+          maxLines: subtitleSettings.maxLines,
+          asrModelId: subtitleSettings.whisperModel,
+        });
+
+        if (res?.cues?.length) {
+          const speed = subtitleSettings.speechSpeed;
+          const mappedCues: EditableSubtitleCue[] = res.cues.map((c, idx) => ({
+            index: c.index || idx + 1,
+            startSec: Number((c.startSec * speed).toFixed(3)),
+            endSec: Number((c.endSec * speed).toFixed(3)),
+            text: c.text,
+            isEdited: false,
+          }));
+          setCues(mappedCues);
+          cachedTranscriptRef.current = mappedCues.map((c) => c.text.replace(/\s+/g, " ").trim()).join(" ");
+          setProgressPercent(100);
+          setProcessedSec(total);
+          setWorkspaceState("RESULT");
+          setCurrentTimeSec(0);
+          setIsPlaying(false);
+          return;
+        }
+      }
+    } catch {
+      // Fallback to local subtitle engine if sidecar is unavailable
     }
 
     processingTimerRef.current = setInterval(() => {

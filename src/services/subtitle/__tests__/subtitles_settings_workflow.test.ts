@@ -163,9 +163,9 @@ describe("Subtitle & Translation Settings Verification Suite (Cases 1 - 16)", ()
     const p9_16 = getSubtitleProfile("9:16");
     const p1_1 = getSubtitleProfile("1:1");
 
-    assert.equal(p16_9.maxWidth, 40);
+    assert.equal(p16_9.maxWidth, 32);
     assert.equal(p9_16.maxWidth, 26);
-    assert.equal(p1_1.maxWidth, 34);
+    assert.equal(p1_1.maxWidth, 29);
 
     // 16:9 capacity > 1:1 capacity > 9:16 capacity
     assert.ok(p16_9.maxWidth > p1_1.maxWidth);

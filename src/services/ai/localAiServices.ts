@@ -111,6 +111,23 @@ export interface AudioQualityValidationResult {
   asrModelId?: string;
 }
 
+export interface MasterSubtitleCue {
+  index: number;
+  startSec: number;
+  endSec: number;
+  text: string;
+}
+
+export interface MasterSubtitleResult {
+  srt: string;
+  cues: MasterSubtitleCue[];
+  totalCues: number;
+  durationSec?: number;
+  language?: string;
+  asrModelId?: string;
+  validationReport?: Record<string, unknown>;
+}
+
 const VI_DIACRITICS = /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i;
 
 /** Minimal guard so an English-only engine is never fed Vietnamese text silently. */
@@ -315,6 +332,58 @@ export class LocalAiServices {
       },
       onProgress
     );
+  }
+
+  async generateMasterSubtitles(
+    params: {
+      audioPath: string;
+      scriptText?: string;
+      language?: string;
+      aspectRatio?: "16:9" | "9:16" | "1:1";
+      maxLines?: 1 | 2;
+      asrModelId?: string;
+      chunkCount?: number;
+    },
+    onProgress?: (pct: number, stage: string) => void
+  ): Promise<MasterSubtitleResult> {
+    const s = this.settings();
+    const effectiveModel = params.asrModelId || s.asrModelId || "large-v3-turbo";
+    return this.call<MasterSubtitleResult>(
+      "core",
+      "subtitle.generate_srt",
+      {
+        audioPath: params.audioPath,
+        scriptText: params.scriptText,
+        language: params.language || "auto",
+        aspectRatio: params.aspectRatio || "16:9",
+        maxLines: params.maxLines ?? 2,
+        modelsDir: s.modelsDir,
+        modelId: effectiveModel,
+        asrModelId: effectiveModel,
+        chunkCount: params.chunkCount ?? 0,
+      },
+      onProgress
+    );
+  }
+
+  async optimizeSubtitlesV2(params: {
+    segments: AsrSegment[];
+    aspectRatio?: "16:9" | "9:16" | "1:1";
+    maxLines?: 1 | 2;
+    audioPath?: string;
+    scriptText?: string;
+    language?: string;
+    chunkCount?: number;
+  }): Promise<MasterSubtitleResult> {
+    return this.call<MasterSubtitleResult>("core", "subtitle.optimize", {
+      segments: params.segments,
+      aspectRatio: params.aspectRatio || "16:9",
+      maxLines: params.maxLines ?? 2,
+      audioPath: params.audioPath,
+      scriptText: params.scriptText,
+      language: params.language || "en",
+      chunkCount: params.chunkCount ?? 0,
+    });
   }
 
   /** Soft cancel first; if the engine is inside one blocking call, hard-cancel (kill) after graceMs. */

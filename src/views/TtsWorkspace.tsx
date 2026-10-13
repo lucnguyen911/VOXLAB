@@ -35,6 +35,7 @@ import {
   assembleMasterAudioAsync,
   downloadAudioBlob,
   generateSrtFromChunks,
+  generateMasterSrtWithAsr,
   downloadTextBlob,
   computeChunkPausesMs,
 } from "../services/audio/masterExport";
@@ -1209,6 +1210,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       // 2. High-performance on-disk assembly via Python sidecar if in desktop Tauri
       if (chosenPath && ai && allHaveDiskPaths) {
         const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
+        setProgressStage("Đang ghép Master Audio...");
         await ai.assemble({
           inputs: sortedChunks.map((c, i) => ({
             path: c.audioFilePath!,
@@ -1222,21 +1224,37 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         if (exportSrt) {
           try {
             const subtitleSettings = loadSubtitleSettings();
-            const srtContent = generateSrtFromChunks(chunks, {
-              punctuationPauses: ttsSettings.pauses,
+            setProgressStage(
+              `Đang nhận dạng & căn chỉnh phụ đề bằng ${subtitleSettings.whisperModel}...`
+            );
+            const srtRes = await generateMasterSrtWithAsr({
+              audioPath: chosenPath,
+              chunks,
+              scriptText: sortedChunks.map((c) => c.text).join(" "),
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
-              optimize: true,
+              punctuationPauses: ttsSettings.pauses,
+              ai,
+              onProgress: (_pct, stage) => {
+                if (stage === "optimizing_youtube_subtitles") {
+                  setProgressStage("Đang tối ưu phụ đề YouTube...");
+                }
+              },
             });
             const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
             const { invoke } = await import("@tauri-apps/api/core");
             await invoke("fs_write_text", {
               path: srtPath,
-              content: srtContent,
+              content: srtRes.srt,
             });
+            setProgressStage("Hoàn tất xuất WAV + SRT");
           } catch (err: any) {
             console.error("SRT export error:", err);
+          } finally {
+            setTimeout(() => setProgressStage(""), 1200);
           }
+        } else {
+          setProgressStage("");
         }
 
         try {
@@ -1246,7 +1264,11 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           console.warn("Could not reveal file in folder:", folderErr);
         }
 
-        alert(`Đã xuất file âm thanh thành công:\n${chosenPath}`);
+        alert(
+          exportSrt
+            ? `Hoàn tất xuất WAV + SRT:\n${chosenPath}`
+            : `Đã xuất file âm thanh thành công:\n${chosenPath}`
+        );
         return;
       }
 

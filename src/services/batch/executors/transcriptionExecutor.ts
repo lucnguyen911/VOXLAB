@@ -140,6 +140,12 @@ export class TranscriptionExecutor {
           startSec: s.startSec,
           endSec: s.endSec,
           text: s.text,
+          words: s.words?.map((w) => ({
+            word: w.word,
+            startSec: w.startSec,
+            endSec: w.endSec,
+            confidence: w.probability,
+          })),
         }));
         detectedLanguage = r.language;
       } catch (e) {
@@ -186,13 +192,44 @@ export class TranscriptionExecutor {
     // Timeline Remapping based on speech speed (0.8 | 0.9 | 1.0)
     const remappedSegments = remapWhisperOutputToOriginalTimeline(rawSegments, speechSpeed);
 
-    // Convert segments to formatted SubtitleCue list
-    const subtitleCues: SubtitleCue[] = remappedSegments.map((s, idx) => ({
-      index: idx + 1,
-      startSec: s.startSec,
-      endSec: s.endSec,
-      text: s.text.trim(),
-    }));
+    // Convert segments to formatted SubtitleCue list (using YouTube Cinematic DP optimizer when available)
+    let subtitleCues: SubtitleCue[] = [];
+    if (!mockSegments && ai && typeof ai.optimizeSubtitlesV2 === "function") {
+      try {
+        const subSettings = loadSubtitleSettings();
+        const optRes = await ai.optimizeSubtitlesV2({
+          segments: remappedSegments.map((s, idx) => ({
+            id: typeof s.id === "number" ? s.id : Number(s.id) || idx + 1,
+            startSec: s.startSec,
+            endSec: s.endSec,
+            text: s.text,
+            words: s.words?.map((w) => ({
+              word: w.word,
+              startSec: w.startSec,
+              endSec: w.endSec,
+              probability: w.confidence ?? 0.99,
+            })),
+          })),
+          aspectRatio: subSettings.aspectRatio,
+          maxLines: subSettings.maxLines,
+          audioPath: speechSpeed === 1.0 ? (options.audioFilePath || job.sourceFilePath) : undefined,
+          language: detectedLanguage || "en",
+        });
+        if (optRes?.cues?.length) {
+          subtitleCues = optRes.cues;
+        }
+      } catch {
+        // Fallback when mock backend does not implement subtitle.optimize
+      }
+    }
+    if (subtitleCues.length === 0) {
+      subtitleCues = remappedSegments.map((s, idx) => ({
+        index: idx + 1,
+        startSec: s.startSec,
+        endSec: s.endSec,
+        text: s.text.trim(),
+      }));
+    }
 
     onProgress?.(85, "Đang định dạng và lưu tệp phụ đề...");
 
