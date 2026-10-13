@@ -55,6 +55,8 @@ export interface AudioQualityReview {
   audioPath?: string;
   text?: string;
   validatorVersion?: string;
+  asrModelId?: string;
+  audioSignature?: string;
 }
 
 export interface ChunkItem {

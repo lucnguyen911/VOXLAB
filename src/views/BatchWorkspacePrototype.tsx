@@ -2173,6 +2173,24 @@ export const BatchWorkspacePrototype: React.FC = () => {
     setIsGlobalModalOpen(true);
   };
 
+  useEffect(() => {
+    const handleAsrChange = (e: Event) => {
+      const custom = e as CustomEvent<string>;
+      const model = custom.detail || loadSubtitleSettings().whisperModel;
+      setGlobalDefaults((prev) => ({
+        ...prev,
+        transcription: {
+          ...prev.transcription,
+          whisperModel: model,
+        },
+      }));
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_asr_model_changed", handleAsrChange);
+      return () => window.removeEventListener("voxlab_asr_model_changed", handleAsrChange);
+    }
+  }, []);
+
   const handleUpdateGlobalTranscription = (
     patch: Partial<BatchGlobalDefaults["transcription"]>
   ) => {
@@ -5785,19 +5803,14 @@ export const BatchWorkspacePrototype: React.FC = () => {
                       <label className="block text-textSecondary font-medium text-[11px]">
                         {t.transcription.modelLabel}
                       </label>
-                      <select
-                        value={
-                          globalDefaults.transcription.whisperModel === "auto"
-                            ? "large-v3-turbo"
-                            : globalDefaults.transcription.whisperModel
-                        }
-                        onChange={(e) => handleUpdateGlobalTranscription({ whisperModel: e.target.value })}
-                        className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
-                      >
-                        <option value="large-v3-turbo">{t.transcription.whisperModelTurbo}</option>
-                        <option value="large-v3">{t.transcription.whisperModelLarge}</option>
-                        <option value="medium">{t.transcription.whisperModelMedium}</option>
-                      </select>
+                      <div className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary flex items-center justify-between">
+                        <span className="font-medium text-accent">
+                          {globalDefaults.transcription.whisperModel}
+                        </span>
+                        <span className="text-[10px] text-textMuted italic">
+                          Đồng bộ từ Tab Phụ đề
+                        </span>
+                      </div>
                     </div>
 
                     <div className="space-y-1">
@@ -7137,16 +7150,14 @@ export const BatchWorkspacePrototype: React.FC = () => {
                               <div className="space-y-3">
                                 <div>
                                   <label className="block text-[11px] text-textMuted mb-1">Mô hình ASR (Whisper)</label>
-                                  <select
-                                    disabled={activeDrawerJob.status === "processing"}
-                                    value={((activeDrawerJob.configOverrides as Record<string, any>)?.transcription?.whisperModel) ?? globalDefaults.transcription.whisperModel}
-                                    onChange={(e) => handleUpdateJobTaskConfig(activeDrawerJob.id, "transcription", { whisperModel: e.target.value })}
-                                    className="w-full px-2.5 py-1.5 bg-surface2 border border-borderDefault rounded-md text-textPrimary text-xs disabled:opacity-50 cursor-pointer"
-                                  >
-                                    <option value="large-v3-turbo">large-v3-turbo (Nhanh & Chính xác)</option>
-                                    <option value="large-v3">large-v3 (Chuẩn)</option>
-                                    <option value="medium">medium</option>
-                                  </select>
+                                  <div className="w-full px-2.5 py-1.5 bg-surface2 border border-borderDefault rounded-md text-textPrimary text-xs flex items-center justify-between">
+                                    <span className="font-medium text-accent">
+                                      {globalDefaults.transcription.whisperModel}
+                                    </span>
+                                    <span className="text-[10px] text-textMuted italic">
+                                      Đồng bộ từ Tab Phụ đề
+                                    </span>
+                                  </div>
                                 </div>
                                 <div>
                                   <label className="block text-[11px] text-textMuted mb-1">Ngôn ngữ bóc băng</label>

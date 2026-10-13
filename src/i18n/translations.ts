@@ -300,9 +300,11 @@ export interface Translations {
     asrSettings: string;
     asrSettingsDesc: string;
     modelLabel: string;
+    whisperModelSmall: string;
     whisperModelMedium: string;
     whisperModelTurbo: string;
     whisperModelLarge: string;
+    recommendedBadge: string;
     langAudio: string;
     autoDetect: string;
     advancedOptions: string;
@@ -703,9 +705,11 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       asrSettings: "CÀI ĐẶT NHẬN DIỆN",
       asrSettingsDesc: "Mô hình nhận diện giọng nói tự động trên máy tính.",
       modelLabel: "Mô hình Whisper",
+      whisperModelSmall: "Small (Máy Yếu)",
+      whisperModelMedium: "Medium (Máy Trung Bình)",
       whisperModelTurbo: "Large-V3-Turbo (Cân Bằng)",
-      whisperModelLarge: "Large-V3 (Máy Mạnh)",
-      whisperModelMedium: "Medium (Máy Yếu)",
+      whisperModelLarge: "Large-V3 (Chất Lượng Cao)",
+      recommendedBadge: "Khuyên dùng",
       langAudio: "Ngôn ngữ",
       autoDetect: "Tự Động Phát Hiện",
       advancedOptions: "Tùy chọn nâng cao",
@@ -1105,9 +1109,11 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       asrSettings: "RECOGNITION SETTINGS",
       asrSettingsDesc: "Automatic speech recognition running on local hardware.",
       modelLabel: "Whisper Model",
+      whisperModelSmall: "Small (Low Spec)",
+      whisperModelMedium: "Medium (Mid-tier)",
       whisperModelTurbo: "Large-V3-Turbo (Balanced)",
-      whisperModelLarge: "Large-V3 (High Spec)",
-      whisperModelMedium: "Medium (Low Spec)",
+      whisperModelLarge: "Large-V3 (High Quality)",
+      recommendedBadge: "Recommended",
       langAudio: "Language",
       autoDetect: "Auto Detect",
       advancedOptions: "Advanced Options",
@@ -1507,9 +1513,11 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       asrSettings: "音声認識設定",
       asrSettingsDesc: "ローカルハードウェア上で実行される音声認識モデル。",
       modelLabel: "認識モデル",
+      whisperModelSmall: "Small（低スペック）",
+      whisperModelMedium: "Medium（標準スペック）",
       whisperModelTurbo: "Large-V3-Turbo（バランス）",
       whisperModelLarge: "Large-V3（高精度・高性能PC）",
-      whisperModelMedium: "Medium（低負荷）",
+      recommendedBadge: "推奨",
       langAudio: "言語",
       autoDetect: "自動検出",
       advancedOptions: "詳細オプション",
@@ -1909,9 +1917,11 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       asrSettings: "识别设置",
       asrSettingsDesc: "在本地硬件上运行的自动语音识别模型。",
       modelLabel: "识别模型",
+      whisperModelSmall: "Small（低配置）",
+      whisperModelMedium: "Medium（中等配置）",
       whisperModelTurbo: "Large-V3-Turbo（平衡）",
-      whisperModelLarge: "Large-V3（高配置）",
-      whisperModelMedium: "Medium（低配置）",
+      whisperModelLarge: "Large-V3（高品质）",
+      recommendedBadge: "推荐",
       langAudio: "语言",
       autoDetect: "自动检测",
       advancedOptions: "高级选项",

@@ -100,15 +100,36 @@ export function loadSubtitleSettings(): SubtitleSettings {
 
         const maxLines = parsed.maxLines === 1 || parsed.max_lines === 1 ? 1 : 2;
 
-        const VALID_WHISPER_MODELS = ["large-v3-turbo", "large-v3", "medium"];
+        const VALID_WHISPER_MODELS = ["large-v3-turbo", "large-v3", "medium", "small"] as const;
         let whisperModel = parsed.whisperModel;
-        if (!VALID_WHISPER_MODELS.includes(whisperModel)) {
-          if (typeof whisperModel === "string" && whisperModel.toLowerCase().includes("medium")) {
+        if (typeof whisperModel === "string") {
+          const s = whisperModel.toLowerCase().trim();
+          if (s.includes("small")) {
+            whisperModel = "small";
+          } else if (s.includes("medium")) {
             whisperModel = "medium";
-          } else if (typeof whisperModel === "string" && whisperModel.toLowerCase().includes("v3") && !whisperModel.toLowerCase().includes("turbo")) {
+          } else if (s.includes("v3") && !s.includes("turbo")) {
             whisperModel = "large-v3";
+          } else if (s.includes("turbo") || VALID_WHISPER_MODELS.includes(whisperModel as any)) {
+            whisperModel = "large-v3-turbo";
           } else {
             whisperModel = "large-v3-turbo";
+          }
+        } else {
+          whisperModel = "large-v3-turbo";
+        }
+
+        let hasUserChosenWhisperModel = Boolean(parsed.hasUserChosenWhisperModel);
+        // First-time user preference resolution based on real hardware recommendation
+        if (!hasUserChosenWhisperModel) {
+          try {
+            const { getCachedHardwareProfile, evaluateRecommendedAsrModel } = require("../ai/hardwareRecommendation");
+            const profile = getCachedHardwareProfile();
+            if (profile) {
+              whisperModel = evaluateRecommendedAsrModel(profile).recommendedModel;
+            }
+          } catch {
+            // ignore during early bootstrap
           }
         }
 
@@ -116,6 +137,7 @@ export function loadSubtitleSettings(): SubtitleSettings {
           ...DEFAULT_SUBTITLE_SETTINGS,
           ...parsed,
           whisperModel,
+          hasUserChosenWhisperModel,
           aspectRatio,
           speechSpeed,
           processingSpeed,
@@ -137,6 +159,22 @@ export function saveSubtitleSettings(settings: Partial<SubtitleSettings>): void 
       ...current,
       ...settings,
     };
+    if (settings.whisperModel !== undefined) {
+      updated.hasUserChosenWhisperModel = true;
+      // Single Source of Truth: sync to ai_runtime.json asynchronously
+      import("../ai/aiRuntimeSettings")
+        .then(({ syncAsrModelToAiRuntime }) => syncAsrModelToAiRuntime(settings.whisperModel!))
+        .catch(() => {});
+      if (typeof window !== "undefined") {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("voxlab_asr_model_changed", { detail: settings.whisperModel })
+          );
+        } catch {
+          // Ignore in headless / test environments
+        }
+      }
+    }
     localStorage.setItem(SUBTITLE_STORAGE_KEY, JSON.stringify(updated));
   } catch {
     // Ignore storage errors

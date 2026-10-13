@@ -11,6 +11,7 @@ import {
   BatchJobOutputSnapshot,
   BatchEffectiveConfigSnapshot,
 } from "../../types/batch";
+import { loadSubtitleSettings } from "../subtitle/profiles";
 
 /**
  * Creates default fallback snapshots if global defaults are missing a task
@@ -37,8 +38,7 @@ export function getDefaultTaskConfigMap(): BatchTaskConfigMap {
     },
     transcription: {
       audioLanguage: "auto",
-      // Development verification baseline only; production default is TUNING REQUIRED.
-      whisperModel: "small",
+      whisperModel: loadSubtitleSettings().whisperModel,
       speechSpeed: 1.0,
       outputFormat: "srt",
     },

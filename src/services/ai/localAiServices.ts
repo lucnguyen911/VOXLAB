@@ -108,6 +108,7 @@ export interface AudioQualityValidationResult {
   sampleRate: number;
   checkedAt: number;
   audioPath: string;
+  asrModelId?: string;
 }
 
 const VI_DIACRITICS = /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i;
@@ -252,7 +253,8 @@ export class LocalAiServices {
                    onProgress?: (pct: number, stage: string) => void,
                    asrModelId?: string): Promise<TranscribeResult> {
     const s = this.settings();
-    const modelDir = joinPath(s.modelsDir, asrModelId || s.asrModelId);
+    const effectiveModel = asrModelId || s.asrModelId || "large-v3-turbo";
+    const modelDir = joinPath(s.modelsDir, effectiveModel);
     const key = `${modelDir}|${s.device}`;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (this.loadedAsrKey !== key) {
@@ -294,9 +296,11 @@ export class LocalAiServices {
     text: string,
     language?: string,
     speed?: number,
+    asrModelId?: string,
     onProgress?: (pct: number, stage: string) => void
   ): Promise<AudioQualityValidationResult> {
     const s = this.settings();
+    const effectiveModel = asrModelId || s.asrModelId || "large-v3-turbo";
     return this.call<AudioQualityValidationResult>(
       "core",
       "audio.validate_quality",
@@ -306,6 +310,8 @@ export class LocalAiServices {
         language: language || "auto",
         speed: typeof speed === "number" ? speed : 1.0,
         modelsDir: s.modelsDir,
+        modelId: effectiveModel,
+        asrModelId: effectiveModel,
       },
       onProgress
     );

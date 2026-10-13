@@ -218,6 +218,20 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   const inFlightValidationsRef = useRef<Set<string>>(new Set());
   const masterBlobUrlRef = useRef<string | null>(null);
   const lastChunksSignatureRef = useRef<string>("");
+  const [currentAsrModel, setCurrentAsrModel] = useState<string>(() => loadSubtitleSettings().whisperModel);
+
+  useEffect(() => {
+    const handleAsrChange = (e: Event) => {
+      const custom = e as CustomEvent<string>;
+      const model = custom.detail || loadSubtitleSettings().whisperModel;
+      setCurrentAsrModel(model);
+      inFlightValidationsRef.current.clear();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_asr_model_changed", handleAsrChange);
+      return () => window.removeEventListener("voxlab_asr_model_changed", handleAsrChange);
+    }
+  }, []);
 
   const handleProcessScriptFile = async (file: File) => {
     try {
@@ -415,7 +429,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   };
 
   // Automated Background Quality Validation for Outdated / Unvalidated Chunks
-  // Triggers when chunks are ready with audio, but review is outdated or missing (e.g. validator version bump)
+  // Triggers when chunks are ready with audio, but review is outdated or missing (e.g. validator version bump or ASR model change)
   // Strictly sequential (concurrency 1), guarded against infinite loops and stale audio races.
   useEffect(() => {
     if (isGenerating) return;
@@ -425,22 +439,23 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       (c) =>
         c.status === "ready" &&
         Boolean(c.audioFilePath || c.audioUrl) &&
-        isReviewOutdated(c) &&
-        !inFlightValidationsRef.current.has(getChunkAudioSignature(c))
+        isReviewOutdated(c, currentAsrModel) &&
+        !inFlightValidationsRef.current.has(`${getChunkAudioSignature(c)}::${currentAsrModel}`)
     );
 
     if (!outdatedChunk) return;
 
     const audioSig = getChunkAudioSignature(outdatedChunk);
     if (!audioSig) return;
+    const inFlightKey = `${audioSig}::${currentAsrModel}`;
 
-    inFlightValidationsRef.current.add(audioSig);
+    inFlightValidationsRef.current.add(inFlightKey);
 
     const runAutoValidation = async () => {
       try {
         const lang = outdatedChunk.effectiveVoiceSnapshot?.language;
         const speed = outdatedChunk.effectiveVoiceSnapshot?.speed;
-        const review = await validateChunkAudioQuality(outdatedChunk, lang, undefined, speed);
+        const review = await validateChunkAudioQuality(outdatedChunk, lang, undefined, speed, currentAsrModel);
 
         // State update only if the chunk still exists and still has the exact same audio signature
         setChunks((prev) =>
@@ -454,12 +469,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       } catch (err) {
         console.warn(`[TtsWorkspace] Auto-validation failed for chunk ${outdatedChunk.id}:`, err);
       } finally {
-        inFlightValidationsRef.current.delete(audioSig);
+        inFlightValidationsRef.current.delete(inFlightKey);
       }
     };
 
     runAutoValidation();
-  }, [chunks, isGenerating]);
+  }, [chunks, isGenerating, currentAsrModel]);
 
   // Audio quality and validation state
   const qualityStats = countChunkQualityIssues(chunks);

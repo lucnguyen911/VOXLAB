@@ -22,6 +22,7 @@ import {
 } from "../outputResolver";
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
+import { loadSubtitleSettings } from "../../subtitle/profiles";
 
 export interface TranscriptionExecutorOptions {
   audioFilePath?: string;
@@ -84,10 +85,11 @@ export class TranscriptionExecutor {
     const transSnapshot: BatchTranscriptionSnapshot | undefined =
       job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
 
+    const effectiveWhisperModel = transSnapshot?.whisperModel || loadSubtitleSettings().whisperModel;
     const speechSpeed = transSnapshot?.speechSpeed ?? 1.0;
     const targetFormat = transSnapshot?.outputFormat || job.outputSnapshot?.outputSubtitleFormat || "srt";
 
-    onProgress?.(15, `Đang khởi động mô hình bóc băng Whisper (${transSnapshot?.whisperModel || "base"})...`);
+    onProgress?.(15, `Đang khởi động mô hình bóc băng Whisper (${effectiveWhisperModel})...`);
 
     // Monolithic Safe Cancel Guard:
     // In monolithic execution, check cancellation before entering heavy inference
@@ -131,7 +133,7 @@ export class TranscriptionExecutor {
           transSnapshot?.audioLanguage || "auto",
           true,
           (pct, stage) => onProgress?.(Math.floor(40 + pct * 0.3), `Whisper: ${stage}`),
-          transSnapshot?.whisperModel ? `faster-whisper-${transSnapshot.whisperModel}` : undefined
+          effectiveWhisperModel
         );
         rawSegments = r.segments.map((s, idx) => ({
           id: idx + 1,

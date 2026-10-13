@@ -56,6 +56,11 @@ export const SubtitleSettingsPanel: React.FC = () => {
       label: "medium",
       desc: "Nhanh, nhẹ máy · Độ chính xác khá",
     },
+    {
+      id: "small",
+      label: "small",
+      desc: "Nhẹ máy nhất · Phù hợp máy yếu",
+    },
   ];
 
   // Speech speed options

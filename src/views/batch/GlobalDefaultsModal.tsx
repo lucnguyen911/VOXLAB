@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { BatchTaskConfigMap } from "../../types/batch";
 import { useI18n } from "../../i18n/context";
+import { loadSubtitleSettings } from "../../services/subtitle/profiles";
 
 export interface GlobalDefaultsModalProps {
   isOpen: boolean;
@@ -319,24 +320,16 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
             <div className="space-y-4">
               <div>
                 <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
-                  Mô hình Whisper ASR
+                  Mô hình Whisper ASR (Đồng bộ toàn ứng dụng)
                 </label>
-                <select
-                  value={localDefaults.transcription?.whisperModel || "base"}
-                  onChange={(e) => {
-                    const whisperModel = e.target.value;
-                    setLocalDefaults((prev) => ({
-                      ...prev,
-                      transcription: { ...(prev.transcription || ({} as any)), whisperModel },
-                    }));
-                  }}
-                  className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary"
-                >
-                  <option value="tiny">Tiny (Nhanh nhất, độ chính xác cơ bản)</option>
-                  <option value="base">Base (Cân bằng tốc độ & độ chính xác)</option>
-                  <option value="small">Small (Chính xác tốt hơn)</option>
-                  <option value="large-v3">Large v3 (Chính xác cao nhất)</option>
-                </select>
+                <div className="w-full bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs text-textPrimary flex items-center justify-between">
+                  <span className="font-medium text-accent">
+                    {loadSubtitleSettings().whisperModel}
+                  </span>
+                  <span className="text-[11px] text-textMuted italic">
+                    Cấu hình tại Tab Phụ đề
+                  </span>
+                </div>
               </div>
             </div>
           )}

@@ -12,6 +12,9 @@ import os
 import sys
 
 MODELS = {
+    "faster-whisper-large-v3-turbo": {"repo": "deepdml/faster-whisper-large-v3-turbo", "allow": None},
+    "faster-whisper-large-v3": {"repo": "Systran/faster-whisper-large-v3", "allow": None},
+    "faster-whisper-medium": {"repo": "Systran/faster-whisper-medium", "allow": None},
     "faster-whisper-small": {"repo": "Systran/faster-whisper-small", "allow": None},
     "omnivoice": {"repo": "k2-fsa/OmniVoice", "allow": None},
     # s3gen.safetensors (1 GB) is not used by Turbo; skip it.

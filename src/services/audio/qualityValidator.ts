@@ -1,8 +1,9 @@
 import { AudioQualityReview, AudioQualityStatus, ChunkItem } from "../../types/ui";
 import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
+import { loadSubtitleSettings } from "../subtitle/profiles";
 
-export const QUALITY_VALIDATOR_VERSION = "2.4.0";
+export const QUALITY_VALIDATOR_VERSION = "2.5.0";
 
 /**
  * Helper to get the unique audio signature of a chunk's generated audio.
@@ -65,13 +66,23 @@ export function isReviewCurrent(chunk: ChunkItem): boolean {
 
 /**
  * Returns true if the chunk's quality review is missing, stale (text changed),
- * or evaluated with an older version of the validator.
+ * evaluated with an older version of the validator, evaluated with a different ASR model,
+ * or evaluated on different audio (audioSignature changed).
  */
-export function isReviewOutdated(chunk: ChunkItem): boolean {
+export function isReviewOutdated(chunk: ChunkItem, currentAsrModel?: string): boolean {
   if (!chunk.qualityReview) return true;
   if (!isReviewCurrent(chunk)) return true;
   if (chunk.qualityReview.validatorVersion !== QUALITY_VALIDATOR_VERSION) {
     return true;
+  }
+  const currentSig = getChunkAudioSignature(chunk);
+  if (chunk.qualityReview.audioSignature && currentSig && chunk.qualityReview.audioSignature !== currentSig) {
+    return true;
+  }
+  if (currentAsrModel) {
+    if (!chunk.qualityReview.asrModelId || chunk.qualityReview.asrModelId !== currentAsrModel) {
+      return true;
+    }
   }
   return false;
 }
@@ -304,9 +315,12 @@ export async function validateChunkAudioQuality(
   chunk: ChunkItem,
   language?: string,
   customAi?: LocalAiServices | null,
-  speed?: number
+  speed?: number,
+  asrModelId?: string
 ): Promise<AudioQualityReview> {
   const now = Date.now();
+  const effectiveAsrModel = asrModelId || loadSubtitleSettings().whisperModel;
+  const audioSig = getChunkAudioSignature(chunk);
 
   // Technical check: chunk must have an audio destination
   if (!chunk.audioFilePath && !chunk.audioUrl) {
@@ -323,6 +337,8 @@ export async function validateChunkAudioQuality(
       checkedAt: now,
       text: chunk.text,
       validatorVersion: QUALITY_VALIDATOR_VERSION,
+      asrModelId: effectiveAsrModel,
+      audioSignature: "",
     };
   }
 
@@ -330,7 +346,13 @@ export async function validateChunkAudioQuality(
     const ai = customAi !== undefined ? customAi : await getSharedAiServices();
 
     if (ai && chunk.audioFilePath) {
-      const res = await ai.validateAudioQuality(chunk.audioFilePath, chunk.text, language, speed);
+      const res = await ai.validateAudioQuality(
+        chunk.audioFilePath,
+        chunk.text,
+        language,
+        speed,
+        effectiveAsrModel
+      );
       return {
         status: res.status,
         issues: res.issues || [],
@@ -340,6 +362,8 @@ export async function validateChunkAudioQuality(
         audioPath: chunk.audioFilePath,
         text: chunk.text,
         validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: res.asrModelId || effectiveAsrModel,
+        audioSignature: audioSig,
       };
     }
   } catch (err: any) {
@@ -353,6 +377,8 @@ export async function validateChunkAudioQuality(
       audioPath: chunk.audioFilePath,
       text: chunk.text,
       validatorVersion: QUALITY_VALIDATOR_VERSION,
+      asrModelId: effectiveAsrModel,
+      audioSignature: audioSig,
     };
   }
 
@@ -371,6 +397,8 @@ export async function validateChunkAudioQuality(
       checkedAt: now,
       text: chunk.text,
       validatorVersion: QUALITY_VALIDATOR_VERSION,
+      asrModelId: effectiveAsrModel,
+      audioSignature: audioSig,
     };
   }
 
@@ -382,5 +410,7 @@ export async function validateChunkAudioQuality(
     audioPath: chunk.audioFilePath,
     text: chunk.text,
     validatorVersion: QUALITY_VALIDATOR_VERSION,
+    asrModelId: effectiveAsrModel,
+    audioSignature: audioSig,
   };
 }

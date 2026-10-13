@@ -804,8 +804,8 @@ describe("Audio Quality Validator Tests", () => {
     assert.ok(issue.message.includes("steelering"));
   });
 
-  it("V19: detects outdated quality reviews and associates validatorVersion", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "2.4.0");
+  it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
+    assert.equal(QUALITY_VALIDATOR_VERSION, "2.5.0");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -816,8 +816,9 @@ describe("Audio Quality Validator Tests", () => {
       pauseAfterMs: "auto",
     };
 
-    const review = await validateChunkAudioQuality(chunkNoAudio);
-    assert.equal(review.validatorVersion, "2.4.0");
+    const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
+    assert.equal(review.validatorVersion, "2.5.0");
+    assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
       ...chunkNoAudio,
@@ -826,6 +827,11 @@ describe("Audio Quality Validator Tests", () => {
       qualityReview: review,
     };
     assert.equal(isReviewOutdated(chunkWithCurrentReview), false);
+    assert.equal(isReviewOutdated(chunkWithCurrentReview, "large-v3-turbo"), false);
+
+    // Stale review due to different ASR model selected
+    assert.equal(isReviewOutdated(chunkWithCurrentReview, "small"), true);
+    assert.equal(isReviewOutdated(chunkWithCurrentReview, "large-v3"), true);
 
     // Stale review due to text modification
     const chunkModifiedText: ChunkItem = {
@@ -843,6 +849,17 @@ describe("Audio Quality Validator Tests", () => {
       },
     };
     assert.equal(isReviewOutdated(chunkOlderVersion), true);
+
+    // Stale review due to audio signature mismatch
+    const chunkMismatchedSig: ChunkItem = {
+      ...chunkWithCurrentReview,
+      durationSec: 9.9,
+      qualityReview: {
+        ...review,
+        audioSignature: "blob:mock::2.0",
+      },
+    };
+    assert.equal(isReviewOutdated(chunkMismatchedSig), true);
   });
 
   it("V20: getChunkAudioSignature generates deterministic signature and detects audio changes", () => {

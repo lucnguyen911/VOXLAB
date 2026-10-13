@@ -1622,6 +1622,7 @@ def validate_audio_quality(
     text: str,
     language: str | None = None,
     models_dir: str | None = None,
+    model_id: str | None = None,
     speed: float = 1.0,
     force_skip_whisper: bool = False,
 ) -> dict[str, Any]:
@@ -1636,6 +1637,7 @@ def validate_audio_quality(
         "sampleRate": int,
         "checkedAt": float,
         "audioPath": str,
+        "asrModelId": str,
     }
     """
     checked_at = time.time()
@@ -1667,6 +1669,7 @@ def validate_audio_quality(
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
+            "asrModelId": model_id or "large-v3-turbo",
         }
 
     # Step 2: Speech Alignment & Prosody Validation
@@ -1680,42 +1683,46 @@ def validate_audio_quality(
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
+            "asrModelId": model_id or "large-v3-turbo",
         }
 
-    from .asr_engine import find_whisper_model_dir
+    from .asr_engine import resolve_whisper_model_dir, get_shared_whisper_model, AsrLifecycleManager
 
-    model_dir = find_whisper_model_dir(models_dir)
-    if not model_dir:
+    target_model_dir, canonical_id = resolve_whisper_model_dir(model_id, models_dir)
+    if not target_model_dir:
         return {
             "status": "unverified",
             "issues": [],
             "metrics": default_metrics,
-            "summary": "Chưa kiểm chứng (không tìm thấy mô hình faster-whisper cục bộ)",
+            "summary": f"Chưa kiểm chứng (không tìm thấy mô hình Whisper '{canonical_id}' cục bộ)",
             "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
+            "asrModelId": canonical_id,
         }
 
     # Use shared whisper instance for zero-overhead validation
     try:
-        from .asr_engine import get_shared_whisper_model
-
-        whisper_model = get_shared_whisper_model(models_dir)
+        whisper_model = get_shared_whisper_model(models_dir=models_dir, model_id=target_model_dir)
+        mgr = AsrLifecycleManager.get_instance()
+        active_model_id = mgr.current_model_id or canonical_id
     except Exception as e:
         log(f"[audio_quality] Cannot load whisper model: {e}")
         whisper_model = None
+        active_model_id = canonical_id
 
     if whisper_model is None:
         return {
             "status": "unverified",
             "issues": [],
             "metrics": default_metrics,
-            "summary": "Chưa kiểm chứng (không thể khởi tạo mô hình ASR)",
+            "summary": f"Chưa kiểm chứng (không thể khởi tạo mô hình ASR '{canonical_id}')",
             "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
+            "asrModelId": canonical_id,
         }
 
     try:
@@ -1772,6 +1779,7 @@ def validate_audio_quality(
                 "sampleRate": info.get("sampleRate", 0),
                 "checkedAt": checked_at,
                 "audioPath": audio_path,
+                "asrModelId": active_model_id,
             }
 
         # Low coverage check: if source sentence has >= 6 words but ASR recognizes < 20%
@@ -1785,6 +1793,7 @@ def validate_audio_quality(
                 "sampleRate": info.get("sampleRate", 0),
                 "checkedAt": checked_at,
                 "audioPath": audio_path,
+                "asrModelId": active_model_id,
             }
 
         # Recover unaligned words in acoustic speech energy gaps
@@ -1849,6 +1858,7 @@ def validate_audio_quality(
                 "sampleRate": info.get("sampleRate", 0),
                 "checkedAt": checked_at,
                 "audioPath": audio_path,
+                "asrModelId": active_model_id,
             }
         elif has_warnings:
             return {
@@ -1860,6 +1870,7 @@ def validate_audio_quality(
                 "sampleRate": info.get("sampleRate", 0),
                 "checkedAt": checked_at,
                 "audioPath": audio_path,
+                "asrModelId": active_model_id,
             }
         elif has_unverified:
             return {
@@ -1871,6 +1882,7 @@ def validate_audio_quality(
                 "sampleRate": info.get("sampleRate", 0),
                 "checkedAt": checked_at,
                 "audioPath": audio_path,
+                "asrModelId": active_model_id,
             }
 
         return {
@@ -1882,10 +1894,12 @@ def validate_audio_quality(
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
+            "asrModelId": active_model_id,
         }
     except Exception as e:
         log(f"[audio_quality] Validation error on {audio_path}: {e}")
         # Failure in ASR check does NOT break or discard the audio
+        fallback_model = locals().get("active_model_id") or model_id or "large-v3-turbo"
         return {
             "status": "unverified",
             "issues": [],
@@ -1895,4 +1909,5 @@ def validate_audio_quality(
             "sampleRate": info.get("sampleRate", 0),
             "checkedAt": checked_at,
             "audioPath": audio_path,
+            "asrModelId": fallback_model,
         }

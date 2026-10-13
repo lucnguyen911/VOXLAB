@@ -84,5 +84,6 @@ export interface SubtitleSettings {
   processingSpeed: SubtitleProcessingSpeed; // default "auto" (options: "auto", "1x", "2x", "4x", "8x")
   aspectRatio: SubtitleAspectRatio; // default "16:9" (options: "16:9", "9:16", "1:1")
   maxLines: SubtitleMaxLines; // default 2 (options: 1, 2)
+  hasUserChosenWhisperModel?: boolean;
 }
 

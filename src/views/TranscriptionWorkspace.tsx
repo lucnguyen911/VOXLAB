@@ -41,6 +41,10 @@ import {
 import { DubbingHandoffSnapshot } from "../types/dubbing";
 import { extractFilesFromDropEvent } from "../services/fileDropHelper";
 import { SearchableLanguageSelect } from "../components/common/SearchableLanguageSelect";
+import {
+  queryHardwareProfile,
+  evaluateRecommendedAsrModel,
+} from "../services/ai/hardwareRecommendation";
 
 export type SubtitleWorkspaceState =
   | "EMPTY"
@@ -219,8 +223,24 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
 
   // Subtitle Configuration & Optimization State
   const [subtitleSettings, setSubtitleSettings] = useState<SubtitleSettings>(() => loadSubtitleSettings());
+  const [recommendedModel, setRecommendedModel] = useState<string>("large-v3-turbo");
   const [invalidationNotice, setInvalidationNotice] = useState<string>("");
   const cachedTranscriptRef = useRef<string>(DEFAULT_TRANSCRIPT_TEXT);
+
+  useEffect(() => {
+    let active = true;
+    queryHardwareProfile()
+      .then((profile) => {
+        if (active) {
+          const rec = evaluateRecommendedAsrModel(profile);
+          setRecommendedModel(rec.recommendedModel);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Invalidation Rule for Group 1: Nhận diện
   const handleUpdateRecognition = (updates: Partial<SubtitleSettings>) => {
@@ -1167,9 +1187,22 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
                   onChange={(e) => handleUpdateRecognition({ whisperModel: e.target.value })}
                   className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
                 >
-                  <option value="large-v3-turbo">{t.transcription.whisperModelTurbo}</option>
-                  <option value="large-v3">{t.transcription.whisperModelLarge}</option>
-                  <option value="medium">{t.transcription.whisperModelMedium}</option>
+                  <option value="large-v3-turbo">
+                    {t.transcription.whisperModelTurbo}
+                    {recommendedModel === "large-v3-turbo" ? ` · (${t.transcription.recommendedBadge})` : ""}
+                  </option>
+                  <option value="large-v3">
+                    {t.transcription.whisperModelLarge}
+                    {recommendedModel === "large-v3" ? ` · (${t.transcription.recommendedBadge})` : ""}
+                  </option>
+                  <option value="medium">
+                    {t.transcription.whisperModelMedium}
+                    {recommendedModel === "medium" ? ` · (${t.transcription.recommendedBadge})` : ""}
+                  </option>
+                  <option value="small">
+                    {t.transcription.whisperModelSmall}
+                    {recommendedModel === "small" ? ` · (${t.transcription.recommendedBadge})` : ""}
+                  </option>
                 </select>
               </div>
 

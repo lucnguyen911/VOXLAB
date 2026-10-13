@@ -18,12 +18,32 @@ export interface StoredAiRuntimeSettings extends AiRuntimeSettings {
 const FILE = "settings/ai_runtime.json";
 export const DEV_BASELINE_ASR_MODEL = "faster-whisper-small";
 
+export function normalizeWhisperModelId(raw?: string | null): string {
+  if (!raw) return "large-v3-turbo";
+  let s = raw.toLowerCase().trim();
+  if (s.startsWith("faster-whisper-")) {
+    s = s.slice("faster-whisper-".length);
+  }
+  if (s.includes("turbo")) return "large-v3-turbo";
+  if (s.includes("v3")) return "large-v3";
+  if (s.includes("medium")) return "medium";
+  if (s.includes("small")) return "small";
+  return s;
+}
+
 const DEVICES: DevicePreference[] = ["auto", "cuda", "cpu"];
 const ENGINES: LocalTtsEngineId[] = ["omnivoice", "chatterbox", "qwen"];
 
 async function defaultModelsDir(): Promise<string> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("ai_models_dir");
+  if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) {
+    return "";
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string>("ai_models_dir");
+  } catch {
+    return "";
+  }
 }
 
 export function sanitizeAiRuntimeSettings(raw: unknown, fallbackModelsDir: string): StoredAiRuntimeSettings {
@@ -49,11 +69,41 @@ export async function loadAiRuntimeSettings(): Promise<StoredAiRuntimeSettings> 
   } catch {
     raw = null; // first run or unreadable → defaults
   }
-  return sanitizeAiRuntimeSettings(raw, fallback);
+  const settings = sanitizeAiRuntimeSettings(raw, fallback);
+
+  // Single Source of Truth: synchronize ASR model from Subtitle settings
+  try {
+    const { loadSubtitleSettings } = await import("../subtitle/profiles");
+    const sub = loadSubtitleSettings();
+    if (sub && sub.whisperModel) {
+      settings.asrModelId = `faster-whisper-${normalizeWhisperModelId(sub.whisperModel)}`;
+    }
+  } catch {
+    // ignore
+  }
+
+  return settings;
 }
 
 export async function saveAiRuntimeSettings(s: StoredAiRuntimeSettings): Promise<void> {
   await saveAppDataFile(FILE, JSON.stringify(s, null, 2));
+}
+
+export async function syncAsrModelToAiRuntime(whisperModel: string): Promise<void> {
+  if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) {
+    return;
+  }
+  try {
+    const canonical = normalizeWhisperModelId(whisperModel);
+    const targetAsrId = `faster-whisper-${canonical}`;
+    const s = await loadAiRuntimeSettings();
+    if (s.asrModelId !== targetAsrId) {
+      s.asrModelId = targetAsrId;
+      await saveAiRuntimeSettings(s);
+    }
+  } catch (err) {
+    console.warn("[aiRuntimeSettings] Failed to sync ASR model to ai_runtime.json:", err);
+  }
 }
 
 export interface ModelStatus {

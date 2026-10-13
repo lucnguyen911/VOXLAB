@@ -21,7 +21,52 @@ from .tts.service import TtsService  # noqa: E402
 
 
 def system_info(runtime: str, asr, tts: TtsService) -> dict:
-    info: dict = {"runtime": runtime, "python": platform.python_version(), "platform": platform.platform()}
+    info: dict = {
+        "runtime": runtime,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "cpuCores": os.cpu_count() or 1,
+    }
+    # Detect CPU name
+    try:
+        if os.name == "nt":
+            import winreg
+
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+            cpu_name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+            info["cpu"] = str(cpu_name).strip()
+        else:
+            info["cpu"] = platform.processor() or "CPU"
+    except Exception:
+        info["cpu"] = platform.processor() or "CPU"
+
+    # Detect RAM (Total & Free)
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            class _MEM(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", wintypes.DWORD),
+                    ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("sullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            m = _MEM()
+            m.dwLength = ctypes.sizeof(_MEM)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+                info["ramTotalMb"] = int(m.ullTotalPhys // (1024 * 1024))
+                info["ramFreeMb"] = int(m.ullAvailPhys // (1024 * 1024))
+    except Exception:
+        pass
+
     try:
         import torch
 
@@ -37,6 +82,7 @@ def system_info(runtime: str, asr, tts: TtsService) -> dict:
             info["vramFreeMb"] = free // (1024 * 1024)
     except ImportError:
         info["torch"] = None
+        info["cudaAvailable"] = False
     info["asr"] = asr.status() if asr else None
     info["tts"] = tts.status()
     return info
@@ -108,12 +154,14 @@ def main(argv: list[str] | None = None) -> int:
             text = params.get("text") or ""
             language = params.get("language")
             models_dir = params.get("modelsDir")
+            model_id = params.get("modelId") or params.get("asrModelId")
             speed = float(params.get("speed") or 1.0)
             res = audio_quality.validate_audio_quality(
                 audio_path=audio_path,
                 text=text,
                 language=language,
                 models_dir=models_dir,
+                model_id=model_id,
                 speed=speed,
             )
             ctx.progress(100.0, "validated")
