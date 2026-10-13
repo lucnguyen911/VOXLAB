@@ -117,3 +117,12 @@
    ```text
    cargo check --manifest-path src-tauri/Cargo.toml -> Finished `dev` profile in 0.23s (Exit code 0)
    ```
+
+---
+
+## 7. XÁC MINH COMMIT VÀ ĐỒNG BỘ GITHUB (`origin/master`)
+
+- **Commit thuật toán & kiểm thử:** `e7105e9` (`feat(subtitle): finalize YouTube cinematic subtitle protected spans, semantic line balance, and acoustic hallucination filter`)
+- **Nhánh:** `master` -> `origin/master`
+- **Trạng thái working tree:** Sạch (`git status -s` rỗng, `HEAD == origin/master`).
+
