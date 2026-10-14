@@ -145,10 +145,32 @@ def main(argv: list[str] | None = None) -> int:
         server.register_heavy("asr.load", asr.load)
         server.register_heavy("asr.transcribe", asr.transcribe)
         server.register_heavy("asr.unload", asr.unload)
+        import importlib
         from . import audio_ops
+        from . import number_normalizer
         from . import audio_quality
+        from . import subtitle_optimizer
+
+        _mod_mtimes: dict[str, float] = {}
+        for _m_obj in (number_normalizer, audio_quality, subtitle_optimizer):
+            _f = getattr(_m_obj, "__file__", None)
+            if _f and os.path.exists(_f):
+                _mod_mtimes[_m_obj.__name__] = os.path.getmtime(_f)
+
+        def _ensure_fresh_qc_modules() -> None:
+            for _m_obj in (number_normalizer, audio_quality, subtitle_optimizer):
+                _f = getattr(_m_obj, "__file__", None)
+                if _f and os.path.exists(_f):
+                    _cur_mtime = os.path.getmtime(_f)
+                    if _cur_mtime > _mod_mtimes.get(_m_obj.__name__, 0.0):
+                        try:
+                            importlib.reload(_m_obj)
+                            _mod_mtimes[_m_obj.__name__] = _cur_mtime
+                        except Exception:
+                            pass
 
         def validate_quality_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
+            _ensure_fresh_qc_modules()
             ctx.progress(10.0, "validating_audio")
             audio_path = params.get("audioPath") or ""
             text = params.get("text") or ""
@@ -171,9 +193,8 @@ def main(argv: list[str] | None = None) -> int:
         server.register_light("audio.probe", audio_ops.probe)
         server.register_heavy("audio.validate_quality", validate_quality_handler)
 
-        from . import subtitle_optimizer
-
         def generate_srt_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
+            _ensure_fresh_qc_modules()
             ctx.progress(5.0, "preparing_master_subtitle")
             return subtitle_optimizer.generate_srt_from_master_audio(
                 audio_path=str(params.get("audioPath") or ""),

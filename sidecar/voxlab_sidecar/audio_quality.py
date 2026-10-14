@@ -1017,12 +1017,17 @@ def analyze_word_alignment_issues(
             unrepresented_content_indices = []
             for idx in range(i1, i2):
                 sw = source_words_clean[idx]
+                raw_sw_tok = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", source_words[idx])
                 if not sw or len(sw) < 3 or sw in IGNORED_OMISSION_WORDS:
                     continue
                 if any(are_words_equivalent(sw, aw) for aw in asr_slice_clean):
                     continue
-                if is_likely_proper_noun(source_words, delimiters, idx):
-                    if any(levenshtein_dist(phonetic_key(sw), phonetic_key(aw)) <= 2 for aw in asr_slice_clean):
+                if is_likely_proper_noun(source_words, delimiters, idx) and not raw_sw_tok.isupper():
+                    if any(
+                        abs(len(sw) - len(aw)) <= 1
+                        and levenshtein_dist(phonetic_key(sw), phonetic_key(aw)) <= 2
+                        for aw in asr_slice_clean
+                    ):
                         continue
                 unrepresented_content_indices.append(idx)
 
@@ -1043,6 +1048,36 @@ def analyze_word_alignment_issues(
                 })
                 continue
 
+            # Case 2a: Acronym partial letter omission (e.g. "GVEC" -> "GV" missing "EC", or ["G", "V"])
+            if (i2 - i1) == 1 and (j2 - j1) >= 1:
+                sw = src_slice_clean[0]
+                raw_sw_tok = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", source_words[i1])
+                w_prob_max = max(
+                    (float(asr_words[k].get("probability", 1.0)) for k in range(j1, min(j2, len(asr_words)))),
+                    default=1.0,
+                )
+                if (
+                    raw_sw_tok.isupper()
+                    and raw_sw_tok.isalpha()
+                    and len(raw_sw_tok) >= 3
+                    and 1 <= len(asr_joined) < len(sw)
+                    and (sw.startswith(asr_joined) or sw.endswith(asr_joined))
+                    and w_prob_max >= 0.50
+                ):
+                    missing_part = (
+                        raw_sw_tok[len(asr_joined):]
+                        if sw.startswith(asr_joined)
+                        else raw_sw_tok[:-len(asr_joined)]
+                    )
+                    issues.append({
+                        "severity": "warning",
+                        "code": "MISSING_WORD",
+                        "message": f'Nghi vấn đọc thiếu âm "{missing_part}" trong từ viết tắt "{raw_sw_tok}" (ASR chỉ ghi nhận "{asr_joined.upper()}") — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                        "words": [raw_sw_tok, missing_part],
+                        "timeRange": [round(t_start, 3), round(t_end, 3)],
+                    })
+                    continue
+
             # Case 2: Partial syllable truncation (e.g. "mobile" -> "mo", "building" -> "build")
             if (i2 - i1) == 1 and (j2 - j1) == 1:
                 sw = src_slice_clean[0]
@@ -1051,8 +1086,7 @@ def analyze_word_alignment_issues(
                 is_pn = is_likely_proper_noun(source_words, delimiters, i1)
 
                 if (
-                    not is_pn
-                    and len(sw) >= 4
+                    len(sw) >= 4
                     and len(aw) >= 2
                     and len(sw) >= len(aw) + 2
                     and (sw.startswith(aw) or phonetic_key(sw).startswith(phonetic_key(aw)))

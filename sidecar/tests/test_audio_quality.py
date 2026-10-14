@@ -1549,6 +1549,41 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en")
         self.assertEqual(len(issues), 0, f"Expected 0 issues for Chunk 37 dollars and cents, got: {issues}")
 
+    def test_acronym_missing_letters_gvec_spoken_as_gv_flagged(self):
+        """Regression test for Chunk 37 (27.3s): when 'GVEC' in script is only spoken as 'GV' (missing 'EC')
+        while 'five thousand nine hundred and twenty two dollars and fifty cents' is spoken in full,
+        QC must flag 'GVEC' / 'EC' as MISSING_WORD and must NOT falsely flag 'cents'."""
+        text = (
+            "Take a look at the GVEC cooperative in Texas as a prime example. "
+            "Through their Peak-Time Payback program, eligible homeowners can receive an initial upfront "
+            "incentive of up to five thousand nine hundred and twenty two dollars and fifty cents just for "
+            "installing a Powerwall Three and enrolling. On top of that, the program offers annual bill "
+            "credits of up to eight hundred and sixty two dollars and fifty cents."
+        )
+        raw_tokens = [
+            "take", "a", "look", "at", "the", "GV", "Cooperative", "in", "Texas", "as", "a", "prime", "example.",
+            "Through", "their", "Peak", "Time", "Payback", "program,", "eligible", "homeowners",
+            "can", "receive", "an", "initial", "upfront", "incentive", "of", "up", "to",
+            "$5", ",922", ".50", "just", "for", "installing", "a", "Powerwall", "3", "and",
+            "enrolling.", "On", "top", "of", "that,", "the", "program", "offers", "annual",
+            "bill", "credits", "of", "up", "to", "$862", ".50.",
+        ]
+        mock_words = [
+            {
+                "word": tok,
+                "startSec": round(0.1 + idx * 0.35, 3),
+                "endSec": round(0.1 + idx * 0.35 + 0.30, 3),
+                "probability": 0.98,
+            }
+            for idx, tok in enumerate(raw_tokens)
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en")
+        self.assertEqual(len(issues), 1, f"Expected 1 issue for GVEC -> GV, got: {issues}")
+        self.assertEqual(issues[0]["code"], "MISSING_WORD")
+        self.assertIn("GVEC", issues[0]["words"])
+        self.assertIn("EC", issues[0]["words"])
+        self.assertNotIn("cents", issues[0]["words"])
+
 
 if __name__ == "__main__":
     unittest.main()
