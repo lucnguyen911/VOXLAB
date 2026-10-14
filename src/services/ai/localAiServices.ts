@@ -334,6 +334,17 @@ export class LocalAiServices {
     );
   }
 
+  async probeAudio(audioPath: string): Promise<{
+    durationSec: number;
+    sampleRate: number;
+    channels: number;
+    format: string;
+    hasAudioTrack?: boolean;
+    resolution?: string;
+  }> {
+    return this.call("core", "audio.probe", { path: audioPath });
+  }
+
   async generateMasterSubtitles(
     params: {
       audioPath: string;
@@ -343,6 +354,7 @@ export class LocalAiServices {
       maxLines?: 1 | 2;
       asrModelId?: string;
       chunkCount?: number;
+      speechSpeed?: number;
     },
     onProgress?: (pct: number, stage: string) => void
   ): Promise<MasterSubtitleResult> {
@@ -361,6 +373,7 @@ export class LocalAiServices {
         modelId: effectiveModel,
         asrModelId: effectiveModel,
         chunkCount: params.chunkCount ?? 0,
+        speechSpeed: typeof params.speechSpeed === "number" ? params.speechSpeed : 1.0,
       },
       onProgress
     );

@@ -39,13 +39,25 @@ import {
   WHISPER_AUDIO_LANGUAGES,
 } from "../services/subtitle";
 import { DubbingHandoffSnapshot } from "../types/dubbing";
-import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
+import {
+   extractFilesFromDropEvent,
+  expandTauriPaths,
+  useTauriDropZone,
+} from "../services/fileDropHelper";
 import { SearchableLanguageSelect } from "../components/common/SearchableLanguageSelect";
 import {
   queryHardwareProfile,
   evaluateRecommendedAsrModel,
 } from "../services/ai/hardwareRecommendation";
-import { getSharedAiServices } from "../services/batch/batchRuntime";
+import {
+  getSharedAiServices,
+  readAudioFileBlobUrl,
+   reloadAiRuntimeSettings,
+  showPathInFolder,
+  tauriAiFs,
+} from "../services/batch/batchRuntime";
+import { syncAsrModelToAiRuntime } from "../services/ai/aiRuntimeSettings";
+import { isTauriRuntime } from "../services/ai/tauriBackend";
 
 export type SubtitleWorkspaceState =
   | "EMPTY"
@@ -63,6 +75,7 @@ export interface MediaFileInfo {
   hasAudioTrack: boolean;
   objectUrl?: string;
   file?: File;
+  nativePath?: string;
 }
 
 export interface EditableSubtitleCue extends SubtitleCue {
@@ -79,6 +92,10 @@ export interface TranscriptionWorkspaceProps {
 
 const DEFAULT_TRANSCRIPT_TEXT =
   "Chào mọi người đã quay trở lại với series sản xuất nội dung âm thanh VoxLab. Hôm nay chúng ta sẽ thử nghiệm mô hình nhận diện giọng nói faster-whisper trên hệ thống. Tốc độ xử lý đạt trên 15x thời gian thực với độ chính xác cao đối với tiếng Việt có dấu. Sau khi bóc băng xong, bạn có thể bấm nút Chuyển sang TTS để lồng tiếng lại ngay lập tức.";
+
+const SUPPORTED_AUDIO_EXTS = ["wav", "mp3", "flac", "m4a", "aac", "ogg"];
+const SUPPORTED_VIDEO_EXTS = ["mp4", "mov", "mkv", "webm", "avi"];
+const ALL_SUPPORTED_MEDIA_EXTS = [...SUPPORTED_AUDIO_EXTS, ...SUPPORTED_VIDEO_EXTS];
 
 /**
  * Compact, auto-resizing textarea that matches subtitle text typography
@@ -217,6 +234,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
   const [processedSec, setProcessedSec] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const isPausedRef = useRef(false);
+  const cancelledRef = useRef(false);
   const processingTimerRef = useRef<any>(null);
 
   // Subtitle Cues
@@ -250,6 +268,12 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     setSubtitleSettings(updated);
     saveSubtitleSettings(updates);
 
+    if (updates.whisperModel) {
+      syncAsrModelToAiRuntime(updates.whisperModel)
+        .then(() => reloadAiRuntimeSettings())
+        .catch(() => {});
+    }
+
     if (workspaceState === "RESULT") {
       setWorkspaceState("READY");
       setCues([]);
@@ -274,6 +298,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
               aspectRatio: updated.aspectRatio,
               maxLines: updated.maxLines,
               asrModelId: updated.whisperModel,
+              speechSpeed: updated.speechSpeed,
             });
             if (res?.cues?.length) {
               setCues(res.cues.map((c) => ({ ...c, isEdited: false })));
@@ -347,9 +372,10 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
   const isEditingRef = useRef(false);
   const cueListContainerRef = useRef<HTMLDivElement>(null);
 
-  // Playback timer (speed-aware)
+  // Synthetic playback timer only when no real <audio> element is active (e.g. non-browser tests)
   useEffect(() => {
     if (!isPlaying) return;
+    if (audioRef.current && fileInfo?.objectUrl) return;
     const interval = setInterval(() => {
       setCurrentTimeSec((prev) => {
         const step = 0.1 * playbackSpeed;
@@ -363,7 +389,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     }, 100);
 
     return () => clearInterval(interval);
-  }, [isPlaying, totalDurationSec, playbackSpeed]);
+  }, [isPlaying, totalDurationSec, playbackSpeed, fileInfo?.objectUrl]);
 
   // Sync real audio element
   useEffect(() => {
@@ -420,10 +446,139 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   };
 
+  const probeMediaFilePath = useCallback(
+    async (nativePath: string, isVideo: boolean, ext: string) => {
+      try {
+        const ai = await getSharedAiServices();
+        if (!ai?.probeAudio) return;
+        const info = await ai.probeAudio(nativePath);
+        if (info.hasAudioTrack === false) {
+          setErrorMessage(t.transcription.noAudioStream);
+          setWorkspaceState("ERROR");
+          return;
+        }
+        setFileInfo((prev) => {
+          if (!prev || (prev.nativePath && prev.nativePath !== nativePath)) return prev;
+          const dur =
+            typeof info.durationSec === "number" && info.durationSec > 0
+              ? Number(info.durationSec.toFixed(2))
+              : prev.durationSec;
+          const resOrFmt =
+            isVideo && info.resolution
+              ? info.resolution
+              : info.channels
+              ? `${ext.toUpperCase()} • ${info.channels === 1 ? "Mono" : "Stereo"}`
+              : prev.resolutionOrFormat;
+          return {
+            ...prev,
+            durationSec: dur,
+            resolutionOrFormat: resOrFmt,
+            hasAudioTrack: true,
+          };
+        });
+      } catch (err: any) {
+        const msg = String(err?.message || err || "");
+        if (msg.includes("NO_AUDIO_STREAM")) {
+          setErrorMessage(t.transcription.noAudioStream);
+          setWorkspaceState("ERROR");
+        }
+      }
+    },
+    [t.transcription.noAudioStream]
+  );
+
+  const handleNativePathSelect = useCallback(
+    async (rawPath: string) => {
+      const expanded = await expandTauriPaths([rawPath]);
+      const chosenPath =
+        expanded.find((p) => {
+          const ext = p.split(".").pop()?.toLowerCase() || "";
+          return ALL_SUPPORTED_MEDIA_EXTS.includes(ext);
+        }) ||
+        expanded[0] ||
+        rawPath;
+
+      const fileName = chosenPath.split(/[\\/]/).pop() || chosenPath;
+      const ext = fileName.split(".").pop()?.toLowerCase() || "";
+      const isAudio = SUPPORTED_AUDIO_EXTS.includes(ext);
+      const isVideo = SUPPORTED_VIDEO_EXTS.includes(ext);
+
+      if (!isAudio && !isVideo) {
+        setErrorMessage(t.transcription.unsupportedFile);
+        setWorkspaceState("ERROR");
+        return;
+      }
+
+      const lowerName = fileName.toLowerCase();
+      if (
+        isVideo &&
+        (lowerName.includes("no_audio") ||
+          lowerName.includes("silent") ||
+          lowerName.includes("no-audio"))
+      ) {
+        setErrorMessage(t.transcription.noAudioStream);
+        setWorkspaceState("ERROR");
+        return;
+      }
+
+      if (fileInfo?.objectUrl) {
+        try {
+          URL.revokeObjectURL(fileInfo.objectUrl);
+        } catch {
+          // ignore
+        }
+      }
+
+      let sizeFormatted = "0.0 MB";
+      try {
+        const core = await import("@tauri-apps/api/core");
+        const st = await core.invoke<{ size: number; mtimeMs: number } | null>("fs_stat", {
+          path: chosenPath,
+        });
+        if (st && typeof st.size === "number") {
+          sizeFormatted = (st.size / (1024 * 1024)).toFixed(1) + " MB";
+        }
+      } catch {
+        // ignore
+      }
+
+      const resolutionOrFormat = isVideo ? "1920×1080" : `${ext.toUpperCase()} • Stereo`;
+      cachedAudioPathRef.current = chosenPath;
+
+      setFileInfo({
+        name: fileName,
+        sizeFormatted,
+        type: isVideo ? "video" : "audio",
+        durationSec: 0,
+        resolutionOrFormat,
+        hasAudioTrack: true,
+        nativePath: chosenPath,
+      });
+      setCues([]);
+      setCurrentTimeSec(0);
+      setIsPlaying(false);
+      setInvalidationNotice("");
+      setWorkspaceState("READY");
+      setErrorMessage("");
+
+      // Load Blob URL for preview playback and probe real duration via sidecar in parallel
+      readAudioFileBlobUrl(chosenPath)
+        .then((blobUrl) => {
+          setFileInfo((prev) =>
+            prev && prev.nativePath === chosenPath ? { ...prev, objectUrl: blobUrl } : prev
+          );
+        })
+        .catch(() => {});
+
+      await probeMediaFilePath(chosenPath, isVideo, ext);
+    },
+    [fileInfo?.objectUrl, probeMediaFilePath, t.transcription.noAudioStream, t.transcription.unsupportedFile]
+  );
+
   const handleFileChange = (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
-    const isAudio = ["wav", "mp3", "flac", "m4a"].includes(ext) || file.type.startsWith("audio/");
-    const isVideo = ["mp4", "mov", "mkv", "webm"].includes(ext) || file.type.startsWith("video/");
+    const isAudio = SUPPORTED_AUDIO_EXTS.includes(ext) || file.type.startsWith("audio/");
+    const isVideo = SUPPORTED_VIDEO_EXTS.includes(ext) || file.type.startsWith("video/");
 
     if (!isAudio && !isVideo) {
       setErrorMessage(t.transcription.unsupportedFile);
@@ -433,14 +588,31 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
 
     // Video without audio track check
     const lowerName = file.name.toLowerCase();
-    if (isVideo && (lowerName.includes("no_audio") || lowerName.includes("silent") || lowerName.includes("no-audio"))) {
+    if (
+      isVideo &&
+      (lowerName.includes("no_audio") ||
+        lowerName.includes("silent") ||
+        lowerName.includes("no-audio"))
+    ) {
       setErrorMessage(t.transcription.noAudioStream);
       setWorkspaceState("ERROR");
       return;
     }
 
+    if (fileInfo?.objectUrl) {
+      try {
+        URL.revokeObjectURL(fileInfo.objectUrl);
+      } catch {
+        // ignore
+      }
+    }
+
     const sizeFormatted = (file.size / (1024 * 1024)).toFixed(1) + " MB";
-    const durationSec = 18.5;
+    const nativePath =
+      typeof (file as any).path === "string" && (file as any).path.trim().length > 0
+        ? ((file as any).path as string)
+        : undefined;
+    const durationSec = isTauriRuntime() ? 0 : 18.5;
     const resolutionOrFormat = isVideo ? "1920×1080" : `${ext.toUpperCase()} • Stereo`;
 
     let objectUrl: string | undefined;
@@ -452,6 +624,8 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
       // ignore
     }
 
+    cachedAudioPathRef.current = nativePath || null;
+
     setFileInfo({
       name: file.name,
       sizeFormatted,
@@ -461,9 +635,44 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
       hasAudioTrack: true,
       file,
       objectUrl,
+      nativePath,
     });
+    setCues([]);
+    setCurrentTimeSec(0);
+    setIsPlaying(false);
+    setInvalidationNotice("");
     setWorkspaceState("READY");
     setErrorMessage("");
+
+    if (nativePath && isTauriRuntime()) {
+      probeMediaFilePath(nativePath, isVideo, ext);
+    }
+  };
+
+  const handleBrowseFile = async () => {
+    if (isTauriRuntime()) {
+      try {
+        const dialog = await import("@tauri-apps/plugin-dialog");
+        const selected = await dialog.open({
+          multiple: false,
+          filters: [
+            {
+              name: "Audio / Video",
+              extensions: ALL_SUPPORTED_MEDIA_EXTS,
+            },
+          ],
+        });
+        if (typeof selected === "string" && selected.trim().length > 0) {
+          await handleNativePathSelect(selected);
+        } else if (Array.isArray(selected) && selected.length > 0 && typeof selected[0] === "string") {
+          await handleNativePathSelect(selected[0]);
+        }
+        return;
+      } catch {
+        // Fallback to hidden file input if dialog fails
+      }
+    }
+    fileInputRef.current?.click();
   };
 
   const centralDropZoneRef = useRef<HTMLDivElement>(null);
@@ -471,11 +680,24 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
   useTauriDropZone(centralDropZoneRef, {
     enabled: workspaceState !== "PROCESSING",
     onDragStateChange: setIsDragging,
+    onDropPaths: async (paths) => {
+      const expanded = await expandTauriPaths(paths);
+      const validPath =
+        expanded.find((p) => {
+          const ext = p.toLowerCase().split(".").pop() || "";
+          return ALL_SUPPORTED_MEDIA_EXTS.includes(ext);
+        }) ||
+        expanded[0] ||
+        paths[0];
+      if (validPath) {
+        await handleNativePathSelect(validPath);
+      }
+    },
     onDropFiles: (files) => {
       const validFile =
         files.find((f) => {
           const ext = f.name.toLowerCase().split(".").pop() || "";
-          return ["mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "mov", "mkv", "webm", "avi"].includes(ext);
+          return ALL_SUPPORTED_MEDIA_EXTS.includes(ext);
         }) || files[0];
       if (validFile) {
         handleFileChange(validFile);
@@ -509,7 +731,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     const validFile =
       files.find((f) => {
         const ext = f.name.toLowerCase().split(".").pop() || "";
-        return ["mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "mov", "mkv", "webm", "avi"].includes(ext);
+        return ALL_SUPPORTED_MEDIA_EXTS.includes(ext);
       }) || files[0];
     if (validFile) {
       handleFileChange(validFile);
@@ -521,66 +743,136 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     setWorkspaceState("PROCESSING");
     setIsPaused(false);
     isPausedRef.current = false;
+    cancelledRef.current = false;
     setProgressPercent(0);
     setProcessedSec(0);
     setInvalidationNotice("");
+    setErrorMessage("");
 
-    const total = fileInfo.durationSec || 18.5;
+    let total = fileInfo.durationSec || 18.5;
     let currentPct = 0;
 
     if (processingTimerRef.current) {
       clearInterval(processingTimerRef.current);
+      processingTimerRef.current = null;
     }
 
     // In Tauri desktop runtime with a real media file, run the Sidecar YouTube Cinematic ASR + Optimizer pipeline
-    try {
-      const ai = await getSharedAiServices();
-      if (ai?.generateMasterSubtitles && fileInfo.file && typeof fileInfo.file.arrayBuffer === "function") {
-        setProgressPercent(15);
-        const existingPath = (fileInfo.file as any).path as string | undefined;
+    if (isTauriRuntime()) {
+      try {
+        await syncAsrModelToAiRuntime(subtitleSettings.whisperModel);
+        await reloadAiRuntimeSettings();
+        const ai = await getSharedAiServices();
+        if (!ai?.generateMasterSubtitles) {
+          throw new Error("Dịch vụ AI cục bộ chưa sẵn sàng.");
+        }
+
+        setProgressPercent(5);
+        const existingPath =
+          fileInfo.nativePath ||
+          ((fileInfo.file as any)?.path as string | undefined);
         let audioPath: string;
         if (existingPath && typeof existingPath === "string" && existingPath.trim().length > 0) {
           audioPath = existingPath;
-        } else {
+        } else if (fileInfo.file && typeof fileInfo.file.arrayBuffer === "function") {
           const core = await import("@tauri-apps/api/core");
           const scratchDir = await core.invoke<string>("fs_scratch_dir", { name: "subtitle_tab" });
           const safeName = (fileInfo.name || "media.wav").replace(/[^a-zA-Z0-9._-]/g, "_");
           audioPath = `${scratchDir.replace(/[\\/]+$/, "")}/${Date.now()}_${safeName}`;
           const buf = new Uint8Array(await fileInfo.file.arrayBuffer());
           await core.invoke<void>("fs_write_bytes", { path: audioPath, bytes: Array.from(buf) });
+        } else {
+          throw new Error("Không tìm thấy đường dẫn tệp âm thanh/video để xử lý.");
         }
+
+        if (cancelledRef.current) return;
         cachedAudioPathRef.current = audioPath;
 
-        setProgressPercent(45);
-        const res = await ai.generateMasterSubtitles({
-          audioPath,
-          language: subtitleSettings.audioLanguage,
-          aspectRatio: subtitleSettings.aspectRatio,
-          maxLines: subtitleSettings.maxLines,
-          asrModelId: subtitleSettings.whisperModel,
-        });
+        if ((!fileInfo.durationSec || fileInfo.durationSec <= 0) && ai.probeAudio) {
+          try {
+            const probeInfo = await ai.probeAudio(audioPath);
+            if (probeInfo.hasAudioTrack === false) {
+              throw new Error(t.transcription.noAudioStream);
+            }
+            if (typeof probeInfo.durationSec === "number" && probeInfo.durationSec > 0) {
+              total = Number(probeInfo.durationSec.toFixed(2));
+              setFileInfo((prev) => (prev ? { ...prev, durationSec: total } : prev));
+            }
+          } catch (probeErr: any) {
+            if (String(probeErr?.message || "").includes("NO_AUDIO_STREAM")) {
+              throw new Error(t.transcription.noAudioStream);
+            }
+          }
+        }
 
-        if (res?.cues?.length) {
-          const speed = subtitleSettings.speechSpeed;
-          const mappedCues: EditableSubtitleCue[] = res.cues.map((c, idx) => ({
-            index: c.index || idx + 1,
-            startSec: Number((c.startSec * speed).toFixed(3)),
-            endSec: Number((c.endSec * speed).toFixed(3)),
-            text: c.text,
-            isEdited: false,
-          }));
-          setCues(mappedCues);
-          cachedTranscriptRef.current = mappedCues.map((c) => c.text.replace(/\s+/g, " ").trim()).join(" ");
-          setProgressPercent(100);
-          setProcessedSec(total);
-          setWorkspaceState("RESULT");
-          setCurrentTimeSec(0);
-          setIsPlaying(false);
+        if (cancelledRef.current) return;
+        setProgressPercent(12);
+
+        const res = await ai.generateMasterSubtitles(
+          {
+            audioPath,
+            language: subtitleSettings.audioLanguage,
+            aspectRatio: subtitleSettings.aspectRatio,
+            maxLines: subtitleSettings.maxLines,
+            asrModelId: subtitleSettings.whisperModel,
+            speechSpeed: subtitleSettings.speechSpeed,
+          },
+          (percent) => {
+            if (cancelledRef.current || isPausedRef.current) return;
+            if (typeof percent === "number" && Number.isFinite(percent)) {
+              const pct = Math.min(99, Math.max(12, Math.round(percent)));
+              setProgressPercent(pct);
+              if (total > 0) {
+                setProcessedSec(Number(((pct / 100) * total).toFixed(1)));
+              }
+            }
+          }
+        );
+
+        if (cancelledRef.current) return;
+
+        const rawCues = res?.cues || [];
+        const mappedCues: EditableSubtitleCue[] = rawCues.map((c, idx) => ({
+          index: c.index || idx + 1,
+          startSec: Number(Number(c.startSec).toFixed(3)),
+          endSec: Number(Number(c.endSec).toFixed(3)),
+          text: c.text,
+          isEdited: false,
+        }));
+
+        if (mappedCues.length > 0 && (!fileInfo.durationSec || fileInfo.durationSec <= 0)) {
+          const maxEnd = Math.max(...mappedCues.map((c) => c.endSec));
+          if (maxEnd > 0) {
+            total = Number(maxEnd.toFixed(2));
+            setFileInfo((prev) => (prev ? { ...prev, durationSec: total } : prev));
+          }
+        }
+
+        setCues(mappedCues);
+        cachedTranscriptRef.current = mappedCues
+          .map((c) => c.text.replace(/\s+/g, " ").trim())
+          .join(" ");
+        setProgressPercent(100);
+        setProcessedSec(total);
+        setWorkspaceState("RESULT");
+        setCurrentTimeSec(0);
+        setIsPlaying(false);
+        return;
+      } catch (err: any) {
+        if (cancelledRef.current) return;
+        const rawMsg = String(err?.message || err || "");
+        if (rawMsg.toLowerCase().includes("cancel")) {
+          setWorkspaceState("READY");
           return;
         }
+        setErrorMessage(
+          rawMsg.includes("NO_AUDIO_STREAM")
+            ? t.transcription.noAudioStream
+            : rawMsg || t.transcription.recognitionFailed
+        );
+        setWorkspaceState("ERROR");
+        return;
       }
-    } catch {
-      // Fallback to local subtitle engine if sidecar is unavailable
     }
 
     processingTimerRef.current = setInterval(() => {
@@ -659,9 +951,15 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
   };
 
   const handleCancelProcessing = () => {
+    cancelledRef.current = true;
     if (processingTimerRef.current) {
       clearInterval(processingTimerRef.current);
       processingTimerRef.current = null;
+    }
+    if (isTauriRuntime()) {
+      getSharedAiServices()
+        .then((ai) => ai?.cancelActive())
+        .catch(() => {});
     }
     isPausedRef.current = false;
     setIsPaused(false);
@@ -678,6 +976,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
         // ignore
       }
     }
+    cachedAudioPathRef.current = null;
     setFileInfo(null);
     setCues([]);
     setWorkspaceState("EMPTY");
@@ -715,6 +1014,9 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
 
   const handleCueClick = useCallback((cue: EditableSubtitleCue) => {
     setCurrentTimeSec(cue.startSec);
+    if (audioRef.current) {
+      audioRef.current.currentTime = cue.startSec;
+    }
     setIsPlaying(true);
   }, []);
 
@@ -736,16 +1038,41 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const exportTextWithNativeDialog = async (
+    content: string,
+    defaultFilename: string,
+    filterName: string,
+    ext: string
+  ) => {
+    if (isTauriRuntime()) {
+      try {
+        const dialog = await import("@tauri-apps/plugin-dialog");
+        const savePath = await dialog.save({
+          defaultPath: defaultFilename,
+          filters: [{ name: filterName, extensions: [ext] }],
+        });
+        if (savePath && typeof savePath === "string") {
+          await tauriAiFs.writeText(savePath, content);
+          await showPathInFolder(savePath).catch(() => {});
+        }
+        return;
+      } catch {
+        // Fallback to browser download below
+      }
+    }
+    downloadTextFile(content, defaultFilename, "text/plain;charset=utf-8");
+  };
+
   const handleExportSrt = () => {
     const srt = exportToSrt(cues);
     const baseName = fileInfo?.name.replace(/\.[^/.]+$/, "") || "phu_de";
-    downloadTextFile(srt, `${baseName}.srt`, "text/plain;charset=utf-8");
+    void exportTextWithNativeDialog(srt, `${baseName}.srt`, "SubRip Subtitle (.srt)", "srt");
   };
 
   const handleExportTxt = () => {
     const txt = cues.map((c) => c.text.trim()).join("\n\n");
     const baseName = fileInfo?.name.replace(/\.[^/.]+$/, "") || "phu_de";
-    downloadTextFile(txt, `${baseName}.txt`, "text/plain;charset=utf-8");
+    void exportTextWithNativeDialog(txt, `${baseName}.txt`, "Text Document (.txt)", "txt");
   };
 
   const activeAspectRatio = subtitleSettings.aspectRatio;
@@ -761,7 +1088,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
             handleFileChange(e.target.files[0]);
           }
         }}
-        accept="audio/*,video/*,.wav,.mp3,.flac,.m4a,.mp4,.mov,.mkv,.webm"
+        accept="audio/*,video/*,.wav,.mp3,.flac,.m4a,.aac,.ogg,.mp4,.mov,.mkv,.webm,.avi"
         className="hidden"
       />
 
@@ -782,7 +1109,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
           {workspaceState !== "EMPTY" && (
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={handleBrowseFile}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
               title="Tải lên tệp hoặc thư mục âm thanh / video"
             >
@@ -854,7 +1181,9 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
           {workspaceState === "EMPTY" && (
             <div className="flex-1 flex flex-col p-4 sm:p-6 select-none overflow-hidden">
               <div
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => {
+                  void handleBrowseFile();
+                }}
                 className={`flex-1 w-full rounded-2xl border-2 border-dashed flex flex-col items-center justify-center text-center p-6 sm:p-10 transition-all cursor-pointer group ${
                   isDragging
                     ? "border-accent bg-accent/10 scale-[0.995]"
@@ -869,7 +1198,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    fileInputRef.current?.click();
+                    void handleBrowseFile();
                   }}
                   className="px-8 py-3.5 bg-accent hover:bg-accent/90 text-background rounded-xl font-bold text-sm sm:text-base shadow-md hover:shadow-lg transition-all flex items-center gap-2.5 cursor-pointer active:scale-95"
                 >
@@ -1013,9 +1342,9 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
                   <button
                     onClick={() => {
                       if (fileInfo) {
-                        handleStartProcessing();
+                        void handleStartProcessing();
                       } else {
-                        fileInputRef.current?.click();
+                        void handleBrowseFile();
                       }
                     }}
                     className="px-4 py-2 bg-accent hover:bg-accent/90 text-background rounded-lg text-xs font-semibold shadow-sm transition-colors cursor-pointer"
@@ -1215,7 +1544,9 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
                 {/* Change File Button */}
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => {
+                    void handleBrowseFile();
+                  }}
                   className="px-2.5 py-1 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-lg text-xs font-medium border border-borderDefault/70 transition-colors cursor-pointer shrink-0"
                 >
                   {t.transcription.changeFile}
@@ -1240,6 +1571,17 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
                 <audio
                   ref={audioRef}
                   src={fileInfo.objectUrl}
+                  onLoadedMetadata={(e) => {
+                    const dur = e.currentTarget.duration;
+                    if (Number.isFinite(dur) && dur > 0) {
+                      setFileInfo((prev) =>
+                        prev ? { ...prev, durationSec: Number(dur.toFixed(2)) } : prev
+                      );
+                    }
+                  }}
+                  onTimeUpdate={(e) => {
+                    setCurrentTimeSec(e.currentTarget.currentTime);
+                  }}
                   onEnded={() => {
                     setIsPlaying(false);
                     setCurrentTimeSec(0);

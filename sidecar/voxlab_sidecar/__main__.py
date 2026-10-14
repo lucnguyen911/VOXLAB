@@ -152,13 +152,13 @@ def main(argv: list[str] | None = None) -> int:
         from . import subtitle_optimizer
 
         _mod_mtimes: dict[str, float] = {}
-        for _m_obj in (number_normalizer, audio_quality, subtitle_optimizer):
+        for _m_obj in (audio_ops, number_normalizer, audio_quality, subtitle_optimizer):
             _f = getattr(_m_obj, "__file__", None)
             if _f and os.path.exists(_f):
                 _mod_mtimes[_m_obj.__name__] = os.path.getmtime(_f)
 
         def _ensure_fresh_qc_modules() -> None:
-            for _m_obj in (number_normalizer, audio_quality, subtitle_optimizer):
+            for _m_obj in (audio_ops, number_normalizer, audio_quality, subtitle_optimizer):
                 _f = getattr(_m_obj, "__file__", None)
                 if _f and os.path.exists(_f):
                     _cur_mtime = os.path.getmtime(_f)
@@ -189,8 +189,12 @@ def main(argv: list[str] | None = None) -> int:
             ctx.progress(100.0, "validated")
             return res
 
+        def probe_handler(params: dict) -> dict:
+            _ensure_fresh_qc_modules()
+            return audio_ops.probe(params)
+
         server.register_heavy("audio.assemble", audio_ops.assemble)
-        server.register_light("audio.probe", audio_ops.probe)
+        server.register_light("audio.probe", probe_handler)
         server.register_heavy("audio.validate_quality", validate_quality_handler)
 
         def generate_srt_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
@@ -205,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
                 models_dir=params.get("modelsDir"),
                 model_id=params.get("modelId") or params.get("asrModelId"),
                 chunk_count=int(params.get("chunkCount") or 0),
+                speech_speed=float(params.get("speechSpeed") or 1.0),
                 ctx=ctx,
             )
 

@@ -357,7 +357,99 @@ class SubtitleOptimizerTest(unittest.TestCase):
             self.assertEqual(records_wav[0]["action"], "removed")
             self.assertFalse(any("It's happening." in c["text"] for c in cues_wav))
 
+    def test_generate_srt_from_master_audio_auto_language_and_speech_speed_remapping(self):
+        import tempfile
+        import wave
+        from unittest.mock import patch, MagicMock
+        from voxlab_sidecar.subtitle_optimizer import generate_srt_from_master_audio
+        from voxlab_sidecar.asr_engine import AsrLifecycleManager
+        from voxlab_sidecar import audio_ops
+
+        class _MockWord:
+            def __init__(self, word, start, end, probability=0.99):
+                self.word = word
+                self.start = start
+                self.end = end
+                self.probability = probability
+
+        class _MockSegment:
+            def __init__(self, seg_id, start, end, text, words):
+                self.id = seg_id
+                self.start = start
+                self.end = end
+                self.text = text
+                self.words = words
+
+        class _MockInfo:
+            duration = 12.5
+            language = "en"
+
+        captured_kwargs = {}
+
+        class _MockWhisperModel:
+            def transcribe(self, audio_path, **kwargs):
+                captured_kwargs["audio_path"] = audio_path
+                captured_kwargs.update(kwargs)
+                # Simulated timestamps on 0.8x slowed audio: 10.0s -> 12.5s (which maps to 8.0s -> 10.0s original)
+                seg = _MockSegment(
+                    1,
+                    10.0,
+                    12.5,
+                    "Welcome back to the channel.",
+                    [
+                        _MockWord("Welcome", 10.0, 10.5),
+                        _MockWord("back", 10.5, 11.0),
+                        _MockWord("to", 11.0, 11.4),
+                        _MockWord("the", 11.4, 11.8),
+                        _MockWord("channel.", 11.8, 12.5),
+                    ],
+                )
+                return [seg], _MockInfo()
+
+        mock_mgr = MagicMock()
+        mock_mgr.get_or_load.return_value = _MockWhisperModel()
+        mock_mgr.current_model_id = "large-v3-turbo"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav_path = os.path.join(tmpdir, "sample.wav")
+            sr = 16000
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(b"\x00\x00" * (sr * 10))
+
+            # Verify audio_ops.probe returns accurate metadata
+            probe_res = audio_ops.probe({"audioPath": wav_path})
+            self.assertAlmostEqual(probe_res["durationSec"], 10.0, places=1)
+            self.assertTrue(probe_res["hasAudioTrack"])
+
+            with patch.object(
+                AsrLifecycleManager,
+                "get_instance",
+                return_value=mock_mgr,
+            ):
+                res = generate_srt_from_master_audio(
+                    audio_path=wav_path,
+                    models_dir=tmpdir,
+                    model_id="large-v3-turbo",
+                    language="auto",
+                    aspect_ratio="16:9",
+                    max_lines=2,
+                    speech_speed=0.8,
+                )
+
+            # Must pass language=None (never "auto") to faster-whisper
+            self.assertIsNone(captured_kwargs.get("language"))
+            self.assertEqual(res["language"], "en")
+            self.assertEqual(len(res["cues"]), 1)
+            # 10.0 * 0.8 = 8.0s, 12.5 * 0.8 = 10.0s (cue includes 40ms cinematic lead-in -> 7.96s)
+            self.assertAlmostEqual(res["cues"][0]["startSec"], 7.96, places=2)
+            self.assertAlmostEqual(res["cues"][0]["endSec"], 10.0, places=2)
+            self.assertEqual(res["cues"][0]["text"], "Welcome back to the channel.")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

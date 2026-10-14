@@ -147,8 +147,21 @@ export async function readAudioFileBlobUrl(filePath: string): Promise<string> {
     }
   }
   const bytes = await invoke<number[]>("fs_read_bytes", { path: cleanPath });
-  const ext = cleanPath.toLowerCase().split(".").pop();
-  const mime = ext === "mp3" ? "audio/mpeg" : ext === "ogg" ? "audio/ogg" : "audio/wav";
+  const ext = cleanPath.toLowerCase().split(".").pop() || "";
+  const mimeMap: Record<string, string> = {
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    ogg: "audio/ogg",
+    flac: "audio/flac",
+    m4a: "audio/mp4",
+    aac: "audio/aac",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    mkv: "video/x-matroska",
+    webm: "video/webm",
+    avi: "video/x-msvideo",
+  };
+  const mime = mimeMap[ext] || "audio/wav";
   const blob = new Blob([new Uint8Array(bytes)], { type: mime });
   return URL.createObjectURL(blob);
 }

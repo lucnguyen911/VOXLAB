@@ -1861,6 +1861,14 @@ def _audio_duration_from_wav(wav_path: Optional[Path]) -> float:
             with wave.open(str(wav_path), "rb") as wf:
                 return wf.getnframes() / float(wf.getframerate())
         except Exception:
+            try:
+                import av
+
+                with av.open(str(wav_path)) as container:
+                    if container.duration is not None and container.duration > 0:
+                        return float(container.duration) / 1_000_000.0
+            except Exception:
+                pass
             return 0.0
 
 
@@ -2084,7 +2092,7 @@ def validate_final_cues(
 
     # Check 2: Anti-chunk-copying invariant
     chunk_copy_ok = True
-    if chunk_count >= 10 or audio_duration >= 120.0:
+    if chunk_count >= 10 or (audio_duration >= 120.0 and len(source_words) >= 250):
         min_expected = max(int(chunk_count * 2.5), 25) if chunk_count >= 10 else 25
         if len(cues) < min_expected:
             chunk_copy_ok = False
@@ -2221,6 +2229,7 @@ def optimize_subtitles_v2(
     chunk_count: int = 0,
     subtitle_sync_offset_ms: float = 0.0,
     debug_validation_report: Optional[Dict[str, Any]] = None,
+    audio_duration_sec: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     profile = get_profile(video_format, max_lines)
     words = build_word_sequence(segments)
@@ -2276,7 +2285,11 @@ def optimize_subtitles_v2(
         if b not in relaxed_protected_boundaries and b not in hard_boundaries
     }
 
-    audio_duration = _audio_duration_from_wav(Path(wav_path) if wav_path is not None else None)
+    audio_duration = (
+        float(audio_duration_sec)
+        if audio_duration_sec is not None and float(audio_duration_sec) > 0.0
+        else _audio_duration_from_wav(Path(wav_path) if wav_path is not None else None)
+    )
     display_times = _assign_display_times(
         all_cue_words,
         profile,
@@ -2339,6 +2352,50 @@ def _compute_audio_hash(audio_path: str) -> str:
         return os.path.abspath(audio_path)
 
 
+def _prepare_slowed_audio_if_needed(audio_path: str, speech_speed: float) -> Tuple[str, Optional[str]]:
+    """When speech_speed < 1.0 (e.g. 0.9x or 0.8x), creates a temporary pitch-preserving slowed WAV
+    so faster-whisper can recognize fast speech more accurately. Returns (transcribe_path, temp_path_to_cleanup)."""
+    if speech_speed >= 0.999 or speech_speed <= 0.4:
+        return audio_path, None
+    try:
+        import tempfile
+        import numpy as np
+        import soundfile as sf
+        from .audio_ops import apply_clarity_time_stretch
+
+        mono = None
+        sr = 16000
+        try:
+            data, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+            mono = data.mean(axis=1)
+        except Exception:
+            import av
+
+            with av.open(audio_path) as container:
+                resampler = av.audio.resampler.AudioResampler(format="fltp", layout="mono", rate=16000)
+                chunks = []
+                for frame in container.decode(audio=0):
+                    for out_frame in resampler.resample(frame):
+                        chunks.append(out_frame.to_ndarray()[0])
+                for out_frame in resampler.resample(None):
+                    chunks.append(out_frame.to_ndarray()[0])
+                if chunks:
+                    mono = np.concatenate(chunks).astype(np.float32)
+                    sr = 16000
+
+        if mono is None or mono.size == 0:
+            return audio_path, None
+
+        stretched = apply_clarity_time_stretch(mono, sr, rate=speech_speed)
+        fd, tmp_wav = tempfile.mkstemp(prefix="voxlab_asr_slow_", suffix=".wav")
+        os.close(fd)
+        sf.write(tmp_wav, stretched, sr, subtype="PCM_16", format="WAV")
+        return tmp_wav, tmp_wav
+    except Exception as e:
+        logger.warning(f"Could not time-stretch audio for speech_speed={speech_speed}: {e}")
+        return audio_path, None
+
+
 def generate_srt_from_master_audio(
     audio_path: str,
     script_text: Optional[str] = None,
@@ -2348,6 +2405,7 @@ def generate_srt_from_master_audio(
     models_dir: Optional[str] = None,
     model_id: Optional[str] = None,
     chunk_count: int = 0,
+    speech_speed: float = 1.0,
     ctx: Any = None,
 ) -> Dict[str, Any]:
     """Full end-to-end ASR + YouTube Cinematic Subtitle pipeline for Master Audio."""
@@ -2357,10 +2415,12 @@ def generate_srt_from_master_audio(
     if not audio_path or not os.path.isfile(audio_path):
         raise SubtitleOptimizationError(f"Master audio file not found: {audio_path}")
 
+    safe_speed = float(speech_speed) if speech_speed and 0.4 <= float(speech_speed) <= 2.0 else 1.0
     resolved_lang = resolve_script_language(script_text or "", language)
+    whisper_lang = None if not resolved_lang or resolved_lang == "auto" else resolved_lang
     canonical_model = canonicalize_whisper_model_id(model_id)
     wav_hash = _compute_audio_hash(audio_path)
-    cache_key = f"{wav_hash}_{canonical_model}_{resolved_lang or 'auto'}"
+    cache_key = f"{wav_hash}_{canonical_model}_{whisper_lang or 'auto'}_{safe_speed:.2f}"
 
     cached = _MASTER_ASR_CACHE.get(cache_key)
     if cached is not None:
@@ -2375,37 +2435,51 @@ def generate_srt_from_master_audio(
         if ctx:
             ctx.progress(15.0, f"transcribing_master_{used_model_id}")
 
-        segments_iter, info = model.transcribe(
-            audio_path,
-            language=resolved_lang,
-            word_timestamps=True,
-            beam_size=5,
-            vad_filter=False,
-        )
-        duration_sec = float(info.duration or 0.0)
-        detected_lang = info.language or (resolved_lang or "en")
-        segments = []
-        for seg in segments_iter:
-            if ctx:
-                ctx.check_cancelled()
-            words_list = [
-                {
-                    "startSec": round(w.start, 3),
-                    "endSec": round(w.end, 3),
-                    "word": w.word,
-                    "probability": round(w.probability, 4),
-                }
-                for w in (seg.words or [])
-            ]
-            segments.append({
-                "id": len(segments) + 1,
-                "startSec": round(seg.start, 3),
-                "endSec": round(seg.end, 3),
-                "text": seg.text.strip(),
-                "words": words_list,
-            })
-            if ctx and duration_sec > 0:
-                ctx.progress(min(80.0, 15.0 + (seg.end / duration_sec) * 65.0), "transcribing_master")
+        transcribe_path, temp_slow_wav = _prepare_slowed_audio_if_needed(audio_path, safe_speed)
+        scale_factor = safe_speed if temp_slow_wav is not None else 1.0
+
+        try:
+            segments_iter, info = model.transcribe(
+                transcribe_path,
+                language=whisper_lang,
+                word_timestamps=True,
+                beam_size=5,
+                vad_filter=False,
+            )
+            raw_info_dur = float(info.duration or 0.0) * scale_factor
+            probed_dur = _audio_duration_from_wav(Path(audio_path))
+            duration_sec = probed_dur if probed_dur > 0.0 else raw_info_dur
+            detected_lang = info.language or (whisper_lang or "en")
+            segments = []
+            for seg in segments_iter:
+                if ctx:
+                    ctx.check_cancelled()
+                words_list = [
+                    {
+                        "startSec": round(float(w.start) * scale_factor, 3),
+                        "endSec": round(float(w.end) * scale_factor, 3),
+                        "word": w.word,
+                        "probability": round(float(w.probability), 4),
+                    }
+                    for w in (seg.words or [])
+                ]
+                seg_start = round(float(seg.start) * scale_factor, 3)
+                seg_end = round(float(seg.end) * scale_factor, 3)
+                segments.append({
+                    "id": len(segments) + 1,
+                    "startSec": seg_start,
+                    "endSec": seg_end,
+                    "text": seg.text.strip(),
+                    "words": words_list,
+                })
+                if ctx and duration_sec > 0:
+                    ctx.progress(min(80.0, 15.0 + (seg_end / duration_sec) * 65.0), "transcribing_master")
+        finally:
+            if temp_slow_wav and os.path.isfile(temp_slow_wav):
+                try:
+                    os.remove(temp_slow_wav)
+                except Exception:
+                    pass
 
         _MASTER_ASR_CACHE[cache_key] = {
             "segments": segments,
@@ -2427,6 +2501,7 @@ def generate_srt_from_master_audio(
         language=detected_lang,
         chunk_count=chunk_count,
         debug_validation_report=validation_report,
+        audio_duration_sec=duration_sec,
     )
     srt_content = export_cues_to_srt(cues)
 

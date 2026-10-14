@@ -182,15 +182,59 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
 def probe(params: dict[str, Any]) -> dict[str, Any]:
     import soundfile as sf
 
-    path = require(params, "path", str)
+    raw_path = params.get("path") or params.get("audioPath")
+    path = raw_path if isinstance(raw_path, str) and raw_path.strip() else require(params, "path", str)
     if not os.path.isfile(path):
         raise SidecarError("INPUT_NOT_FOUND", "path does not exist")
     try:
         info = sf.info(path)
-    except Exception as e:  # noqa: BLE001
-        raise SidecarError("INVALID_REQUEST", f"cannot read audio header: {e}") from e
-    return {"durationSec": round(float(info.duration), 4), "sampleRate": int(info.samplerate),
-            "channels": int(info.channels), "format": str(info.format)}
+        return {
+            "durationSec": round(float(info.duration), 4),
+            "sampleRate": int(info.samplerate),
+            "channels": int(info.channels),
+            "format": str(info.format),
+            "hasAudioTrack": True,
+        }
+    except Exception as sf_err:  # noqa: BLE001
+        try:
+            import av
+
+            with av.open(path) as container:
+                audio_streams = list(container.streams.audio)
+                video_streams = list(container.streams.video)
+                if not audio_streams:
+                    if video_streams:
+                        raise SidecarError("NO_AUDIO_STREAM", "Không tìm thấy track âm thanh trong video.")
+                    raise SidecarError("INVALID_REQUEST", f"cannot read audio stream: {sf_err}")
+
+                a_stream = audio_streams[0]
+                dur_sec = 0.0
+                if container.duration is not None and container.duration > 0:
+                    dur_sec = float(container.duration) / 1_000_000.0
+                elif a_stream.duration is not None and a_stream.time_base is not None:
+                    dur_sec = float(a_stream.duration * a_stream.time_base)
+
+                sr = int(getattr(a_stream, "rate", 0) or getattr(a_stream.codec_context, "sample_rate", 0) or 44100)
+                ch = int(getattr(a_stream, "channels", 0) or getattr(a_stream.codec_context, "channels", 0) or 2)
+                ext = os.path.splitext(path)[1].lstrip(".").upper() or "MEDIA"
+                res: dict[str, Any] = {
+                    "durationSec": round(max(0.0, dur_sec), 4),
+                    "sampleRate": sr,
+                    "channels": ch,
+                    "format": ext,
+                    "hasAudioTrack": True,
+                }
+                if video_streams:
+                    v_stream = video_streams[0]
+                    w = int(getattr(v_stream, "width", 0) or getattr(v_stream.codec_context, "width", 0) or 0)
+                    h = int(getattr(v_stream, "height", 0) or getattr(v_stream.codec_context, "height", 0) or 0)
+                    if w > 0 and h > 0:
+                        res["resolution"] = f"{w}×{h}"
+                return res
+        except SidecarError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise SidecarError("INVALID_REQUEST", f"cannot read media header: {e}") from e
 
 
 def prepare_clone_reference(
