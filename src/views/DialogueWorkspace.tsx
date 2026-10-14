@@ -831,17 +831,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
   }, [masterAudioUrl, masterDurationSec, characters.length, segments]);
 
   return (
-    <div
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        const file = e.dataTransfer.files?.[0];
-        if (file) {
-          handleProcessScriptFile(file);
-        }
-      }}
-      className="flex-1 flex flex-col h-full overflow-hidden bg-background"
-    >
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
       {/* Top Header Bar matching TTS Workspace */}
       <div className="h-12 border-b border-borderDefault bg-panel px-3.5 flex items-center justify-between flex-shrink-0 overflow-x-auto gap-2">
         <div className="flex items-center gap-2 flex-shrink-0">

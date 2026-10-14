@@ -14,6 +14,7 @@ import {
 import { DialogueCharacter, DialogueSegment } from "../../types/dialogue";
 import { VoiceProfile } from "../../types/ui";
 import { parsePauseDurationMs } from "../../services/pause";
+import { extractFilesFromDropEvent, useTauriDropZone } from "../../services/fileDropHelper";
 
 const AutoResizeTextarea: React.FC<{
   value: string;
@@ -93,6 +94,22 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
   isConverting = false,
 }) => {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const studioDropZoneRef = useRef<HTMLDivElement>(null);
+
+  useTauriDropZone(studioDropZoneRef, {
+    enabled: true,
+    onDragStateChange: setIsDraggingOver,
+    onDropFiles: (files) => {
+      const validFile =
+        files.find((f) => {
+          const ext = f.name.toLowerCase().split(".").pop() || "";
+          return ["docx", "txt", "md", "srt", "vtt"].includes(ext);
+        }) || files[0];
+      if (validFile && onDropFile) {
+        onDropFile(validFile);
+      }
+    },
+  });
 
   // Fast lookups
   const charMap = new Map(characters.map((c) => [c.id, c]));
@@ -104,17 +121,27 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
 
   return (
     <div
+      ref={studioDropZoneRef}
       onDragOver={(e) => {
         e.preventDefault();
         setIsDraggingOver(true);
       }}
-      onDragLeave={() => setIsDraggingOver(false)}
-      onDrop={(e) => {
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setIsDraggingOver(false);
+        }
+      }}
+      onDrop={async (e) => {
         e.preventDefault();
         setIsDraggingOver(false);
-        const file = e.dataTransfer.files?.[0];
-        if (file && onDropFile) {
-          onDropFile(file);
+        const files = await extractFilesFromDropEvent(e);
+        const validFile =
+          files.find((f) => {
+            const ext = f.name.toLowerCase().split(".").pop() || "";
+            return ["docx", "txt", "md", "srt", "vtt"].includes(ext);
+          }) || files[0];
+        if (validFile && onDropFile) {
+          onDropFile(validFile);
         }
       }}
       className="flex-1 flex flex-col h-full overflow-hidden min-h-0 min-w-0 relative"

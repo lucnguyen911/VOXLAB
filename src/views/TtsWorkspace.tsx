@@ -43,7 +43,7 @@ import { loadStoredTtsSettings } from "../components/inspector/TtsInspector";
 import { exportTtsLog } from "../services/audio/ttsLogExporter";
 import { loadSubtitleSettings } from "../services/subtitle";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
-import { extractFilesFromDropEvent } from "../services/fileDropHelper";
+import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import {
   getSharedAiServices,
 } from "../services/batch/batchRuntime";
@@ -299,6 +299,22 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       }
     }
   };
+
+  const editorDropZoneRef = useRef<HTMLDivElement>(null);
+  useTauriDropZone(editorDropZoneRef, {
+    enabled: stage === "prep",
+    onDragStateChange: setIsDraggingOver,
+    onDropFiles: (files) => {
+      const validFile =
+        files.find((f) => {
+          const ext = f.name.toLowerCase().split(".").pop() || "";
+          return ["docx", "txt", "md", "srt", "vtt"].includes(ext);
+        }) || files[0];
+      if (validFile) {
+        handleProcessScriptFile(validFile);
+      }
+    },
+  });
 
   const handleWorkingTextChange = (text: string) => {
     setWorkingText(text);
@@ -1613,11 +1629,16 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
             {/* Editor Box */}
             <div
+              ref={editorDropZoneRef}
               onDragOver={(e) => {
                 e.preventDefault();
                 setIsDraggingOver(true);
               }}
-              onDragLeave={() => setIsDraggingOver(false)}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setIsDraggingOver(false);
+                }
+              }}
               onDrop={async (e) => {
                 e.preventDefault();
                 setIsDraggingOver(false);

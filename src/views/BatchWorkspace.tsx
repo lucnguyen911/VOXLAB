@@ -25,6 +25,7 @@ import { BatchArtifactPreviewModal } from "./batch/BatchArtifactPreviewModal";
 import { BatchFooter } from "../components/batch/BatchFooter";
 import { initBatchRuntime, tauriAiFs, getDefaultBatchOutputDir } from "../services/batch/batchRuntime";
 import { isTauriRuntime } from "../services/ai/tauriBackend";
+import { expandTauriPaths, extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 
 /** A file to stage. In the desktop runtime `path` is absolute; in browser preview it is only the name. */
 interface IncomingFile {
@@ -199,6 +200,62 @@ export const BatchWorkspace: React.FC = () => {
     orchestrator.setJobs(updated);
   };
 
+  const BATCH_ALLOWED_EXTS = [
+    "txt",
+    "docx",
+    "md",
+    "srt",
+    "vtt",
+    "mp3",
+    "wav",
+    "m4a",
+    "flac",
+    "ogg",
+    "mp4",
+    "mkv",
+    "mov",
+    "webm",
+  ];
+
+  const batchTableDropZoneRef = useRef<HTMLDivElement>(null);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+  const handleAddTauriPaths = async (rawPaths: string[]) => {
+    try {
+      const expanded = await expandTauriPaths(rawPaths);
+      const validPaths = expanded.filter((p) => {
+        const ext = p.split(".").pop()?.toLowerCase() || "";
+        return BATCH_ALLOWED_EXTS.includes(ext);
+      });
+      const targetPaths = validPaths.length > 0 ? validPaths : expanded;
+      if (targetPaths.length === 0) return;
+
+      const { invoke } = await import("@tauri-apps/api/core");
+      const incoming = await Promise.all(
+        targetPaths.map(async (p): Promise<IncomingFile> => {
+          const st = await invoke<{ size: number; mtimeMs: number } | null>("fs_stat", { path: p }).catch(() => null);
+          const isText = /\.(txt|md)$/i.test(p);
+          return {
+            path: p,
+            name: baseName(p),
+            size: st?.size ?? 0,
+            mtime: st?.mtimeMs ?? Date.now(),
+            textContent: isText ? await tauriAiFs.readText(p).catch(() => undefined) : undefined,
+          };
+        })
+      );
+      if (incoming.length > 0) handleAddFiles(incoming);
+    } catch (err) {
+      console.error("Không thể nạp tệp kéo thả vào Hàng loạt:", err);
+    }
+  };
+
+  useTauriDropZone(batchTableDropZoneRef, {
+    enabled: activeView === "list",
+    onDragStateChange: setIsDraggingOver,
+    onDropPaths: handleAddTauriPaths,
+  });
+
   // Desktop runtime: native picker gives absolute paths the sidecar can read.
   const handleUploadClick = async () => {
     if (!isTauriRuntime()) {
@@ -214,21 +271,9 @@ export const BatchWorkspace: React.FC = () => {
         ],
       });
       const paths = picked === null ? [] : Array.isArray(picked) ? picked : [picked];
-      const { invoke } = await import("@tauri-apps/api/core");
-      const incoming = await Promise.all(
-        paths.map(async (p): Promise<IncomingFile> => {
-          const st = await invoke<{ size: number; mtimeMs: number } | null>("fs_stat", { path: p });
-          const isText = /\.txt$/i.test(p);
-          return {
-            path: p,
-            name: baseName(p),
-            size: st?.size ?? 0,
-            mtime: st?.mtimeMs ?? Date.now(),
-            textContent: isText ? await tauriAiFs.readText(p).catch(() => undefined) : undefined,
-          };
-        })
-      );
-      if (incoming.length > 0) handleAddFiles(incoming);
+      if (paths.length > 0) {
+        await handleAddTauriPaths(paths);
+      }
     } catch (err) {
       console.error("Không thể mở hộp thoại chọn tệp:", err);
     }
@@ -417,7 +462,51 @@ export const BatchWorkspace: React.FC = () => {
         )}
 
         {/* View Tables */}
-        <div className="flex-1 min-h-0 bg-surface1 rounded-xl border border-borderDefault flex flex-col overflow-hidden shadow-xs relative">
+        <div
+          ref={batchTableDropZoneRef}
+          onDragOver={(e) => {
+            if (activeView !== "list") return;
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDraggingOver(true);
+          }}
+          onDragLeave={(e) => {
+            if (activeView !== "list") return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setIsDraggingOver(false);
+            }
+          }}
+          onDrop={async (e) => {
+            if (activeView !== "list") return;
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDraggingOver(false);
+            const droppedFiles = await extractFilesFromDropEvent(e);
+            if (droppedFiles.length === 0) return;
+            const validFiles = droppedFiles.filter((f) => {
+              const ext = f.name.split(".").pop()?.toLowerCase() || "";
+              return BATCH_ALLOWED_EXTS.includes(ext);
+            });
+            const targetFiles = validFiles.length > 0 ? validFiles : droppedFiles;
+            const incoming = await Promise.all(
+              targetFiles.map(async (f): Promise<IncomingFile> => ({
+                path: (f as any).path || f.name,
+                name: f.name,
+                size: f.size,
+                mtime: f.lastModified || Date.now(),
+                textContent: /\.(txt|md)$/i.test(f.name) ? await f.text().catch(() => undefined) : undefined,
+              }))
+            );
+            if (incoming.length > 0) handleAddFiles(incoming);
+          }}
+          className={`flex-1 min-h-0 bg-surface1 rounded-xl border flex flex-col overflow-hidden shadow-xs relative transition-all ${
+            activeView === "list" && isDraggingOver
+              ? "border-accent ring-2 ring-accent/30 bg-accent/5"
+              : "border-borderDefault"
+          }`}
+        >
           {activeView === "list" && (
             <FileTaskMatrixTable
               jobs={viewJobs}

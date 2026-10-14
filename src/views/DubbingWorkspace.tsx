@@ -56,7 +56,7 @@ import { analyzeTimingCollision, canExportMasterWav } from "../services/dubbing/
 import { resolveTimingCollisions, countCollisions } from "../services/dubbing/autoFit";
 import { mergeMasterAudio } from "../services/dubbing/masterAssembly";
 import { DubbingSynthesisQueue } from "../services/dubbing/synthesisQueue";
-import { extractFilesFromDropEvent } from "../services/fileDropHelper";
+import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import { useI18n } from "../i18n/context";
 import { createEffectiveVoiceSnapshot } from "../services/providers";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
@@ -348,7 +348,24 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     reader.readAsText(file);
   };
 
-  // Drag and Drop handlers for subtitle files across workspace
+  const reviewGridDropZoneRef = useRef<HTMLDivElement>(null);
+
+  useTauriDropZone(reviewGridDropZoneRef, {
+    enabled: true,
+    onDragStateChange: setIsDragging,
+    onDropFiles: (files) => {
+      const subFile =
+        files.find((f) => {
+          const ext = f.name.toLowerCase();
+          return ext.endsWith(".srt") || ext.endsWith(".vtt") || ext.endsWith(".txt");
+        }) || files[0];
+      if (subFile) {
+        handleImportFile(subFile);
+      }
+    },
+  });
+
+  // Drag and Drop handlers for subtitle files in the central ReviewGrid drop zone
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -968,12 +985,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   }, [playingCueIndex, audioSegments, originalCues, translatedCues, voices, activeVoiceId]);
 
   return (
-    <div
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      className="flex-1 flex flex-col h-full overflow-hidden bg-background relative"
-    >
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-background relative">
       {/* Hidden File Input for Subtitle (.srt / .vtt) */}
       <input
         type="file"
@@ -1069,51 +1081,59 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Drag and Drop Active Overlay when cues exist */}
-      {isDragging && originalCues.length > 0 && (
-        <div className="absolute inset-0 z-50 bg-background/80 backdrop-blur-xs flex items-center justify-center p-6 pointer-events-none">
-          <div className="w-full h-full rounded-2xl border-2 border-dashed border-accent bg-accent/10 flex flex-col items-center justify-center text-center p-6">
-            <UploadCloud className="w-12 h-12 text-accent mb-4 animate-bounce" />
-            <h3 className="text-xl font-bold text-textPrimary mb-2">
-              Kéo thả file phụ đề vào đây
-            </h3>
-            <p className="text-xs text-textMuted">
-              Hỗ trợ định dạng .srt, .vtt
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Workspace Main Body: Center Grid & Right Controls Inspector */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Center: Side-by-Side Review Grid */}
-        <ReviewGrid
-          originalCues={originalCues}
-          translatedCues={translatedCues}
-          audioSegments={audioSegments}
-          overflowAnalysis={overflowAnalysis}
-          playingCueIndex={playingCueIndex}
-          collidingCount={collidingCuesCount}
-          onAutoFitAll={handleAutoFitAll}
-          onUpdateText={handleUpdateText}
-          onPlayAudio={(idx) => {
-            setPlayingCueIndex((prev) => (prev === idx ? null : idx));
-          }}
-          onRegenerateAudio={handleRegenerateAudio}
-          onSelectFile={() => fileInputRef.current?.click()}
-          isDragging={isDragging}
-          bottomPlayer={
-            activeDubTrack ? (
-              <BottomAudioPlayer
-                track={activeDubTrack}
-                isPlaying={playingCueIndex !== null}
-                onTogglePlay={() => setPlayingCueIndex((prev) => (prev === null ? activeDubTrack.chunkIndex || 1 : null))}
-                onClose={() => setPlayingCueIndex(null)}
-                className="mx-0 mb-0"
-              />
-            ) : null
-          }
-        />
+        {/* Center: Side-by-Side Review Grid (Allowed Drop Zone) */}
+        <div
+          ref={reviewGridDropZoneRef}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className="flex-1 flex flex-col overflow-hidden relative min-w-0"
+        >
+          {/* Drag and Drop Active Overlay when cues exist */}
+          {isDragging && originalCues.length > 0 && (
+            <div className="absolute inset-0 z-50 bg-background/80 backdrop-blur-xs flex items-center justify-center p-6 pointer-events-none">
+              <div className="w-full h-full rounded-2xl border-2 border-dashed border-accent bg-accent/10 flex flex-col items-center justify-center text-center p-6">
+                <UploadCloud className="w-12 h-12 text-accent mb-4 animate-bounce" />
+                <h3 className="text-xl font-bold text-textPrimary mb-2">
+                  Kéo thả file phụ đề vào đây
+                </h3>
+                <p className="text-xs text-textMuted">
+                  Hỗ trợ định dạng .srt, .vtt
+                </p>
+              </div>
+            </div>
+          )}
+
+          <ReviewGrid
+            originalCues={originalCues}
+            translatedCues={translatedCues}
+            audioSegments={audioSegments}
+            overflowAnalysis={overflowAnalysis}
+            playingCueIndex={playingCueIndex}
+            collidingCount={collidingCuesCount}
+            onAutoFitAll={handleAutoFitAll}
+            onUpdateText={handleUpdateText}
+            onPlayAudio={(idx) => {
+              setPlayingCueIndex((prev) => (prev === idx ? null : idx));
+            }}
+            onRegenerateAudio={handleRegenerateAudio}
+            onSelectFile={() => fileInputRef.current?.click()}
+            isDragging={isDragging}
+            bottomPlayer={
+              activeDubTrack ? (
+                <BottomAudioPlayer
+                  track={activeDubTrack}
+                  isPlaying={playingCueIndex !== null}
+                  onTogglePlay={() => setPlayingCueIndex((prev) => (prev === null ? activeDubTrack.chunkIndex || 1 : null))}
+                  onClose={() => setPlayingCueIndex(null)}
+                  className="mx-0 mb-0"
+                />
+              ) : null
+            }
+          />
+        </div>
 
         {/* Right Inspector Panel: Subtitle Translation & Dubbing Controls */}
         <aside className="w-[380px] border-l border-borderDefault bg-surface1 select-none flex-shrink-0 flex flex-col h-full overflow-hidden text-xs">

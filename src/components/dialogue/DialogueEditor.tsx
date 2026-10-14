@@ -9,7 +9,7 @@ import { DialogueCharacter } from "../../types/dialogue";
 import { normalizeCharacterId } from "../../services/dialogue/parser";
 import { ManualPausePopover } from "../popovers/ManualPausePopover";
 import { formatPauseToken } from "../../services/pause";
-import { extractFilesFromDropEvent } from "../../services/fileDropHelper";
+import { extractFilesFromDropEvent, useTauriDropZone } from "../../services/fileDropHelper";
 
 interface DialogueEditorProps {
   value: string;
@@ -41,8 +41,24 @@ export const DialogueEditor: React.FC<DialogueEditorProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const editorDropZoneRef = useRef<HTMLDivElement>(null);
   const [isPausePopoverOpen, setIsPausePopoverOpen] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+  useTauriDropZone(editorDropZoneRef, {
+    enabled: true,
+    onDragStateChange: setIsDraggingOver,
+    onDropFiles: (files) => {
+      const validFile =
+        files.find((f) => {
+          const ext = f.name.toLowerCase().split(".").pop() || "";
+          return ["docx", "txt", "md", "srt", "vtt"].includes(ext);
+        }) || files[0];
+      if (validFile && onUploadFile) {
+        onUploadFile(validFile);
+      }
+    },
+  });
 
   // Sync scroll between textarea and syntax highlight backdrop
   const handleScroll = () => {
@@ -231,11 +247,16 @@ export const DialogueEditor: React.FC<DialogueEditorProps> = ({
 
       {/* Editor Box (matches TTS Editor Box with rounded border and card header) */}
       <div
+        ref={editorDropZoneRef}
         onDragOver={(e) => {
           e.preventDefault();
           setIsDraggingOver(true);
         }}
-        onDragLeave={() => setIsDraggingOver(false)}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            setIsDraggingOver(false);
+          }
+        }}
         onDrop={async (e) => {
           e.preventDefault();
           setIsDraggingOver(false);

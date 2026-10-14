@@ -39,7 +39,7 @@ import {
   WHISPER_AUDIO_LANGUAGES,
 } from "../services/subtitle";
 import { DubbingHandoffSnapshot } from "../types/dubbing";
-import { extractFilesFromDropEvent } from "../services/fileDropHelper";
+import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import { SearchableLanguageSelect } from "../components/common/SearchableLanguageSelect";
 import {
   queryHardwareProfile,
@@ -466,15 +466,37 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     setErrorMessage("");
   };
 
+  const centralDropZoneRef = useRef<HTMLDivElement>(null);
+
+  useTauriDropZone(centralDropZoneRef, {
+    enabled: workspaceState !== "PROCESSING",
+    onDragStateChange: setIsDragging,
+    onDropFiles: (files) => {
+      const validFile =
+        files.find((f) => {
+          const ext = f.name.toLowerCase().split(".").pop() || "";
+          return ["mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "mov", "mkv", "webm", "avi"].includes(ext);
+        }) || files[0];
+      if (validFile) {
+        handleFileChange(validFile);
+      }
+    },
+  });
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(true);
+    if (workspaceState !== "PROCESSING") {
+      setIsDragging(true);
+    }
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) {
+      return;
+    }
     setIsDragging(false);
   };
 
@@ -482,11 +504,12 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
+    if (workspaceState === "PROCESSING") return;
     const files = await extractFilesFromDropEvent(e);
     const validFile =
       files.find((f) => {
         const ext = f.name.toLowerCase().split(".").pop() || "";
-        return ["mp3", "wav", "flac", "m4a", "aac", "mp4", "mov", "mkv", "webm", "avi"].includes(ext);
+        return ["mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "mov", "mkv", "webm", "avi"].includes(ext);
       }) || files[0];
     if (validFile) {
       handleFileChange(validFile);
@@ -514,12 +537,18 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
       const ai = await getSharedAiServices();
       if (ai?.generateMasterSubtitles && fileInfo.file && typeof fileInfo.file.arrayBuffer === "function") {
         setProgressPercent(15);
-        const core = await import("@tauri-apps/api/core");
-        const scratchDir = await core.invoke<string>("fs_scratch_dir", { name: "subtitle_tab" });
-        const safeName = (fileInfo.name || "media.wav").replace(/[^a-zA-Z0-9._-]/g, "_");
-        const audioPath = `${scratchDir.replace(/[\\/]+$/, "")}/${Date.now()}_${safeName}`;
-        const buf = new Uint8Array(await fileInfo.file.arrayBuffer());
-        await core.invoke<void>("fs_write_bytes", { path: audioPath, bytes: Array.from(buf) });
+        const existingPath = (fileInfo.file as any).path as string | undefined;
+        let audioPath: string;
+        if (existingPath && typeof existingPath === "string" && existingPath.trim().length > 0) {
+          audioPath = existingPath;
+        } else {
+          const core = await import("@tauri-apps/api/core");
+          const scratchDir = await core.invoke<string>("fs_scratch_dir", { name: "subtitle_tab" });
+          const safeName = (fileInfo.name || "media.wav").replace(/[^a-zA-Z0-9._-]/g, "_");
+          audioPath = `${scratchDir.replace(/[\\/]+$/, "")}/${Date.now()}_${safeName}`;
+          const buf = new Uint8Array(await fileInfo.file.arrayBuffer());
+          await core.invoke<void>("fs_write_bytes", { path: audioPath, bytes: Array.from(buf) });
+        }
         cachedAudioPathRef.current = audioPath;
 
         setProgressPercent(45);
@@ -814,15 +843,16 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
       {/* Main Workspace Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Central Workspace Area */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-background">
+        <div
+          ref={centralDropZoneRef}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className="flex-1 flex flex-col overflow-hidden bg-background relative"
+        >
           {/* STATE 1: EMPTY (FULL WORKING AREA DROP ZONE) */}
           {workspaceState === "EMPTY" && (
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className="flex-1 flex flex-col p-4 sm:p-6 select-none overflow-hidden"
-            >
+            <div className="flex-1 flex flex-col p-4 sm:p-6 select-none overflow-hidden">
               <div
                 onClick={() => fileInputRef.current?.click()}
                 className={`flex-1 w-full rounded-2xl border-2 border-dashed flex flex-col items-center justify-center text-center p-6 sm:p-10 transition-all cursor-pointer group ${

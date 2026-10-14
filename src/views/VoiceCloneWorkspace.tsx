@@ -51,6 +51,7 @@ import { SearchableLanguageSelect } from "../components/common/SearchableLanguag
 import { ALL_STANDARD_LANGUAGES, findLanguage, LanguageItem } from "../services/subtitle/languages";
 import { upsertCloneVoice } from "../services/ai/cloneVoiceRegistry";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
+import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 
 // Model definition with real capabilities
 export interface CloneModelDefinition {
@@ -429,10 +430,34 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const referenceDropZoneRef = useRef<HTMLDivElement>(null);
+  const [isDraggingOverRef, setIsDraggingOverRef] = useState<boolean>(false);
+
+  const pickValidReferenceFile = (files: File[]): File | undefined =>
+    files.find((f) => {
+      const ext = f.name.toLowerCase().split(".").pop() || "";
+      return ["wav", "mp3", "m4a", "flac", "ogg", "aac"].includes(ext) || f.type.startsWith("audio/");
+    }) || files[0];
+
+  useTauriDropZone(referenceDropZoneRef, {
+    enabled: true,
+    onDragStateChange: setIsDraggingOverRef,
+    onDropFiles: (files) => {
+      const validFile = pickValidReferenceFile(files);
+      if (validFile) {
+        handleFileChange(validFile);
+      }
+    },
+  });
+
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileChange(e.dataTransfer.files[0]);
+    e.stopPropagation();
+    setIsDraggingOverRef(false);
+    const files = await extractFilesFromDropEvent(e);
+    const validFile = pickValidReferenceFile(files);
+    if (validFile) {
+      handleFileChange(validFile);
     }
   };
 
@@ -750,92 +775,117 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                   }}
                 />
 
-                {audioBuffer && referenceFileMeta ? (
-                  /* Audio Reference Component */
-                  <div className="p-4 bg-surface2/60 rounded-xl border border-borderDefault space-y-3.5">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-9 h-9 rounded-lg bg-accent/20 border border-accent/40 flex items-center justify-center text-accent shrink-0">
-                          <FileAudio className="w-4.5 h-4.5" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-textPrimary truncate" title={referenceFileMeta.name}>
-                            {referenceFileMeta.name}
+                <div
+                  ref={referenceDropZoneRef}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDraggingOverRef(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                      setIsDraggingOverRef(false);
+                    }
+                  }}
+                  onDrop={handleDrop}
+                >
+                  {audioBuffer && referenceFileMeta ? (
+                    /* Audio Reference Component */
+                    <div
+                      className={`p-4 bg-surface2/60 rounded-xl border space-y-3.5 transition-all ${
+                        isDraggingOverRef
+                          ? "border-accent ring-2 ring-accent/30 bg-accent/5"
+                          : "border-borderDefault"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-lg bg-accent/20 border border-accent/40 flex items-center justify-center text-accent shrink-0">
+                            <FileAudio className="w-4.5 h-4.5" />
                           </div>
-                          <div className="text-[11px] text-textMuted font-mono mt-0.5">
-                            {referenceFileMeta.duration} • {(audioBuffer.sampleRate / 1000).toFixed(1)}kHz • {audioBuffer.numberOfChannels === 1 ? "Mono" : "Stereo"}
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-textPrimary truncate" title={referenceFileMeta.name}>
+                              {referenceFileMeta.name}
+                            </div>
+                            <div className="text-[11px] text-textMuted font-mono mt-0.5">
+                              {referenceFileMeta.duration} • {(audioBuffer.sampleRate / 1000).toFixed(1)}kHz • {audioBuffer.numberOfChannels === 1 ? "Mono" : "Stereo"}
+                            </div>
                           </div>
                         </div>
+
+                        {/* Play / Pause button */}
+                        <button
+                          onClick={handleTogglePlayReference}
+                          className={`w-8 h-8 rounded-full flex items-center justify-center transition-all shrink-0 ${
+                            isPlayingReference
+                              ? "bg-rose-500 text-white shadow-md animate-pulse"
+                              : "bg-accent text-background hover:bg-accent/90"
+                          }`}
+                          title={isPlayingReference ? "Dừng nghe" : "Nghe mẫu"}
+                        >
+                          {isPlayingReference ? (
+                            <Pause className="w-4 h-4 fill-current" />
+                          ) : (
+                            <Play className="w-4 h-4 fill-current ml-0.5" />
+                          )}
+                        </button>
                       </div>
 
-                      {/* Play / Pause button */}
-                      <button
-                        onClick={handleTogglePlayReference}
-                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-all shrink-0 ${
-                          isPlayingReference
-                            ? "bg-rose-500 text-white shadow-md animate-pulse"
-                            : "bg-accent text-background hover:bg-accent/90"
-                        }`}
-                        title={isPlayingReference ? "Dừng nghe" : "Nghe mẫu"}
-                      >
-                        {isPlayingReference ? (
-                          <Pause className="w-4 h-4 fill-current" />
-                        ) : (
-                          <Play className="w-4 h-4 fill-current ml-0.5" />
-                        )}
-                      </button>
-                    </div>
+                      {/* High-density PCM waveform */}
+                      <div className="bg-surface3/40 rounded-lg p-1 border border-borderDefault/40 select-none overflow-hidden">
+                        <CompactWaveform
+                          audioBuffer={audioBuffer}
+                          isPlaying={isPlayingReference}
+                          currentTime={refPlayCurrentSec}
+                          duration={audioBuffer.duration}
+                          height={36}
+                        />
+                      </div>
 
-                    {/* High-density PCM waveform */}
-                    <div className="bg-surface3/40 rounded-lg p-1 border border-borderDefault/40 select-none overflow-hidden">
-                      <CompactWaveform
-                        audioBuffer={audioBuffer}
-                        isPlaying={isPlayingReference}
-                        currentTime={refPlayCurrentSec}
-                        duration={audioBuffer.duration}
-                        height={36}
-                      />
-                    </div>
+                      {/* Action Bar: Trim & Change File */}
+                      <div className="flex items-center justify-between pt-1">
+                        <button
+                          onClick={() => setTrimModalOpen(true)}
+                          className="flex items-center gap-1.5 px-3.5 py-1.5 bg-surface3 hover:bg-surface2 border border-borderDefault rounded-lg text-textPrimary hover:text-accent font-semibold text-xs transition-colors"
+                        >
+                          <Scissors className="w-3.5 h-3.5 text-accent" />
+                          <span>{lang === "vi" ? "Cắt" : "Trim"}</span>
+                        </button>
 
-                    {/* Action Bar: Trim & Change File */}
-                    <div className="flex items-center justify-between pt-1">
-                      <button
-                        onClick={() => setTrimModalOpen(true)}
-                        className="flex items-center gap-1.5 px-3.5 py-1.5 bg-surface3 hover:bg-surface2 border border-borderDefault rounded-lg text-textPrimary hover:text-accent font-semibold text-xs transition-colors"
-                      >
-                        <Scissors className="w-3.5 h-3.5 text-accent" />
-                        <span>{lang === "vi" ? "Cắt" : "Trim"}</span>
-                      </button>
-
-                      <button
-                        onClick={handlePickReferenceAudio}
-                        className="text-xs text-accent hover:underline font-semibold transition-colors"
-                      >
-                        {lang === "vi" ? "Đổi file" : "Change file"}
-                      </button>
+                        <button
+                          onClick={handlePickReferenceAudio}
+                          className="text-xs text-accent hover:underline font-semibold transition-colors"
+                        >
+                          {lang === "vi" ? "Đổi file" : "Change file"}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  /* Empty Dropzone */
-                  <div
-                    onClick={handlePickReferenceAudio}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={handleDrop}
-                    className="border-2 border-dashed border-borderDefault hover:border-accent/70 hover:bg-accent/5 rounded-xl p-7 text-center cursor-pointer transition-all bg-surface2/30 space-y-2.5 group"
-                  >
-                    <div className="w-11 h-11 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center text-accent mx-auto group-hover:scale-110 transition-transform">
-                      <UploadCloud className="w-5.5 h-5.5" />
+                  ) : (
+                    /* Empty Dropzone */
+                    <div
+                      onClick={handlePickReferenceAudio}
+                      className={`border-2 border-dashed rounded-xl p-7 text-center cursor-pointer transition-all space-y-2.5 group ${
+                        isDraggingOverRef
+                          ? "border-accent bg-accent/10"
+                          : "border-borderDefault hover:border-accent/70 hover:bg-accent/5 bg-surface2/30"
+                      }`}
+                    >
+                      <div className="w-11 h-11 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center text-accent mx-auto group-hover:scale-110 transition-transform">
+                        <UploadCloud className="w-5.5 h-5.5" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-textPrimary group-hover:text-accent transition-colors">
+                          Kéo thả file âm thanh vào đây hoặc ấn để chọn
+                        </p>
+                        <p className="text-[11px] text-textMuted mt-1">
+                          Hỗ trợ WAV, MP3, M4A, FLAC (khuyến nghị 10s – 30s)
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold text-textPrimary group-hover:text-accent transition-colors">
-                        Kéo thả file âm thanh vào đây hoặc ấn để chọn
-                      </p>
-                      <p className="text-[11px] text-textMuted mt-1">
-                        Hỗ trợ WAV, MP3, M4A, FLAC (khuyến nghị 10s – 30s)
-                      </p>
-                    </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
 
               {/* 5. VĂN BẢN THAM CHIẾU */}
