@@ -122,8 +122,8 @@ def normalize_digit_string(token: str) -> str:
     if re.fullmatch(r"\d{1,2}:\d{2}", cleaned):
         return cleaned
 
-    # Check comma-separated thousands: e.g. 1,000 or 10,000,000
-    if re.fullmatch(r"-?\d{1,3}(,\d{3})+", cleaned):
+    # Check comma-separated thousands (with optional decimal and %): e.g. 1,000 or 5,922.50 or 10,000,000
+    if re.fullmatch(r"-?\d{1,3}(,\d{3})+(?:\.\d+)?%?", cleaned):
         return cleaned.replace(",", "")
 
     # Dot-separated thousands in VN: e.g. 1.000 or 10.000.000 (3 digits per group)
@@ -131,7 +131,7 @@ def normalize_digit_string(token: str) -> str:
         return cleaned.replace(".", "")
 
     # Decimals with comma: e.g. 0,8 or 13,5 or 3,14 (not thousands like 1,000 or 10,000)
-    if re.fullmatch(r"-?\d+,\d+%?", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+%?", cleaned):
+    if re.fullmatch(r"-?\d+,\d+%?", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+(?:\.\d+)?%?", cleaned):
         return cleaned.replace(",", ".")
 
     # Decimals: e.g. 3.14 or -3.14
@@ -703,6 +703,55 @@ def collapse_number_tokens(
 
     is_vi = language and language.startswith("vi")
 
+    def has_boundary_before(pos: int) -> bool:
+        if pos <= 0:
+            return False
+        if has_trailing_boundary(words[pos - 1]):
+            return True
+        if delimiters is not None and pos < len(delimiters) and any(c in ",;:.!?—–()[]\n\r" for c in delimiters[pos]):
+            return True
+        return False
+
+    def try_parse_cents_at(start_idx: int) -> tuple[int, int] | None:
+        if start_idx >= n or has_boundary_before(start_idx):
+            return None
+        num_idx = start_idx
+        if clean_token(words[num_idx]) == "and":
+            if num_idx + 1 >= n or has_boundary_before(num_idx + 1):
+                return None
+            num_idx += 1
+
+        cents_val: int | None = None
+        cents_end = num_idx
+
+        norm_d = normalize_digit_string(words[num_idx])
+        c_tok = clean_token(words[num_idx])
+        if re.fullmatch(r"\d{1,2}", norm_d):
+            cents_val = int(norm_d)
+            cents_end = num_idx + 1
+        elif "-" in c_tok and not is_ip_address(c_tok):
+            sub_p = [p for p in c_tok.split("-") if p]
+            if len(sub_p) > 1:
+                val_h, cons_h = parse_english_number_phrase(sub_p, 0)
+                if val_h is not None and cons_h == len(sub_p) and re.fullmatch(r"\d{1,2}", val_h):
+                    cents_val = int(val_h)
+                    cents_end = num_idx + 1
+
+        if cents_val is None:
+            val_p, cons_p = parse_english_number_phrase(words, num_idx, delimiters)
+            if val_p is not None and cons_p > 0 and re.fullmatch(r"\d{1,2}", val_p):
+                cents_val = int(val_p)
+                cents_end = num_idx + cons_p
+
+        if (
+            cents_val is not None
+            and cents_end < n
+            and not has_boundary_before(cents_end)
+            and clean_token(words[cents_end]) in ("cent", "cents")
+        ):
+            return cents_val, cents_end + 1
+        return None
+
     def consume_trailing_modifiers() -> None:
         nonlocal idx
         while idx < n and spans and spans[-1].is_number:
@@ -715,7 +764,7 @@ def collapse_number_tokens(
                     is_number=True,
                 )
                 idx += 1
-            elif next_c in ("dollar", "dollars", "usd"):
+            elif next_c in ("dollar", "dollars", "usd", "buck", "bucks"):
                 spans[-1] = NormalizedSpan(
                     canonical=spans[-1].canonical,
                     orig_start=spans[-1].orig_start,
@@ -723,6 +772,33 @@ def collapse_number_tokens(
                     is_number=True,
                 )
                 idx += 1
+                if re.fullmatch(r"-?\d+", spans[-1].canonical):
+                    cents_res = try_parse_cents_at(idx)
+                    if cents_res is not None:
+                        cents_val, after_cents_idx = cents_res
+                        spans[-1] = NormalizedSpan(
+                            canonical=f"{spans[-1].canonical}.{cents_val:02d}",
+                            orig_start=spans[-1].orig_start,
+                            orig_end=after_cents_idx,
+                            is_number=True,
+                        )
+                        idx = after_cents_idx
+            elif (
+                re.fullmatch(r"-?\d+", spans[-1].canonical)
+                and words[spans[-1].orig_start].strip().startswith(("$", "€", "£"))
+            ):
+                cents_res = try_parse_cents_at(idx)
+                if cents_res is not None:
+                    cents_val, after_cents_idx = cents_res
+                    spans[-1] = NormalizedSpan(
+                        canonical=f"{spans[-1].canonical}.{cents_val:02d}",
+                        orig_start=spans[-1].orig_start,
+                        orig_end=after_cents_idx,
+                        is_number=True,
+                    )
+                    idx = after_cents_idx
+                else:
+                    break
             else:
                 break
 
@@ -792,6 +868,18 @@ def collapse_number_tokens(
                         end_idx += 1
                     else:
                         break
+
+            # Merge BPE-split decimal fraction token immediately following an integer (e.g. ["$5", ",922", ".50"] -> "5922.50", ["$862", ".50."] -> "862.50")
+            if (
+                not is_leading_dot_frac
+                and end_idx < n
+                and not has_trailing_boundary(words[end_idx - 1])
+                and re.fullmatch(r"-?\d+", combined_digit)
+            ):
+                m_bpe_frac = re.match(r"^\.(\d+)[,.;:!?)]*$", words[end_idx].strip())
+                if m_bpe_frac:
+                    combined_digit = f"{combined_digit}.{m_bpe_frac.group(1)}"
+                    end_idx += 1
 
             # Combine integer digit token with immediately following scale word (e.g. ["770", "million"] -> "770000000")
             if (
@@ -904,6 +992,9 @@ def are_number_expressions_equivalent(expr1: str, expr2: str, language: str | No
         c2 = s2[0].canonical
         if c1 == c2:
             return True
+        if re.fullmatch(r"-?\d+\.\d+", c1) and re.fullmatch(r"-?\d+\.\d+", c2):
+            if c1.rstrip("0").rstrip(".") == c2.rstrip("0").rstrip("."):
+                return True
         # Check ordinal to cardinal equivalence: e.g. '23rd' == '23', 'thứ 1' == '1'
         base1 = re.sub(r"^(thứ\s+|thu\s+)", "", c1)
         base2 = re.sub(r"^(thứ\s+|thu\s+)", "", c2)

@@ -217,6 +217,41 @@ class NumberNormalizerTest(unittest.TestCase):
         self.assertEqual(src_unit, ["1.55", "kwh"])
         self.assertEqual(asr_unit, ["1.55", "kwh"])
 
+    def test_currency_dollars_and_cents_and_bpe_decimals(self):
+        self.assertEqual(normalize_digit_string("$5,922.50"), "5922.50")
+        self.assertEqual(normalize_digit_string("$862.50."), "862.50")
+
+        src_5922 = [
+            s.canonical
+            for s in collapse_number_tokens(
+                "five thousand nine hundred and twenty two dollars and fifty cents".split(),
+                "en",
+            )
+        ]
+        asr_5922 = [s.canonical for s in collapse_number_tokens(["$5", ",922", ".50"], "en")]
+        self.assertEqual(src_5922, ["5922.50"])
+        self.assertEqual(asr_5922, ["5922.50"])
+
+        src_862 = [
+            s.canonical
+            for s in collapse_number_tokens(
+                "eight hundred and sixty two dollars and fifty cents".split(),
+                "en",
+            )
+        ]
+        asr_862 = [s.canonical for s in collapse_number_tokens(["$862", ".50."], "en")]
+        self.assertEqual(src_862, ["862.50"])
+        self.assertEqual(asr_862, ["862.50"])
+
+        self.assertTrue(
+            are_number_expressions_equivalent(
+                "five thousand nine hundred and twenty two dollars and fifty cents",
+                "$5,922.50",
+                "en",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+

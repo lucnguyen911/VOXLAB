@@ -1520,9 +1520,36 @@ class AudioQualityTest(unittest.TestCase):
         self.assertTrue(issues[0].get("asrNormalizedExcerpt"))
         self.assertEqual(issues[0].get("tokenSource"), "primary_asr")
 
+    def test_currency_dollars_and_cents_chunk37_no_false_missing_cents(self):
+        """Regression test for Chunk 37: spoken 'five thousand nine hundred and twenty two dollars and fifty cents'
+        and 'eight hundred and sixty two dollars and fifty cents' transcribed by Whisper as BPE tokens
+        ['$5', ',922', '.50'] and ['$862', '.50.'] must not flag 'cents' as MISSING_WORD."""
+        text = (
+            "Through their Peak-Time Payback program, eligible homeowners can receive an initial upfront "
+            "incentive of up to five thousand nine hundred and twenty two dollars and fifty cents just for "
+            "installing a Powerwall Three and enrolling. On top of that, the program offers annual bill "
+            "credits of up to eight hundred and sixty two dollars and fifty cents."
+        )
+        raw_tokens = [
+            "Through", "their", "Peak", "-Time", "Payback", "program,", "eligible", "homeowners",
+            "can", "receive", "an", "initial", "upfront", "incentive", "of", "up", "to",
+            "$5", ",922", ".50", "just", "for", "installing", "a", "Powerwall", "3", "and",
+            "enrolling.", "On", "top", "of", "that,", "the", "program", "offers", "annual",
+            "bill", "credits", "of", "up", "to", "$862", ".50.",
+        ]
+        mock_words = [
+            {
+                "word": tok,
+                "startSec": round(0.1 + idx * 0.35, 3),
+                "endSec": round(0.1 + idx * 0.35 + 0.30, 3),
+                "probability": 0.99,
+            }
+            for idx, tok in enumerate(raw_tokens)
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, mock_words, language="en")
+        self.assertEqual(len(issues), 0, f"Expected 0 issues for Chunk 37 dollars and cents, got: {issues}")
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
 
