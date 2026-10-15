@@ -56,10 +56,28 @@ export function matchAndProtectPronunciations(
     };
   }
 
-  // Contract: Longest match first
-  const sortedRules = [...validRules].sort(
-    (a, b) => b.sourceText.length - a.sourceText.length
+  // Contract:
+  // 1. Project rules override Global rules on identical sourceText.
+  // 2. Project scope tier is evaluated before Global scope tier, and within each tier longest match wins.
+  const projectRules = validRules.filter((r) => r.scope === "project");
+  const projectSourceKeys = new Set(
+    projectRules.map((r) => r.sourceText.trim().toLowerCase())
   );
+  const deduplicatedRules = [
+    ...projectRules,
+    ...validRules.filter(
+      (r) =>
+        r.scope !== "project" &&
+        !projectSourceKeys.has(r.sourceText.trim().toLowerCase())
+    ),
+  ];
+
+  const sortedRules = [...deduplicatedRules].sort((a, b) => {
+    const tierA = a.scope === "project" ? 0 : 1;
+    const tierB = b.scope === "project" ? 0 : 1;
+    if (tierA !== tierB) return tierA - tierB;
+    return b.sourceText.length - a.sourceText.length;
+  });
 
   const claimedSpans: ClaimedSpan[] = [];
 

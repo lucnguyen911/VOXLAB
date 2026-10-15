@@ -729,4 +729,60 @@ describe("Queue Race Condition & Hardening Tests (QR1 - QR10)", () => {
     assert.equal(queue.getActiveWorkers(), 0);
     assert.equal(queue.getMaxObserved(), 0);
   });
+
+  it("T1-A: splitLongSentence protects Tesla Powerwall 3, Tesla Model 3, and NEM 3.0 without exceeding hardMax", () => {
+    const sentence =
+      "Look at the Tesla Powerwall 3 and the Tesla Model 3 under NEM 3.0 right now.";
+    // With hardMax = 35, "Look at the Tesla Powerwall 3" is 29 chars, next is "and the Tesla Model 3" (21 chars)
+    const parts = splitLongSentence(sentence, 35);
+    for (const p of parts) {
+      assert.ok(p.length <= 35, `Part exceeded hardMax=35: "${p}" (${p.length})`);
+    }
+    assert.ok(parts.some((p) => p.includes("Tesla Powerwall 3")));
+    assert.ok(parts.some((p) => p.includes("Tesla Model 3")));
+    assert.ok(parts.some((p) => p.includes("NEM 3.0")));
+
+    // Soft-lock fallback: if hardMax is smaller than the entity itself (e.g. hardMax = 12),
+    // it must release the entity lock and never exceed hardMax
+    const tinyParts = splitLongSentence("Tesla Powerwall 3 works", 12);
+    for (const tp of tinyParts) {
+      assert.ok(tp.length <= 12, `Tiny part exceeded hardMax=12: "${tp}" (${tp.length})`);
+    }
+    assert.equal(tinyParts.join(" "), "Tesla Powerwall 3 works");
+  });
+
+  it("T1-B: analyzeSpeechBoundaries trims high-confidence isolated leading artifact with Hann fade-in and preserves ambiguous bursts", async () => {
+    const { analyzeSpeechBoundaries } = await import("../../audio/masterExport");
+    const sr = 24000;
+    const samples = new Float32Array(Math.floor(1.5 * sr));
+
+    // Isolated weak pre-pulse at 0.14s - 0.21s (70ms, peak 0.015, low freq 180Hz)
+    const sB0 = Math.floor(0.14 * sr);
+    const sB1 = Math.floor(0.21 * sr);
+    for (let i = sB0; i < sB1; i++) {
+      samples[i] = 0.015 * Math.sin((2 * Math.PI * 180 * (i - sB0)) / sr);
+    }
+    // Silence valley at 0.21s - 0.25s (40ms)
+    // Main speech at 0.25s - 1.25s (peak 0.35)
+    const sM0 = Math.floor(0.25 * sr);
+    const sM1 = Math.floor(1.25 * sr);
+    for (let i = sM0; i < sM1; i++) {
+      samples[i] = 0.35 * Math.sin((2 * Math.PI * 220 * (i - sM0)) / sr);
+    }
+
+    const res = analyzeSpeechBoundaries(samples, sr, true, true);
+    assert.equal(res.leadingArtifactAction, "trimmed");
+    assert.ok(res.cutStartSample >= sB1, `Expected cutStartSample >= ${sB1}, got ${res.cutStartSample}`);
+    assert.ok(Math.abs(res.trimmedSamples[0]) < 1e-5, "Expected Hann fade-in at start of trimmedSamples");
+
+    // Ambiguous stronger burst -> preserved with warning
+    const ambig = new Float32Array(samples);
+    for (let i = sB0; i < sB1; i++) {
+      ambig[i] = 0.065 * Math.sin((2 * Math.PI * 250 * (i - sB0)) / sr);
+    }
+    const resAmbig = analyzeSpeechBoundaries(ambig, sr, true, true);
+    assert.equal(resAmbig.leadingArtifactAction, "kept_with_warning");
+    assert.equal(resAmbig.cutStartSample, 0);
+    assert.ok(resAmbig.leadingArtifactWarning);
+  });
 });

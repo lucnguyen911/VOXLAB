@@ -42,6 +42,7 @@ import { stripPauseTokens } from "../services/pause";
 import { sanitizePunctuationPauses } from "../services/pause/punctuationPause";
 import { createEffectiveVoiceSnapshot } from "../services/providers";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
+import { getEffectiveRules, prepareSpokenText } from "../services/pronunciation";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
 import { MOCK_VOICES } from "../mock/data";
 
@@ -156,6 +157,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
   // Normalization and Pronunciation modals state
   const [isNormalizerOpen, setIsNormalizerOpen] = useState(false);
   const [isPronunciationModalOpen, setIsPronunciationModalOpen] = useState(false);
+  const lastPronunciationRulesRef = useRef(getEffectiveRules("dialogue"));
 
   // Helper: Stop current playing audio
   const stopSegmentAudio = useCallback(() => {
@@ -1067,6 +1069,21 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         isOpen={isPronunciationModalOpen}
         onClose={() => setIsPronunciationModalOpen(false)}
         projectId="dialogue"
+        onRulesUpdated={() => {
+          const prevRules = lastPronunciationRulesRef.current;
+          const nextRules = getEffectiveRules("dialogue");
+          setSegments((prev) =>
+            prev.map((seg) => {
+              const beforeSpoken = prepareSpokenText(seg.cleanText, { rules: prevRules }).spokenText;
+              const afterSpoken = prepareSpokenText(seg.cleanText, { rules: nextRules }).spokenText;
+              if (beforeSpoken !== afterSpoken && seg.status === "ready") {
+                return { ...seg, status: "pending" as const };
+              }
+              return seg;
+            })
+          );
+          lastPronunciationRulesRef.current = nextRules;
+        }}
       />
     </div>
   );

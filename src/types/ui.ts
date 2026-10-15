@@ -78,6 +78,7 @@ export interface ChunkItem {
   audioFilePath?: string;
   errorMessage?: string;
   trailingSilenceMs?: number;
+  leadingSilenceMs?: number;
   effectiveVoiceSnapshot?: EffectiveVoiceSnapshot;
   qualityReview?: AudioQualityReview;
   acknowledgedAt?: number;

@@ -60,8 +60,10 @@ import {
   getChunkBadgeInfo,
   getIssueShortLabel,
   isReviewOutdated,
+  markChunksAffectedByPronunciationRules,
   QUALITY_VALIDATOR_VERSION,
 } from "../services/audio/qualityValidator";
+import { getEffectiveRules } from "../services/pronunciation";
 import {
   checkAsrReadiness,
   applyAsrModelSwitch,
@@ -230,6 +232,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   const inFlightValidationsRef = useRef<Set<string>>(new Set());
   const masterBlobUrlRef = useRef<string | null>(null);
   const lastChunksSignatureRef = useRef<string>("");
+  const lastPronunciationRulesRef = useRef(getEffectiveRules());
   const [currentAsrModel, setCurrentAsrModel] = useState<string>(() => loadSubtitleSettings().whisperModel);
 
   useEffect(() => {
@@ -1246,7 +1249,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             const srtRes = await generateMasterSrtWithAsr({
               audioPath: chosenPath,
               chunks,
-              scriptText: sortedChunks.map((c) => c.text).join(" "),
+              scriptText: sortedChunks.map((c) => c.text || c.originalText).join("\n"),
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
               punctuationPauses: ttsSettings.pauses,
@@ -2138,6 +2141,19 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       <PronunciationManagerModal
         isOpen={isPronunciationModalOpen}
         onClose={() => setIsPronunciationModalOpen(false)}
+        onRulesUpdated={() => {
+          const nextRules = getEffectiveRules();
+          setChunks((prev) => {
+            const { updatedChunks } = markChunksAffectedByPronunciationRules(
+              prev,
+              lastPronunciationRulesRef.current,
+              nextRules
+            );
+            return updatedChunks;
+          });
+          lastPronunciationRulesRef.current = nextRules;
+          inFlightValidationsRef.current.clear();
+        }}
       />
 
       {/* ASR Readiness Pre-flight Modal */}

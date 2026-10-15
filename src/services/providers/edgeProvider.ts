@@ -384,6 +384,9 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       const sampleText = text || mapping?.previewText || (isVi
         ? "Xin chào, đây là giọng đọc thử nghiệm của Microsoft Edge trên VoxLab."
         : "Hello, this is a voice sample preview from Microsoft Edge on VoxLab.");
+      const { getEffectiveRules, prepareSpokenText } = await import("../pronunciation");
+      const rules = getEffectiveRules();
+      const spokenSample = prepareSpokenText(sampleText, { rules, engine: "edge" }).spokenText;
 
       const { invoke } = await import("@tauri-apps/api/core");
       const synthResult = await invoke<{
@@ -397,7 +400,8 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
         method: "tts.edge_preview",
         params: {
           voice: edgeVoiceName,
-          text: sampleText,
+          text: spokenSample,
+          pronunciationRules: rules,
         },
       });
 
@@ -440,6 +444,10 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       throw new Error(`Giọng Edge "${options.voiceId}" không hợp lệ hoặc không tìm thấy.`);
     }
 
+    const { getEffectiveRules, prepareSpokenText } = await import("../pronunciation");
+    const rules = getEffectiveRules();
+    const spokenText = prepareSpokenText(options.text, { rules, engine: "edge" }).spokenText;
+
     const { invoke } = await import("@tauri-apps/api/core");
     options.onProgress?.(10, "connecting");
 
@@ -454,11 +462,12 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       method: "tts.edge_synthesize",
       params: {
         voice: edgeVoiceName,
-        text: options.text,
+        text: spokenText,
         outputPath: options.outputPath,
         rate: formatEdgeRate(options.speed),
         pitch: formatEdgePitch(options.pitch),
         volume: formatEdgeVolume(options.volume),
+        pronunciationRules: rules,
       },
     });
 

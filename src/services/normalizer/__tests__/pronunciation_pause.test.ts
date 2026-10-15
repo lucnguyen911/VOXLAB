@@ -7,7 +7,11 @@ import {
   validatePauseDuration,
   splitScriptWithPauses,
 } from "../../pause";
-import { PronunciationRule } from "../../pronunciation";
+import {
+  PronunciationRule,
+  prepareSpokenText,
+} from "../../pronunciation";
+import { markChunksAffectedByPronunciationRules } from "../../audio/qualityValidator";
 
 describe("Pronunciation Overrides - Targeted Tests (P1-P13)", () => {
   const defaultRule = (partial: Partial<PronunciationRule>): PronunciationRule => ({
@@ -363,3 +367,131 @@ describe("Manual Pause - Targeted Tests (S1-S14)", () => {
     assert.equal(deleted, "First sentence. Second sentence.");
   });
 });
+
+describe("Context-Aware Acronym Pronunciation & 3-Representation Contract", () => {
+  const makeRule = (partial: Partial<PronunciationRule>): PronunciationRule => ({
+    id: "rule_" + Math.random().toString(36).slice(2),
+    sourceText: "",
+    spokenText: "",
+    enabled: true,
+    caseSensitive: false,
+    scope: "global",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...partial,
+  });
+
+  it("A1: Group A initialisms (GVEC, VPP, FBI, CEO, GDP, CPU, GPU) expand to spaced letters in spokenText while preserving sourceText", () => {
+    const src = "Take a look at GVEC, VPP, FBI, CEO, GDP, CPU, and GPU.";
+    const res = prepareSpokenText(src);
+    assert.equal(res.sourceText, src);
+    assert.equal(
+      res.spokenText,
+      "Take a look at G V E C, V P P, F B I, C E O, G D P, C P U, and G P U."
+    );
+    const gvecMap = res.pronunciationMapping.find((m) => m.sourceSpan === "GVEC");
+    assert.ok(gvecMap);
+    assert.deepEqual(gvecMap.expectedLetters, ["g", "v", "e", "c"]);
+  });
+
+  it("A2: Group B pronounceable acronyms (NASA, NATO, OPEC) remain words", () => {
+    const src = "NASA, NATO, and OPEC announced a new partnership.";
+    const res = prepareSpokenText(src);
+    assert.equal(res.spokenText, src);
+  });
+
+  it("A3: Group C context-dependent homographs (WHO, US, IT, SEC) and multi-convention (FERC, ISO, NEM)", () => {
+    assert.equal(
+      prepareSpokenText("The WHO issued a global health warning.").spokenText,
+      "The W H O issued a global health warning."
+    );
+    assert.equal(
+      prepareSpokenText("WHO ARE YOU TO JUDGE?").spokenText,
+      "Who are you to judge?"
+    );
+    assert.equal(
+      prepareSpokenText("The US government and IT department filed with the SEC.").spokenText,
+      "The U S government and I T department filed with the S E C."
+    );
+    assert.equal(
+      prepareSpokenText("LET US FIX IT IN A SEC.").spokenText,
+      "Let us fix it in a sec."
+    );
+    assert.equal(
+      prepareSpokenText("FERC and ISO reviewed the NEM tariff.").spokenText,
+      "FERC and ISO reviewed the NEM tariff."
+    );
+  });
+
+  it("A4: Group D ordinary uppercase words & ALL-CAPS segments normalize to natural reading case without letter spelling", () => {
+    const src = "NOW POWER HUMAN BOT TESLA NEVER STOP.";
+    const res = prepareSpokenText(src);
+    assert.equal(res.spokenText, "Now power human bot Tesla never stop.");
+    assert.equal(res.sourceText, src);
+
+    const mixedSrc = "THE TEN THOUSAND DOLLAR MONEY EQUATION. Look closely at the receipts on the screen.";
+    const mixedRes = prepareSpokenText(mixedSrc);
+    assert.equal(
+      mixedRes.spokenText,
+      "The ten thousand dollar money equation. Look closely at the receipts on the screen."
+    );
+    assert.equal(mixedRes.sourceText, mixedSrc);
+  });
+
+  it("A5: Group E technical compounds (PG&E, NEM 3.0, Powerwall 3, kWh)", () => {
+    const src = "PG&E customers under NEM 3.0 installed a Tesla Powerwall 3 with 13.5 kWh.";
+    const res = prepareSpokenText(src);
+    assert.equal(
+      res.spokenText,
+      "P G and E customers under NEM three point zero installed a Tesla Powerwall three with 13.5 kWh."
+    );
+    assert.equal(res.sourceText, src);
+  });
+
+  it("A6: Precedence hierarchy: Project Rule > Global Rule > Dictionary, and longest match wins", () => {
+    const rules: PronunciationRule[] = [
+      makeRule({ sourceText: "GVEC", spokenText: "Global GVEC", scope: "global" }),
+      makeRule({ sourceText: "GVEC", spokenText: "Guadalupe Valley", scope: "project" }),
+      makeRule({
+        sourceText: "GVEC cooperative",
+        spokenText: "Guadalupe Valley Electric Cooperative",
+        scope: "project",
+      }),
+      makeRule({ sourceText: "FERC", spokenText: "F E R C", scope: "global" }),
+    ];
+    const src = "The GVEC cooperative and GVEC met with FERC.";
+    const res = prepareSpokenText(src, { rules });
+    assert.equal(
+      res.spokenText,
+      "The Guadalupe Valley Electric Cooperative and Guadalupe Valley met with F E R C."
+    );
+    assert.equal(res.sourceText, src);
+  });
+
+  it("A7: Updating pronunciation rules marks affected ready chunks as modified while keeping chunk.text as sourceText", () => {
+    const chunks = splitScriptWithPauses(
+      "Take a look at the GVEC cooperative in Texas. All homeowners are eligible."
+    );
+    chunks[0].status = "ready";
+    const prevRules: PronunciationRule[] = [];
+    const nextRules: PronunciationRule[] = [
+      makeRule({ sourceText: "GVEC", spokenText: "Guadalupe Valley", scope: "project" }),
+    ];
+    const { updatedChunks, affectedCount } = markChunksAffectedByPronunciationRules(
+      chunks,
+      prevRules,
+      nextRules
+    );
+    assert.equal(affectedCount, 1);
+    assert.equal(updatedChunks[0].status, "modified");
+    assert.ok(updatedChunks[0].text.includes("GVEC cooperative"));
+  });
+
+  it("A8: Smart chunker protects dotted and ampersand initialisms (U.S.A., W.H.O., PG&E) from false sentence splits", () => {
+    const script = "The U.S.A. and W.H.O. met with PG&E in California. They reached an agreement.";
+    const chunks = splitScriptWithPauses(script);
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0].text, script);
+  });
+});
+

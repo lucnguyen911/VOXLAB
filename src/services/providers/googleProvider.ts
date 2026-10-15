@@ -262,12 +262,18 @@ export class GoogleTranslateTtsProvider implements TtsProviderAdapter {
     try {
       const lang = voice.supportedLanguages[0] || "vi";
       const sampleText = text || (lang === "vi" ? "Xin chào, đây là giọng đọc thử nghiệm Google Cloud TTS." : "Hello, this is Google Cloud Text-to-Speech preview.");
+      const { getEffectiveRules, prepareSpokenText } = await import("../pronunciation");
+      const spokenSample = prepareSpokenText(sampleText, {
+        rules: getEffectiveRules(),
+        language: lang,
+        engine: "google_translate",
+      }).spokenText;
 
       const res = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          input: { text: sampleText },
+          input: { text: spokenSample },
           voice: {
             languageCode: lang === "vi" ? "vi-VN" : "en-US",
             name: voice.id.startsWith("google_") ? undefined : voice.id,
@@ -313,13 +319,19 @@ export class GoogleTranslateTtsProvider implements TtsProviderAdapter {
 
     const isVi = options.voiceId.includes("vi");
     const langCode = isVi ? "vi-VN" : "en-US";
+    const { getEffectiveRules, prepareSpokenText } = await import("../pronunciation");
+    const spokenText = prepareSpokenText(options.text, {
+      rules: getEffectiveRules(),
+      language: isVi ? "vi" : "en",
+      engine: "google_translate",
+    }).spokenText;
     options.onProgress?.(10, "connecting");
 
     const res = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        input: { text: options.text },
+        input: { text: spokenText },
         voice: {
           languageCode: langCode,
           name: options.voiceId.startsWith("google_") ? undefined : options.voiceId,

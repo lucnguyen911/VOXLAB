@@ -2,8 +2,9 @@ import { AudioQualityReview, AudioQualityStatus, ChunkItem } from "../../types/u
 import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
 import { loadSubtitleSettings } from "../subtitle/profiles";
+import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
 
-export const QUALITY_VALIDATOR_VERSION = "2.6.0";
+export const QUALITY_VALIDATOR_VERSION = "2.8.3";
 
 /**
  * Helper to get the unique audio signature of a chunk's generated audio.
@@ -235,6 +236,8 @@ export function getIssueShortLabel(code?: string): string {
       return "Audio im lặng";
     case "FILE_CORRUPTED":
       return "File audio lỗi";
+    case "UNVERIFIED_ACRONYM":
+      return "Chưa kiểm chứng";
     default:
       return "Cần kiểm tra";
   }
@@ -364,11 +367,13 @@ export async function validateChunkAudioQuality(
   language?: string,
   customAi?: LocalAiServices | null,
   speed?: number,
-  asrModelId?: string
+  asrModelId?: string,
+  projectId: string = "current"
 ): Promise<AudioQualityReview> {
   const now = Date.now();
   const effectiveAsrModel = asrModelId || loadSubtitleSettings().whisperModel;
   const audioSig = getChunkAudioSignature(chunk);
+  const effectiveRules = getEffectiveRules(projectId);
 
   // Technical check: chunk must have an audio destination
   if (!chunk.audioFilePath && !chunk.audioUrl) {
@@ -408,7 +413,11 @@ export async function validateChunkAudioQuality(
             chunk.text,
             language,
             speed,
-            effectiveAsrModel
+            effectiveAsrModel,
+            undefined,
+            effectiveRules,
+            undefined,
+            projectId
           ),
           timeoutPromise,
         ]);
@@ -476,3 +485,31 @@ export async function validateChunkAudioQuality(
     audioSignature: audioSig,
   };
 }
+
+/**
+ * When pronunciation rules are updated in PronunciationManagerModal, compares the
+ * spokenText of each chunk before vs. after the rule update and marks any affected
+ * ready chunk as `status: "modified"` (while preserving `chunk.text` as `sourceText`).
+ */
+export function markChunksAffectedByPronunciationRules(
+  chunks: ChunkItem[],
+  previousRules: ReturnType<typeof getEffectiveRules>,
+  nextRules: ReturnType<typeof getEffectiveRules>
+): { updatedChunks: ChunkItem[]; affectedCount: number } {
+  let affectedCount = 0;
+  const updatedChunks = chunks.map((chunk) => {
+    const beforeSpoken = prepareSpokenText(chunk.text, { rules: previousRules }).spokenText;
+    const afterSpoken = prepareSpokenText(chunk.text, { rules: nextRules }).spokenText;
+    if (beforeSpoken !== afterSpoken && chunk.status === "ready") {
+      affectedCount += 1;
+      return {
+        ...chunk,
+        status: "modified" as const,
+        acknowledgedAudioSignature: undefined,
+      };
+    }
+    return chunk;
+  });
+  return { updatedChunks, affectedCount };
+}
+

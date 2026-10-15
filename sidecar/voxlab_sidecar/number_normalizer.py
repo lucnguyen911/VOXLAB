@@ -325,6 +325,7 @@ def parse_english_number_phrase(
     words_consumed = 0
     valid_number_found = False
     is_ordinal = False
+    min_scale_applied: int | None = None
 
     while idx < n:
         w = clean_token(words[idx])
@@ -343,6 +344,8 @@ def parse_english_number_phrase(
             idx += 1
             continue
         elif w in EN_ONES:
+            if current % 100 != 0:
+                break
             current += EN_ONES[w]
             words_consumed += 1
             valid_number_found = True
@@ -350,6 +353,8 @@ def parse_english_number_phrase(
             if hit_boundary:
                 break
         elif w in EN_TENS:
+            if current % 100 != 0:
+                break
             t_val = EN_TENS[w]
             words_consumed += 1
             valid_number_found = True
@@ -385,6 +390,8 @@ def parse_english_number_phrase(
             idx += 1
             break
         elif w == "hundred":
+            if current >= 100:
+                break
             if current == 0:
                 current = 1
             current *= 100
@@ -395,16 +402,46 @@ def parse_english_number_phrase(
                 break
         elif w in ("thousand", "million", "billion"):
             scale = EN_SCALES[w]
+            if min_scale_applied is not None and scale >= min_scale_applied:
+                break
             if current == 0:
                 current = 1
             total += current * scale
             current = 0
+            min_scale_applied = scale
             words_consumed += 1
             valid_number_found = True
             idx += 1
             if hit_boundary:
                 break
-        elif w == "and" and valid_number_found and idx + 1 < n and clean_token(words[idx + 1]) in (EN_ONES | EN_TENS | EN_ORDINALS):
+        elif (
+            w == "and"
+            and valid_number_found
+            and (total > 0 or current >= 100)
+            and current % 100 == 0
+            and idx + 1 < n
+            and clean_token(words[idx + 1]) in (EN_ONES | EN_TENS | EN_ORDINALS)
+        ):
+            # Look ahead past the <100 value after 'and': if it is followed by 'hundred',
+            # 'thousand', 'million', or 'billion' (e.g. "eleven thousand five hundred and thirteen thousand five hundred"),
+            # then 'and' is a coordinating conjunction between two separate numbers, NOT an internal number connector.
+            next_num_w = clean_token(words[idx + 1])
+            after_next_idx = idx + 2
+            if (
+                next_num_w in EN_TENS
+                and after_next_idx < n
+                and clean_token(words[after_next_idx]) in (EN_ONES | EN_ORDINALS)
+                and 1 <= (EN_ONES.get(clean_token(words[after_next_idx])) or EN_ORDINALS.get(clean_token(words[after_next_idx])) or 0) <= 9
+            ):
+                after_next_idx += 1
+            if after_next_idx < n:
+                after_scale_w = clean_token(words[after_next_idx])
+                if after_scale_w == "hundred":
+                    break
+                if after_scale_w in ("thousand", "million", "billion"):
+                    next_scale = EN_SCALES[after_scale_w]
+                    if current < 100 or (min_scale_applied is not None and next_scale >= min_scale_applied):
+                        break
             words_consumed += 1
             idx += 1
         else:
@@ -688,6 +725,37 @@ HYPHENATED_UNIT_MAP = {
     "gigawatt-hours": "gwh",
 }
 
+SINGLE_WORD_UNIT_MAP = {
+    "kilowatt": "kw",
+    "kilowatts": "kw",
+    "megawatt": "mw",
+    "megawatts": "mw",
+    "gigawatt": "gw",
+    "gigawatts": "gw",
+    "watt": "w",
+    "watts": "w",
+    "volt": "v",
+    "volts": "v",
+    "amp": "a",
+    "amps": "a",
+    "ampere": "a",
+    "amperes": "a",
+    "milliamp": "mah",
+    "milliamps": "mah",
+    "gigahertz": "ghz",
+    "megahertz": "mhz",
+    "kilohertz": "khz",
+    "hertz": "hz",
+    "terabyte": "tb",
+    "terabytes": "tb",
+    "gigabyte": "gb",
+    "gigabytes": "gb",
+    "megabyte": "mb",
+    "megabytes": "mb",
+    "kilobyte": "kb",
+    "kilobytes": "kb",
+}
+
 
 def collapse_number_tokens(
     words: list[str],
@@ -827,16 +895,123 @@ def collapse_number_tokens(
             idx += 1
             continue
 
-        # Dash range token immediately following a number span (e.g. ["60", "-70", "%"] -> "60", "to", "70%")
-        if spans and spans[-1].is_number and re.match(r"^[-–]\d", raw_w.strip()):
+        if spans and spans[-1].is_number and cleaned in SINGLE_WORD_UNIT_MAP:
+            spans.append(NormalizedSpan(
+                canonical=SINGLE_WORD_UNIT_MAP[cleaned],
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            idx += 1
+            continue
+
+        # Normalize spoken range/code connectors ("dash", "hyphen") immediately following a number span
+        if spans and spans[-1].is_number and cleaned in ("dash", "hyphen"):
             spans.append(NormalizedSpan(
                 canonical="to",
                 orig_start=idx,
                 orig_end=idx + 1,
                 is_number=False,
             ))
+            idx += 1
+            continue
+
+        # Dash range token immediately following a number span (e.g. ["60", "-70", "%"] -> "60", "to", "70%")
+        # Note: Leading-zero multi-digit groups like "-031", "-0299" are serial/patent code segments, NOT numeric ranges.
+        if spans and spans[-1].is_number and re.match(r"^[-–]\d", raw_w.strip()):
+            if not re.match(r"^[-–]0\d", raw_w.strip()):
+                spans.append(NormalizedSpan(
+                    canonical="to",
+                    orig_start=idx,
+                    orig_end=idx + 1,
+                    is_number=False,
+                ))
             raw_w = raw_w.strip().lstrip("-–")
             cleaned = clean_token(raw_w)
+
+        # Single-token dashed numeric range/code (e.g. "119-21" -> ["119", "to", "21"], "10-15%" -> ["10", "to", "15%"])
+        m_dash_rng = re.fullmatch(r"(\d+(?:,\d{3})*(?:\.\d+)?)([-–])(\d+(?:,\d{3})*(?:\.\d+)?%?)", cleaned)
+        if m_dash_rng and not is_ip_address(cleaned):
+            p1 = normalize_digit_string(m_dash_rng.group(1))
+            p2 = normalize_digit_string(m_dash_rng.group(3))
+            spans.append(NormalizedSpan(
+                canonical=p1,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            spans.append(NormalizedSpan(
+                canonical="to",
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            spans.append(NormalizedSpan(
+                canonical=p2,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            idx += 1
+            consume_trailing_modifiers()
+            continue
+
+        # Single-token slashed numeric pair (e.g. "24/7" -> ["24", "7"])
+        m_slash_num = re.fullmatch(r"(\d+)/(\d+)", cleaned)
+        if m_slash_num:
+            spans.append(NormalizedSpan(
+                canonical=m_slash_num.group(1),
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            spans.append(NormalizedSpan(
+                canonical=m_slash_num.group(2),
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            idx += 1
+            continue
+
+        # Single-token number + letter/unit suffix (e.g. "25d" -> ["25", "d"], "4k" -> ["4", "k"], "10kwh" -> ["10", "kwh"])
+        m_num_alpha = re.fullmatch(r"(-?\d+(?:,\d{3})*(?:\.\d+)?)([a-z]{1,4})", cleaned)
+        if m_num_alpha and m_num_alpha.group(2) not in ("st", "nd", "rd", "th"):
+            num_part = normalize_digit_string(m_num_alpha.group(1))
+            raw_suffix = m_num_alpha.group(2)
+            alpha_part = SINGLE_WORD_UNIT_MAP.get(raw_suffix, raw_suffix)
+            spans.append(NormalizedSpan(
+                canonical=num_part,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            spans.append(NormalizedSpan(
+                canonical=alpha_part,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            idx += 1
+            continue
+
+        # Single-token letter + number code (e.g. "a1" / "-A1" -> ["a", "1"], "v3" -> ["v", "3"], "q4" -> ["q", "4"])
+        m_alpha_num = re.fullmatch(r"([a-z]{1,2})(\d+)", cleaned)
+        if m_alpha_num:
+            spans.append(NormalizedSpan(
+                canonical=m_alpha_num.group(1),
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            spans.append(NormalizedSpan(
+                canonical=m_alpha_num.group(2),
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            idx += 1
+            continue
 
         # Check if already a numeric token (e.g. '300', '1,000', '3.14', '127.0.0.1', '23rd')
         norm_digit = normalize_digit_string(raw_w)
@@ -846,11 +1021,15 @@ def collapse_number_tokens(
             is_leading_dot_frac = raw_w.strip().startswith(".")
 
             # Merge BPE-split thousands/3-digit groups (e.g. ["82", ",000"], ["15", "400"], ["$290", ",000"])
-            if not is_leading_dot_frac and re.fullmatch(r"-?\d{1,3}", combined_digit):
+            # and consecutive leading-zero digit-by-digit code groups (e.g. ["031", "0299"] or ["031", "-0299"] -> "0310299")
+            if not is_leading_dot_frac and (
+                re.fullmatch(r"-?\d{1,3}", combined_digit)
+                or (combined_digit.isdigit() and combined_digit.startswith("0") and len(combined_digit) >= 2)
+            ):
                 while end_idx < n:
                     prev_raw = words[end_idx - 1].strip()
                     next_raw = words[end_idx].strip()
-                    next_clean = clean_token(next_raw)
+                    next_clean = clean_token(next_raw.lstrip("-–"))
                     has_delim_punct = (
                         delimiters is not None
                         and end_idx < len(delimiters)
@@ -860,9 +1039,20 @@ def collapse_number_tokens(
                     if re.match(r"^,\d{3}(?:[,.;:!?)]|$)", next_raw) and re.fullmatch(r"\d{3}", next_clean):
                         combined_digit = combined_digit + next_clean
                         end_idx += 1
-                    elif not has_delim_punct and (
-                        (next_clean == "000" and re.fullmatch(r"-?\d{1,3}", combined_digit))
-                        or (re.fullmatch(r"[1-9]00", next_clean) and re.fullmatch(r"-?\d{1,2}", combined_digit))
+                    elif (
+                        not has_delim_punct
+                        and combined_digit.isdigit()
+                        and combined_digit.startswith("0")
+                        and len(combined_digit) >= 2
+                        and next_clean.isdigit()
+                        and next_clean.startswith("0")
+                        and len(next_clean) >= 2
+                    ):
+                        combined_digit = combined_digit + next_clean
+                        end_idx += 1
+                    elif not has_delim_punct and not next_raw.startswith(("-", "–")) and (
+                        (next_clean == "000" and re.fullmatch(r"-?\d{1,3}", combined_digit) and not combined_digit.startswith("0"))
+                        or (re.fullmatch(r"[1-9]00", next_clean) and re.fullmatch(r"-?\d{1,2}", combined_digit) and not combined_digit.startswith("0"))
                     ):
                         combined_digit = combined_digit + next_clean
                         end_idx += 1
@@ -995,11 +1185,37 @@ def are_number_expressions_equivalent(expr1: str, expr2: str, language: str | No
         if re.fullmatch(r"-?\d+\.\d+", c1) and re.fullmatch(r"-?\d+\.\d+", c2):
             if c1.rstrip("0").rstrip(".") == c2.rstrip("0").rstrip("."):
                 return True
+        # Spoken hundreds vs time notation: e.g. 'one nineteen' ('1:19') == '119'
+        if (":" in c1 or ":" in c2) and not is_ip_address(c1) and not is_ip_address(c2):
+            d1 = c1.replace(":", "")
+            d2 = c2.replace(":", "")
+            if d1.isdigit() and d1 == d2:
+                return True
         # Check ordinal to cardinal equivalence: e.g. '23rd' == '23', 'thứ 1' == '1'
         base1 = re.sub(r"^(thứ\s+|thu\s+)", "", c1)
         base2 = re.sub(r"^(thứ\s+|thu\s+)", "", c2)
         base1 = re.sub(r"(st|nd|rd|th)$", "", base1)
         base2 = re.sub(r"(st|nd|rd|th)$", "", base2)
         if base1 and base1 == base2:
+            return True
+    # Multi-span numeric/alphanumeric equivalence (e.g. 'twenty five D' == '25D', '119 dash 21' == '119-21')
+    if (
+        len(s1) == len(s2)
+        and len(s1) >= 2
+        and any(x.is_number for x in s1)
+        and all(a.canonical == b.canonical for a, b in zip(s1, s2))
+    ):
+        return True
+    # Paired digit groups vs concatenated integer (e.g. ['20', '26'] == ['2026'], ['1', '19'] == ['119'])
+    if (
+        s1
+        and s2
+        and (len(s1) > 1 or len(s2) > 1)
+        and all(x.is_number for x in s1)
+        and all(x.is_number for x in s2)
+    ):
+        j1 = "".join(x.canonical.replace(":", "") for x in s1)
+        j2 = "".join(x.canonical.replace(":", "") for x in s2)
+        if j1.isdigit() and j1 == j2:
             return True
     return False

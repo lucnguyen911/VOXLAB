@@ -169,6 +169,10 @@ describe("Punctuation-Driven Pause Rhythm & Simplification (Cases 1 - 8)", () =>
     const gap2 = calculateEffectiveSilenceGapMs(500, 500);
     assert.equal(gap2, 0, "500ms target - 500ms model silence = 0ms inserted silence");
 
+    // Combined trailing silence (chunk 1: 150ms) + leading silence (chunk 2: 120ms)
+    const gap3 = calculateEffectiveSilenceGapMs(500, 150, 120);
+    assert.equal(gap3, 230, "500ms target - (150ms trailing + 120ms leading) = 230ms inserted silence");
+
     // Verify DEFAULT_PUNCTUATION_PAUSES defaults
     assert.equal(DEFAULT_PUNCTUATION_PAUSES.comma, 0.2);
     assert.equal(DEFAULT_PUNCTUATION_PAUSES.period, 0.6);

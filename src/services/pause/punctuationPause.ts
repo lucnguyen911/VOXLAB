@@ -118,10 +118,11 @@ export function getTargetPauseMs(
  */
 export function calculateEffectiveSilenceGapMs(
   targetPauseMs: number,
-  existingTrailingSilenceMs = 0
+  existingTrailingSilenceMs = 0,
+  nextLeadingSilenceMs = 0
 ): number {
   const safeTarget = Math.max(0, targetPauseMs);
-  const safeExisting = Math.max(0, existingTrailingSilenceMs);
+  const safeExisting = Math.max(0, existingTrailingSilenceMs) + Math.max(0, nextLeadingSilenceMs);
   return Math.max(0, safeTarget - safeExisting);
 }
 

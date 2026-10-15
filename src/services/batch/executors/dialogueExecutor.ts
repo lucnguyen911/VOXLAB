@@ -33,6 +33,7 @@ import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
+import { getEffectiveRules } from "../../pronunciation";
 
 export interface DialogueExecutorOptions {
   scriptContent?: string;
@@ -103,6 +104,7 @@ export class DialogueExecutor {
     const characterVoices = dialogueSnapshot?.characterVoices || {};
     const defaultVoice = dialogueSnapshot?.defaultVoiceId || "vi-VN-HoaiMyNeural";
     const model = dialogueSnapshot?.model || "";
+    const effectiveRules = getEffectiveRules("dialogue");
     const fail = (progressPct: number, error: string): BatchStepResult => ({
       task: "dialogue",
       status: "failed",
@@ -169,6 +171,8 @@ export class DialogueExecutor {
             text: seg.cleanText,
             outputPath,
             advancedSettings: jobAdvancedSettings,
+            pronunciationRules: effectiveRules,
+            projectId: "dialogue",
           });
         }
         seg.durationSec = r.durationSec; // real duration → speaker timeline + subtitles

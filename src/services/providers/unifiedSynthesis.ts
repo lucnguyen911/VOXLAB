@@ -1,11 +1,19 @@
 import { EffectiveVoiceSnapshot } from "../../types/ui";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../batch/batchRuntime";
+import {
+  getEffectiveRules,
+  prepareSpokenText,
+  PronunciationMappingEntry,
+  PronunciationRule,
+} from "../pronunciation";
 import { edgeTtsProvider } from "./edgeProvider";
 import { googleTranslateTtsProvider } from "./googleProvider";
 
 export interface SynthesisCoreOptions {
   scope?: string;
   id?: string;
+  projectId?: string;
+  pronunciationRules?: PronunciationRule[];
   advancedSettings?: Record<string, unknown>;
   onProgress?: (pct: number, stage: string) => void;
 }
@@ -14,6 +22,9 @@ export interface SynthesisCoreResult {
   durationSec: number;
   outputPath: string;
   blobUrl: string;
+  sourceText: string;
+  spokenText: string;
+  pronunciationMapping: PronunciationMappingEntry[];
 }
 
 /**
@@ -23,7 +34,8 @@ export interface SynthesisCoreResult {
  * - Local AI (OmniVoice, Chatterbox Turbo, Qwen TTS)
  * - Local Cloned Voices (Zero-shot voice cloning)
  *
- * Saves real audio to disk atomically and returns real duration, file path, and Blob URL for webview playback.
+ * Strictly preserves `sourceText` while sending normalized `spokenText` and `pronunciationRules`
+ * to the underlying synthesis engine.
  */
 export async function synthesizeSpeechCore(
   text: string,
@@ -35,6 +47,12 @@ export async function synthesizeSpeechCore(
   const fileExt = isOnline ? "mp3" : "wav";
   const scope = options.scope || "tts";
   const id = (options.id || `chunk_${Date.now()}`).replace(/[^\w-]/g, "_");
+  const projectId = options.projectId || (scope === "dialogue" ? "dialogue" : "current");
+  const effectiveRules = options.pronunciationRules ?? getEffectiveRules(projectId);
+  const prepared = prepareSpokenText(text, {
+    rules: effectiveRules,
+    engine: snapshot.modelId || snapshot.provider,
+  });
 
   const outputPath = ai
     ? await ai.scratchPath(scope, `${id}_${Date.now()}.${fileExt}`)
@@ -42,11 +60,13 @@ export async function synthesizeSpeechCore(
 
   let durationSec = 0;
   let finalOutputPath = outputPath;
+  let spokenText = prepared.spokenText;
+  let pronunciationMapping = prepared.pronunciationMapping;
 
   if (snapshot.provider === "edge") {
     const res = await edgeTtsProvider.synthesize({
       voiceId: snapshot.providerVoiceId || snapshot.voiceId,
-      text,
+      text: prepared.spokenText,
       outputPath,
       speed: snapshot.speed,
       pitch: snapshot.pitch,
@@ -58,7 +78,7 @@ export async function synthesizeSpeechCore(
   } else if (snapshot.provider === "google_translate") {
     const res = await googleTranslateTtsProvider.synthesize({
       voiceId: snapshot.providerVoiceId || snapshot.voiceId,
-      text,
+      text: prepared.spokenText,
       outputPath,
       speed: snapshot.speed,
       onProgress: options.onProgress,
@@ -76,10 +96,14 @@ export async function synthesizeSpeechCore(
       outputPath,
       speed: snapshot.speed,
       advancedSettings: options.advancedSettings,
+      pronunciationRules: effectiveRules,
+      projectId,
       onProgress: options.onProgress,
     });
     durationSec = res.durationSec;
     finalOutputPath = res.outputPath;
+    if (res.spokenText) spokenText = res.spokenText;
+    if (res.pronunciationMapping) pronunciationMapping = res.pronunciationMapping;
   } else {
     throw new Error(`Provider "${snapshot.provider}" chưa được hỗ trợ để tạo audio.`);
   }
@@ -89,5 +113,9 @@ export async function synthesizeSpeechCore(
     durationSec,
     outputPath: finalOutputPath,
     blobUrl,
+    sourceText: text,
+    spokenText,
+    pronunciationMapping,
   };
 }
+

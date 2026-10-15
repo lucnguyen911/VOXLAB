@@ -211,15 +211,20 @@ COMPLEMENT_TAKING = {
     "making", "using", "takes", "took", "needs", "needed", "wants", "wanted",
     "expects", "expected", "means", "meant", "called", "calls", "call", "named", "known",
     "becomes", "unsettle", "unsettles", "unsettled", "prove", "proves", "proved", "more",
-    "less", "fewer", "rather", "other", "close", "next", "prior", "due", "according",
-    "up", "down", "out", "instead", "capable", "full", "part", "kind", "sort", "verge",
+    "less", "fewer", "rather", "other", "prior", "due", "according",
+    "instead", "capable", "full", "part", "kind", "sort", "verge",
 }
 
 QUANTIFIER_OF_HEADS = {
     "millions", "thousands", "billions", "hundreds", "trillions", "tens", "dozens",
     "tons", "lots", "plenty", "most", "all", "some", "many", "few", "none",
-    "half", "majority", "number", "amount", "couple", "handful",
-    "verge", "sake", "scrap", "introduction",
+    "half", "majority", "number", "amount", "couple", "handful", "one", "each",
+    "both", "either", "neither", "any", "much", "several", "enough",
+    "verge", "sake", "scrap", "introduction", "degrees", "degree", "glass", "cup",
+    "bottle", "box", "pair", "piece", "slice", "drop", "fraction", "percent",
+    "percentage", "range", "variety", "series", "set", "group", "type", "types",
+    "stage", "stages", "phase", "phases", "part", "parts", "level", "levels",
+    "form", "forms", "kind", "kinds", "sort", "sorts",
 }
 
 ENTITY_DESIGNATOR_HEADS = {
@@ -230,7 +235,13 @@ ENTITY_DESIGNATOR_HEADS = {
     "megacharger", "megapack", "cybertruck", "optimus", "version", "ver", "tier", "phase",
     "stage", "level", "class", "category", "type", "series", "generation", "gen", "mark",
     "mk", "block", "part", "chapter", "section", "article", "title", "rule", "policy",
-    "act", "bill", "prop", "proposition", "amendment", "apollo", "saturn",
+    "act", "bill", "prop", "proposition", "amendment", "apollo", "saturn", "option",
+    "plan", "grade",
+}
+
+LETTER_DESIGNATOR_HEADS = {
+    "model", "option", "plan", "type", "class", "tier", "grade", "part", "section",
+    "category", "series", "phase", "stage", "block", "version", "gen", "generation", "mark",
 }
 
 SMALL_NUMBER_WORD_TO_DIGIT = {
@@ -246,11 +257,28 @@ PRENOMINAL_MODIFIERS = {
     "repeated", "strong", "quiet", "quietly", "genuine", "genuinely", "exact", "exactly",
     "likely", "unlikely", "major", "minor", "first", "last", "next", "previous", "new",
     "old", "human", "robotic", "elderly", "friendly", "early", "single", "whole",
-    "electric", "commercial", "industrial", "massive", "tiny", "huge", "global",
+    "electric", "electronic", "three-dimensional", "mechanical", "electrical", "structural",
+    "thermal", "optical", "digital", "synthetic", "flexible", "delicate", "precise",
+    "advanced", "automated", "integrated", "proprietary", "affordable", "reliable",
+    "durable", "wireless", "autonomous", "intelligent", "hydraulic", "magnetic",
+    "bionic", "tactile", "capacitive", "resistive", "piezoresistive",
+    "commercial", "industrial", "massive", "tiny", "huge", "global",
     "eligible", "ultimate", "predictive", "continuous", "instantaneous", "virtual",
     "solar", "stored", "wholesale", "honest", "final", "overloaded", "glowing", "surplus",
     "long", "short", "high", "low", "peak", "extra", "backup", "freezing", "soaring",
-    "failing", "desperate", "equivalent",
+    "failing", "desperate", "equivalent", "hot", "cold", "warm", "wet", "dry", "raw",
+    "fragile", "complex", "simple", "normal", "common", "special", "vital", "critical",
+    "practical", "financial", "emotional", "medical", "physical", "personal",
+    "residential", "local", "national", "internal", "external", "humanoid", "adult",
+    "senior", "older", "young", "flagship", "grocery", "laundry", "nursing", "computing",
+    "operating", "charging", "living", "visiting", "moving", "working", "learning",
+    "teaching", "driving", "sensing", "chinese", "american", "european", "japanese",
+    "korean", "federal", "wider", "broader", "higher", "lower", "faster", "slower",
+    "bigger", "smaller", "closer", "far", "electromechanical", "monthly", "daily",
+    "weekly", "annual", "yearly", "hourly", "full", "total", "average", "maximum",
+    "minimum", "standard", "conventional", "revised", "updated", "dedicated", "powerful",
+    "tireless", "crushing", "distant", "sudden", "painful", "meaningful", "independent",
+    "middle", "stage", "industry", "engineering",
 }
 
 VI_VERBS = {
@@ -263,34 +291,48 @@ VI_VERBS = {
 
 COMMON_VERBS = AUXILIARIES | VI_VERBS | {
     "accept", "accepted", "allow", "allows", "allowed", "appear", "appears", "arrive",
-    "arrived", "ask", "asked", "become", "became", "believe", "believes", "build",
+    "arrived", "ask", "asked", "become", "became", "believe", "believes", "bend",
+    "bends", "bent", "bending", "build",
     "built", "building", "buy", "buys", "bought", "buying", "call", "called", "calls",
+    "carry", "carries", "carried", "carrying", "clear", "clears", "cleared", "clearing",
     "change", "changed", "changes", "charge", "charged", "come", "comes", "came",
     "coming", "connect", "connecting", "cost", "costs", "create", "created", "cut",
-    "cuts", "depend", "depends", "design", "designed", "discharge", "draw", "drive",
+    "cuts", "depend", "depends", "design", "designed", "detect", "detects", "detected",
+    "discharge", "draw", "drive",
     "drives", "drove", "driving", "end", "ends", "ended", "endure", "erase", "erased",
     "exist", "exists", "eye", "eyeing", "factor", "fight", "find", "finding", "finish",
     "finished", "function", "generate", "get", "gets", "got", "getting", "give",
     "gives", "gave", "go", "goes", "went", "gone", "handle", "handles", "happen",
     "happens", "happened", "happening", "hear", "help", "helps", "hold", "holds",
     "hope", "hoping", "install", "jack", "keep", "keeps", "kept", "know", "knows",
-    "knew", "leave", "leaves", "left", "leaving", "let", "lets", "live", "lives",
+    "knew", "leave", "leaves", "left", "leaving", "let", "lets", "lift", "lifts",
+    "lifted", "lifting", "live", "lives",
     "log", "logged", "look", "looks", "looked", "love", "loved", "make", "makes",
-    "made", "mean", "means", "meant", "move", "moves", "moved", "need", "needs",
+    "made", "mean", "means", "meant", "move", "moves", "moved", "navigate", "navigates",
+    "navigated", "need", "needs",
     "needed", "override", "overrides", "owe", "owes", "pack", "packed", "pay", "pays",
-    "paid", "paying", "place", "placing", "plan", "planning", "play", "plug", "plugged",
-    "plummet", "pour", "pouring", "process", "processed", "promise", "promised",
+    "paid", "paying", "pick", "picks", "picked", "picking", "place", "placing", "plan",
+    "planning", "play", "plug", "plugged",
+    "plummet", "point", "points", "pointed", "pointing", "pour", "pouring", "process",
+    "processed", "promise", "promised",
     "prove", "proves", "proved", "pull", "pulls", "pulled", "read", "receive",
-    "receives", "remember", "replace", "replaced", "run", "runs", "ran", "save",
+    "receives", "recognize", "recognizes", "recognized", "rely", "relies", "relied",
+    "remember", "replace", "replaced", "roll", "rolls", "rolled", "rolling", "run",
+    "runs", "ran", "save",
     "saving", "say", "says", "said", "see", "sees", "saw", "seeing", "sell", "selling",
     "send", "sending", "shave", "show", "shows", "showed", "shut", "sit", "sits", "sat",
-    "skyrocket", "slash", "slashed", "sound", "sounds", "sounded", "squeeze",
+    "skyrocket", "slash", "slashed", "slip", "slips", "slipped", "sound", "sounds",
+    "sounded", "squeeze",
     "stabilize", "start", "starts", "started", "stay", "stays", "stayed", "step",
-    "stop", "stops", "stopped", "strain", "straining", "struggle", "take", "takes",
-    "took", "talk", "talks", "tell", "telling", "think", "thinks", "thought", "turn",
-    "turns", "turned", "turning", "use", "uses", "used", "using", "wait", "waiting",
+    "stop", "stops", "stopped", "strain", "straining", "strip", "strips", "stripped",
+    "stripping", "struggle", "take", "takes",
+    "took", "taking", "talk", "talks", "tape", "taped", "tear", "tears", "tore", "torn",
+    "tearing", "tell", "telling", "think", "thinks", "thought", "turn",
+    "turns", "turned", "turning", "understand", "understands", "use", "uses", "used",
+    "using", "wait", "waiting",
     "walk", "walked", "want", "wants", "wanted", "watch", "watched", "work", "works",
-    "working", "affect", "affects", "frighten", "hide", "count", "counts",
+    "working", "wrap", "wraps", "wrapped", "wrapping", "affect", "affects", "frighten",
+    "hide", "count", "counts",
 }
 
 NOUN_THAT_COMPLEMENTS = {
@@ -304,20 +346,27 @@ SHORT_STANDALONE = {
     "đúng", "không", "khoan", "chờ đã", "tất nhiên", "chính xác",
 }
 
-KNOWN_PHRASES = {
+# Phrases that should stay in the same cue (cue_protected) when possible, but ARE allowed
+# to wrap cleanly across lines inside a 2-line cue (before "to", "on", "about", "from", "into").
+LINE_WRAP_ALLOWED_PHRASES = {
+    "have to", "has to", "had to", "going to", "able to", "need to", "needs to",
+    "want to", "wants to", "rely on", "relies on", "depend on", "depends on",
+    "talk about", "came from", "come from", "comes from", "turn into", "turned into",
+    "turning into", "close to", "next to",
+}
+
+KNOWN_PHRASES = LINE_WRAP_ALLOWED_PHRASES | {
     "elon musk", "tesla semi", "tesla's semi", "model s", "model x", "model y", "model 3",
     "powerwall 3", "tesla powerwall", "tesla powerwall 3", "nem 3.0", "virtual power plant",
     "lithium iron phosphate", "storm watch", "spaceX starship", "spacex starship",
     "giga texas", "giga nevada", "north america", "new york", "san francisco", "united states",
     "wall street", "general motors", "the boring company", "boring company",
-    "mass production", "production line", "assembly line", "assembly lines",
-    "self driving", "self-driving", "talk about", "out of", "check in", "care of",
-    "close to", "many of", "more than", "less than", "fewer than", "rather than",
-    "other than", "up to", "down to", "instead of", "because of", "according to",
-    "due to", "thanks to", "next to", "able to", "going to", "have to", "has to",
-    "had to", "need to", "needs to", "want to", "wants to", "designed to", "built to",
-    "meant to", "came from", "come from", "comes from", "turning into", "turn into",
-    "turned into", "shut it down", "shut down", "backed up", "back up", "on its own",
+    "tesla insider news", "optimus gen 3", "optimus gen three", "optimus gen 2",
+    "mass production", "production line", "production lines", "assembly line", "assembly lines",
+    "self driving", "self-driving", "out of", "check in", "care of",
+    "many of", "more than", "less than", "fewer than", "rather than",
+    "other than", "instead of", "because of", "according to",
+    "due to", "thanks to", "shut it down", "shut down", "backed up", "back up", "on its own",
     "at the end", "in real time", "real time", "side by side", "for the first time",
     "very first time", "second quarter", "working hours", "force limiting", "hive mind",
     "product update", "know how", "dollars per month", "miles per hour", "kilowatt hour",
@@ -325,9 +374,62 @@ KNOWN_PHRASES = {
     "a year", "a day", "a month", "safety net", "strong enough", "fully functional",
     "truck stop", "diesel engine", "diesel engines", "diesel truck", "diesel trucks",
     "diesel industry", "freight costs", "grocery shelves", "one single", "single piston",
-    "what if", "find out", "step back", "storage tank", "surge capacity", "data trap",
+    "what if", "find out", "found out", "step back", "step in", "stepped in", "steps in",
+    "fight back", "fights back", "fought back", "stay on", "stays on", "stayed on",
+    "turn on", "turns on", "turned on", "turn off", "turns off", "turned off",
+    "cut off", "cuts off", "plug in", "plugged in", "pay off", "pays off", "paid off",
+    "paying off", "go down", "goes down", "went down", "give up", "gave up", "set up",
+    "lock in", "locked in", "jack up", "opt out", "sell back", "wipe out", "wiped out",
+    "tear down", "tears down", "tearing down", "tore down", "torn down",
+    "strip out", "strips out", "stripped out", "stripping out",
+    "point out", "points out", "pointed out", "pointing out",
+    "pick up", "picks up", "picked up", "picking up",
+    "tape out", "taped out", "taping out",
+    "bend down", "bends down", "bent down", "bending down",
+    "take away", "takes away", "took away", "taking away",
+    "roll off", "rolls off", "rolled off", "rolling off",
+    "call in", "calls in", "called in", "calling in",
+    "clear out", "clears out", "cleared out", "clearing out",
+    "go wrong", "goes wrong", "went wrong", "going wrong",
+    "wrap around", "wraps around", "wrapped around", "wrapping around",
+    "navigate back", "navigates back", "navigated back", "come back", "came back",
+    "go back", "went back", "bring back", "brought back", "push back", "pushed back",
+    "scale up", "scaled up", "speed up", "sped up", "slow down", "slowed down",
+    "break down", "broke down", "wear out", "wore out", "worn out", "clean up", "cleaned up",
+    "stand up", "stood up", "sit down", "sat down", "carry out", "carried out",
+    "figure out", "figured out", "work out", "worked out", "roll out", "rolled out",
+    "phase out", "phased out", "build out", "built out", "pull out", "pulled out",
+    "take over", "takes over", "took over", "end up", "ends up", "ended up",
+    "show up", "shows up", "showed up", "keep up", "kept up", "catch up", "caught up",
+    "open up", "opened up", "free up", "freed up",
+    "storage tank", "surge capacity", "data trap",
+    "energy squeeze", "breaking point", "evening news", "money equation", "hidden catch",
+    "trojan horse", "soaring rates", "failing grids", "peak hours", "battery storage",
+    "grid outage", "grid outages", "backup system", "backup generator",
     "solar panels", "solar power", "utility bills", "electric bills", "electric bill",
     "power company", "utility company", "utility companies", "game changer", "long term",
+    "degrees of freedom", "degree of freedom", "glass of water", "language model",
+    "language models", "computing power", "memory bandwidth", "memory shortages",
+    "memory configuration", "energy density", "operating time", "electricity rate",
+    "electricity bill", "monthly financing", "monthly burden", "payment plan",
+    "charging station", "charging stations", "charging cycles", "charging time",
+    "balance sheet", "human dignity", "assisted living", "nursing home", "nursing homes",
+    "laundry basket", "laundry baskets", "grocery bags", "grocery bag",
+    "prescription bottle", "cardboard box", "power cord", "power system", "bed sheets",
+    "science fiction", "industry insiders", "flagship cars", "flagship vehicles",
+    "engineering challenge", "humanoid robot", "humanoid robots", "humanoid machine",
+    "export restrictions", "life changing", "life-changing", "mid motion", "self play",
+    "multi layer", "water resistant", "three dimensional", "in home", "in-home",
+    "out of pocket", "out-of-pocket", "real world", "real-world", "middle class",
+    "full time", "full-time", "part time", "part-time", "high speed", "low cost",
+    "large scale", "next generation", "in house", "around the clock",
+    "twenty four seven", "hand dexterity", "contact pressure", "surface texture",
+    "grip strength", "medical crisis", "medical emergency", "emergency services",
+    "family members", "older adults", "elderly parents", "household chores",
+    "household robot", "daily tasks", "daily routines", "kitchen counter",
+    "kitchen tile", "basement stairs", "hot stove", "hot soup", "raw egg",
+    "fragile objects", "commercial vehicles", "demonstration robot", "adult children",
+    "wider range", "design leaks",
     # Vietnamese compounds
     "mô hình", "giọng nói", "hệ thống", "thử nghiệm", "nhận diện", "bóc băng",
     "sản xuất", "nội dung", "âm thanh", "thời gian", "chính xác", "tiếng việt",
@@ -339,16 +441,47 @@ KNOWN_PHRASES = {
 
 MAX_KNOWN_PHRASE_WORDS = 4
 
+NEGATION_CONTRACTIONS = {
+    "isn't", "aren't", "wasn't", "weren't", "haven't", "hasn't", "hadn't",
+    "don't", "doesn't", "didn't", "won't", "wouldn't", "can't", "cannot",
+    "couldn't", "shouldn't",
+}
+NEGATION_WORDS = {"not", "never", "không", "chẳng", "chưa"} | NEGATION_CONTRACTIONS
+
+HEADER_NEXT_SENTENCE_STARTERS = {
+    "now", "before", "after", "to", "on", "in", "at", "from", "for", "with", "by",
+    "under", "over", "during", "since", "until", "when", "while", "if", "as",
+    "because", "although", "though", "once", "here", "there", "today", "yesterday",
+    "tomorrow", "let", "picture", "imagine", "take", "look", "think", "consider",
+    "remember", "most", "many", "every", "all", "some", "each", "we", "you", "they",
+    "he", "she", "it", "this", "that", "these", "those", "but", "and", "so", "yet",
+    "however", "meanwhile", "instead", "first", "second", "third", "finally",
+    "ultimately", "suddenly",
+}
+
+FINITE_CLAUSE_VERBS = AUXILIARIES | {
+    "is", "are", "was", "were", "has", "have", "had", "do", "does", "did",
+    "can", "could", "will", "would", "should", "may", "might", "must",
+    "let", "lets", "make", "makes", "made", "take", "takes", "took",
+    "give", "gives", "gave", "come", "comes", "came", "go", "goes", "went",
+    "say", "says", "said", "mean", "means", "meant", "know", "knows", "knew",
+    "want", "wants", "wanted", "need", "needs", "needed",
+}
+
 UNIT_WORDS = {
-    "percent", "%", "dollar", "dollars", "usd", "mile", "miles", "hour", "hours",
-    "minute", "minutes", "second", "seconds", "day", "days", "week", "weeks",
-    "month", "months", "year", "years", "volt", "volts", "watt", "watts",
+    "percent", "%", "dollar", "dollars", "usd", "cent", "cents", "mile", "miles", "hour", "hours",
+    "minute", "minutes", "second", "seconds", "millisecond", "milliseconds", "day", "days",
+    "week", "weeks", "month", "months", "year", "years", "volt", "volts", "watt", "watts",
     "kilowatt", "kilowatts", "megawatt", "megawatts", "gigawatt", "gigawatts",
     "kwh", "mwh", "gwh", "kw", "mw", "gw", "ghz", "mhz", "khz", "hz",
-    "pound", "pounds", "lb", "lbs", "ton", "tons", "kg", "g", "mg", "km", "m",
-    "cm", "mm", "mph", "km/h", "liter", "liters", "gallon", "gallons",
-    "million", "billion", "trillion", "thousand", "hundred",
+    "pound", "pounds", "lb", "lbs", "ton", "tons", "kg", "kilogram", "kilograms",
+    "g", "gram", "grams", "mg", "km", "m", "meter", "meters", "cm", "mm", "inch", "inches",
+    "foot", "feet", "mph", "km/h", "liter", "liters", "gallon", "gallons",
+    "byte", "bytes", "kilobyte", "kilobytes", "megabyte", "megabytes", "gigabyte",
+    "gigabytes", "terabyte", "terabytes", "kb", "mb", "gb", "tb",
+    "degree", "degrees", "million", "billion", "trillion", "thousand", "hundred",
     "units", "vehicles", "trucks", "cars", "robots", "packs", "cells", "stations",
+    "actuators", "sensors", "motors", "cores", "layers", "stages", "times", "fold",
 }
 
 NOISY_ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "prof", "st", "vs", "etc", "e.g", "i.e", "u.s", "u.k"}
@@ -576,6 +709,8 @@ def build_word_sequence(segments: Sequence[Any]) -> List[Dict[str, Any]]:
             elif re.fullmatch(r"\d+(?:\.\d+)?", cur_clean) and prev_w["text"].rstrip().endswith(TERMINAL_PUNCTUATION):
                 prev_w["text"] = _replace_terminal_for_display(prev_w["text"], "")
 
+    result = _collapse_spaced_acronyms_and_compounds(result)
+
     if result:
         result[0]["text"] = _capitalize_subtitle_opening(result[0]["text"])
 
@@ -583,11 +718,118 @@ def build_word_sequence(segments: Sequence[Any]) -> List[Dict[str, Any]]:
     return result
 
 
+def _collapse_spaced_acronyms_and_compounds(words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Canonicalize spaced TTS acronyms ('A' + 'I' -> 'AI', 'A' + 'I' + 'five' -> 'AI5')
+    and hyphenated numeric idioms ('24-7' -> '24/7') while preserving word timings."""
+    if not words:
+        return words
+
+    # First normalize standalone token forms like "24-7." -> "24/7."
+    for w in words:
+        raw_t = w["text"]
+        if re.match(r"^24-7(?=[,.;:!?…]*$)", raw_t):
+            w["text"] = re.sub(r"^24-7", "24/7", raw_t, count=1)
+            w["display_text"] = w["text"]
+
+    pronoun_i_verbs = (
+        AUXILIARIES
+        | FINITE_CLAUSE_VERBS
+        | {
+            "think", "thought", "believe", "believed", "know", "knew", "want", "wanted",
+            "need", "needed", "hope", "hoped", "mean", "meant", "say", "said", "see", "saw",
+            "hear", "heard", "feel", "felt", "go", "went", "come", "came", "take", "took",
+            "make", "made", "get", "got", "find", "found", "ask", "asked", "tell", "told",
+            "work", "worked", "live", "lived", "love", "loved", "like", "liked", "use", "used",
+        }
+    )
+
+    merged: List[Dict[str, Any]] = []
+    i = 0
+    n = len(words)
+    while i < n:
+        cur = words[i]
+        if i + 1 < n:
+            nxt = words[i + 1]
+            cur_raw = cur["text"].strip()
+            nxt_raw = nxt["text"].strip()
+            cur_clean = _clean_token(cur_raw)
+            nxt_clean = _clean_token(nxt_raw)
+            gap = max(0.0, float(nxt["start"]) - float(cur["end"]))
+            prev_clean = _clean_token(merged[-1]["text"]) if merged else ""
+            after_clean = _clean_token(words[i + 2]["text"]) if (i + 2 < n) else ""
+
+            is_spaced_ai = (
+                cur_clean == "a"
+                and nxt_clean == "i"
+                and nxt_raw.startswith("I")
+                and not cur_raw.endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+                and not nxt.get("source_boundary_before")
+                and gap < 0.35
+                and prev_clean not in LETTER_DESIGNATOR_HEADS
+                and after_clean not in pronoun_i_verbs
+            )
+            if is_spaced_ai:
+                trailing_punct = ""
+                stripped_nxt = nxt_raw
+                while stripped_nxt and stripped_nxt[-1] in TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION:
+                    trailing_punct = stripped_nxt[-1] + trailing_punct
+                    stripped_nxt = stripped_nxt[:-1]
+
+                combined = dict(cur)
+                # Check if immediately followed by a chip version number ("A I five" -> "AI5")
+                if (
+                    not trailing_punct
+                    and i + 2 < n
+                    and not words[i + 2].get("source_boundary_before")
+                    and max(0.0, float(words[i + 2]["start"]) - float(nxt["end"])) < 0.35
+                    and after_clean in {"five", "four", "three", "six", "5", "4", "3", "6"}
+                    and (
+                        i + 3 < n
+                        and _clean_token(words[i + 3]["text"])
+                        in {"chip", "chips", "processor", "processors", "hardware", "memory", "computer", "completed", "with"}
+                    )
+                ):
+                    third = words[i + 2]
+                    third_raw = third["text"].strip()
+                    third_punct = ""
+                    while third_raw and third_raw[-1] in TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION:
+                        third_punct = third_raw[-1] + third_punct
+                        third_raw = third_raw[:-1]
+                    digit_str = SMALL_NUMBER_WORD_TO_DIGIT.get(after_clean, after_clean)
+                    combined["text"] = f"AI{digit_str}{third_punct}"
+                    combined["display_text"] = combined["text"]
+                    combined["end"] = max(cur["end"], third["end"])
+                    combined["raw_duration"] = round(
+                        float(cur.get("raw_duration", 0.05))
+                        + float(nxt.get("raw_duration", 0.05))
+                        + float(third.get("raw_duration", 0.05)),
+                        4,
+                    )
+                    merged.append(combined)
+                    i += 3
+                    continue
+
+                combined["text"] = f"AI{trailing_punct}"
+                combined["display_text"] = combined["text"]
+                combined["end"] = max(cur["end"], nxt["end"])
+                combined["raw_duration"] = round(
+                    float(cur.get("raw_duration", 0.05)) + float(nxt.get("raw_duration", 0.05)),
+                    4,
+                )
+                merged.append(combined)
+                i += 2
+                continue
+
+        merged.append(cur)
+        i += 1
+    return merged
+
+
 def _reindex_word_sequence(words: List[Dict[str, Any]]) -> None:
     for idx, word in enumerate(words):
         word["id"] = idx
         word["display_text"] = word["text"]
-        word["terminal"] = word["text"].rstrip().endswith(TERMINAL_PUNCTUATION)
+        word["terminal"] = word["text"].rstrip().endswith(TERMINAL_PUNCTUATION) or bool(word.get("section_header_end"))
         word["clause_end"] = word["text"].rstrip().endswith(CLAUSE_PUNCTUATION)
         word["pause_after"] = (
             max(0.0, words[idx + 1]["start"] - word["end"])
@@ -710,6 +952,33 @@ def filter_asr_hallucinations(
     return filtered
 
 
+def _tokens_phonetically_or_orthographically_match(asr_tok: str, scr_tok: str) -> bool:
+    """Return True if single ASR token and script token are close orthographic/phonetic variants
+    (e.g. 'optimists' vs 'Optimus', 'Musk\\'s' vs 'Musk', 'Pepsico' vs 'PepsiCo')."""
+    a_c = _clean_token(asr_tok)
+    s_c = _clean_token(scr_tok)
+    if not a_c or not s_c:
+        return False
+    if a_c == s_c:
+        return True
+    # Possessive / plural s stripping ("musk's" vs "musk", "optimus'" vs "optimus")
+    a_stem = re.sub(r"(?:['’]s|s['’]|s)$", "", a_c)
+    s_stem = re.sub(r"(?:['’]s|s['’]|s)$", "", s_c)
+    if a_stem and len(a_stem) >= 3 and a_stem == s_stem:
+        return True
+    ratio = difflib.SequenceMatcher(None, a_c, s_c).ratio()
+    if ratio >= 0.82:
+        return True
+    if (
+        ratio >= 0.72
+        and len(s_c) >= 5
+        and len(a_c) >= 5
+        and (a_c[:4] == s_c[:4] or scr_tok.strip()[0].isupper())
+    ):
+        return True
+    return False
+
+
 def recover_orthography_from_script(
     words: List[Dict[str, Any]],
     script_text: Optional[str],
@@ -719,15 +988,30 @@ def recover_orthography_from_script(
 
     Aligns the ASR word stream (which holds authoritative audio timestamps) with the
     original script text to recover exact capitalization, brand/proper nouns
-    (PepsiCo, Sysco, Tesla Semi, Optimus, Megacharger), and compact number/unit
-    formatting ($290,000, 1.55 kWh, 4680, 50,000) while preserving 100% of ASR timing.
+    (PepsiCo, Sysco, Tesla Semi, Optimus, Megacharger), compact number/unit
+    formatting ($290,000, 1.55 kWh, 4680, 50,000), and standalone section header
+    line boundaries while preserving 100% of ASR timing.
     """
     if not words or not script_text or not script_text.strip():
         return words
 
-    # Clean pause tags from script while preserving all surface words & punctuation
+    # Clean pause tags from script while preserving line structure for section headers
     cleaned_script = re.sub(r"\[pause[^\]]*\]", " ", script_text, flags=re.IGNORECASE)
-    script_tokens = [t.strip() for t in cleaned_script.split() if t.strip()]
+    script_tokens: List[str] = []
+    script_header_end_indices: set[int] = set()
+    for raw_line in cleaned_script.splitlines():
+        line_toks = [t.strip() for t in raw_line.split() if t.strip()]
+        if not line_toks:
+            continue
+        script_tokens.extend(line_toks)
+        last_tok = line_toks[-1].rstrip()
+        if (
+            1 <= len(line_toks) <= 8
+            and not last_tok.endswith(CLAUSE_PUNCTUATION)
+            and not any(_clean_token(t) in FINITE_CLAUSE_VERBS for t in line_toks)
+        ):
+            script_header_end_indices.add(len(script_tokens) - 1)
+
     if not script_tokens:
         return words
 
@@ -741,13 +1025,16 @@ def recover_orthography_from_script(
         if tag == "equal":
             for k in range(i2 - i1):
                 w = dict(words[i1 + k])
-                scr_tok = script_tokens[j1 + k]
+                scr_idx = j1 + k
+                scr_tok = script_tokens[scr_idx]
                 # Preserve script casing and punctuation when underlying lexical token matches
                 if _clean_token(w["text"]) == _clean_token(scr_tok):
                     w["text"] = scr_tok
                     w["display_text"] = scr_tok
-                    if scr_tok.rstrip().endswith(TERMINAL_PUNCTUATION):
+                    if scr_tok.rstrip().endswith(TERMINAL_PUNCTUATION) or scr_idx in script_header_end_indices:
                         w["script_confirmed_terminal"] = True
+                    if scr_idx in script_header_end_indices:
+                        w["section_header_end"] = True
                 recovered.append(w)
             continue
 
@@ -774,13 +1061,24 @@ def recover_orthography_from_script(
         asr_has_digits = any(any(ch.isdigit() for ch in w["text"]) for w in asr_slice)
         scr_has_digits = any(any(ch.isdigit() for ch in t) for t in scr_slice)
         if asr_has_digits and not scr_has_digits:
-            if scr_slice and scr_slice[-1].rstrip().endswith(TERMINAL_PUNCTUATION):
+            if scr_slice and (scr_slice[-1].rstrip().endswith(TERMINAL_PUNCTUATION) or (j2 - 1) in script_header_end_indices):
                 asr_copy = [dict(w) for w in asr_slice]
                 asr_copy[-1]["script_confirmed_terminal"] = True
+                if (j2 - 1) in script_header_end_indices:
+                    asr_copy[-1]["section_header_end"] = True
                 recovered.extend(asr_copy)
             else:
                 for w_orig in asr_slice:
                     recovered.append(dict(w_orig))
+            continue
+
+        # Do not split a compact ASR acronym (e.g. "AI") into spaced single letters ("A I") from a phonetic script
+        if (
+            len(scr_slice) > len(asr_slice)
+            and all(len(_clean_token(t)) == 1 and t.strip()[0].isupper() for t in scr_slice if _clean_token(t))
+        ):
+            for w_orig in asr_slice:
+                recovered.append(dict(w_orig))
             continue
 
         # Check if normalized forms match (e.g., "$290,000" vs "two hundred and ninety thousand dollars",
@@ -794,6 +1092,11 @@ def recover_orthography_from_script(
             joined_scr = "".join(scr_norm)
             if joined_asr == joined_scr:
                 norm_matches = True
+            elif len(asr_slice) == len(scr_slice) and all(
+                _tokens_phonetically_or_orthographically_match(w_o["text"], s_t)
+                for w_o, s_t in zip(asr_slice, scr_slice)
+            ):
+                norm_matches = True
             else:
                 ratio = difflib.SequenceMatcher(None, joined_asr, joined_scr).ratio()
                 if ratio >= 0.82 and abs(len(asr_slice) - len(scr_slice)) <= 2:
@@ -801,12 +1104,15 @@ def recover_orthography_from_script(
 
         if norm_matches and 1 <= len(scr_slice) <= len(asr_slice) + 1:
             if len(scr_slice) == len(asr_slice):
-                for w_orig, s_tok in zip(asr_slice, scr_slice):
+                for idx_s, (w_orig, s_tok) in enumerate(zip(asr_slice, scr_slice)):
                     w = dict(w_orig)
+                    scr_idx = j1 + idx_s
                     w["text"] = s_tok
                     w["display_text"] = s_tok
-                    if s_tok.rstrip().endswith(TERMINAL_PUNCTUATION):
+                    if s_tok.rstrip().endswith(TERMINAL_PUNCTUATION) or scr_idx in script_header_end_indices:
                         w["script_confirmed_terminal"] = True
+                    if scr_idx in script_header_end_indices:
+                        w["section_header_end"] = True
                     recovered.append(w)
             else:
                 # Distribute the ASR span [start, end] proportionally across scr_slice tokens
@@ -821,6 +1127,7 @@ def recover_orthography_from_script(
                     default=None,
                 )
                 for idx_s, (s_tok, weight) in enumerate(zip(scr_slice, weights)):
+                    scr_idx = j1 + idx_s
                     w_s = span_start + span_dur * (cursor / total_w)
                     cursor += weight
                     w_e = span_start + span_dur * (cursor / total_w)
@@ -830,19 +1137,140 @@ def recover_orthography_from_script(
                     base_w["start"] = round(w_s, 3)
                     base_w["end"] = round(max(w_s + 0.04, w_e), 3)
                     base_w["probability"] = min_prob
-                    if s_tok.rstrip().endswith(TERMINAL_PUNCTUATION):
+                    if s_tok.rstrip().endswith(TERMINAL_PUNCTUATION) or scr_idx in script_header_end_indices:
                         base_w["script_confirmed_terminal"] = True
+                    if scr_idx in script_header_end_indices:
+                        base_w["section_header_end"] = True
                     base_w["source_boundary_before"] = (
                         asr_slice[0].get("source_boundary_before", False) and idx_s == 0
                     )
                     recovered.append(base_w)
         else:
-            # Keep ASR tokens untouched if no high-confidence alignment exists
-            for w_orig in asr_slice:
-                recovered.append(dict(w_orig))
+            # Even if the full slice didn't match, check 1-to-1 token recovery when lengths match
+            if len(asr_slice) == len(scr_slice):
+                for idx_s, (w_orig, s_tok) in enumerate(zip(asr_slice, scr_slice)):
+                    w = dict(w_orig)
+                    scr_idx = j1 + idx_s
+                    if _tokens_phonetically_or_orthographically_match(w_orig["text"], s_tok) and not (
+                        any(ch.isdigit() for ch in w_orig["text"]) and not any(ch.isdigit() for ch in s_tok)
+                    ):
+                        w["text"] = s_tok
+                        w["display_text"] = s_tok
+                        if s_tok.rstrip().endswith(TERMINAL_PUNCTUATION) or scr_idx in script_header_end_indices:
+                            w["script_confirmed_terminal"] = True
+                        if scr_idx in script_header_end_indices:
+                            w["section_header_end"] = True
+                    recovered.append(w)
+            else:
+                for w_orig in asr_slice:
+                    recovered.append(dict(w_orig))
 
+    recovered = _collapse_spaced_acronyms_and_compounds(recovered)
     _reindex_word_sequence(recovered)
     return recovered
+
+
+def detect_section_header_boundaries(words: List[Dict[str, Any]]) -> None:
+    """Detect standalone Title-Case section/chapter headers in the word stream
+    (e.g. 'The Trojan Horse', 'The $10,000 Money Equation', 'The Hidden Catch',
+    'The Ultimate Data Trap') so they are never merged into the opening of the
+    following sentence.
+    """
+    n = len(words)
+    if n < 3:
+        return
+
+    minor_title_connectors = {"the", "a", "an", "of", "in", "on", "to", "for", "and", "or", "vs"}
+    idx = 0
+    while idx < n - 1:
+        is_start_of_unit = (
+            idx == 0
+            or bool(words[idx - 1].get("terminal"))
+            or bool(words[idx - 1].get("section_header_end"))
+            or bool(words[idx].get("source_boundary_before"))
+            or max(0.0, float(words[idx]["start"]) - float(words[idx - 1]["end"])) >= 0.45
+        )
+        if not is_start_of_unit:
+            idx += 1
+            continue
+
+        first_raw = words[idx]["text"].strip()
+        if not first_raw or not first_raw[0].isupper():
+            idx += 1
+            continue
+
+        matched_end: Optional[int] = None
+        for span_len in range(2, 7):
+            h_end = idx + span_len
+            if h_end >= n:
+                break
+            span = words[idx:h_end]
+            # Internal words of a header cannot have terminal or clause punctuation
+            if any(w["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION) for w in span[:-1]):
+                break
+            last_w = span[-1]
+            last_raw = last_w["text"].strip()
+            last_clean = _clean_token(last_raw)
+            if not last_raw or last_raw.endswith(CLAUSE_PUNCTUATION):
+                continue
+            if not last_raw[0].isupper() or last_clean in FORBIDDEN_ENDINGS or last_clean in CLAUSE_STARTERS:
+                continue
+
+            # Must not contain any finite clause verb
+            if any(_clean_token(w["text"]) in FINITE_CLAUSE_VERBS for w in span):
+                break
+
+            # Every non-connector token in span must be Title-Case or a number/currency expression
+            all_title_case = True
+            cap_count = 0
+            for pos_w, w_item in enumerate(span):
+                w_r = w_item["text"].strip()
+                w_c = _clean_token(w_r)
+                if not w_r:
+                    all_title_case = False
+                    break
+                if w_r[0].isupper():
+                    cap_count += 1
+                elif re.search(r"\d", w_r):
+                    pass
+                elif pos_w > 0 and w_c in minor_title_connectors:
+                    pass
+                else:
+                    all_title_case = False
+                    break
+            if not all_title_case or cap_count < 2:
+                continue
+
+            # If the header already ends with terminal punctuation, mark it as a section header
+            if last_raw.endswith(TERMINAL_PUNCTUATION) or last_w.get("section_header_end"):
+                matched_end = h_end
+                break
+
+            # Otherwise, check if the next word starts a new capitalized sentence
+            next_w = words[h_end]
+            next_raw = next_w["text"].strip()
+            next_clean = _clean_token(next_raw)
+            if not next_raw or not next_raw[0].isupper():
+                continue
+            if f"{last_clean} {next_clean}" in KNOWN_PHRASES or _is_entity_designator_pair(words, h_end - 1):
+                continue
+
+            if next_clean in HEADER_NEXT_SENTENCE_STARTERS:
+                matched_end = h_end
+                break
+
+        if matched_end is not None:
+            header_last = words[matched_end - 1]
+            header_last["section_header_end"] = True
+            header_last["script_confirmed_terminal"] = True
+            header_last["terminal"] = True
+            if matched_end < n:
+                words[matched_end]["source_boundary_before"] = True
+            for k in range(idx, matched_end):
+                words[k]["in_section_header"] = True
+            idx = matched_end
+        else:
+            idx += 1
 
 
 def _looks_like_verb(token: str) -> bool:
@@ -855,6 +1283,8 @@ def _looks_like_verb(token: str) -> bool:
 
 
 def _looks_like_standalone_title(words: Sequence[Dict[str, Any]], index: int) -> bool:
+    if words[index].get("section_header_end"):
+        return True
     following = [_clean_token(word["text"]) for word in words[index + 1 : index + 7]]
     if len(following) < 4 or following[0] not in {"the", "a", "an"}:
         return False
@@ -867,7 +1297,7 @@ def _is_suspicious_terminal(words: Sequence[Dict[str, Any]], index: int) -> bool
     current = words[index]
     if not current.get("terminal"):
         return False
-    if current.get("script_confirmed_terminal"):
+    if current.get("script_confirmed_terminal") or current.get("section_header_end"):
         return False
     next_word = words[index + 1]
     gap = max(0.0, next_word["start"] - current["end"])
@@ -939,7 +1369,10 @@ def mark_hard_boundaries(
     for word in words:
         word["display_text"] = word["text"]
     for idx, word in enumerate(words):
-        is_hard_sentence = bool(word.get("terminal")) and not _is_suspicious_terminal(words, idx)
+        is_hard_sentence = (
+            bool(word.get("section_header_end"))
+            or (bool(word.get("terminal")) and not _is_suspicious_terminal(words, idx))
+        )
         word["hard_sentence_end"] = is_hard_sentence
         replacement = _false_terminal_display_replacement(words, idx)
         if replacement is not None:
@@ -965,6 +1398,8 @@ def _is_proper_noun_pair(words: Sequence[Dict[str, Any]], idx: int) -> bool:
     """Detect 2-word capitalized Proper Nouns (e.g. 'Tesla Semi', 'Elon Musk', 'Giga Texas')."""
     if idx < 0 or idx >= len(words) - 1:
         return False
+    if words[idx].get("section_header_end") or words[idx + 1].get("source_boundary_before"):
+        return False
     w1_raw = words[idx]["text"].strip()
     w2_raw = words[idx + 1]["text"].strip()
     if w1_raw.endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION):
@@ -975,14 +1410,19 @@ def _is_proper_noun_pair(words: Sequence[Dict[str, Any]], idx: int) -> bool:
         return False
     if not (w1_raw[0].isupper() and w2_raw[0].isupper()):
         return False
-    if w1_clean in COMMON_SENTENCE_STARTERS or w2_clean in FORBIDDEN_ENDINGS:
+    if (
+        w1_clean in COMMON_SENTENCE_STARTERS
+        or w2_clean in COMMON_SENTENCE_STARTERS
+        or w2_clean in FORBIDDEN_ENDINGS
+        or w2_clean in HEADER_NEXT_SENTENCE_STARTERS
+    ):
         return False
     return True
 
 
 def _is_entity_designator_pair(words: Sequence[Dict[str, Any]], idx: int) -> bool:
-    """Detect Product/Model/Policy/Standard + Version/Number (e.g. 'Powerwall 3', 'Model 3',
-    'NEM 3.0', 'ISO 9001', 'iPhone 17', 'Megapack 2', 'Starship 3')."""
+    """Detect Product/Model/Policy/Standard + Version/Number/Letter (e.g. 'Powerwall 3', 'Model 3',
+    'Model S', 'Model X', 'Option A', 'Option B', 'NEM 3.0', 'ISO 9001', 'iPhone 17')."""
     if idx < 0 or idx >= len(words) - 1:
         return False
     w1_raw = words[idx]["text"].strip()
@@ -996,6 +1436,16 @@ def _is_entity_designator_pair(words: Sequence[Dict[str, Any]], idx: int) -> boo
     w2_clean = _clean_token(w2_raw)
     if not w1_clean or not w2_clean:
         return False
+    w2_stripped = w2_raw.rstrip(".,;:!?…")
+    is_single_upper_letter = (
+        len(w2_stripped) == 1
+        and w2_stripped.isalpha()
+        and w2_stripped.isupper()
+        and w1_clean in LETTER_DESIGNATOR_HEADS
+        and (w1_raw[0].isupper() or w2_clean != "a" or w1_clean in {"option", "model", "plan", "tier", "grade", "class"})
+    )
+    if is_single_upper_letter:
+        return True
     is_version_num = bool(re.fullmatch(r"\d+(?:\.\d+)?[a-z]?", w2_clean)) or w2_clean in SMALL_NUMBER_WORD_TO_DIGIT
     if not is_version_num:
         return False
@@ -1047,9 +1497,11 @@ def build_protected_boundary_map(
                 continue
             phrase = " ".join(clean[start:end])
             if phrase in KNOWN_PHRASES:
+                allow_line_wrap = phrase in LINE_WRAP_ALLOWED_PHRASES
                 for boundary in range(start + 1, end):
                     cue_protected[boundary] = f"protected phrase: {phrase}"
-                    line_protected[boundary] = f"protected phrase: {phrase}"
+                    if not allow_line_wrap:
+                        line_protected[boundary] = f"protected phrase: {phrase}"
                 break
 
     # 1b. Brand/Product/Policy/Standard + Version/Number (e.g. "Powerwall 3", "Tesla Powerwall 3",
@@ -1068,8 +1520,8 @@ def build_protected_boundary_map(
             for b in range(span_start + 1, idx + 2):
                 cue_protected[b] = f"protected entity designator: {entity_text}"
                 line_protected[b] = f"protected entity designator: {entity_text}"
-            # Keep "called NEM 3.0" / "named Powerwall 3" together in the same cue
-            if span_start > 0 and clean[span_start - 1] in {"called", "named"}:
+            # Keep "called NEM 3.0" / "named Powerwall 3" / "Type Option A" together in the same cue
+            if span_start > 0 and clean[span_start - 1] in {"called", "named", "type"}:
                 cue_protected[span_start] = f"named entity introduction: {words[span_start - 1]['text']} {entity_text}"
             elif (
                 span_start >= 2
@@ -1089,6 +1541,15 @@ def build_protected_boundary_map(
             q_phrase = f"{words[idx]['text']} {words[idx + 1]['text']}"
             cue_protected[idx + 1] = f"quantifier of-phrase: {q_phrase}"
             line_protected[idx + 1] = f"quantifier of-phrase: {q_phrase}"
+
+    # 1d. Section headers: keep all tokens of a standalone section header in one cue
+    for idx in range(n - 1):
+        if (
+            words[idx].get("in_section_header")
+            and words[idx + 1].get("in_section_header")
+            and not words[idx].get("section_header_end")
+        ):
+            cue_protected[idx + 1] = "section header phrase"
 
     # 2. Short 3-item coordinate noun lists: "X, Y, and Z" or "X, Y and Z"
     # Example: "cars, trucks, and robots." or "steel, aluminum, and glass."
@@ -1113,8 +1574,9 @@ def build_protected_boundary_map(
                 line_protected[idx + 1] = f"3-item list head: {list_text}"
                 line_protected[idx + 3] = f"3-item list conjunction: {list_text}"
 
-    # 3. Short 2-item coordinate noun pairs without commas:
-    # "PepsiCo and Sysco", "Americans and Europeans", "vegetables and eggs", "rau và trứng"
+    # 3. Coordinate noun pairs without commas:
+    # Distinguish bare pairs ("PepsiCo and Sysco", "Americans and Europeans", "vegetables and eggs")
+    # from modified coordinate phrases ("[Mod1 + Noun1] and [Mod2 + Noun2]" like "soaring rates and failing grids")
     for idx in range(n - 2):
         w1_raw = words[idx]["text"].rstrip()
         w2_clean = clean[idx + 1]
@@ -1136,14 +1598,44 @@ def build_protected_boundary_map(
                 and clean[idx + 3] not in {"have", "has", "had", "are", "were"}
                 and clean[idx + 2] in SUBJECT_PRONOUNS
             )
-            pair_text = _join_tokens([words[idx]["text"], words[idx + 1]["text"], words[idx + 2]["text"]])
-            if not next_is_clause_verb and display_width(pair_text) <= 28:
-                cue_protected[idx + 1] = f"coordinate noun pair: {pair_text}"
-                cue_protected[idx + 2] = f"coordinate noun pair: {pair_text}"
-                line_protected[idx + 2] = f"coordinate noun pair conjunction: {pair_text}"
-                prev_clean = clean[idx - 1] if idx > 0 else ""
-                if display_width(pair_text) <= 20 and prev_clean not in PREPOSITIONS:
-                    line_protected[idx + 1] = f"coordinate noun pair: {pair_text}"
+            if next_is_clause_verb:
+                continue
+
+            left_has_modifier = (
+                idx > 0
+                and not words[idx - 1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+                and clean[idx - 1] in PRENOMINAL_MODIFIERS
+            )
+            right_is_modifier_np = (
+                clean[idx + 2] in PRENOMINAL_MODIFIERS
+                and idx + 3 < n
+                and not w3_raw.endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+                and clean[idx + 3] not in FORBIDDEN_ENDINGS | COMMON_VERBS | CLAUSE_STARTERS
+            )
+
+            if left_has_modifier or right_is_modifier_np:
+                # Modified coordinate phrase (e.g. "soaring rates and failing grids"):
+                # Protect each [Mod + Noun] unit and keep "and" attached to the second NP,
+                # while allowing a clean break BEFORE "and".
+                cue_protected[idx + 2] = f"coordinate conjunction before modified NP: {words[idx + 1]['text']} {words[idx + 2]['text']}"
+                line_protected[idx + 2] = f"coordinate conjunction before modified NP: {words[idx + 1]['text']} {words[idx + 2]['text']}"
+                if left_has_modifier:
+                    mod_np1 = f"{words[idx - 1]['text']} {words[idx]['text']}"
+                    cue_protected[idx] = f"modified coordinate NP1: {mod_np1}"
+                    line_protected[idx] = f"modified coordinate NP1: {mod_np1}"
+                if right_is_modifier_np:
+                    mod_np2 = f"{words[idx + 2]['text']} {words[idx + 3]['text']}"
+                    cue_protected[idx + 3] = f"modified coordinate NP2: {mod_np2}"
+                    line_protected[idx + 3] = f"modified coordinate NP2: {mod_np2}"
+            else:
+                pair_text = _join_tokens([words[idx]["text"], words[idx + 1]["text"], words[idx + 2]["text"]])
+                if display_width(pair_text) <= 28:
+                    cue_protected[idx + 1] = f"coordinate noun pair: {pair_text}"
+                    cue_protected[idx + 2] = f"coordinate noun pair: {pair_text}"
+                    line_protected[idx + 2] = f"coordinate noun pair conjunction: {pair_text}"
+                    prev_clean = clean[idx - 1] if idx > 0 else ""
+                    if display_width(pair_text) <= 20 and prev_clean not in PREPOSITIONS:
+                        line_protected[idx + 1] = f"coordinate noun pair: {pair_text}"
 
     # 4. Tight subordinate starter + pronoun subject + verb ("that it depends", "that they are")
     for idx in range(n - 2):
@@ -1196,12 +1688,37 @@ def build_protected_boundary_map(
         elif not left_has_punct and (left in FORBIDDEN_ENDINGS or left.endswith("'s") or left.endswith("’s")):
             if right not in {"before", "after", "when", "while", "because", "if", "although"}:
                 reason = f"forbidden ending: {left}"
-                if is_copula_before_that_clause:
+                if is_copula_before_that_clause or left in NEGATION_CONTRACTIONS:
+                    line_protect_also = False
+                elif left == "if" and idx > 0 and clean[idx - 1] == "what":
                     line_protect_also = False
         elif not left_has_punct and left_number and right in UNIT_WORDS:
             reason = f"number and unit: {left_raw} {right_raw}"
+            if idx >= 2 and clean[idx - 1] == "to":
+                line_protect_also = False
+        elif (
+            not left_has_punct
+            and left_number
+            and right not in (CLAUSE_STARTERS | PREPOSITIONS | AUXILIARIES | COMMON_VERBS | {"and", "or"})
+        ):
+            reason = f"number and modified word: {left_raw} {right_raw}"
+            line_protect_also = False
         elif not left_has_punct and left in UNIT_WORDS and right in UNIT_WORDS and left in {"million", "billion", "trillion", "thousand", "hundred", "kilowatt", "megawatt", "gigawatt"}:
             reason = f"scale and unit: {left_raw} {right_raw}"
+        elif (
+            not left_has_punct
+            and left in UNIT_WORDS
+            and idx > 0
+            and (
+                bool(re.fullmatch(r"[$€£]?\d[\d,.:/-]*%?", clean[idx - 1]))
+                or clean[idx - 1] in NUMBER_WORDS
+                or clean[idx - 1] in {"kilowatt", "megawatt", "gigawatt"}
+            )
+            and right not in (CLAUSE_STARTERS | PREPOSITIONS | AUXILIARIES | COMMON_VERBS | DETERMINERS | {"and", "or"})
+            and not right_number
+        ):
+            reason = f"unit modifier with head noun: {left_raw} {right_raw}"
+            line_protect_also = False
         elif not left_has_punct and left in UNIT_WORDS and right == "per" and idx + 2 < n and clean[idx + 2] in UNIT_WORDS:
             cue_protected[boundary] = f"unit rate: {left_raw} per {words[idx + 2]['text']}"
             cue_protected[boundary + 1] = f"unit rate: {left_raw} per {words[idx + 2]['text']}"
@@ -1236,6 +1753,18 @@ def build_protected_boundary_map(
             line_protect_also = False
         elif (
             not left_has_punct
+            and idx > 0
+            and clean[idx - 1] in DETERMINERS
+            and not words[idx - 1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+            and left not in (CLAUSE_STARTERS | PREPOSITIONS | AUXILIARIES | COMMON_VERBS | DETERMINERS)
+            and right not in (CLAUSE_STARTERS | PREPOSITIONS | AUXILIARIES | COMMON_VERBS | DETERMINERS | {"and", "or"})
+            and not _looks_like_verb(left_raw)
+            and not _looks_like_verb(right_raw)
+        ):
+            reason = f"determiner-modifier-noun phrase: {words[idx - 1]['text']} {left_raw} {right_raw}"
+            line_protect_also = False
+        elif (
+            not left_has_punct
             and left.endswith("ly")
             and left not in {"elderly", "friendly", "family", "only", "likely", "unlikely", "early"}
             and right not in CLAUSE_STARTERS
@@ -1254,7 +1783,7 @@ def build_protected_boundary_map(
             line_protect_also = False
         elif not left_has_punct and left in AUXILIARIES and right not in CLAUSE_STARTERS:
             reason = f"auxiliary with following predicate: {left}"
-            if is_copula_before_that_clause:
+            if is_copula_before_that_clause or left in NEGATION_CONTRACTIONS:
                 line_protect_also = False
 
         if reason and not left_is_terminal:
@@ -1355,7 +1884,9 @@ def _boundary_features(
         reasons.append("independent clause conjunction")
     elif right_clean in CLAUSE_STARTERS and boundary not in protected:
         if right_clean in {"and", "or", "và", "hay", "hoặc"} and not left_has_clause_punct and not line_wrap:
-            pass
+            if boundary + 1 < len(words) and _clean_token(words[boundary + 1]["text"]) in PRENOMINAL_MODIFIERS:
+                cost -= 300.0
+                reasons.append("coordinate modified noun phrase split before conjunction")
         else:
             cost -= 280.0
             reasons.append("clause starter")
@@ -1369,9 +1900,22 @@ def _boundary_features(
             and left_clean in {"is", "was", "are", "were"}
             and right_clean in {"that", "whether", "what", "why", "how", "where", "when", "who"}
         )
+        # Prevent stranding the final word before a comma into the start of the next cue
+        if (
+            not line_wrap
+            and right["text"].rstrip().endswith(CLAUSE_PUNCTUATION)
+            and right_clean not in {"however", "meanwhile", "instead", "therefore", "otherwise", "first", "second", "third", "finally"}
+        ):
+            cost += 2200.0
+            reasons.append("pre-comma word spillover")
+
         if left_is_number and right_clean in UNIT_WORDS:
-            cost += 5800.0
-            reasons.append(f"number-unit split: {left_raw} {right['text']}")
+            if line_wrap and boundary >= 2 and _clean_token(words[boundary - 2]["text"]) == "to":
+                cost += 120.0
+                reasons.append(f"line wrap after numeric range before unit: {left_raw} {right['text']}")
+            else:
+                cost += 5800.0
+                reasons.append(f"number-unit split: {left_raw} {right['text']}")
         if _is_entity_designator_pair(words, boundary - 1):
             cost += 6000.0
             reasons.append(f"entity-designator split: {left_raw} {right['text']}")
@@ -1382,9 +1926,27 @@ def _boundary_features(
             elif is_copula_that:
                 cost -= 80.0
                 reasons.append("line wrap after copula before complement clause")
+            elif line_wrap and left_clean in NEGATION_CONTRACTIONS:
+                # Handled below via semantic negation penalty so ultra-long lines can still wrap if forced
+                pass
+            elif line_wrap and left_clean == "if" and boundary >= 2 and _clean_token(words[boundary - 2]["text"]) == "what":
+                cost += 180.0
+                reasons.append("soft line wrap after 'what if'")
             else:
                 cost += 5400.0
                 reasons.append(f"forbidden ending: {left_clean}")
+        if left_clean in NEGATION_WORDS and right_clean not in CLAUSE_STARTERS:
+            neg_pen = 1750.0 if line_wrap else 2200.0
+            cost += neg_pen
+            reasons.append(f"negation split from following predicate: {left_clean}")
+        elif (
+            boundary >= 2
+            and _clean_token(words[boundary - 2]["text"]) in NEGATION_WORDS
+            and left_clean in {"just", "only", "even", "really", "simply", "ever"}
+            and right_clean not in CLAUSE_STARTERS
+        ):
+            cost += 1350.0
+            reasons.append(f"negation modifier split from complement: {left_clean}")
         if left_clean in COMPLEMENT_TAKING:
             if line_wrap and right_clean in DETERMINERS:
                 cost += 120.0
@@ -1393,8 +1955,21 @@ def _boundary_features(
                 cost += 1400.0
                 reasons.append(f"complement expected after: {left_clean}")
         if left_clean in PRENOMINAL_MODIFIERS:
-            cost += 1700.0
-            reasons.append(f"modifier should stay with following word: {left_clean}")
+            next_is_compound_head = (
+                line_wrap
+                and boundary + 1 < len(words)
+                and not right["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+                and (
+                    f"{right_clean} {_clean_token(words[boundary + 1]['text'])}" in KNOWN_PHRASES
+                    or _clean_token(words[boundary + 1]["text"]) not in FORBIDDEN_ENDINGS | COMMON_VERBS | CLAUSE_STARTERS
+                )
+            )
+            if next_is_compound_head:
+                cost += 160.0
+                reasons.append(f"line wrap after modifier before compound noun: {left_clean}")
+            else:
+                cost += 1700.0
+                reasons.append(f"modifier should stay with following word: {left_clean}")
         if (
             left_clean.endswith("ly")
             and left_clean not in {"elderly", "friendly", "family", "only", "likely", "unlikely", "early"}
@@ -1408,9 +1983,16 @@ def _boundary_features(
                 cost += 1200.0
                 reasons.append("adverb should stay with following predicate/modifier")
 
+        next_after_right = _clean_token(words[boundary + 1]["text"]) if (boundary + 1 < len(words)) else ""
+        right_starts_negation_or_phrasal = (
+            right_clean in NEGATION_WORDS
+            or (right_clean in AUXILIARIES and next_after_right in NEGATION_WORDS)
+            or (right_clean in AUXILIARIES and boundary + 2 < len(words) and f"{next_after_right} {_clean_token(words[boundary + 2]['text'])}" in KNOWN_PHRASES)
+        )
+
         if line_wrap:
             # Semantic Line Balancing inside a 2-line cue:
-            # 1. Reward wrapping before a Prepositional Phrase (e.g. "store cheap solar energy / from the afternoon")
+            # 1. Reward wrapping before a Prepositional Phrase or Infinitive Clause (e.g. "store cheap solar energy / from the afternoon")
             if (
                 right_clean in PREPOSITIONS
                 and right_clean not in {"of"}
@@ -1419,15 +2001,24 @@ def _boundary_features(
             ):
                 cost -= 220.0
                 reasons.append("line wrap before prepositional phrase")
-            # 2. Avoid splitting a pronoun subject (e.g. "you buy", "they are") from its verb across lines,
+            # 2. Reward wrapping before a negated auxiliary or modal + phrasal verb (e.g. "But what if you / could fight back?")
+            if right_starts_negation_or_phrasal and left_clean not in FORBIDDEN_ENDINGS:
+                cost -= 120.0
+                reasons.append("line wrap before negated or phrasal predicate")
+            # 3. Avoid splitting a pronoun subject (e.g. "you buy", "they are") from its verb across lines,
             # while allowing a multi-word Subject NP (e.g. "your Powerwall 3 / can") to wrap cleanly before its verb
-            if (_looks_like_verb(right["text"]) or right_clean in AUXILIARIES) and left_clean not in CLAUSE_STARTERS:
+            elif (_looks_like_verb(right["text"]) or right_clean in AUXILIARIES) and left_clean not in CLAUSE_STARTERS:
                 if left_clean in (SUBJECT_PRONOUNS | {"it", "you", "who", "that", "which"}):
                     cost += 680.0
                     reasons.append("pronoun subject-predicate line split")
         else:
             # Avoid splitting a short subject (1-3 words) or any pronoun subject from its verb across separate cues
-            if _looks_like_verb(right["text"]) and left_clean not in CLAUSE_STARTERS and gap < profile.soft_pause:
+            if (
+                _looks_like_verb(right["text"])
+                and not right_starts_negation_or_phrasal
+                and left_clean not in CLAUSE_STARTERS
+                and gap < profile.soft_pause
+            ):
                 phrase_len = 1
                 k = boundary - 2
                 while k >= max(0, boundary - 5):
@@ -1486,6 +2077,12 @@ def _wrap_words(
         elif w1 < 11 or w2 < 11:
             score += 140.0
 
+        # Penalty against leaving a single orphan word on Line 1 or Line 2
+        if split_idx == 1 and n >= 3:
+            score += 1550.0
+        if split_idx == n - 1 and n >= 3:
+            score += 1550.0
+
         boundary_cost, _ = _boundary_features(
             cue_words,
             split_idx,
@@ -1512,12 +2109,22 @@ def _has_predicate(cue_words: Sequence[Dict[str, Any]]) -> bool:
     return any(_looks_like_verb(word["text"]) for word in cue_words)
 
 
-def _standalone_is_valid(cue_words: Sequence[Dict[str, Any]]) -> bool:
+def _standalone_is_valid(
+    cue_words: Sequence[Dict[str, Any]],
+    *,
+    is_block_start: bool = False,
+) -> bool:
     phrase = " ".join(_clean_token(word["text"]) for word in cue_words).strip()
     if phrase in SHORT_STANDALONE or phrase in KNOWN_PHRASES:
         return True
     if cue_words and cue_words[-1].get("hard_sentence_end"):
-        return True
+        if (
+            len(cue_words) >= 2
+            or is_block_start
+            or bool(cue_words[0].get("source_boundary_before"))
+            or bool(cue_words[-1].get("section_header_end"))
+        ):
+            return True
     if len(cue_words) == 1:
         token = cue_words[0]["text"].rstrip()
         clean = _clean_token(token)
@@ -1614,11 +2221,16 @@ def _cue_cost(
     elif raw_duration < profile.min_duration:
         cost += 700.0 + (profile.min_duration - raw_duration) * 1800.0
 
-    if word_count == 1 and not _standalone_is_valid(cue_words):
+    is_block_start = (
+        start == 0
+        or bool(words[start - 1].get("hard_sentence_end"))
+        or bool(cue_words[0].get("source_boundary_before"))
+    )
+    if word_count == 1 and not _standalone_is_valid(cue_words, is_block_start=is_block_start):
         if not is_block_end:
             return math.inf, None, {}
         cost += 6500.0
-    elif word_count == 2 and not _standalone_is_valid(cue_words):
+    elif word_count == 2 and not _standalone_is_valid(cue_words, is_block_start=is_block_start):
         if not is_block_end:
             return math.inf, None, {}
         cost += 3200.0
@@ -1756,6 +2368,10 @@ def _segment_block_fallback(
                 cost = abs(len(cue_words) - profile.target_words) * 5.0
                 cost += abs(duration - profile.target_duration) * 8.0
                 cost += abs(widest_line - profile.target_width)
+                if len(cue_words) == 1 and not _standalone_is_valid(cue_words):
+                    cost += 6500.0
+                elif len(cue_words) == 2 and not _standalone_is_valid(cue_words):
+                    cost += 3200.0
                 if global_end != block_end:
                     b_cost, _ = _boundary_features(words, global_end, profile, cue_protected)
                     cost += max(-300.0, b_cost)
@@ -1831,6 +2447,8 @@ def _merge_safe_fragment_cues(
         short_fragment = (
             previous_duration < profile.min_duration
             or current_duration < profile.min_duration
+            or (len(previous) == 1 and not _standalone_is_valid(previous))
+            or (len(current) == 1 and not _standalone_is_valid(current))
         )
         can_merge = (
             not next_first.get("source_boundary_before")
@@ -2248,6 +2866,7 @@ def optimize_subtitles_v2(
     if script_text and script_text.strip():
         words = recover_orthography_from_script(words, script_text, language=language)
 
+    detect_section_header_boundaries(words)
     cue_protected, line_protected = build_protected_boundary_map(words)
     hard_boundaries = mark_hard_boundaries(words, profile, cue_protected=cue_protected)
     all_cue_words: List[List[Dict[str, Any]]] = []

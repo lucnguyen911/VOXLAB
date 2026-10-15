@@ -191,7 +191,12 @@ export function computeChunkPausesMs(
     if (!isLast) {
       if (punctuationPauses) {
         const targetPauseMs = getTargetPauseMs(chunk.text, punctuationPauses, chunk.pauseAfterMs);
-        return calculateEffectiveSilenceGapMs(targetPauseMs, chunk.trailingSilenceMs ?? 0);
+        const nextLeadMs = sortedChunks[i + 1]?.leadingSilenceMs ?? 0;
+        return calculateEffectiveSilenceGapMs(
+          targetPauseMs,
+          chunk.trailingSilenceMs ?? 0,
+          nextLeadMs
+        );
       }
       return typeof chunk.pauseAfterMs === "number" && chunk.pauseAfterMs > 0 ? chunk.pauseAfterMs : 0;
     }
@@ -500,8 +505,8 @@ export async function generateMasterSrtWithAsr(params: {
     (params.chunks
       ? [...params.chunks]
           .sort((a, b) => a.index - b.index)
-          .map((c) => c.text)
-          .join(" ")
+          .map((c) => c.text || c.originalText)
+          .join("\n")
       : undefined);
 
   if (params.audioPath && params.ai?.generateMasterSubtitles) {
@@ -568,15 +573,17 @@ export interface SpeechBoundaryAnalysis {
   cutEndSample: number;
   actualLeadingSilenceRetainedMs: number;
   actualTrailingSilenceRetainedMs: number;
+  leadingArtifactAction?: "none" | "trimmed" | "kept_with_warning";
+  leadingArtifactWarning?: string;
 }
 
 /**
  * Analyzes audio chunk boundaries to detect true speech onset and offset.
  * Applies safety margins (30ms leading, 50ms trailing) to preserve weak final
  * consonants (s, t, m, n), breath, natural decay, and soft speech.
- * Computes exact actual silence retained at boundaries so dynamic injected gaps
- * never double-accumulate silence.
- * Applies Hann raised-cosine micro-fade (8ms) at cut points to eliminate clicks/pops.
+ * Also evaluates multi-feature acoustic criteria (duration, relative RMS, silence valley,
+ * and zero-crossing rate) to filter high-confidence isolated leading micro-transients
+ * while protecting real initial consonants.
  */
 export function analyzeSpeechBoundaries(
   samples: Float32Array,
@@ -604,6 +611,7 @@ export function analyzeSpeechBoundaries(
       cutEndSample: samples.length,
       actualLeadingSilenceRetainedMs: 0,
       actualTrailingSilenceRetainedMs: 0,
+      leadingArtifactAction: "none",
     };
   }
 
@@ -622,10 +630,12 @@ export function analyzeSpeechBoundaries(
       cutEndSample: samples.length,
       actualLeadingSilenceRetainedMs: 0,
       actualTrailingSilenceRetainedMs: 0,
+      leadingArtifactAction: "none",
     };
   }
 
   const frameRms = new Float32Array(numFrames);
+  const activeRmsList: number[] = [];
   for (let f = 0; f < numFrames; f++) {
     const start = f * frameSize;
     const end = Math.min(samples.length, start + frameSize);
@@ -633,7 +643,11 @@ export function analyzeSpeechBoundaries(
     for (let j = start; j < end; j++) {
       sumSquares += samples[j] * samples[j];
     }
-    frameRms[f] = Math.sqrt(sumSquares / (end - start));
+    const rmsVal = Math.sqrt(sumSquares / (end - start));
+    frameRms[f] = rmsVal;
+    if (rmsVal >= silenceThresholdRms * 2.0) {
+      activeRmsList.push(rmsVal);
+    }
   }
 
   // 3. Find speech onset (scan forward)
@@ -644,6 +658,104 @@ export function analyzeSpeechBoundaries(
       speechStartFrame = f;
       foundStart = true;
       break;
+    }
+  }
+
+  // 3b. Evaluate multi-feature criteria for isolated leading micro-transient before true speech onset
+  let leadingArtifactAction: "none" | "trimmed" | "kept_with_warning" = "none";
+  let leadingArtifactWarning: string | undefined;
+  let artifactEndSample = 0;
+
+  if (foundStart && speechStartFrame < 50 && numFrames >= 25 && activeRmsList.length > 0) {
+    const sortedActive = [...activeRmsList].sort((a, b) => a - b);
+    const refRms = sortedActive[Math.min(sortedActive.length - 1, Math.floor(sortedActive.length * 0.75))];
+    const mainOnsetThresh = Math.max(silenceThresholdRms * 3.0, refRms * 0.20);
+
+    let bEnd = speechStartFrame;
+    let reachedMainDirectly = false;
+    for (let f = speechStartFrame; f < Math.min(numFrames, speechStartFrame + 16); f++) {
+      if (frameRms[f] >= mainOnsetThresh) {
+        reachedMainDirectly = true;
+        break;
+      }
+      if (frameRms[f] >= silenceThresholdRms * 0.85) {
+        bEnd = f + 1;
+      } else if (
+        f + 1 < Math.min(numFrames, speechStartFrame + 15) &&
+        frameRms[f + 1] >= silenceThresholdRms &&
+        frameRms[f + 1] < mainOnsetThresh
+      ) {
+        bEnd = f + 1;
+      } else {
+        break;
+      }
+    }
+
+    if (!reachedMainDirectly && bEnd > speechStartFrame) {
+      let mainStart = -1;
+      for (let f = bEnd; f < Math.min(numFrames - 1, bEnd + 40); f++) {
+        if (frameRms[f] >= mainOnsetThresh && frameRms[f + 1] >= silenceThresholdRms * 2.0) {
+          mainStart = f;
+          break;
+        }
+      }
+
+      if (mainStart > bEnd) {
+        const sB0 = speechStartFrame * frameSize;
+        const sB1 = bEnd * frameSize;
+        const sM0 = mainStart * frameSize;
+        const sM1 = Math.min(samples.length, sM0 + Math.floor(sampleRate * 0.15));
+
+        const burstDurMs = (bEnd - speechStartFrame) * 10;
+        const valleyDurMs = (mainStart - bEnd) * 10;
+
+        let burstSq = 0;
+        let burstPeak = 0;
+        let zeroCrossings = 0;
+        for (let j = sB0; j < sB1; j++) {
+          const v = samples[j];
+          burstSq += v * v;
+          const a = Math.abs(v);
+          if (a > burstPeak) burstPeak = a;
+          if (j > sB0 && (samples[j] < 0) !== (samples[j - 1] < 0)) {
+            zeroCrossings++;
+          }
+        }
+        const burstRms = sB1 > sB0 ? Math.sqrt(burstSq / (sB1 - sB0)) : 0;
+        const zcr = sB1 - sB0 > 1 ? zeroCrossings / (sB1 - sB0 - 1) : 0;
+
+        let valleySq = 0;
+        for (let j = sB1; j < sM0; j++) {
+          valleySq += samples[j] * samples[j];
+        }
+        const valleyRms = sM0 > sB1 ? Math.sqrt(valleySq / (sM0 - sB1)) : 0;
+
+        let nucleusSq = 0;
+        for (let j = sM0; j < sM1; j++) {
+          nucleusSq += samples[j] * samples[j];
+        }
+        const nucleusRms = sM1 > sM0 ? Math.sqrt(nucleusSq / (sM1 - sM0)) : 1e-6;
+        const relRmsRatio = burstRms / Math.max(1e-6, nucleusRms);
+
+        const isLikelyInitialFricative = (zcr >= 0.22 && relRmsRatio >= 0.08) || burstDurMs > 95;
+        const isHighConfidenceArtifact =
+          burstDurMs >= 10 &&
+          burstDurMs <= 95 &&
+          valleyDurMs >= 25 &&
+          valleyRms <= silenceThresholdRms * 1.25 &&
+          relRmsRatio <= 0.12 &&
+          burstPeak <= 0.065 &&
+          !isLikelyInitialFricative;
+
+        if (isHighConfidenceArtifact) {
+          leadingArtifactAction = "trimmed";
+          speechStartFrame = mainStart;
+          artifactEndSample = sB1;
+        } else if (burstDurMs >= 10 && burstDurMs <= 130 && valleyDurMs >= 20 && relRmsRatio <= 0.25) {
+          leadingArtifactAction = "kept_with_warning";
+          leadingArtifactWarning = `Phát hiện xung âm nghi vấn đầu đoạn (${(sB0 / sampleRate).toFixed(2)}s–${(sB1 / sampleRate).toFixed(2)}s, ${burstDurMs}ms); giữ nguyên âm gốc để bảo toàn phụ âm đầu.`;
+        }
+      }
     }
   }
 
@@ -667,9 +779,12 @@ export function analyzeSpeechBoundaries(
   const safetyHeadSamples = Math.floor(sampleRate * (SAFETY_HEAD_MS / 1000));
   const safetyTailSamples = Math.floor(sampleRate * (SAFETY_TAIL_MS / 1000));
 
-  const cutStartSample = isFirst
-    ? 0
-    : Math.max(0, speechStartSample - safetyHeadSamples);
+  const cutStartSample =
+    leadingArtifactAction === "trimmed"
+      ? Math.max(artifactEndSample, speechStartSample - Math.floor(sampleRate * 0.025))
+      : isFirst
+      ? 0
+      : Math.max(0, speechStartSample - safetyHeadSamples);
 
   const cutEndSample = isLast
     ? samples.length
@@ -679,29 +794,32 @@ export function analyzeSpeechBoundaries(
   const actualEnd = Math.max(cutStartSample, cutEndSample);
 
   // Exact measurement of silence retained
-  const actualLeadingSilenceRetainedMs = isFirst
-    ? 0
-    : Math.max(0, ((speechStartSample - actualStart) / sampleRate) * 1000);
+  const actualLeadingSilenceRetainedMs =
+    isFirst && leadingArtifactAction !== "trimmed"
+      ? 0
+      : Math.max(0, ((speechStartSample - actualStart) / sampleRate) * 1000);
 
   const actualTrailingSilenceRetainedMs = isLast
     ? 0
     : Math.max(0, ((actualEnd - speechEndSample) / sampleRate) * 1000);
 
-  // 6. Slice samples and apply Hann raised-cosine micro-fade (8ms)
+  // 6. Slice samples and apply Hann raised-cosine micro-fade (10ms when artifact trimmed, 8ms otherwise)
   const trimmed = samples.slice(actualStart, actualEnd);
-  const fadeLen = Math.min(trimmed.length, Math.floor(sampleRate * 0.008)); // 8ms fade
+  const headFadeSec = leadingArtifactAction === "trimmed" ? 0.010 : 0.008;
+  const headFadeLen = Math.min(trimmed.length, Math.floor(sampleRate * headFadeSec));
+  const tailFadeLen = Math.min(trimmed.length, Math.floor(sampleRate * 0.008));
 
-  if (!isFirst && fadeLen > 0) {
-    for (let i = 0; i < fadeLen; i++) {
-      const w = 0.5 * (1 - Math.cos((Math.PI * i) / fadeLen));
+  if ((!isFirst || leadingArtifactAction === "trimmed") && headFadeLen > 0) {
+    for (let i = 0; i < headFadeLen; i++) {
+      const w = 0.5 * (1 - Math.cos((Math.PI * i) / headFadeLen));
       trimmed[i] *= w;
     }
   }
 
-  if (!isLast && fadeLen > 0) {
-    for (let i = 0; i < fadeLen; i++) {
+  if (!isLast && tailFadeLen > 0) {
+    for (let i = 0; i < tailFadeLen; i++) {
       const idx = trimmed.length - 1 - i;
-      const w = 0.5 * (1 - Math.cos((Math.PI * i) / fadeLen));
+      const w = 0.5 * (1 - Math.cos((Math.PI * i) / tailFadeLen));
       trimmed[idx] *= w;
     }
   }
@@ -714,6 +832,8 @@ export function analyzeSpeechBoundaries(
     cutEndSample: actualEnd,
     actualLeadingSilenceRetainedMs: Math.round(actualLeadingSilenceRetainedMs * 10) / 10,
     actualTrailingSilenceRetainedMs: Math.round(actualTrailingSilenceRetainedMs * 10) / 10,
+    leadingArtifactAction,
+    leadingArtifactWarning,
   };
 }
 

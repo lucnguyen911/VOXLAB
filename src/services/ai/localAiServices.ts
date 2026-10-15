@@ -12,6 +12,11 @@ import {
   resolveLocalEngine,
 } from "./ttsEngines";
 import { getEngineAdvancedSettings } from "./ttsAdvancedSettings";
+import {
+  getEffectiveRules,
+  PronunciationMappingEntry,
+  PronunciationRule,
+} from "../pronunciation";
 
 export interface AiFs {
   readText(path: string): Promise<string>;
@@ -46,6 +51,8 @@ export interface SynthesizeRequest {
   speed?: number;
   sampleRate?: number;
   advancedSettings?: Record<string, unknown>;
+  pronunciationRules?: PronunciationRule[];
+  projectId?: string;
   onProgress?: (pct: number, stage: string) => void;
 }
 
@@ -54,6 +61,9 @@ export interface SynthesizeResult {
   durationSec: number;
   sampleRate: number;
   engine: string;
+  sourceText?: string;
+  spokenText?: string;
+  pronunciationMapping?: PronunciationMappingEntry[];
 }
 
 export interface AsrSegment {
@@ -89,7 +99,7 @@ export interface AssembleResult {
 export interface AudioQualityValidationResult {
   status: "pass" | "warning" | "error" | "unverified";
   issues: {
-    severity: "error" | "warning";
+    severity: "error" | "warning" | "unverified";
     code: string;
     message: string;
     timeRange?: [number, number];
@@ -246,10 +256,15 @@ export class LocalAiServices {
       params.advancedSettings = advanced;
     }
 
+    const effRules = req.pronunciationRules ?? getEffectiveRules(req.projectId);
+    if (effRules && effRules.length > 0) {
+      params.pronunciationRules = effRules;
+    }
+
     for (let attempt = 0; attempt < 2; attempt++) {
       await this.ensureTtsLoaded(caps, req.onProgress);
       try {
-        const r = await this.call<{ outputPath: string; durationSec: number; sampleRate: number; engine: string }>(
+        const r = await this.call<SynthesizeResult>(
           caps.runtime, "tts.synthesize", params, req.onProgress);
         return r;
       } catch (e) {
@@ -314,10 +329,14 @@ export class LocalAiServices {
     language?: string,
     speed?: number,
     asrModelId?: string,
-    onProgress?: (pct: number, stage: string) => void
+    onProgress?: (pct: number, stage: string) => void,
+    pronunciationRules?: PronunciationRule[],
+    pronunciationMapping?: PronunciationMappingEntry[],
+    projectId?: string
   ): Promise<AudioQualityValidationResult> {
     const s = this.settings();
     const effectiveModel = asrModelId || s.asrModelId || "large-v3-turbo";
+    const effRules = pronunciationRules ?? getEffectiveRules(projectId);
     return this.call<AudioQualityValidationResult>(
       "core",
       "audio.validate_quality",
@@ -329,6 +348,8 @@ export class LocalAiServices {
         modelsDir: s.modelsDir,
         modelId: effectiveModel,
         asrModelId: effectiveModel,
+        pronunciationRules: effRules,
+        ...(pronunciationMapping ? { pronunciationMapping } : {}),
       },
       onProgress
     );

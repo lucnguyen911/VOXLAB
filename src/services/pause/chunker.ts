@@ -1,16 +1,22 @@
 import { ChunkItem } from "../../types/ui";
 import { parsePauseDurationMs } from "./types";
+import { buildRuleRegex, getEffectiveRules, PronunciationRule } from "../pronunciation";
 
 export interface SmartChunkOptions {
   targetSentences?: number; // default: 3
   hardMaxChars?: number;    // default: 600
+  pronunciationRules?: PronunciationRule[];
+  projectId?: string;
 }
 
 /**
  * Token protection utility for technical tokens, custom pronunciation spans,
  * numeric units, currencies, abbreviations, and proper names during sentence/long-text splitting.
  */
-export function protectSemanticTokens(text: string): {
+export function protectSemanticTokens(
+  text: string,
+  customRules?: PronunciationRule[]
+): {
   protectedText: string;
   restore: (str: string) => string;
 } {
@@ -20,27 +26,58 @@ export function protectSemanticTokens(text: string): {
   }
 
   const protectedItems: string[] = [];
+  const maskMatch = (match: string): string => {
+    protectedItems.push(match);
+    return `VOXTOK${sessionKey}P${protectedItems.length - 1}XOT`;
+  };
+
+  let working = text;
+
+  // 0. Protect multi-character / multi-word user pronunciation rule spans so chunk boundaries
+  // never split inside a user-defined pronunciation rule, while restoring exact source_text.
+  const activeRules = (customRules ?? getEffectiveRules()).filter(
+    (r) =>
+      r.enabled &&
+      r.sourceText &&
+      r.sourceText.trim().length > 1 &&
+      (/[\s.&/-]/.test(r.sourceText.trim()) || r.sourceText.trim().length >= 3)
+  );
+  for (const rule of activeRules) {
+    const rx = buildRuleRegex(rule);
+    working = working.replace(rx, (m) => {
+      if (m.includes(`VOXTOK${sessionKey}`)) return m;
+      return maskMatch(m);
+    });
+  }
+
   // Protect:
   // 1. Custom pronunciation placeholders (VOX_PRON_P..._XOV)
   // 2. Manual pause representations ([PAUSE ...])
   // 3. URLs and emails
-  // 4. Numbers with commas/decimals (15,000, 3.14)
-  // 5. Abbreviations with periods (Dr., Mr., Mrs., Ms., Prof., e.g., i.e.)
-  // 6. Currencies ($119B, $15,000, 500.000₫)
-  // 7. Numeric units (1.2 MW, 20 km/h, 13.5%, 5°C, -10°C, 10-15)
-  // 8. Technical model tokens (RTX-5090, v1.2.3, 127.0.0.1, AI-5, X-1)
-  // 9. Proper names (Shin-Etsu, Mercedes-Benz, Rolls-Royce, Harley-Davidson)
+  // 4. Product / brand / policy version spans (Tesla Powerwall 3, Powerwall 3, Tesla Model 3, NEM 3.0, ISO 9001, iPhone 17)
+  // 5. Dotted and ampersand initialisms (U.S., U.S.A., W.H.O., PG&E, AT&T, S&P, R&D)
+  // 6. Numbers with commas/decimals (15,000, 3.14)
+  // 7. Abbreviations with periods (Dr., Mr., Mrs., Ms., Prof., e.g., i.e.)
+  // 8. Currencies ($119B, $15,000, 500.000₫)
+  // 9. Numeric units (1.2 MW, 13.5 kWh, 20 km/h, 13.5%, 5°C, -10°C, 10-15)
+  // 10. Technical model tokens (RTX-5090, v1.2.3, 127.0.0.1, AI-5, X-1)
+  // 11. Proper names (Shin-Etsu, Mercedes-Benz, Rolls-Royce, Harley-Davidson)
   const tokenPattern =
-    /(?:VOX_PRON_P\d+_XOV|\[(?:PAUSE|pause)\s+[^\]]+\]|https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?\b|\b\d{1,2}:\d{2}(?::\d{2})?\b|\b\d+:\d+\b|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|\bv?\d+(?:\.\d+)+[a-zA-Z0-9._-]*\b|\b(?:Dr|Mr|Mrs|Ms|Prof|Rev|Gen|Sen|Rep|St|Jr|Sr)\.(?:[A-Z][a-zA-Z]+|(?=\s|$|[,/:;!?)[\]]))|\b(?:e\.g|i\.e|etc|vs|al|a\.m|p\.m|E\.G|I\.E)\.|\b(?:Shin-Etsu|Mercedes-Benz|Rolls-Royce|Harley-Davidson|Coca-Cola)\b|\b[A-Za-z]+-[0-9]+[A-Za-z0-9_-]*\b|\b[A-Za-z]-[0-9]+\b|\b\$\d+(?:\.\d+)?[BMKbmk]?\b|\b\d+(?:\.\d+)?\s*(?:MW|kW|km\/h|m\/s|%|°C|°F|V|kV|A|mA|Hz|kHz|MHz|GHz|TB|GB|MB|KB|kg|g|mg|km|m|cm|mm|usd|vnd|eur|dollars?|cents?)\b)/gu;
+    /(?:VOX_PRON_P\d+_XOV|\[(?:PAUSE|pause)\s+[^\]]+\]|https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+|\b(?:(?:Tesla|Apple|Samsung|Google|Microsoft|Sony|AMD|Intel|Nvidia|NVIDIA|OpenAI|Anthropic|Meta|SpaceX)\s+)?(?:Powerwall|Model|iPhone|iPad|MacBook|AirPods|iMac|Galaxy|Pixel|Surface|Windows|Android|iOS|macOS|PlayStation|Xbox|Switch|Ryzen|GeForce|Radeon|RTX|GTX|GPT|Claude|Gemini|Llama|Qwen|DeepSeek|Starship|Falcon|Optimus|Cybercab|Megapack|Supercharger|NEM|ISO|IEEE|USB|HDMI|PCIe|Wi-Fi|WiFi|Bluetooth|Web|DOCSIS|WPA|TLS|HTTP|Version|Stage|Phase|Tier|Level|Part|Chapter)\s+(?:\d{1,4}(?:\.\d{1,3})*[A-Za-z]?|[SXY])\b|(?:[A-Z]\.){2,6}|\b[A-Z]{1,3}&[A-Z]{1,3}\b|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?\b|\b\d{1,2}:\d{2}(?::\d{2})?\b|\b\d+:\d+\b|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|\bv?\d+(?:\.\d+)+[a-zA-Z0-9._-]*\b|\b(?:Dr|Mr|Mrs|Ms|Prof|Rev|Gen|Sen|Rep|St|Jr|Sr)\.(?:[A-Z][a-zA-Z]+|(?=\s|$|[,/:;!?)[\]]))|\b(?:e\.g|i\.e|etc|vs|al|a\.m|p\.m|E\.G|I\.E)\.|\b(?:Shin-Etsu|Mercedes-Benz|Rolls-Royce|Harley-Davidson|Coca-Cola)\b|\b[A-Za-z]+-[0-9]+[A-Za-z0-9_-]*\b|\b[A-Za-z]-[0-9]+\b|\b\$\d+(?:,\d{3})*(?:\.\d+)?[BMKbmk]?\b|\b\d+(?:\.\d+)?\s*(?:GWh|MWh|kWh|Wh|GW|MW|kW|W|km\/h|m\/s|mph|%|°C|°F|V|kV|A|mA|Ah|mAh|Hz|kHz|MHz|GHz|TB|GB|MB|KB|kg|g|mg|lb|lbs|tons?|km|m|cm|mm|mi|usd|vnd|eur|dollars?|cents?)\b)/gu;
 
-  const protectedText = text.replace(tokenPattern, (match) => {
-    protectedItems.push(match);
-    return `VOXTOK${sessionKey}P${protectedItems.length - 1}XOT`;
+  const protectedText = working.replace(tokenPattern, (match) => {
+    if (match.includes(`VOXTOK${sessionKey}`)) return match;
+    return maskMatch(match);
   });
 
   const restore = (str: string): string => {
     const restoreRegex = new RegExp(`VOXTOK${sessionKey}P(\\d+)XOT`, "g");
-    return str.replace(restoreRegex, (_, idx) => protectedItems[Number(idx)] ?? "");
+    let out = str;
+    for (let pass = 0; pass < 2; pass++) {
+      if (!out.includes(`VOXTOK${sessionKey}`)) break;
+      out = out.replace(restoreRegex, (_, idx) => protectedItems[Number(idx)] ?? "");
+    }
+    return out;
   };
 
   return { protectedText, restore };
@@ -53,7 +90,8 @@ export function protectSemanticTokens(text: string): {
  * 2. Clause boundary: ':'
  * 3. Safe comma: ','
  * 4. Safe whitespace fallback
- * Never splits inside protected semantic tokens.
+ * Protects semantic tokens and entity spans when possible, but releases the entity
+ * lock if needed so chunks never exceed hardMax.
  */
 export function splitLongSentence(sentence: string, hardMax = 600): string[] {
   const trimmed = sentence.trim();
@@ -61,26 +99,82 @@ export function splitLongSentence(sentence: string, hardMax = 600): string[] {
   if (trimmed.length <= hardMax) return [trimmed];
 
   const { protectedText, restore } = protectSemanticTokens(trimmed);
+  const tokenRegex = /VOXTOK[a-z0-9]+P\d+XOT/g;
+
+  const splitPlainByMax = (plainStr: string, maxLen: number): string[] => {
+    const s = plainStr.trim();
+    if (!s) return [];
+    if (s.length <= maxLen) return [s];
+    const window = s.slice(0, maxLen + 1);
+    const wsMatch = window.match(/\s+(?=[^\s]*$)/);
+    if (wsMatch && wsMatch.index !== undefined && wsMatch.index > 0) {
+      const head = s.slice(0, wsMatch.index).trim();
+      const tail = s.slice(wsMatch.index + wsMatch[0].length).trim();
+      return [head, ...splitPlainByMax(tail, maxLen)];
+    }
+    return [s.slice(0, maxLen), ...splitPlainByMax(s.slice(maxLen), maxLen)];
+  };
+
+  const computeSafeWindowEnd = (str: string, maxLen: number): number => {
+    // Find the largest prefix of `str` (without slicing inside a VOXTOK placeholder)
+    // whose restored length is <= maxLen + 1.
+    const tokenSpans: Array<{ start: number; end: number }> = [];
+    let m: RegExpExecArray | null;
+    tokenRegex.lastIndex = 0;
+    while ((m = tokenRegex.exec(str)) !== null) {
+      tokenSpans.push({ start: m.index, end: m.index + m[0].length });
+    }
+
+    let bestPos = 0;
+    let pos = 0;
+    while (pos <= str.length) {
+      const activeTok = tokenSpans.find((t) => pos > t.start && pos < t.end);
+      if (activeTok) {
+        pos = activeTok.end;
+        continue;
+      }
+      const restoredPrefixLen = restore(str.slice(0, pos)).length;
+      if (restoredPrefixLen <= maxLen + 1) {
+        bestPos = pos;
+      } else {
+        break;
+      }
+      const startingTok = tokenSpans.find((t) => t.start === pos);
+      if (startingTok) {
+        pos = startingTok.end;
+      } else {
+        pos += 1;
+      }
+    }
+    return bestPos;
+  };
 
   const splitProtected = (str: string, maxLen: number): string[] => {
-    if (str.length <= maxLen) return [str];
+    const restoredFull = restore(str).trim();
+    if (!restoredFull) return [];
+    if (restoredFull.length <= maxLen) return [restoredFull];
 
-    // Find cut position within searchWindow [1, maxLen]
-    const searchWindow = str.slice(0, maxLen + 1);
+    const windowEnd = computeSafeWindowEnd(str, maxLen);
+    const searchWindow = str.slice(0, windowEnd);
+    const isValidCut = (idx: number): boolean => {
+      if (idx <= 0) return false;
+      const len = restore(str.slice(0, idx)).trim().length;
+      return len > 0 && len <= maxLen;
+    };
 
     let cutIndex = -1;
     let delimiterLen = 1;
 
     // 1. Semicolons
     const semiIdx = searchWindow.lastIndexOf(";");
-    if (semiIdx > 0 && semiIdx < maxLen) {
+    if (semiIdx > 0 && isValidCut(semiIdx + 1)) {
       cutIndex = semiIdx + 1;
     }
 
     // 2. Colons
     if (cutIndex === -1) {
       const colonIdx = searchWindow.lastIndexOf(":");
-      if (colonIdx > 0 && colonIdx < maxLen) {
+      if (colonIdx > 0 && isValidCut(colonIdx + 1)) {
         cutIndex = colonIdx + 1;
       }
     }
@@ -88,7 +182,7 @@ export function splitLongSentence(sentence: string, hardMax = 600): string[] {
     // 3. Safe comma
     if (cutIndex === -1) {
       const commaIdx = searchWindow.lastIndexOf(",");
-      if (commaIdx > 0 && commaIdx < maxLen) {
+      if (commaIdx > 0 && isValidCut(commaIdx + 1)) {
         cutIndex = commaIdx + 1;
       }
     }
@@ -96,24 +190,25 @@ export function splitLongSentence(sentence: string, hardMax = 600): string[] {
     // 4. Safe whitespace
     if (cutIndex === -1) {
       const wsMatch = searchWindow.match(/\s+(?=[^\s]*$)/);
-      if (wsMatch && wsMatch.index !== undefined && wsMatch.index > 0) {
+      if (wsMatch && wsMatch.index !== undefined && isValidCut(wsMatch.index)) {
         cutIndex = wsMatch.index;
         delimiterLen = wsMatch[0].length;
       }
     }
 
-    // Fallback if no delimiter found in searchWindow (unbreakable sequence)
+    // Soft-lock fallback: if no protected boundary fits within maxLen (e.g. a protected
+    // entity at the start of `str` is itself longer than `maxLen`), release the lock
+    // on the first token/segment and split on plain whitespace so `maxLen` is never exceeded.
     if (cutIndex <= 0) {
-      cutIndex = maxLen;
-      delimiterLen = 0;
+      return splitPlainByMax(restoredFull, maxLen);
     }
 
-    const head = str.slice(0, cutIndex).trim();
+    const head = restore(str.slice(0, cutIndex)).trim();
     const tail = str.slice(cutIndex + (delimiterLen > 1 ? delimiterLen : 0)).trim();
 
     const parts: string[] = [];
     if (head.length > 0) {
-      parts.push(head);
+      parts.push(...(head.length > maxLen ? splitPlainByMax(head, maxLen) : [head]));
     }
     if (tail.length > 0) {
       parts.push(...splitProtected(tail, maxLen));
@@ -121,8 +216,7 @@ export function splitLongSentence(sentence: string, hardMax = 600): string[] {
     return parts;
   };
 
-  const rawChunks = splitProtected(protectedText, hardMax);
-  return rawChunks.map((c) => restore(c).trim()).filter((c) => c.length > 0);
+  return splitProtected(protectedText, hardMax).filter((c) => c.length > 0);
 }
 
 /**

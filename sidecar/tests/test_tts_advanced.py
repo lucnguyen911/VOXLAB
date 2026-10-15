@@ -96,7 +96,8 @@ class TestTtsServiceAdvancedSettings(unittest.TestCase):
         cases = [
             ("Comment BOT if you trust robots", "Comment bot if you trust robots"),
             ("Comment HUMAN if you trust robots", "Comment HUMAN if you trust robots"),
-            ("The USA and FBI utilize AI models", "The USA and FBI utilize AI models"),
+            ("The USA and FBI utilize AI models", "The U S A and F B I utilize A I models"),
+            ("NASA and NATO met with OPEC", "NASA and NATO met with OPEC"),
             ("ROBOT and BOTTOM are unaffected", "ROBOT and BOTTOM are unaffected"),
         ]
 
@@ -110,6 +111,92 @@ class TestTtsServiceAdvancedSettings(unittest.TestCase):
                 res = svc.synthesize("tts.synthesize", params, mock_ctx)
                 req: SynthesisRequest = mock_adapter.synthesize.call_args[0][0]
                 self.assertEqual(req.text, expected_spoken_text)
+                self.assertEqual(res.get("sourceText"), original_text)
+                self.assertEqual(res.get("spokenText"), expected_spoken_text)
+
+    def test_acronym_pronunciation_groups_and_precedence(self):
+        from voxlab_sidecar.tts.service import prepare_spoken_text_for_tts
+
+        # Group A: Initialisms spelled letter-by-letter
+        res_a = prepare_spoken_text_for_tts("Take a look at GVEC, VPP, FBI, CEO, GDP, CPU, and GPU.")
+        self.assertEqual(
+            res_a["spokenText"],
+            "Take a look at G V E C, V P P, F B I, C E O, G D P, C P U, and G P U.",
+        )
+        self.assertEqual(
+            res_a["sourceText"],
+            "Take a look at GVEC, VPP, FBI, CEO, GDP, CPU, and GPU.",
+        )
+
+        # Group B: Pronounceable acronyms kept as words
+        res_b = prepare_spoken_text_for_tts("NASA, NATO, and OPEC released a joint report.")
+        self.assertEqual(
+            res_b["spokenText"],
+            "NASA, NATO, and OPEC released a joint report.",
+        )
+
+        # Group C: Context-dependent homographs (WHO, US, IT, SEC) and multi-convention (FERC, ISO, NEM)
+        res_who_org = prepare_spoken_text_for_tts("The WHO issued a global health warning.")
+        self.assertEqual(res_who_org["spokenText"], "The W H O issued a global health warning.")
+
+        res_who_pronoun = prepare_spoken_text_for_tts("WHO ARE YOU TO JUDGE?")
+        self.assertEqual(res_who_pronoun["spokenText"], "Who are you to judge?")
+        self.assertEqual(res_who_pronoun["sourceText"], "WHO ARE YOU TO JUDGE?")
+
+        res_us_org = prepare_spoken_text_for_tts("The US economy and IT department filed with the SEC.")
+        self.assertEqual(
+            res_us_org["spokenText"],
+            "The U S economy and I T department filed with the S E C.",
+        )
+
+        res_us_pronoun = prepare_spoken_text_for_tts("LET US FIX IT IN A SEC.")
+        self.assertEqual(res_us_pronoun["spokenText"], "Let us fix it in a sec.")
+        self.assertEqual(res_us_pronoun["sourceText"], "LET US FIX IT IN A SEC.")
+
+        # Multi-convention acronyms (FERC, ISO) default to unexpanded unless user overrides
+        res_multi = prepare_spoken_text_for_tts("FERC and ISO approved the grid tariff.")
+        self.assertEqual(res_multi["spokenText"], "FERC and ISO approved the grid tariff.")
+
+        # Group D: All-caps ordinary words & ALL-CAPS segments inside mixed chunks
+        res_d = prepare_spoken_text_for_tts("NOW POWER HUMAN BOT TESLA NEVER STOP.")
+        self.assertEqual(res_d["spokenText"], "Now power human bot Tesla never stop.")
+        self.assertEqual(res_d["sourceText"], "NOW POWER HUMAN BOT TESLA NEVER STOP.")
+
+        res_caps_clause = prepare_spoken_text_for_tts(
+            "THE TEN THOUSAND DOLLAR MONEY EQUATION. Look closely at the receipts on the screen."
+        )
+        self.assertEqual(
+            res_caps_clause["spokenText"],
+            "The ten thousand dollar money equation. Look closely at the receipts on the screen.",
+        )
+        self.assertEqual(
+            res_caps_clause["sourceText"],
+            "THE TEN THOUSAND DOLLAR MONEY EQUATION. Look closely at the receipts on the screen.",
+        )
+
+        # Group E: Technical compounds & product versions
+        res_e = prepare_spoken_text_for_tts("PG&E customers under NEM 3.0 installed a Tesla Powerwall 3 with 13.5 kWh.")
+        self.assertEqual(
+            res_e["spokenText"],
+            "P G and E customers under NEM three point zero installed a Tesla Powerwall three with 13.5 kWh.",
+        )
+
+        # Precedence: Project Rule > Global Rule > Dictionary, and longest match wins
+        rules = [
+            {"sourceText": "GVEC", "replacementText": "Global GVEC", "scope": "global"},
+            {"sourceText": "GVEC", "replacementText": "Guadalupe Valley", "scope": "project"},
+            {"sourceText": "GVEC cooperative", "replacementText": "Guadalupe Valley Electric Cooperative", "scope": "project"},
+            {"sourceText": "FERC", "replacementText": "F E R C", "scope": "global"},
+        ]
+        res_rules = prepare_spoken_text_for_tts(
+            "The GVEC cooperative and GVEC met with FERC.",
+            pronunciation_rules=rules,
+        )
+        self.assertEqual(
+            res_rules["spokenText"],
+            "The Guadalupe Valley Electric Cooperative and Guadalupe Valley met with F E R C.",
+        )
+
 
 
 

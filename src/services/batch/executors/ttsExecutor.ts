@@ -27,6 +27,7 @@ import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
+import { getEffectiveRules } from "../../pronunciation";
 
 export interface TtsExecutorOptions {
   textContent?: string;
@@ -76,9 +77,10 @@ export class TtsExecutor {
       };
     }
 
-    // 2. Normalization
+    // 2. Normalization (safe text cleanup; spoken pronunciation rules are applied strictly at TTS synthesis time so subtitles keep source_text)
     const normResult = normalizeText(rawText, getDefaultEnabledGroupIds());
     const normalizedText = normResult.normalizedText;
+    const effectiveRules = getEffectiveRules();
 
     // 3. Smart Chunking with pauses
     const chunks: ChunkItem[] = splitScriptWithPauses(normalizedText);
@@ -162,6 +164,7 @@ export class TtsExecutor {
             outputPath,
             speed,
             advancedSettings: jobAdvancedSettings,
+            pronunciationRules: effectiveRules,
           });
         }
         chunk.durationSec = r.durationSec; // real audio duration → synthesized_timing subtitles
@@ -223,7 +226,7 @@ export class TtsExecutor {
         try {
           const masterSub = await ai.generateMasterSubtitles({
             audioPath: audioResolution.resolvedPath,
-            scriptText: sortedChunks.map((c) => c.text).join(" "),
+            scriptText: sortedChunks.map((c) => c.text || c.originalText).join("\n"),
             chunkCount: sortedChunks.length,
           });
           if (masterSub?.srt?.trim()) {

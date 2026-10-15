@@ -148,17 +148,18 @@ def main(argv: list[str] | None = None) -> int:
         import importlib
         from . import audio_ops
         from . import number_normalizer
+        from . import pronunciation
         from . import audio_quality
         from . import subtitle_optimizer
 
         _mod_mtimes: dict[str, float] = {}
-        for _m_obj in (audio_ops, number_normalizer, audio_quality, subtitle_optimizer):
+        for _m_obj in (audio_ops, number_normalizer, pronunciation, audio_quality, subtitle_optimizer):
             _f = getattr(_m_obj, "__file__", None)
             if _f and os.path.exists(_f):
                 _mod_mtimes[_m_obj.__name__] = os.path.getmtime(_f)
 
         def _ensure_fresh_qc_modules() -> None:
-            for _m_obj in (audio_ops, number_normalizer, audio_quality, subtitle_optimizer):
+            for _m_obj in (audio_ops, number_normalizer, pronunciation, audio_quality, subtitle_optimizer):
                 _f = getattr(_m_obj, "__file__", None)
                 if _f and os.path.exists(_f):
                     _cur_mtime = os.path.getmtime(_f)
@@ -178,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             models_dir = params.get("modelsDir")
             model_id = params.get("modelId") or params.get("asrModelId")
             speed = float(params.get("speed") or 1.0)
+            pron_rules = params.get("pronunciationRules") if isinstance(params.get("pronunciationRules"), list) else None
+            pron_mapping = params.get("pronunciationMapping") if isinstance(params.get("pronunciationMapping"), list) else None
             res = audio_quality.validate_audio_quality(
                 audio_path=audio_path,
                 text=text,
@@ -185,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
                 models_dir=models_dir,
                 model_id=model_id,
                 speed=speed,
+                pronunciation_mapping=pron_mapping,
+                pronunciation_rules=pron_rules,
             )
             ctx.progress(100.0, "validated")
             return res
@@ -260,15 +265,28 @@ def main(argv: list[str] | None = None) -> int:
 
     def edge_preview_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
         from .edge_tts_engine import synthesize_edge_tts
+        from .tts.service import prepare_spoken_text_for_tts
         ctx.progress(10.0, "connecting")
+        raw_text = params.get("text", "Xin chào, đây là giọng đọc thử nghiệm của Edge TTS.")
+        raw_rules = params.get("pronunciationRules")
+        custom_rules = raw_rules if isinstance(raw_rules, list) else None
+        prep = prepare_spoken_text_for_tts(
+            raw_text,
+            language=params.get("language"),
+            engine="edge",
+            custom_rules=custom_rules,
+        )
         res = synthesize_edge_tts(
-            text=params.get("text", "Xin chào, đây là giọng đọc thử nghiệm của Edge TTS."),
+            text=prep["spokenText"],
             voice=params.get("voice", "vi-VN-HoaiMyNeural"),
             output_path=params.get("outputPath"),
             rate=params.get("rate", "+0%"),
             pitch=params.get("pitch", "+0Hz"),
             volume=params.get("volume", "+0%"),
         )
+        res["sourceText"] = raw_text
+        res["spokenText"] = prep["spokenText"]
+        res["pronunciationMapping"] = prep["pronunciationMapping"]
         ctx.progress(100.0, "ready")
         return res
 

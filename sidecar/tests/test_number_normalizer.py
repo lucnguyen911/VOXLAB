@@ -251,6 +251,77 @@ class NumberNormalizerTest(unittest.TestCase):
             )
         )
 
+    def test_alphanumeric_dashed_and_unit_tokens(self):
+        # Section twenty five D vs 25D
+        src_25d = [s.canonical for s in collapse_number_tokens("Section twenty five D.".split(), "en")]
+        asr_25d = [s.canonical for s in collapse_number_tokens(["Section", "25D."], "en")]
+        self.assertEqual(src_25d, ["section", "25", "d"])
+        self.assertEqual(asr_25d, ["section", "25", "d"])
+        self.assertTrue(are_number_expressions_equivalent("twenty five D", "25D", "en"))
+        self.assertFalse(are_number_expressions_equivalent("twenty five D", "20D", "en"))
+
+        # Dashed Public Law 119-21 vs one hundred and nineteen dash twenty one
+        src_law = [
+            s.canonical
+            for s in collapse_number_tokens("one hundred and nineteen dash twenty one".split(), "en")
+        ]
+        asr_law_single = [s.canonical for s in collapse_number_tokens(["119-21"], "en")]
+        asr_law_split = [s.canonical for s in collapse_number_tokens(["119", "-21"], "en")]
+        self.assertEqual(src_law, ["119", "to", "21"])
+        self.assertEqual(asr_law_single, ["119", "to", "21"])
+        self.assertEqual(asr_law_split, ["119", "to", "21"])
+        self.assertTrue(are_number_expressions_equivalent("one hundred and nineteen dash twenty one", "119-21", "en"))
+
+        # Slashed 24/7 vs twenty four seven
+        src_247 = [s.canonical for s in collapse_number_tokens("twenty four seven".split(), "en")]
+        asr_247 = [s.canonical for s in collapse_number_tokens(["24/7"], "en")]
+        self.assertEqual(src_247, ["24", "7"])
+        self.assertEqual(asr_247, ["24", "7"])
+
+        # Attached and spoken single-word units (50MW, 10kWh, 100GB)
+        src_mw = [s.canonical for s in collapse_number_tokens("fifty megawatts".split(), "en")]
+        asr_mw = [s.canonical for s in collapse_number_tokens(["50MW"], "en")]
+        self.assertEqual(src_mw, ["50", "mw"])
+        self.assertEqual(asr_mw, ["50", "mw"])
+
+        src_kwh = [s.canonical for s in collapse_number_tokens("ten kilowatt hours".split(), "en")]
+        asr_kwh = [s.canonical for s in collapse_number_tokens(["10kWh"], "en")]
+        self.assertEqual(src_kwh, ["10", "kwh"])
+        self.assertEqual(asr_kwh, ["10", "kwh"])
+
+        # Spoken hundreds vs integer ('one nineteen' == '119')
+        self.assertTrue(are_number_expressions_equivalent("one nineteen", "119", "en"))
+
+        # Coordinating 'and' between two separate compound numbers ('between 11,500 and 13,500')
+        src_between = [
+            s.canonical
+            for s in collapse_number_tokens(
+                "between eleven thousand five hundred and thirteen thousand five hundred dollars".split(),
+                "en",
+            )
+        ]
+        self.assertEqual(src_between, ["between", "11500", "and", "13500"])
+
+        # Patent / serial code with leading-zero groups and letter+number suffix
+        src_patent = [
+            s.canonical
+            for s in collapse_number_tokens(
+                "twenty twenty six zero three one zero two nine nine A one".split(),
+                "en",
+            )
+        ]
+        asr_patent_dashed = [
+            s.canonical
+            for s in collapse_number_tokens(["2026", "-031", "-0299", "-A1"], "en")
+        ]
+        asr_patent_spaced = [
+            s.canonical
+            for s in collapse_number_tokens(["2026", "031", "0299", "a1"], "en")
+        ]
+        self.assertEqual(src_patent, ["2026", "0310299", "a", "1"])
+        self.assertEqual(asr_patent_dashed, ["2026", "0310299", "a", "1"])
+        self.assertEqual(asr_patent_spaced, ["2026", "0310299", "a", "1"])
+
 
 if __name__ == "__main__":
     unittest.main()

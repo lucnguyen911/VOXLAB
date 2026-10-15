@@ -448,8 +448,140 @@ class SubtitleOptimizerTest(unittest.TestCase):
             self.assertAlmostEqual(res["cues"][0]["endSec"], 10.0, places=2)
             self.assertEqual(res["cues"][0]["text"], "Welcome back to the channel.")
 
+    def test_modified_coordinate_noun_phrases_soaring_rates_and_failing_grids(self):
+        # Tầng 3 — Yêu cầu A: [Mod1 + Noun1] and [Mod2 + Noun2] must keep each [Mod + Noun] intact
+        sentence = "For millions of Americans and Europeans, this winter is a nightmare of soaring rates and failing grids."
+        report = {}
+        cues = optimize_subtitles_v2(
+            [_make_segment(sentence)],
+            video_format="16:9",
+            max_lines=2,
+            debug_validation_report=report,
+        )
+        self.assertTrue(report["export_allowed"])
+        self.assertEqual(cues[0]["text"], "For millions of Americans\nand Europeans,")
+        for c in cues:
+            # Must NEVER split "soaring / rates" across lines
+            self.assertNotIn("soaring\nrates", c["text"])
+            self.assertNotIn("of soaring\n", c["text"])
+        all_lines = [line for c in cues for line in c["text"].splitlines()]
+        self.assertTrue(any("of soaring rates" in line for line in all_lines))
+        self.assertTrue(any("and failing grids." in line for line in all_lines))
+
+    def test_section_headers_isolated_from_following_sentences(self):
+        # Tầng 3 — Yêu cầu B: Standalone chapter/section headers must NOT merge with following sentence
+        header_cases = [
+            (
+                "The Trojan Horse On the surface, the pitch for a home battery sounds like pure common sense.",
+                "The Trojan Horse",
+                "On the surface,",
+            ),
+            (
+                "The $10,000 Money Equation Now let's look at the financial argument.",
+                "The $10,000 Money Equation",
+                "Now let's look",
+            ),
+            (
+                "The Hidden Catch Before we get to the biggest secret of all, we need to talk about hardware.",
+                "The Hidden Catch",
+                "Before we get",
+            ),
+        ]
+        for text, expected_header, next_prefix in header_cases:
+            cues = optimize_subtitles_v2(
+                [_make_segment(text)],
+                video_format="16:9",
+                max_lines=2,
+            )
+            self.assertGreaterEqual(len(cues), 2, f"Expected header isolation for: {text}")
+            flat_cue_0 = " ".join(cues[0]["text"].splitlines())
+            self.assertEqual(flat_cue_0, expected_header)
+            flat_cue_1 = " ".join(cues[1]["text"].splitlines())
+            self.assertTrue(
+                flat_cue_1.startswith(next_prefix),
+                f"Expected cue 1 to start with '{next_prefix}', got '{flat_cue_1}'",
+            )
+
+    def test_compound_noun_modifier_wraps_and_phrasal_verbs_preserved(self):
+        # Tầng 3 — Yêu cầu C:
+        # 1. "to Europe's freezing energy squeeze," -> "to Europe's freezing\nenergy squeeze,"
+        cues_squeeze = optimize_subtitles_v2(
+            [_make_segment("From California's utility shocks, to Europe's freezing energy squeeze,")],
+            video_format="16:9",
+            max_lines=2,
+        )
+        self.assertEqual(len(cues_squeeze), 2)
+        self.assertEqual(cues_squeeze[1]["text"], "to Europe's freezing\nenergy squeeze,")
+
+        # 2. "But what if you could fight back?" -> must NOT leave "back?" alone on line 2
+        cues_fight = optimize_subtitles_v2(
+            [_make_segment("But what if you could fight back?")],
+            video_format="16:9",
+            max_lines=2,
+        )
+        self.assertEqual(len(cues_fight), 1)
+        self.assertEqual(cues_fight[0]["text"], "But what if you\ncould fight back?")
+
+    def test_negation_words_not_split_from_complement(self):
+        # Tầng 3 — Yêu cầu D: Do not split immediately after negation ("is not", "does not", "should not")
+        cues_neg = optimize_subtitles_v2(
+            [_make_segment("Notice that the utility is not paying you cash for your energy.")],
+            video_format="16:9",
+            max_lines=2,
+        )
+        for c in cues_neg:
+            for line in c["text"].splitlines():
+                self.assertFalse(
+                    line.endswith(" is not") or line.endswith(" does not") or line.endswith(" should not"),
+                    f"Line should not end with bare negation: '{line}' in cue:\n{c['text']}",
+                )
+
+    def test_optimus_16_srt_phrase_boundaries_and_orthography_recovery(self):
+        # 1. Pre-comma spillover & phrasal verb ("tore down"):
+        # "you do not need to rely on marketing promises, you just need to look at what Tesla physically tore down inside its California factory."
+        seg1 = _make_segment(
+            "you do not need to rely on marketing promises, you just need to look at what Tesla physically tore down inside its California factory."
+        )
+        cues1 = optimize_subtitles_v2([seg1], video_format="16:9", max_lines=2)
+        flat1 = [c["text"].replace("\n", " ") for c in cues1]
+        self.assertTrue(
+            any(t.endswith("marketing promises,") for t in flat1),
+            f"Expected cue break at 'marketing promises,' without 1-word spillover: {flat1}",
+        )
+        self.assertTrue(
+            any("tore down" in t for t in flat1),
+            f"Expected phrasal verb 'tore down' to stay intact in the same cue: {flat1}",
+        )
+
+        # 2. Letter designators ("Option A", "Model S"), unit modifier with head noun ("2.3 kilowatt hour battery"),
+        # and adjective modifier ("three-dimensional electronic skin"):
+        seg2 = _make_segment(
+            "Look at Option A with a 2.3 kilowatt hour battery and three-dimensional electronic skin and water resistant sealing,"
+        )
+        cues2 = optimize_subtitles_v2([seg2], video_format="16:9", max_lines=2)
+        flat2 = [c["text"].replace("\n", " ") for c in cues2]
+        self.assertTrue(any("Option A" in t for t in flat2), f"'Option A' split across cues: {flat2}")
+        self.assertTrue(any("hour battery" in t for t in flat2), f"'hour battery' split across cues: {flat2}")
+        self.assertTrue(any("electronic skin" in t for t in flat2), f"'electronic skin' split across cues: {flat2}")
+
+        # 3. Phonetic/orthographic recovery ("optimists" -> "Optimus", "A I computing" -> "AI computing", "24-7." -> "24/7.")
+        # and no 1-word orphan cue for "24/7." at sentence end:
+        seg3 = _make_segment(
+            "Elon Musk's emphasized the possibility of operating optimists with A I computing around the clock, 24-7."
+        )
+        script3 = "Elon Musk emphasized the possibility of operating Optimus with AI computing around the clock, 24/7."
+        cues3 = optimize_subtitles_v2([seg3], video_format="16:9", max_lines=2, script_text=script3)
+        joined3 = " ".join(c["text"].replace("\n", " ") for c in cues3)
+        self.assertIn("Elon Musk emphasized", joined3)
+        self.assertIn("Optimus", joined3)
+        self.assertIn("AI computing", joined3)
+        self.assertIn("24/7.", joined3)
+        self.assertTrue(
+            all(len(c["text"].split()) > 1 for c in cues3),
+            f"Expected no 1-word orphan cue at sentence end: {[c['text'] for c in cues3]}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-
 

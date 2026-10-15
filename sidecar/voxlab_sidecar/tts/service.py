@@ -8,7 +8,223 @@ from typing import Any
 
 from ..protocol import Cancelled, SidecarError, log, require
 from ..server import RequestContext
-from .base import SynthesisRequest, TtsEngineAdapter, cuda_available
+from .base import Capabilities, SynthesisRequest, TtsEngineAdapter, cuda_available
+
+_BRACKET_CONTROL_RE = re.compile(r"\[[^\[\]]*\]")
+_VI_DIACRITIC_RE = re.compile(
+    r"[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
+    r"ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ]"
+)
+
+_EN_ONES = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+)
+_EN_TENS = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+
+_VI_DIGITS = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín")
+
+_VERSION_HEAD_WORDS: set[str] = {
+    "powerwall", "model", "iphone", "ipad", "macbook", "airpods", "imac",
+    "galaxy", "pixel", "surface", "windows", "android", "ios", "macos",
+    "playstation", "xbox", "switch", "ryzen", "geforce", "radeon", "rtx",
+    "gtx", "gpt", "claude", "gemini", "llama", "qwen", "deepseek",
+    "starship", "falcon", "optimus", "cybercab", "megapack", "supercharger",
+    "nem", "iso", "ieee", "usb", "hdmi", "pcie", "wifi", "wi-fi", "bluetooth",
+    "web", "docsis", "wpa", "tls", "http", "version", "ver", "gen",
+    "generation", "mark", "mk", "type", "tier", "phase", "stage", "level",
+    "part", "chapter",
+}
+
+_NON_ENTITY_CAPITALIZED_HEADS: set[str] = {
+    "a", "an", "the", "in", "on", "at", "to", "for", "of", "with", "by", "from",
+    "into", "onto", "upon", "about", "above", "below", "under", "over", "after",
+    "before", "between", "among", "through", "during", "without", "within",
+    "around", "near", "nearly", "almost", "only", "just", "even", "than", "as",
+    "and", "or", "but", "nor", "so", "yet", "if", "when", "while", "where",
+    "because", "although", "though", "unless", "until", "since", "whether",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "can", "could", "will", "would", "shall", "should",
+    "may", "might", "must", "january", "february", "march", "april", "june",
+    "july", "august", "september", "october", "november", "december",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "trong", "trên", "dưới", "tại", "với", "từ", "đến", "cho", "của", "và",
+    "hoặc", "nhưng", "khi", "nếu", "vì", "do", "bởi", "khoảng", "hơn", "gần",
+}
+
+_MEASUREMENT_OR_QUANTITY_FOLLOWERS: set[str] = {
+    "kw", "kwh", "mw", "mwh", "gw", "gwh", "wh", "kv", "mv",
+    "ah", "mah", "hz", "khz", "mhz", "ghz", "kb", "mb", "gb", "tb",
+    "pb", "bps", "kbps", "mbps", "gbps", "km", "cm", "mm", "nm",
+    "mi", "mph", "kph", "km/h", "ft", "yd", "kg", "mg", "lb", "lbs",
+    "oz", "ton", "tons", "tonne", "tonnes", "ml", "liter", "liters",
+    "litre", "litres", "gal", "gallon", "gallons", "sec", "secs",
+    "second", "seconds", "ms", "min", "mins", "minute", "minutes",
+    "hr", "hrs", "hour", "hours", "day", "days", "week", "weeks",
+    "month", "months", "year", "years", "decade", "decades",
+    "dollar", "dollars", "cent", "cents", "euro", "euros", "pound", "pounds",
+    "yen", "dong", "vnd", "usd", "eur", "gbp", "percent", "percentage",
+    "million", "millions", "billion", "billions", "trillion", "trillions",
+    "thousand", "thousands", "hundred", "hundreds", "miles", "feet", "foot",
+    "inch", "inches", "meters", "metres", "degrees", "times", "fold",
+    "people", "users", "homes", "households", "cars", "vehicles", "trucks",
+    "units", "items", "pieces", "packs", "cells", "batteries", "panels",
+    "giây", "phút", "giờ", "ngày", "tuần", "tháng", "năm", "thập",
+    "đô", "đồng", "triệu", "tỷ", "nghìn", "ngàn", "trăm", "phần", "lần",
+    "người", "nhà", "xe", "viên", "tấm", "chiếc", "cái",
+}
+
+_VERSION_PATTERN = re.compile(
+    r"(?<![$\u20ac\u00a3\u00a5\u20ab\w])"
+    r"(?P<head>[A-Za-z\u00C0-\u1EF9][A-Za-z0-9\u00C0-\u1EF9-]*)"
+    r"(?P<sep>\s+)"
+    r"(?P<ver>\d{1,2}(?:\.\d{1,2}){1,2}|[1-9]\d?)"
+    r"(?![.,]?\d|[%a-zA-Z\u00C0-\u1EF9])"
+)
+
+
+def _int_to_spoken_en(n: int) -> str:
+    if 0 <= n < 20:
+        return _EN_ONES[n]
+    if 20 <= n < 100:
+        tens, rem = divmod(n, 10)
+        return _EN_TENS[tens] if rem == 0 else f"{_EN_TENS[tens]} {_EN_ONES[rem]}"
+    return str(n)
+
+
+def _int_to_spoken_vi(n: int) -> str:
+    if 0 <= n < 10:
+        return _VI_DIGITS[n]
+    if n == 10:
+        return "mười"
+    if 10 < n < 20:
+        rem = n % 10
+        if rem == 5:
+            return "mười lăm"
+        return f"mười {_VI_DIGITS[rem]}"
+    if 20 <= n < 100:
+        tens, rem = divmod(n, 10)
+        if rem == 0:
+            return f"{_VI_DIGITS[tens]} mươi"
+        if rem == 1:
+            return f"{_VI_DIGITS[tens]} mươi mốt"
+        if rem == 5:
+            return f"{_VI_DIGITS[tens]} mươi lăm"
+        return f"{_VI_DIGITS[tens]} mươi {_VI_DIGITS[rem]}"
+    return str(n)
+
+
+def _version_to_spoken(ver: str, lang_code: str) -> str:
+    if "." in ver:
+        parts = ver.split(".")
+        if lang_code == "vi":
+            spoken_parts = [_int_to_spoken_vi(int(p)) if p.isdigit() else p for p in parts]
+            return " chấm ".join(spoken_parts)
+        spoken_parts = [_int_to_spoken_en(int(p)) if p.isdigit() else p for p in parts]
+        return " point ".join(spoken_parts)
+    n = int(ver)
+    return _int_to_spoken_vi(n) if lang_code == "vi" else _int_to_spoken_en(n)
+
+
+def _is_version_entity_head(head: str) -> bool:
+    h_lower = head.lower()
+    if h_lower in _VERSION_HEAD_WORDS:
+        return True
+    if h_lower in _NON_ENTITY_CAPITALIZED_HEADS:
+        return False
+    # All-caps acronym (e.g. NEM, ISO, USB, GPT) or MixedCase / Capitalized brand (Powerwall, iPhone)
+    if len(head) >= 2 and (head[0].isupper() or any(c.isupper() for c in head[1:])):
+        if not any(c.isdigit() for c in head):
+            return True
+    return False
+
+
+def _find_version_spans(text: str, lang_code: str) -> list[tuple[int, int, str]]:
+    """Finds `(start, end, spoken_version)` spans for valid product/policy version numbers."""
+    out: list[tuple[int, int, str]] = []
+    for m in _VERSION_PATTERN.finditer(text):
+        head = m.group("head")
+        ver = m.group("ver")
+        if not _is_version_entity_head(head):
+            continue
+
+        tail_text = text[m.end() :]
+        if not re.match(r"^\s*[,.;:!?—–\-)\]\"]", tail_text):
+            next_word_match = re.match(r"^\s+([A-Za-z\u00C0-\u1EF9/%]+)", tail_text)
+            if next_word_match:
+                next_word_raw = next_word_match.group(1)
+                next_word = next_word_raw.lower().strip("/%")
+                if next_word in _MEASUREMENT_OR_QUANTITY_FOLLOWERS:
+                    continue
+                if (
+                    head.lower() not in _VERSION_HEAD_WORDS
+                    and "." not in ver
+                    and not (head.isupper() or any(c.isupper() for c in head[1:]))
+                ):
+                    continue
+        else:
+            if (
+                head.lower() not in _VERSION_HEAD_WORDS
+                and "." not in ver
+                and not (head.isupper() or any(c.isupper() for c in head[1:]))
+            ):
+                continue
+
+        spoken_ver = _version_to_spoken(ver, lang_code)
+        out.append((m.start("ver"), m.end("ver"), spoken_ver))
+    return out
+
+
+def prepare_spoken_text_for_tts(
+    text: str,
+    language: str | None = None,
+    engine: str | None = None,
+    custom_rules: list[dict[str, Any]] | None = None,
+    pronunciation_rules: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Returns `{ sourceText, spokenText, pronunciationMapping }` for TTS synthesis and QC."""
+    from ..pronunciation import prepare_spoken_text_and_mapping
+
+    eff_rules = custom_rules if custom_rules is not None else pronunciation_rules
+    return prepare_spoken_text_and_mapping(
+        text,
+        language=language,
+        engine=engine,
+        custom_rules=eff_rules,
+        version_span_finder=_find_version_spans,
+    )
+
+
+def normalize_spoken_text_for_tts(
+    text: str,
+    language: str | None = None,
+    engine: str | None = None,
+    custom_rules: list[dict[str, Any]] | None = None,
+    pronunciation_rules: list[dict[str, Any]] | None = None,
+) -> str:
+    """Context-aware internal spoken-text normalization for TTS synthesis.
+
+    Applies the 5-tier pronunciation hierarchy (Project User Rules -> Global User Rules ->
+    Verified Standard Pronunciation Dictionary -> High-Confidence Contextual Auto-Detection ->
+    Keep Original Text) plus product/policy version numbers ('Powerwall 3' -> 'Powerwall three',
+    'NEM 3.0' -> 'NEM three point zero').
+
+    Preserves:
+    - Original script, UI text, and subtitle text (caller's `text` is unchanged)
+    - Pronounceable acronyms (NASA, NATO, OPEC), multi-convention acronyms (FERC, ISO, NEM),
+      and ordinary uppercase words (NOW, POWER, HUMAN, TESLA)
+    - Context-dependent homographs in ordinary-word contexts ('Who are you?', 'help us', 'It works')
+    - Quantities, years (2026), currencies ($10,000), and technical specs with units (13.5 kWh)
+    - Bracketed inline control tags (e.g. `[laughter]`, `[B EY1 S]`)
+    """
+    if not text or not text.strip():
+        return text
+    eff_rules = custom_rules if custom_rules is not None else pronunciation_rules
+    res = prepare_spoken_text_for_tts(
+        text, language=language, engine=engine, custom_rules=eff_rules
+    )
+    return res["spokenText"]
 
 
 class TtsService:
@@ -33,12 +249,12 @@ class TtsService:
                 "device": getattr(a, "device", None) if a else None}
 
     # -- heavy ----------------------------------------------------------------
-    def _adapter(self, engine: str) -> TtsEngineAdapter:
-        a = self._adapters.get(engine)
+    def _adapter(self, a_engine: str) -> TtsEngineAdapter:
+        a = self._adapters.get(a_engine)
         if a is None:
-            raise SidecarError("ENGINE_NOT_INSTALLED", f"engine '{engine}' is not available in this runtime")
+            raise SidecarError("ENGINE_NOT_INSTALLED", f"engine '{a_engine}' is not available in this runtime")
         if not a.is_installed():
-            raise SidecarError("ENGINE_NOT_INSTALLED", f"python package for '{engine}' is not installed")
+            raise SidecarError("ENGINE_NOT_INSTALLED", f"python package for '{a_engine}' is not installed")
         return a
 
     def _resolve_device(self, a: TtsEngineAdapter, requested: str) -> str:
@@ -159,11 +375,16 @@ class TtsService:
         elif caps.reference_audio_required:
             raise SidecarError("INVALID_REQUEST", f"{caps.display_name} requires a reference audio (refAudioPath)")
 
-        # Internal spoken text normalization for TTS engine:
-        # Prevents common uppercase words (e.g. 'BOT') from being letter-spelled or aspirated abnormally,
-        # while strictly preserving user's script text, project state, and subtitles.
-        # Acronyms ('USA', 'FBI', 'AI') and normal words ('HUMAN') are untouched.
-        spoken_text = re.sub(r"\bBOT\b", "bot", text)
+        # Internal context-aware spoken text normalization for TTS engine:
+        # Applies the 5-tier pronunciation hierarchy (Project -> Global -> Verified Dict ->
+        # Contextual Auto-Detection -> Preserve) and product/policy version numbers
+        # while strictly preserving user script, UI text, and subtitles.
+        raw_rules = params.get("pronunciationRules")
+        custom_rules = raw_rules if isinstance(raw_rules, list) else None
+        prep = prepare_spoken_text_for_tts(
+            text, language=language, engine=caps.engine, custom_rules=custom_rules
+        )
+        spoken_text = prep["spokenText"]
 
         req = SynthesisRequest(text=spoken_text, language=language, ref_audio_path=ref_audio, ref_text=ref_text,
                                speed=float(speed) if speed is not None else None,
@@ -187,6 +408,15 @@ class TtsService:
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
 
+        from ..audio_ops import (
+            attenuate_leading_breath_and_measure_edges,
+            detect_and_filter_leading_artifact,
+            normalize_internal_breath_seams,
+        )
+        audio, leading_artifact_info = detect_and_filter_leading_artifact(audio, sr)
+        audio, breath_seam_info = normalize_internal_breath_seams(audio, sr)
+        audio, edge_silence_info = attenuate_leading_breath_and_measure_edges(audio, sr)
+
         ctx.progress(90, "writing_audio")
         import soundfile as sf
 
@@ -198,11 +428,27 @@ class TtsService:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
         duration = audio.shape[-1] / float(sr)
-        peak = float(abs(audio).max())
-        return {"engine": caps.engine, "outputPath": output_path, "sampleRate": sr,
-                "durationSec": round(duration, 3), "inferenceSec": round(inference_sec, 3),
-                "rtf": round(inference_sec / duration, 4) if duration > 0 else None,
-                "peakAmplitude": round(peak, 4), "device": getattr(a, "device", None)}
+        peak = float(abs(audio).max()) if audio.size > 0 else 0.0
+        result_payload: dict[str, Any] = {
+            "engine": caps.engine,
+            "outputPath": output_path,
+            "sampleRate": sr,
+            "durationSec": round(duration, 3),
+            "inferenceSec": round(inference_sec, 3),
+            "rtf": round(inference_sec / duration, 4) if duration > 0 else None,
+            "peakAmplitude": round(peak, 4),
+            "device": getattr(a, "device", None),
+            "sourceText": text,
+            "spokenText": spoken_text,
+            "pronunciationMapping": prep["pronunciationMapping"],
+            "leadingSilenceMs": edge_silence_info.get("leadingSilenceMs", 0),
+            "trailingSilenceMs": edge_silence_info.get("trailingSilenceMs", 0),
+        }
+        if leading_artifact_info.get("action") != "none":
+            result_payload["leadingArtifact"] = leading_artifact_info
+        if breath_seam_info.get("compactedMs", 0) > 0 or breath_seam_info.get("attenuatedBreaths", 0) > 0:
+            result_payload["breathSeamNormalization"] = breath_seam_info
+        return result_payload
 
     def unload(self, _m: str, _p: dict[str, Any], _ctx: RequestContext) -> dict[str, Any]:
         self.unload_quiet()

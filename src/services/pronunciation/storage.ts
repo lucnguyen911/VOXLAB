@@ -65,12 +65,33 @@ export function saveProjectRules(rules: PronunciationRule[], projectId: string =
 
 /**
  * Returns all active/enabled rules applicable to the current project context,
- * combining global rules and project rules.
+ * combining project rules and global rules with strict precedence:
+ * 1. Project rules override global rules when they define the same sourceText.
+ * 2. Within the same scope tier, longer sourceText rules are ordered first.
  */
 export function getEffectiveRules(projectId: string = "current"): PronunciationRule[] {
-  const globalRules = loadGlobalRules().filter((r) => r.enabled);
-  const projectRules = loadProjectRules(projectId).filter((r) => r.enabled);
-  return [...globalRules, ...projectRules];
+  const projectRules = loadProjectRules(projectId)
+    .filter((r) => r.enabled && r.sourceText && r.sourceText.trim().length > 0)
+    .map((r) => ({ ...r, scope: "project" as const }));
+  const globalRules = loadGlobalRules()
+    .filter((r) => r.enabled && r.sourceText && r.sourceText.trim().length > 0)
+    .map((r) => ({ ...r, scope: "global" as const }));
+
+  const projectKeysLower = new Set(
+    projectRules.map((r) => r.sourceText.trim().toLowerCase())
+  );
+  const filteredGlobal = globalRules.filter(
+    (r) => !projectKeysLower.has(r.sourceText.trim().toLowerCase())
+  );
+
+  const combined = [...projectRules, ...filteredGlobal];
+  combined.sort((a, b) => {
+    const tierA = a.scope === "project" ? 0 : 1;
+    const tierB = b.scope === "project" ? 0 : 1;
+    if (tierA !== tierB) return tierA - tierB;
+    return b.sourceText.trim().length - a.sourceText.trim().length;
+  });
+  return combined;
 }
 
 /**
@@ -79,3 +100,4 @@ export function getEffectiveRules(projectId: string = "current"): PronunciationR
 export function getActiveRulesCount(projectId: string = "current"): number {
   return getEffectiveRules(projectId).length;
 }
+
