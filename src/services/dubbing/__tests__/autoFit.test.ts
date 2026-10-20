@@ -26,12 +26,12 @@ describe("Dubbing Auto-Fit & Adaptive Time-Stretch Suite", () => {
     assert.equal(canExportMasterWav(analysis).allowed, true);
   });
 
-  it("resolves single collision by accelerating speed factor to fit before next cue", () => {
+  it("resolves single collision by accelerating speed factor (<= 1.20x) to fit before next cue", () => {
     // Cue 2 starts at 2.2s, Cue 3 starts at 4.6s (window = 2.4s).
-    // Audio ends at 5.1s -> collides with Cue 3 by 0.5s!
+    // Raw audio is 2.8s (ends at 5.0s -> collides with Cue 3 by 0.4s, requires ~1.18x <= 1.20x).
     const segments: Record<number, DubAudioSegment> = {
       1: { cueIndex: 1, rawDurationSec: 1.8, targetDurationSec: 2.0, fittedDurationSec: 1.8, speedFactor: 1.0, audioStartSec: 0.0, audioEndSec: 1.8, status: "ready" },
-      2: { cueIndex: 2, rawDurationSec: 2.9, targetDurationSec: 2.4, fittedDurationSec: 2.9, speedFactor: 1.0, audioStartSec: 2.2, audioEndSec: 5.1, status: "ready" },
+      2: { cueIndex: 2, rawDurationSec: 2.8, targetDurationSec: 2.4, fittedDurationSec: 2.8, speedFactor: 1.0, audioStartSec: 2.2, audioEndSec: 5.0, status: "ready" },
       3: { cueIndex: 3, rawDurationSec: 2.0, targetDurationSec: 2.4, fittedDurationSec: 2.0, speedFactor: 1.0, audioStartSec: 4.6, audioEndSec: 6.6, status: "ready" },
     };
 
@@ -47,14 +47,14 @@ describe("Dubbing Auto-Fit & Adaptive Time-Stretch Suite", () => {
     assert.notEqual(afterAnalysis[2].warningLevel, "collision_danger");
     assert.equal(canExportMasterWav(afterAnalysis).allowed, true);
     assert.ok(resolved[2].audioEndSec <= originalCues[2].startSec);
-    assert.ok(resolved[2].speedFactor > 1.0);
+    assert.ok(resolved[2].speedFactor > 1.0 && resolved[2].speedFactor <= 1.2);
   });
 
-  it("resolves multiple consecutive collisions across cues", () => {
-    // Both Cue 2 and Cue 3 collide with subsequent cues
+  it("resolves multiple consecutive collisions across cues within the 1.20x ceiling", () => {
+    // Both Cue 2 (window 2.4s) and Cue 3 (window 2.9s before Cue 4 at 7.5s) collide with subsequent cues
     const segments: Record<number, DubAudioSegment> = {
-      2: { cueIndex: 2, rawDurationSec: 3.2, targetDurationSec: 2.4, fittedDurationSec: 3.2, speedFactor: 1.0, audioStartSec: 2.2, audioEndSec: 5.4, status: "ready" },
-      3: { cueIndex: 3, rawDurationSec: 3.5, targetDurationSec: 2.4, fittedDurationSec: 3.5, speedFactor: 1.0, audioStartSec: 4.6, audioEndSec: 8.1, status: "ready" },
+      2: { cueIndex: 2, rawDurationSec: 2.8, targetDurationSec: 2.4, fittedDurationSec: 2.8, speedFactor: 1.0, audioStartSec: 2.2, audioEndSec: 5.0, status: "ready" },
+      3: { cueIndex: 3, rawDurationSec: 3.3, targetDurationSec: 2.4, fittedDurationSec: 3.3, speedFactor: 1.0, audioStartSec: 4.6, audioEndSec: 7.9, status: "ready" },
     };
 
     const resolved = resolveTimingCollisions(originalCues, segments);
@@ -63,6 +63,24 @@ describe("Dubbing Auto-Fit & Adaptive Time-Stretch Suite", () => {
     assert.equal(afterAnalysis[2].warningLevel !== "collision_danger", true);
     assert.equal(afterAnalysis[3].warningLevel !== "collision_danger", true);
     assert.equal(canExportMasterWav(afterAnalysis).allowed, true);
+  });
+
+  it("enforces MAX_DUB_SPEEDUP = 1.20x without fake duration clamping when overflow exceeds 1.20x", () => {
+    // Cue 2 window before Cue 3 is 2.4s (4.6 - 2.2).
+    // Raw duration 3.6s at 1.20x max speedup is 3.0s -> still ends at 5.2s > 4.6s!
+    const segments: Record<number, DubAudioSegment> = {
+      2: { cueIndex: 2, rawDurationSec: 3.6, targetDurationSec: 2.4, fittedDurationSec: 3.6, speedFactor: 1.0, audioStartSec: 2.2, audioEndSec: 5.8, status: "ready" },
+      3: { cueIndex: 3, rawDurationSec: 2.0, targetDurationSec: 2.4, fittedDurationSec: 2.0, speedFactor: 1.0, audioStartSec: 4.6, audioEndSec: 6.6, status: "ready" },
+    };
+
+    const resolved = resolveTimingCollisions(originalCues, segments, { maxSpeedup: 1.45 });
+    assert.equal(resolved[2].speedFactor, 1.2);
+    assert.equal(resolved[2].fittedDurationSec, 3.0);
+    assert.equal(resolved[2].audioEndSec, 5.2);
+
+    const afterAnalysis = analyzeTimingCollision(originalCues, resolved);
+    assert.equal(afterAnalysis[2].warningLevel, "collision_danger");
+    assert.equal(canExportMasterWav(afterAnalysis).allowed, false);
   });
 
   it("preserves overflow_only status when audio fits into silence gap without colliding", () => {

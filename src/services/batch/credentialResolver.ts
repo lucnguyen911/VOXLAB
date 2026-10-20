@@ -49,6 +49,14 @@ export class CredentialResolver {
     if (providerId === "deepseek" && translationSettings.deepseekApiKey) {
       return { apiKey: translationSettings.deepseekApiKey };
     }
+    const customModel = translationSettings.customModels?.find((m) => m.id === providerId);
+    if (customModel) {
+      return {
+        apiKey: customModel.apiKey || undefined,
+        endpoint: customModel.endpoint || undefined,
+        model: customModel.model || undefined,
+      };
+    }
 
     return {};
   }

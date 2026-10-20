@@ -581,7 +581,73 @@ class SubtitleOptimizerTest(unittest.TestCase):
             f"Expected no 1-word orphan cue at sentence end: {[c['text'] for c in cues3]}",
         )
 
+    def test_blind_asr_false_period_healing_and_micro_gap_bridging(self):
+        # General-purpose Blind ASR (without script_text):
+        # Whisper often inserts a false period after a short verbless introductory phrase
+        # ("Right now across America. The average bill for a single room...")
+        seg = _make_segment(
+            "Right now across America. The average bill for a single room in a nursing home has surged past $10,000 a month."
+        )
+        cues = optimize_subtitles_v2([seg], video_format="16:9", max_lines=2)
+        self.assertGreaterEqual(len(cues), 2)
+        # First cue should heal the false period into a comma, lowercase 'the', and wrap as a 2-line cue
+        self.assertEqual(cues[0]["text"], "Right now across America,\nthe average bill")
+        # Consecutive cues within continuous speech must have 0ms micro-gap (no < 350ms flicker)
+        for i in range(len(cues) - 1):
+            gap = cues[i + 1]["startSec"] - cues[i]["endSec"]
+            self.assertFalse(0.0 < gap < 0.35, f"Unexpected micro-gap {gap:.3f}s between cue {i+1} and {i+2}")
+
+    def test_blind_asr_audit_regressions_and_context_normalization(self):
+        # 1. Contextual normalization without script_text ("optimists" -> "Optimus",
+        # "water-resistant ceiling" -> "water-resistant sealing", "Elon Musk's emphasized" -> "Elon Musk emphasized")
+        seg = _make_segment(
+            "With water-resistant ceiling, Elon Musk's emphasized that the total cost of operating optimists comes out to roughly $299 a month, and the robot can recharge itself twice a day."
+        )
+        cues = optimize_subtitles_v2([seg], video_format="16:9", max_lines=2)
+        flat = [c["text"].replace("\n", " ") for c in cues]
+        joined = " ".join(flat)
+        self.assertIn("water-resistant sealing,", joined)
+        self.assertIn("Elon Musk emphasized", joined)
+        self.assertIn("Optimus", joined)
+        self.assertNotIn("optimists", joined.lower())
+        self.assertTrue(any("$299 a month," in t for t in flat), f"'$299 a month' split: {flat}")
+        self.assertTrue(any("comes out to" in t for t in flat), f"'comes out to' split: {flat}")
+        self.assertTrue(any("recharge itself" in t for t in flat), f"'recharge itself' split: {flat}")
+        self.assertTrue(any("twice a day." in t for t in flat), f"'twice a day' split: {flat}")
+        self.assertTrue(all(len(t) <= 60 for t in flat), f"Cue exceeded 60 chars: {flat}")
+
+        # 2. Long modifier after determiner ("from an\nelectromechanical standpoint,") must not leave a 1-word line
+        seg_em = _make_segment(
+            "In interviews, Elon Musk has acknowledged that from an electromechanical standpoint, the hand accounts for roughly half of the challenge."
+        )
+        cues_em = optimize_subtitles_v2([seg_em], video_format="16:9", max_lines=2)
+        for c in cues_em:
+            for line in c["text"].splitlines():
+                self.assertGreater(len(line.split()), 1, f"Unexpected 1-word line {line!r} in cue {c['text']!r}")
+
+        # 3. Preserve genuine possessive before participial modifier ("At Tesla's stated $20,000"),
+        # fix plural relative agreement ("battery cells, which offers" -> "which offer"),
+        # heal false comma ("such as the Optimus, fall at an event"), and protect compound nouns
+        seg_beta = _make_segment(
+            "At Tesla's stated $20,000 mass production target, Optimus Gen 3 houses a battery pack inside its chest, switching to 4680 battery cells, which offers higher density, while paying $72,000 a year out-of-pocket for in-home care is financially devastating, and real-world incidents, such as the Optimus, fall at an event in Miami, show why running complex neural networks and 50 precision actuators makes the hand the most expensive and difficult component to manufacture."
+        )
+        cues_beta = optimize_subtitles_v2([seg_beta], video_format="16:9", max_lines=2)
+        flat_beta = [c["text"].replace("\n", " ") for c in cues_beta]
+        all_lines_beta = [line for c in cues_beta for line in c["text"].splitlines()]
+        joined_beta = " ".join(flat_beta)
+        self.assertIn("At Tesla's stated $20,000", joined_beta)
+        self.assertIn("battery cells, which offer", joined_beta)
+        self.assertIn("such as the Optimus fall", joined_beta)
+        self.assertTrue(any("battery pack" in line for line in all_lines_beta), f"'battery pack' split across lines: {all_lines_beta}")
+        self.assertTrue(any("neural networks" in line for line in all_lines_beta), f"'neural networks' split: {all_lines_beta}")
+        self.assertTrue(any("precision actuators" in line for line in all_lines_beta), f"'precision actuators' split: {all_lines_beta}")
+        self.assertTrue(any("difficult component" in line for line in all_lines_beta), f"'difficult component' split: {all_lines_beta}")
+        self.assertTrue(any("in-home care" in line for line in all_lines_beta), f"'in-home care' split: {all_lines_beta}")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
 

@@ -1,4 +1,10 @@
-import { TranslationProvider, TranslationConnectionResult, TranslationContext } from "../types";
+import {
+  TranslationProvider,
+  TranslationConnectionResult,
+  TranslationContext,
+  BatchItem,
+} from "../types";
+import { runWithConcurrency } from "../batchTranslationHelper";
 
 /**
  * Free Google Translate integration.
@@ -17,7 +23,7 @@ export class GoogleTranslateProvider implements TranslationProvider {
     sourceLang = "auto",
     _context?: TranslationContext
   ): Promise<string> {
-    const trimmed = text.trim();
+    const trimmed = text.replace(/\r\n|\r|\n/g, " ").replace(/\s+/g, " ").trim();
     if (!trimmed) return "";
 
     {
@@ -49,4 +55,29 @@ export class GoogleTranslateProvider implements TranslationProvider {
       return { ok: false, message: `Lỗi kết nối: ${err?.message || "Không xác định"}` };
     }
   }
+
+  async translateBatch(
+    items: BatchItem[],
+    targetLang: string,
+    sourceLang = "auto"
+  ): Promise<Map<number, string>> {
+    const map = new Map<number, string>();
+    if (!items || items.length === 0) return map;
+
+    await runWithConcurrency(
+      items,
+      async (it) => {
+        try {
+          const trans = await this.translate(it.text, targetLang, sourceLang);
+          if (trans) map.set(it.id, trans);
+        } catch (e) {
+          console.warn(`Google Translate batch item #${it.id} error:`, e);
+        }
+      },
+      5
+    );
+
+    return map;
+  }
 }
+

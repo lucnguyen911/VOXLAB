@@ -1,18 +1,28 @@
-import React, { useRef, useEffect, useCallback } from "react";
-import { Play, Pause, RefreshCw, AlertTriangle, AlertCircle } from "lucide-react";
+import React, { useRef, useEffect, useCallback, useState } from "react";
+import { Play, Pause, RefreshCw, AlertTriangle, AlertCircle, ChevronDown } from "lucide-react";
 import {
   OriginalCue,
   TranslatedCue,
   DubAudioSegment,
   TimingOverflowMetadata,
+  DubbingMode,
 } from "../../types/dubbing";
 import { formatSrtTimestamp } from "../../services/subtitle/exporter";
+import {
+  isChunkError,
+  isChunkWarning,
+  isChunkChecking,
+  isChunkUnverified,
+  getChunkBadgeInfo,
+  getIssueShortLabel,
+} from "../../services/audio/qualityValidator";
 
 export interface CueRowProps {
   original: OriginalCue;
   translated: TranslatedCue;
   audioSegment?: DubAudioSegment;
   overflowMeta?: TimingOverflowMetadata;
+  dubbingMode?: DubbingMode;
   isPlaying?: boolean;
   onUpdateText: (index: number, newText: string) => void;
   onPlayAudio?: (index: number) => void;
@@ -24,12 +34,14 @@ export const CueRow: React.FC<CueRowProps> = ({
   translated,
   audioSegment,
   overflowMeta,
+  dubbingMode = "source_sync",
   isPlaying = false,
   onUpdateText,
   onPlayAudio,
   onRegenerateAudio,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [isIssuesExpanded, setIsIssuesExpanded] = useState(false);
   const availableDuration = Number((original.endSec - original.startSec).toFixed(2));
 
   // Auto-resize textarea height
@@ -45,17 +57,26 @@ export const CueRow: React.FC<CueRowProps> = ({
     adjustHeight();
   }, [translated.text, adjustHeight]);
 
+  const segIsError = audioSegment ? isChunkError(audioSegment) : false;
+  const segIsWarning = audioSegment ? isChunkWarning(audioSegment) : false;
+  const segIsChecking = audioSegment ? isChunkChecking(audioSegment) : false;
+  const segIsUnverified = audioSegment ? isChunkUnverified(audioSegment) : false;
+  const badgeInfo = audioSegment ? getChunkBadgeInfo(audioSegment) : null;
+
   // Audio status pill rendering
   const renderAudioStatusBadge = () => {
     if (!audioSegment) return null;
     const status = audioSegment.status;
     switch (status) {
       case "ready": {
-        const hasStretch = audioSegment.speedFactor && audioSegment.speedFactor > 1.02;
+        const hasStretch =
+          dubbingMode !== "free_narration" &&
+          audioSegment.speedFactor &&
+          audioSegment.speedFactor > 1.02;
         return (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              Sẵn sàng ({audioSegment.fittedDurationSec ? `${audioSegment.fittedDurationSec}s` : ""})
+              {audioSegment.fittedDurationSec ? `${audioSegment.fittedDurationSec}s` : "Sẵn sàng"}
             </span>
             {hasStretch && (
               <span
@@ -63,6 +84,47 @@ export const CueRow: React.FC<CueRowProps> = ({
                 title={`Tốc độ đọc thích ứng: ${audioSegment.speedFactor}x`}
               >
                 ⚡ {audioSegment.speedFactor}x
+              </span>
+            )}
+            {segIsError && badgeInfo && (
+              <span
+                className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-danger/15 text-danger border border-danger/30 flex items-center gap-1"
+                title={audioSegment.errorMessage || audioSegment.qualityReview?.summary || badgeInfo.fullBadgeText}
+              >
+                <AlertCircle className="w-3 h-3 shrink-0" />
+                <span>{badgeInfo.fullBadgeText}</span>
+              </span>
+            )}
+            {segIsWarning && badgeInfo && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsIssuesExpanded((prev) => !prev);
+                }}
+                className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 flex items-center gap-1 transition-colors cursor-pointer"
+                title="Bấm để xem chi tiết vấn đề chất lượng âm thanh"
+              >
+                <AlertTriangle className="w-3 h-3 shrink-0" />
+                <span>{badgeInfo.fullBadgeText}</span>
+              </button>
+            )}
+            {segIsChecking && (
+              <span
+                className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 flex items-center gap-1 animate-pulse"
+                title="Đang phân tích chất lượng âm thanh và đối chiếu phụ đề qua ASR..."
+              >
+                <RefreshCw className="w-2.5 h-2.5 animate-spin text-cyan-400" />
+                <span>Đang kiểm tra...</span>
+              </span>
+            )}
+            {segIsUnverified && (
+              <span
+                className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-surface3 text-textSecondary border border-borderDefault flex items-center gap-1"
+                title={audioSegment.qualityReview?.summary || "Đoạn âm thanh chưa được kiểm chứng qua ASR"}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-textMuted shrink-0" />
+                <span>Chưa kiểm chứng</span>
               </span>
             )}
           </div>
@@ -89,8 +151,12 @@ export const CueRow: React.FC<CueRowProps> = ({
         );
       case "failed":
         return (
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
-            Lỗi tạo
+          <span
+            className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20 flex items-center gap-1"
+            title={audioSegment.errorMessage || "Lỗi tạo âm thanh"}
+          >
+            <AlertCircle className="w-3 h-3 shrink-0" />
+            <span>{badgeInfo?.fullBadgeText || "Lỗi tạo"}</span>
           </span>
         );
       case "idle":
@@ -140,9 +206,26 @@ export const CueRow: React.FC<CueRowProps> = ({
         }`}
       >
         {/* Top Header: Status Badges, Overflows & Audio Playback if exists */}
-        <div className="flex items-center justify-between gap-2 select-none flex-shrink-0 h-5">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2 select-none flex-shrink-0 min-h-[20px] flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            {audioSegment?.groupCueIndices && audioSegment.groupCueIndices.length > 1 && (
+              <span
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25"
+                title={`Đoạn thuyết minh gộp liền mạch các câu #${audioSegment.groupCueIndices[0]}–#${audioSegment.groupCueIndices[audioSegment.groupCueIndices.length - 1]}`}
+              >
+                {audioSegment.isGroupPrimary === false ? "↳ " : ""}
+                Nhóm #{audioSegment.groupCueIndices[0]}–#{audioSegment.groupCueIndices[audioSegment.groupCueIndices.length - 1]}
+              </span>
+            )}
             {renderAudioStatusBadge()}
+            {translated.projectionNeedsReview && (
+              <span
+                className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/25"
+                title="Câu dịch theo ngữ cảnh cần kiểm tra nhanh vị trí ngắt dòng phụ đề"
+              >
+                Cần rà soát tách câu
+              </span>
+            )}
             {translated.isEdited && (
               <span className="text-[10px] text-accent font-medium">
                 • Đã chỉnh sửa
@@ -150,9 +233,11 @@ export const CueRow: React.FC<CueRowProps> = ({
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Timing overflow and collision indicator badges */}
-            {overflowMeta && overflowMeta.warningLevel !== "none" && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Timing overflow and collision indicator badges (hidden in free_narration mode) */}
+            {dubbingMode !== "free_narration" &&
+              overflowMeta &&
+              overflowMeta.warningLevel !== "none" && (
               <div className="flex items-center gap-1">
                 {overflowMeta.warningLevel === "overflow_only" && (
                   <span
@@ -181,13 +266,21 @@ export const CueRow: React.FC<CueRowProps> = ({
                 type="button"
                 onClick={() => onRegenerateAudio(original.index)}
                 disabled={audioSegment?.status === "generating"}
-                className="flex items-center gap-1 px-2 py-0.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-50"
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-50 ${
+                  segIsError
+                    ? "bg-danger/15 hover:bg-danger/25 text-danger border border-danger/30 font-semibold"
+                    : segIsWarning
+                    ? "bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 font-semibold"
+                    : "bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary"
+                }`}
                 title={audioSegment?.status === "ready" ? "Tạo lại âm thanh cho câu này" : "Tạo âm thanh cho câu này"}
               >
                 <RefreshCw className={`w-2.5 h-2.5 ${audioSegment?.status === "generating" ? "animate-spin text-accent" : ""}`} />
                 <span>
                   {audioSegment?.status === "generating"
                     ? "Đang tạo..."
+                    : segIsError
+                    ? "Thử lại"
                     : audioSegment?.status === "ready"
                     ? "Tạo lại"
                     : "Tạo audio"}
@@ -233,6 +326,65 @@ export const CueRow: React.FC<CueRowProps> = ({
             placeholder="Nhập nội dung bản dịch..."
           />
         </div>
+
+        {/* Expandable breakdown for detected quality issues */}
+        {audioSegment?.qualityReview?.issues && audioSegment.qualityReview.issues.length > 0 && (
+          <div className="pt-1.5 border-t border-borderDefault/40 text-xs" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setIsIssuesExpanded((prev) => !prev)}
+                className="text-textSecondary hover:text-accent font-medium flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                <span>
+                  {isIssuesExpanded
+                    ? "Thu gọn chi tiết"
+                    : audioSegment.qualityReview.issues.length === 1
+                    ? "Xem chi tiết vấn đề"
+                    : `Xem tất cả ${audioSegment.qualityReview.issues.length} vấn đề phát hiện`}
+                </span>
+                <ChevronDown className={`w-3 h-3 transition-transform ${isIssuesExpanded ? "rotate-180" : ""}`} />
+              </button>
+            </div>
+            {isIssuesExpanded && (
+              <div className="mt-2 space-y-2 pl-2 border-l-2 border-amber-500/40">
+                {audioSegment.qualityReview.issues.map((iss, idx) => {
+                  const shortLabel = getIssueShortLabel(iss.code);
+                  const hasTime = Array.isArray(iss.timeRange) && iss.timeRange.length === 2;
+                  const timeStr = hasTime
+                    ? `${Math.floor(iss.timeRange![0] / 60).toString().padStart(2, "0")}:${Math.floor(iss.timeRange![0] % 60).toString().padStart(2, "0")}`
+                    : "";
+                  return (
+                    <div key={idx} className="text-textSecondary leading-snug flex items-start justify-between gap-2 py-0.5">
+                      <div className="flex items-start gap-1.5 min-w-0 flex-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0 mt-1.5" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded text-[11px]">
+                              {shortLabel}
+                            </span>
+                            {timeStr && (
+                              <span className="text-[11px] font-mono text-textMuted bg-surface2 px-1 py-0.5 rounded">
+                                {timeStr}
+                              </span>
+                            )}
+                            {iss.words && iss.words.length > 0 && (
+                              <span className="text-[11px] text-textSecondary italic">
+                                (Từ: {iss.words.join(", ")})
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-0.5 text-textPrimary text-xs">{iss.message}</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

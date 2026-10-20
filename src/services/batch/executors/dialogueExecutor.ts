@@ -23,6 +23,7 @@ import {
   resolveTurnPauseRange,
 } from "../../dialogue/masterAssembly";
 import { generateDialogueSrt } from "../../dialogue/srtExporter";
+import { loadSubtitleSettings } from "../../subtitle";
 import {
   resolveJobOutputDirectory,
   resolveArtifactPath,
@@ -34,6 +35,10 @@ import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 import { getEffectiveRules } from "../../pronunciation";
+import {
+  validateChunkAudioQuality,
+  countChunkQualityIssues,
+} from "../../audio/qualityValidator";
 
 export interface DialogueExecutorOptions {
   scriptContent?: string;
@@ -176,7 +181,24 @@ export class DialogueExecutor {
           });
         }
         seg.durationSec = r.durationSec; // real duration → speaker timeline + subtitles
+        seg.audioFilePath = r.outputPath;
+        seg.status = "ready";
         segmentPaths.push(r.outputPath);
+
+        if (typeof ai.validateAudioQuality === "function") {
+          try {
+            seg.qualityReview = await validateChunkAudioQuality(
+              seg,
+              undefined,
+              ai,
+              undefined,
+              undefined,
+              "dialogue"
+            );
+          } catch {
+            // Non-blocking: quality check failure must not abort batch synthesis
+          }
+        }
       } catch (e) {
         const err = AiError.from(e);
         if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(Math.floor(15 + (i / totalSegments) * 55));
@@ -242,7 +264,11 @@ export class DialogueExecutor {
     // 7. Generate Speaker-labeled Subtitle (.srt / .vtt)
     if (globalSettings.exportSrt) {
       onProgress?.(90, "Đang tạo phụ đề phân vai có nhãn nhân vật...");
-      const srtContent = generateDialogueSrt(assembly.timeline);
+      const subSettings = loadSubtitleSettings();
+      const srtContent = generateDialogueSrt(assembly.timeline, {
+        aspectRatio: subSettings.aspectRatio,
+        maxLines: subSettings.maxLines,
+      });
       const subFormat = job.outputSnapshot?.outputSubtitleFormat || "srt";
       const finalSubContent =
         subFormat === "vtt"
@@ -267,11 +293,18 @@ export class DialogueExecutor {
 
     onProgress?.(100, "Hoàn tất tạo âm thanh và phụ đề phân vai!");
 
+    const qcStats = countChunkQualityIssues(segments);
+    const qcWarning =
+      qcStats.errorCount > 0 || qcStats.warningCount > 0
+        ? `Hậu kiểm chất lượng Hội thoại: ${qcStats.errorCount} lượt lỗi, ${qcStats.warningCount} lượt cảnh báo.`
+        : undefined;
+
     return {
       task: "dialogue",
       status: "completed",
       progressPct: 100,
       outputArtifactPaths,
+      ...(qcWarning ? { warning: qcWarning } : {}),
       startedAt,
       completedAt: Date.now(),
     };

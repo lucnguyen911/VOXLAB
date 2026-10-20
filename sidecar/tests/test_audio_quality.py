@@ -1927,6 +1927,143 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(len(issues_piezo_bad), 1, f"Expected 1 SUSPECTED_MISPRONUNCIATION issue, got: {issues_piezo_bad}")
         self.assertEqual(issues_piezo_bad[0]["code"], "SUSPECTED_MISPRONUNCIATION")
 
+    def test_standalone_cents_and_between_hundred_thousand_alignment(self):
+        """Regression test for Chunk #17 ('thirty to forty cents per mile', 'thirty five cents per mile'
+        where Whisper formats as '$0.30', '$0.35') and Chunk #26 ('between seven hundred and one thousand nanometers'
+        where Whisper formats as 'between 700 and 1,000 nanometers')."""
+        text_17 = (
+            "A total service price of thirty to forty cents per mile, "
+            "and a thirty thousand dollar robotaxi operating for thirty five cents per mile."
+        )
+        asr_17 = [
+            {"word": "A", "startSec": 0.10, "endSec": 0.20, "probability": 0.99},
+            {"word": "total", "startSec": 0.21, "endSec": 0.50, "probability": 0.99},
+            {"word": "service", "startSec": 0.51, "endSec": 0.85, "probability": 0.99},
+            {"word": "price", "startSec": 0.86, "endSec": 1.15, "probability": 0.99},
+            {"word": "of", "startSec": 1.16, "endSec": 1.30, "probability": 0.99},
+            {"word": "$0", "startSec": 1.31, "endSec": 1.50, "probability": 0.99},
+            {"word": ".30", "startSec": 1.51, "endSec": 1.75, "probability": 0.99},
+            {"word": "to", "startSec": 1.76, "endSec": 1.90, "probability": 0.99},
+            {"word": "40", "startSec": 1.91, "endSec": 2.20, "probability": 0.99},
+            {"word": "cents", "startSec": 2.21, "endSec": 2.50, "probability": 0.99},
+            {"word": "per", "startSec": 2.51, "endSec": 2.65, "probability": 0.99},
+            {"word": "mile,", "startSec": 2.66, "endSec": 3.00, "probability": 0.99},
+            {"word": "and", "startSec": 3.10, "endSec": 3.25, "probability": 0.99},
+            {"word": "a", "startSec": 3.26, "endSec": 3.35, "probability": 0.99},
+            {"word": "$30", "startSec": 3.36, "endSec": 3.65, "probability": 0.99},
+            {"word": ",000", "startSec": 3.66, "endSec": 3.95, "probability": 0.99},
+            {"word": "robotaxi", "startSec": 3.96, "endSec": 4.50, "probability": 0.99},
+            {"word": "operating", "startSec": 4.51, "endSec": 4.95, "probability": 0.99},
+            {"word": "for", "startSec": 4.96, "endSec": 5.10, "probability": 0.99},
+            {"word": "$0", "startSec": 5.11, "endSec": 5.35, "probability": 0.99},
+            {"word": ".35", "startSec": 5.36, "endSec": 5.70, "probability": 0.99},
+            {"word": "per", "startSec": 5.71, "endSec": 5.85, "probability": 0.99},
+            {"word": "mile.", "startSec": 5.86, "endSec": 6.20, "probability": 0.99},
+        ]
+        issues_17 = audio_quality.analyze_word_alignment_issues(text_17, asr_17, language="en")
+        self.assertEqual(len(issues_17), 0, f"Expected 0 issues for Chunk #17 cents alignment, got: {issues_17}")
+
+        text_26 = "Allowing the sensors to capture Near Infrared between seven hundred and one thousand nanometers."
+        asr_26 = [
+            {"word": "Allowing", "startSec": 0.10, "endSec": 0.50, "probability": 0.99},
+            {"word": "the", "startSec": 0.51, "endSec": 0.65, "probability": 0.99},
+            {"word": "sensors", "startSec": 0.66, "endSec": 1.10, "probability": 0.99},
+            {"word": "to", "startSec": 1.11, "endSec": 1.25, "probability": 0.99},
+            {"word": "capture", "startSec": 1.26, "endSec": 1.65, "probability": 0.99},
+            {"word": "Near", "startSec": 1.66, "endSec": 1.95, "probability": 0.99},
+            {"word": "Infrared", "startSec": 1.96, "endSec": 2.45, "probability": 0.99},
+            {"word": "between", "startSec": 2.46, "endSec": 2.85, "probability": 0.99},
+            {"word": "700", "startSec": 2.86, "endSec": 3.30, "probability": 0.99},
+            {"word": "and", "startSec": 3.31, "endSec": 3.45, "probability": 0.99},
+            {"word": "1", "startSec": 3.46, "endSec": 3.65, "probability": 0.99},
+            {"word": ",000", "startSec": 3.66, "endSec": 3.95, "probability": 0.99},
+            {"word": "nanometers.", "startSec": 3.96, "endSec": 4.60, "probability": 0.99},
+        ]
+        issues_26 = audio_quality.analyze_word_alignment_issues(text_26, asr_26, language="en")
+        self.assertEqual(len(issues_26), 0, f"Expected 0 issues for Chunk #26 between 700 and 1,000, got: {issues_26}")
+
+    def test_low_confidence_equal_word_slice_verification(self):
+        """When Whisper's LM auto-corrects a truncated word ('Austin' spoken as 'Austs', prob=0.49),
+        targeted slice re-transcription detects the truncation ('Aust...') while passing valid low-prob
+        BPE case variants ('Silicon' -> 'silicon')."""
+        from types import SimpleNamespace
+
+        class MockSliceWhisper:
+            def __init__(self, slice_words):
+                self.slice_words = slice_words
+
+            def transcribe(self, *args, **kwargs):
+                seg = SimpleNamespace(
+                    text=" ".join(w[0] for w in self.slice_words),
+                    words=[SimpleNamespace(word=w[0], probability=w[1], start=0.1, end=0.4) for w in self.slice_words],
+                )
+                return [seg], None
+
+        sr = 16000
+        dummy_audio = (0.2 * np.sin(2 * np.pi * 440.0 * (np.arange(sr * 8) / sr))).astype(np.float32)
+        text = "Cybercabs in Austin last month."
+        asr_words = [
+            {"word": "Cybercabs", "startSec": 0.10, "endSec": 0.80, "probability": 0.98},
+            {"word": "in", "startSec": 0.85, "endSec": 1.10, "probability": 0.99},
+            {"word": "Austin", "startSec": 1.12, "endSec": 1.54, "probability": 0.493},
+            {"word": "last", "startSec": 1.56, "endSec": 1.90, "probability": 0.98},
+            {"word": "month.", "startSec": 1.92, "endSec": 2.35, "probability": 0.99},
+        ]
+
+        # 1. Context-free slice reveals truncated 'Aust...' -> flags PARTIAL_PRONUNCIATION
+        mock_trunc = MockSliceWhisper([("In", 0.58), ("Aust...", 0.58)])
+        issues_trunc = audio_quality.analyze_word_alignment_issues(
+            text,
+            asr_words,
+            language="en",
+            audio_data=dummy_audio,
+            sample_rate=sr,
+            whisper_model=mock_trunc,
+            audio_duration_sec=8.0,
+        )
+        self.assertEqual(len(issues_trunc), 1, f"Expected 1 issue for truncated Austin, got: {issues_trunc}")
+        self.assertEqual(issues_trunc[0]["code"], "PARTIAL_PRONUNCIATION")
+        self.assertEqual(issues_trunc[0]["words"], ["austin", "aust"])
+
+        # 2. Context-free slice confirms 'Austin' -> 0 issues
+        mock_ok = MockSliceWhisper([("In", 0.78), ("Austin", 0.85)])
+        issues_ok = audio_quality.analyze_word_alignment_issues(
+            text,
+            asr_words,
+            language="en",
+            audio_data=dummy_audio,
+            sample_rate=sr,
+            whisper_model=mock_ok,
+            audio_duration_sec=8.0,
+        )
+        self.assertEqual(len(issues_ok), 0, f"Expected 0 issues when slice confirms Austin, got: {issues_ok}")
+
+    def test_decimal_point_with_trailing_one_second_unit(self):
+        """Regression test for Chunk #39 ('the zero point eight one second rocket Roadster')
+        where Whisper formats 'zero point eight one second' as ['0', '.8', 'one', '-second']."""
+        text = "Type Option A if you believe the zero point eight one second rocket Roadster is an absolute masterpiece."
+        asr_words = [
+            {"word": "Type", "startSec": 0.00, "endSec": 0.30, "probability": 0.86},
+            {"word": "option", "startSec": 0.30, "endSec": 0.76, "probability": 0.72},
+            {"word": "A", "startSec": 0.76, "endSec": 1.24, "probability": 0.95},
+            {"word": "if", "startSec": 1.24, "endSec": 1.72, "probability": 0.91},
+            {"word": "you", "startSec": 1.72, "endSec": 1.84, "probability": 1.00},
+            {"word": "believe", "startSec": 1.84, "endSec": 2.26, "probability": 0.99},
+            {"word": "the", "startSec": 2.26, "endSec": 2.46, "probability": 0.99},
+            {"word": "0", "startSec": 2.46, "endSec": 2.74, "probability": 0.99},
+            {"word": ".8", "startSec": 2.74, "endSec": 3.28, "probability": 0.93},
+            {"word": "one", "startSec": 3.28, "endSec": 3.60, "probability": 0.66},
+            {"word": "-second", "startSec": 3.60, "endSec": 3.96, "probability": 0.97},
+            {"word": "Rocket", "startSec": 3.96, "endSec": 4.32, "probability": 0.62},
+            {"word": "Roadster", "startSec": 4.32, "endSec": 4.86, "probability": 0.99},
+            {"word": "is", "startSec": 4.86, "endSec": 5.42, "probability": 0.99},
+            {"word": "an", "startSec": 5.42, "endSec": 5.58, "probability": 1.00},
+            {"word": "absolute", "startSec": 5.58, "endSec": 6.20, "probability": 1.00},
+            {"word": "masterpiece.", "startSec": 6.20, "endSec": 6.80, "probability": 0.99},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, asr_words, language="en")
+        self.assertEqual(len(issues), 0, f"Expected 0 issues for 'zero point eight one second', got: {issues}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -99,6 +99,8 @@ export interface DialogueCharacter {
   volume: number;           // Volume override (default: 1.0)
 }
 
+import { AudioQualityReview, EffectiveVoiceSnapshot, PunctuationPauses } from "./ui";
+
 export interface DialogueSegment {
   id: string;
   index: number;
@@ -116,9 +118,11 @@ export interface DialogueSegment {
   leadingSilenceSec?: number;
   trailingSilenceSec?: number;
   errorMessage?: string;
+  effectiveVoiceSnapshot?: EffectiveVoiceSnapshot;
+  qualityReview?: AudioQualityReview;
+  acknowledgedAt?: number;
+  acknowledgedAudioSignature?: string;
 }
-
-import { PunctuationPauses } from "./ui";
 
 export interface DialogueGlobalSettings {
   model: string;            // TTS model (default: "Omni Voice")

@@ -219,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         def optimize_subtitle_handler(params: dict) -> dict:
+            _ensure_fresh_qc_modules()
             from pathlib import Path
 
             segments = params.get("segments") or []

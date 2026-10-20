@@ -633,7 +633,7 @@ def clean_word(word: str) -> str:
     """Strip whitespace and punctuation for string comparison.
     Preserves decimal notation (e.g. '0.8', '13,5' -> '13.5').
     """
-    cleaned = word.strip(" .,!?;:—–-…()[]\"'“”„«»¿¡").lower()
+    cleaned = word.strip(" .,!?;:—–-…()[]\"'“”„«»¿¡$€£¥₫").lower()
     if re.fullmatch(r"-?\d+(?:[.,]\d+)+", cleaned):
         return cleaned.replace(",", ".")
     return re.sub(r"[^\w\u00C0-\u1EF9]", "", cleaned)
@@ -1456,6 +1456,153 @@ def _evaluate_pronunciation_entry(
     }
 
 
+def _verify_low_confidence_equal_word(
+    source_words: list[str],
+    source_words_clean: list[str],
+    src_idx: int,
+    w_obj: dict[str, Any],
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    audio_path: str | None,
+    whisper_model: Any | None,
+    language: str | None,
+    total_dur: float,
+) -> dict[str, Any] | None:
+    """When Whisper matches a multi-syllable content word in `tag == 'equal'` but with abnormally low
+    acoustic confidence (probability < 0.55), Whisper's language model may have auto-corrected a
+    truncated/mispronounced word from surrounding context (e.g. 'Austin' pronounced as 'Austs' with prob=0.49).
+    Runs a context-free targeted slice re-transcription around [startSec - 0.35s, endSec + 0.35s] to verify
+    whether the word was genuinely articulated or truncated/distorted.
+    """
+    if whisper_model is None or (audio_data is None and audio_path is None):
+        return None
+    if src_idx < 0 or src_idx >= len(source_words_clean):
+        return None
+
+    sw = source_words_clean[src_idx]
+    if len(sw) < 5 or sw in IGNORED_OMISSION_WORDS:
+        return None
+
+    w_raw = str(w_obj.get("word", "")).strip()
+    if w_raw.startswith("-"):
+        return None
+
+    w_prob = float(w_obj.get("probability", 1.0))
+    if w_prob >= 0.55:
+        return None
+
+    t_start = float(w_obj.get("startSec", 0.0))
+    t_end = float(w_obj.get("endSec", 0.0))
+    if t_end <= t_start:
+        return None
+
+    t_slice_start = max(0.0, t_start - 0.35)
+    max_dur = total_dur if total_dur > 0 else (t_end + 0.35)
+    t_slice_end = min(max_dur, t_end + 0.35)
+
+    slice_mono: np.ndarray | None = None
+    sr_used = sample_rate if sample_rate > 0 else 16000
+
+    if audio_data is not None and sample_rate > 0:
+        s1 = max(0, int(round(t_slice_start * sample_rate)))
+        s2 = min(audio_data.size, int(round(t_slice_end * sample_rate)))
+        if s2 > s1:
+            slice_mono = audio_data[s1:s2]
+            sr_used = sample_rate
+    elif audio_path and os.path.exists(audio_path):
+        try:
+            import soundfile as sf
+            info = sf.info(audio_path)
+            sr_used = int(info.samplerate)
+            s1 = max(0, int(round(t_slice_start * sr_used)))
+            frames_to_read = int(round((t_slice_end - t_slice_start) * sr_used))
+            data, _ = sf.read(audio_path, start=s1, stop=s1 + frames_to_read, dtype="float32", always_2d=True)
+            slice_mono = data.mean(axis=1)
+        except Exception:
+            return None
+
+    if slice_mono is None or slice_mono.size < int(0.15 * sr_used):
+        return None
+
+    import tempfile
+    tmp_slice = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_slice_name = tmp_slice.name
+    tmp_slice.close()
+    try:
+        import soundfile as sf
+        sf.write(tmp_slice_name, slice_mono, sr_used, subtype="PCM_16")
+        lang_code = None if not language or language == "auto" else language
+        seg_iter, _ = whisper_model.transcribe(
+            tmp_slice_name,
+            language=lang_code,
+            beam_size=5,
+            word_timestamps=True,
+            vad_filter=False,
+        )
+        slice_words = [
+            (w.word.strip(), clean_word(w.word), float(w.probability))
+            for seg in seg_iter
+            for w in (seg.words or [])
+            if w.word and clean_word(w.word)
+        ]
+    except Exception:
+        return None
+    finally:
+        if os.path.exists(tmp_slice_name):
+            try:
+                os.remove(tmp_slice_name)
+            except Exception:
+                pass
+
+    if not slice_words:
+        return None
+
+    # If any word in the context-free slice matches the expected word with reasonable confidence (>= 0.25),
+    # then the low primary probability was just BPE capitalization variance (e.g. 'Silicon' vs 'silicon').
+    for _, sw_clean_cand, sw_prob in slice_words:
+        if are_words_equivalent(sw, sw_clean_cand) and sw_prob >= 0.25:
+            return None
+
+    prev_src_clean = source_words_clean[src_idx - 1] if src_idx > 0 else ""
+    next_src_clean = source_words_clean[src_idx + 1] if (src_idx + 1) < len(source_words_clean) else ""
+
+    # Filter out immediate neighbor context words to inspect what Whisper heard at the target position
+    non_ctx = [
+        (raw_c, cln_c, pr_c)
+        for raw_c, cln_c, pr_c in slice_words
+        if cln_c not in (prev_src_clean, next_src_clean)
+    ]
+    if not non_ctx:
+        return None
+
+    best_raw, best_clean, _ = non_ctx[0]
+    ts = format_timestamp(t_start)
+    ctx_span = extract_context_span(source_words, src_idx, src_idx + 1)
+
+    if (
+        len(best_clean) >= 2
+        and len(sw) >= len(best_clean) + 2
+        and (sw.startswith(best_clean) or phonetic_key(sw).startswith(phonetic_key(best_clean)))
+    ):
+        return {
+            "severity": "warning",
+            "code": "PARTIAL_PRONUNCIATION",
+            "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm dở dang hoặc thiếu âm tiết ('{best_clean}') — khoảng {ts}. Vui lòng nghe lại.",
+            "words": [sw, best_clean],
+            "timeRange": [round(t_start, 3), round(t_end, 3)],
+        }
+
+    src_raw_tok = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", source_words[src_idx]) or sw
+    best_display = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", best_raw) or best_clean
+    return {
+        "severity": "warning",
+        "code": "SUSPECTED_MISPRONUNCIATION",
+        "message": f"Nghi vấn phát âm sai từ '{src_raw_tok}' (ASR ghi nhận '{best_display}') — khoảng {ts}. Vui lòng nghe lại.",
+        "words": [sw, best_clean],
+        "timeRange": [round(t_start, 3), round(t_end, 3)],
+    }
+
+
 def analyze_word_alignment_issues(
     text: str,
     asr_words: list[dict[str, Any]],
@@ -1583,6 +1730,27 @@ def analyze_word_alignment_issues(
                     )
                     if pm_iss is not None:
                         issues.append(pm_iss)
+                elif (
+                    pm_eq is None
+                    and not s_span.is_number
+                    and (s_span.orig_end - s_span.orig_start) == 1
+                    and (a_span.orig_end - a_span.orig_start) == 1
+                    and a_span.orig_start < len(asr_words)
+                ):
+                    low_conf_iss = _verify_low_confidence_equal_word(
+                        source_words=source_words,
+                        source_words_clean=source_words_clean,
+                        src_idx=s_span.orig_start,
+                        w_obj=asr_words[a_span.orig_start],
+                        audio_data=audio_data,
+                        sample_rate=sample_rate,
+                        audio_path=audio_path,
+                        whisper_model=whisper_model,
+                        language=language,
+                        total_dur=total_dur,
+                    )
+                    if low_conf_iss is not None:
+                        issues.append(low_conf_iss)
         elif tag == "replace":
             # If phonetically / semantically equivalent, map them
             if (s_i2 - s_i1) == (a_j2 - a_j1):
@@ -1601,7 +1769,10 @@ def analyze_word_alignment_issues(
                     whole_exp, frac_exp = split_decimal_parts(s_span.canonical) or ("", "")
                     asr_sub_spans = asr_spans[a_j1:a_j2]
                     asr_canonicals = [a.canonical for a in asr_sub_spans]
-                    if asr_canonicals and asr_canonicals[0] == whole_exp and "".join(asr_canonicals[1:]) == frac_exp:
+                    if asr_canonicals and (
+                        "".join(asr_canonicals) == s_span.canonical
+                        or (asr_canonicals[0] == whole_exp and "".join(asr_canonicals[1:]) == frac_exp)
+                    ):
                         for a_s in asr_sub_spans:
                             for j in range(a_s.orig_start, a_s.orig_end):
                                 asr_to_source[j] = s_span.orig_start
@@ -1931,9 +2102,19 @@ def analyze_word_alignment_issues(
                         total_dec_dur = t_end_frac - t_start_whole
                         inter_digit_gap = t_start_frac - t_end_whole
 
+                        # Case A0: ASR already recognized the decimal point in a split multi-digit decimal (e.g. ['0.8', '1'] == '0.81')
+                        if "".join(asr_canonicals) == s_span.canonical and any("." in c for c in asr_canonicals):
+                            for j in range(j1, j2):
+                                asr_to_source[j] = s_span.orig_start
+                            continue
+
                         # Case A: Digits match candidate decimal
                         if asr_canonicals[0] == whole_exp and "".join(asr_canonicals[1:]) == frac_exp:
                             src_dec_words = source_words[s_span.orig_start : s_span.orig_end]
+                            if any(clean_word(w) in ("cent", "cents") for w in src_dec_words):
+                                for j in range(j1, j2):
+                                    asr_to_source[j] = s_span.orig_start
+                                continue
                             verdict, reason = verify_decimal_separator_hypothesis(
                                 audio_path=audio_path,
                                 audio_data=audio_data,
@@ -2080,12 +2261,23 @@ def analyze_word_alignment_issues(
                 if any(are_words_equivalent(sp.canonical, ac) for ac in asr_span_canonicals):
                     for idx_cov in range(sp.orig_start, sp.orig_end):
                         matched_src_indices.add(idx_cov)
+                elif sp.is_number and len(asr_span_canonicals) >= 2 and any(
+                    asr_span_canonicals[idx_a] + asr_span_canonicals[idx_a + 1] == sp.canonical
+                    for idx_a in range(len(asr_span_canonicals) - 1)
+                ):
+                    for idx_cov in range(sp.orig_start, sp.orig_end):
+                        matched_src_indices.add(idx_cov)
                 elif k_sp + 1 < s_i2:
                     sp_next = src_spans[k_sp + 1]
                     pair_canon = clean_word(sp.canonical + sp_next.canonical)
                     if pair_canon and any(clean_word(ac) == pair_canon for ac in asr_span_canonicals):
                         for idx_cov in range(sp.orig_start, sp_next.orig_end):
                             matched_src_indices.add(idx_cov)
+
+            has_asr_decimal_notation = any(
+                bool(re.search(r"(?:^|\d)[.,]\d", str(asr_words[k].get("word", "")).strip()))
+                for k in range(j1, min(j2, len(asr_words)))
+            ) or any("." in ac for ac in asr_span_canonicals)
 
             # Find unrepresented content words in source
             unrepresented_content_indices = []
@@ -2095,6 +2287,8 @@ def analyze_word_alignment_issues(
                 sw = source_words_clean[idx]
                 raw_sw_tok = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", source_words[idx])
                 if not sw or len(sw) < 3 or sw in IGNORED_OMISSION_WORDS:
+                    continue
+                if sw in ("point", "dot", "phẩy", "phay", "chấm", "cham") and has_asr_decimal_notation:
                     continue
                 if any(are_words_equivalent(sw, aw) for aw in asr_slice_clean):
                     continue

@@ -31,24 +31,28 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
 }) => {
   const { t, lang } = useI18n();
 
-  // Sync with localStorage on load
+  const hasHydratedRef = React.useRef(false);
+
+  // Hydrate from localStorage only once on mount if parent has not provided a valid selectedVoiceId
   useEffect(() => {
+    if (hasHydratedRef.current) return;
+    hasHydratedRef.current = true;
     if (typeof localStorage === "undefined") return;
     try {
-      const saved = localStorage.getItem(DUBBING_VOICE_STORAGE_KEY);
-      if (saved && voices.some((v) => v.id === saved)) {
-        if (saved !== selectedVoiceId) {
+      if (!selectedVoiceId || !voices.some((v) => v.id === selectedVoiceId)) {
+        const saved = localStorage.getItem(DUBBING_VOICE_STORAGE_KEY);
+        if (saved && voices.some((v) => v.id === saved)) {
           onSelectVoice(saved);
+        } else if (voices.length > 0) {
+          onSelectVoice(voices[0].id);
         }
-      } else if (!selectedVoiceId && voices.length > 0) {
-        onSelectVoice(voices[0].id);
       }
     } catch {
       // ignore
     }
   }, [voices, selectedVoiceId, onSelectVoice]);
 
-  // Persist selected voice
+  // Persist selected voice to localStorage whenever it changes
   useEffect(() => {
     if (typeof localStorage === "undefined" || !selectedVoiceId) return;
     try {

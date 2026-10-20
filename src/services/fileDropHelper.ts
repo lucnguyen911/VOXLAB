@@ -43,6 +43,9 @@ function joinPath(dir: string, child: string): string {
   return `${dir.replace(/[\\/]+$/, "")}${sep}${child}`;
 }
 
+const KNOWN_FILE_EXT_REGEX =
+  /\.(txt|md|srt|vtt|docx|wav|mp3|m4a|flac|ogg|aac|mp4|mov|mkv|webm|avi|json)$/i;
+
 /**
  * Recursively expands file and directory paths in Tauri desktop runtime into a flat list of file paths.
  */
@@ -53,6 +56,10 @@ export async function expandTauriPaths(paths: string[]): Promise<string[]> {
     const result: string[] = [];
 
     const visit = async (p: string): Promise<void> => {
+      if (KNOWN_FILE_EXT_REGEX.test(p)) {
+        result.push(p);
+        return;
+      }
       try {
         const children = await invoke<string[]>("fs_list_dir", { path: p });
         if (Array.isArray(children) && children.length > 0) {
@@ -78,12 +85,22 @@ export async function expandTauriPaths(paths: string[]): Promise<string[]> {
 
 /**
  * Loads native file paths from Tauri drag-drop into standard File objects with `.path` attached.
+ * If `allowedExtensions` is specified, files whose extension is not in `allowedExtensions`
+ * are instantiated as lightweight 0-byte shell File objects so callers can still inspect `file.name`
+ * and display validation messages without reading large unsupported files into memory.
  */
-export async function loadFilesFromTauriPaths(paths: string[]): Promise<File[]> {
+export async function loadFilesFromTauriPaths(
+  paths: string[],
+  allowedExtensions?: string[]
+): Promise<File[]> {
   const expanded = await expandTauriPaths(paths);
   if (expanded.length === 0) return [];
   const { invoke } = await import("@tauri-apps/api/core");
   const files: File[] = [];
+  const allowedSet =
+    allowedExtensions && allowedExtensions.length > 0
+      ? new Set(allowedExtensions.map((e) => e.toLowerCase().replace(/^\./, "")))
+      : null;
 
   for (const filePath of expanded) {
     try {
@@ -96,13 +113,22 @@ export async function loadFilesFromTauriPaths(paths: string[]): Promise<File[]> 
       const mimeType = guessMimeType(fileName);
 
       let file: File;
-      if (["txt", "md", "srt", "vtt"].includes(ext)) {
+      if (allowedSet && !allowedSet.has(ext)) {
+        file = new File([""], fileName, { type: mimeType, lastModified });
+      } else if (["txt", "md", "srt", "vtt"].includes(ext)) {
         const text = await invoke<string>("fs_read_text", { path: filePath });
         file = new File([text], fileName, { type: mimeType, lastModified });
       } else {
-        const rawBytes = await invoke<number[]>("fs_read_bytes", { path: filePath });
-        const bytes = new Uint8Array(rawBytes);
-        file = new File([bytes], fileName, { type: mimeType, lastModified });
+        const rawBytes = await invoke<ArrayBuffer | Uint8Array | number[]>("fs_read_bytes", {
+          path: filePath,
+        });
+        const blobPart: BlobPart =
+          rawBytes instanceof ArrayBuffer
+            ? rawBytes
+            : rawBytes instanceof Uint8Array
+            ? (rawBytes as unknown as BlobPart)
+            : new Uint8Array(rawBytes);
+        file = new File([blobPart], fileName, { type: mimeType, lastModified });
       }
 
       try {
@@ -199,6 +225,7 @@ export async function extractFilesFromDropEvent(e: React.DragEvent): Promise<Fil
 
 export interface TauriDropZoneOptions {
   enabled?: boolean;
+  allowedExtensions?: string[];
   onDragStateChange?: (isOver: boolean) => void;
   onDropFiles?: (files: File[]) => void | Promise<void>;
   onDropPaths?: (paths: string[]) => void | Promise<void>;
@@ -319,7 +346,7 @@ function ensureGlobalTauriDragDropListener() {
             return;
           }
           if (opts.onDropFiles) {
-            const files = await loadFilesFromTauriPaths(paths);
+            const files = await loadFilesFromTauriPaths(paths, opts.allowedExtensions);
             if (files.length > 0) {
               await opts.onDropFiles(files);
             }

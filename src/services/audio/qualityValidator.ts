@@ -3,23 +3,51 @@ import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
 import { loadSubtitleSettings } from "../subtitle/profiles";
 import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
+import { stripPauseTokens } from "../pause";
 
-export const QUALITY_VALIDATOR_VERSION = "2.8.3";
+export const QUALITY_VALIDATOR_VERSION = "2.8.6";
+
+export interface QualityCheckableItem {
+  id?: string | number;
+  cueIndex?: number;
+  text?: string;
+  cleanText?: string;
+  status: string;
+  audioUrl?: string;
+  audioBlobUrl?: string;
+  fittedAudioUrl?: string;
+  audioFilePath?: string;
+  durationSec?: number;
+  fittedDurationSec?: number;
+  errorMessage?: string;
+  qualityReview?: AudioQualityReview;
+  acknowledgedAt?: number;
+  acknowledgedAudioSignature?: string;
+}
+
+function getItemText(item: QualityCheckableItem): string {
+  return item.text ?? item.cleanText ?? "";
+}
+
+function getItemDurationSec(item: QualityCheckableItem): number | undefined {
+  return item.durationSec ?? item.fittedDurationSec;
+}
 
 /**
  * Helper to get the unique audio signature of a chunk's generated audio.
  */
-export function getChunkAudioSignature(chunk: ChunkItem): string {
-  const pathOrUrl = chunk.audioUrl || chunk.audioFilePath || "";
+export function getChunkAudioSignature(chunk: QualityCheckableItem): string {
+  const pathOrUrl =
+    chunk.fittedAudioUrl || chunk.audioUrl || chunk.audioBlobUrl || chunk.audioFilePath || "";
   if (!pathOrUrl) return "";
-  return `${pathOrUrl}::${chunk.durationSec ?? 0}`;
+  return `${pathOrUrl}::${getItemDurationSec(chunk) ?? 0}`;
 }
 
 /**
  * Returns true if the chunk has been confirmed by the user as having correct audio.
  * The confirmation is only valid if the audio signature matches the current chunk audio.
  */
-export function isChunkConfirmed(chunk: ChunkItem): boolean {
+export function isChunkConfirmed(chunk: QualityCheckableItem): boolean {
   if (!chunk.acknowledgedAudioSignature) return false;
   const sig = getChunkAudioSignature(chunk);
   return Boolean(sig && chunk.acknowledgedAudioSignature === sig);
@@ -28,14 +56,14 @@ export function isChunkConfirmed(chunk: ChunkItem): boolean {
 /**
  * Returns true if the chunk has a quality warning review, regardless of whether it is confirmed.
  */
-export function hasChunkQualityWarningReview(chunk: ChunkItem): boolean {
+export function hasChunkQualityWarningReview(chunk: QualityCheckableItem): boolean {
   return chunk.qualityReview?.status === "warning";
 }
 
 /**
  * Returns true if the chunk has a definitive error (status is 'failed' or review is 'error').
  */
-export function isChunkError(chunk: ChunkItem): boolean {
+export function isChunkError(chunk: QualityCheckableItem): boolean {
   if (chunk.status === "failed") return true;
   if (chunk.qualityReview?.status === "error") return true;
   return false;
@@ -46,7 +74,7 @@ export function isChunkError(chunk: ChunkItem): boolean {
  * Errors take precedence over warnings.
  * Confirmed chunks do not count as active warnings.
  */
-export function isChunkWarning(chunk: ChunkItem): boolean {
+export function isChunkWarning(chunk: QualityCheckableItem): boolean {
   if (isChunkError(chunk)) return false;
   if (chunk.status !== "ready") return false;
   if (isChunkConfirmed(chunk)) return false;
@@ -57,9 +85,10 @@ export function isChunkWarning(chunk: ChunkItem): boolean {
  * Checks whether the quality review was computed for the current text of the chunk.
  * If text has changed since the review, the review is considered stale.
  */
-export function isReviewCurrent(chunk: ChunkItem): boolean {
+export function isReviewCurrent(chunk: QualityCheckableItem): boolean {
   if (!chunk.qualityReview) return false;
-  if (chunk.qualityReview.text !== undefined && chunk.qualityReview.text !== chunk.text) {
+  const currentText = getItemText(chunk);
+  if (chunk.qualityReview.text !== undefined && currentText && chunk.qualityReview.text !== currentText) {
     return false;
   }
   return true;
@@ -72,7 +101,7 @@ export function isReviewCurrent(chunk: ChunkItem): boolean {
  * When isAsrReady is true, unverified reviews caused by previously missing models are treated as outdated for auto-recovery.
  */
 export function isReviewOutdated(
-  chunk: ChunkItem,
+  chunk: QualityCheckableItem,
   currentAsrModel?: string,
   isAsrReady: boolean = true
 ): boolean {
@@ -110,7 +139,7 @@ export function isReviewOutdated(
 /**
  * Returns true if the chunk is in 'ready' status and currently undergoing ASR inspection.
  */
-export function isChunkChecking(chunk: ChunkItem): boolean {
+export function isChunkChecking(chunk: QualityCheckableItem): boolean {
   if (chunk.status !== "ready") return false;
   return chunk.qualityReview?.status === "checking";
 }
@@ -119,7 +148,7 @@ export function isChunkChecking(chunk: ChunkItem): boolean {
  * Returns true if the chunk is in 'ready' status and has an unverified review.
  * Errors, warnings, and checking take precedence.
  */
-export function isChunkUnverified(chunk: ChunkItem): boolean {
+export function isChunkUnverified(chunk: QualityCheckableItem): boolean {
   if (isChunkError(chunk) || isChunkWarning(chunk) || isChunkChecking(chunk)) return false;
   if (chunk.status !== "ready") return false;
   return chunk.qualityReview?.status === "unverified";
@@ -128,23 +157,23 @@ export function isChunkUnverified(chunk: ChunkItem): boolean {
 /**
  * Returns true if the chunk is in 'ready' status and passed quality validation.
  */
-export function isChunkPass(chunk: ChunkItem): boolean {
+export function isChunkPass(chunk: QualityCheckableItem): boolean {
   if (isChunkError(chunk) || isChunkWarning(chunk) || isChunkUnverified(chunk) || isChunkChecking(chunk)) return false;
   if (chunk.status !== "ready") return false;
   return chunk.qualityReview?.status === "pass";
 }
 
-export interface ChunkQualityStats {
+export interface ChunkQualityStats<T = ChunkItem> {
   errorCount: number;
   warningCount: number;
   unverifiedCount: number;
   checkingCount: number;
   passCount: number;
-  errorChunks: ChunkItem[];
-  warningChunks: ChunkItem[];
-  unverifiedChunks: ChunkItem[];
-  checkingChunks: ChunkItem[];
-  passChunks: ChunkItem[];
+  errorChunks: T[];
+  warningChunks: T[];
+  unverifiedChunks: T[];
+  checkingChunks: T[];
+  passChunks: T[];
 }
 
 /**
@@ -158,12 +187,14 @@ export interface ChunkQualityStats {
  * Guarantee: If a chunk has both error and warning, it is counted ONLY as an error chunk (Priority: Red > Yellow).
  * Guarantee: Modified chunks are not counted as quality warnings.
  */
-export function countChunkQualityIssues(chunks: ChunkItem[]): ChunkQualityStats {
-  const errorChunks: ChunkItem[] = [];
-  const warningChunks: ChunkItem[] = [];
-  const checkingChunks: ChunkItem[] = [];
-  const unverifiedChunks: ChunkItem[] = [];
-  const passChunks: ChunkItem[] = [];
+export function countChunkQualityIssues<T extends QualityCheckableItem = ChunkItem>(
+  chunks: T[]
+): ChunkQualityStats<T> {
+  const errorChunks: T[] = [];
+  const warningChunks: T[] = [];
+  const checkingChunks: T[] = [];
+  const unverifiedChunks: T[] = [];
+  const passChunks: T[] = [];
 
   for (const chunk of chunks) {
     if (isChunkError(chunk)) {
@@ -261,7 +292,7 @@ export interface ChunkBadgeInfo {
  * - For unverified: returns "Chưa kiểm chứng".
  * - For pass / pending: returns null (no badge).
  */
-export function getChunkBadgeInfo(chunk: ChunkItem): ChunkBadgeInfo | null {
+export function getChunkBadgeInfo(chunk: QualityCheckableItem): ChunkBadgeInfo | null {
   if (isChunkError(chunk)) {
     const issues = chunk.qualityReview?.issues || [];
     const uniqueLabels: string[] = [];
@@ -358,12 +389,12 @@ export function getChunkBadgeInfo(chunk: ChunkItem): ChunkBadgeInfo | null {
 export const ASR_VALIDATION_TIMEOUT_MS = 25000;
 
 /**
- * Validates the synthesized audio for a chunk.
+ * Validates the synthesized audio for a chunk or segment.
  * Uses local faster-whisper via LocalAiServices when available.
  * Returns an AudioQualityReview object.
  */
 export async function validateChunkAudioQuality(
-  chunk: ChunkItem,
+  chunk: QualityCheckableItem,
   language?: string,
   customAi?: LocalAiServices | null,
   speed?: number,
@@ -374,9 +405,12 @@ export async function validateChunkAudioQuality(
   const effectiveAsrModel = asrModelId || loadSubtitleSettings().whisperModel;
   const audioSig = getChunkAudioSignature(chunk);
   const effectiveRules = getEffectiveRules(projectId);
+  const itemText = getItemText(chunk);
+  const cleanSpeechText = stripPauseTokens(itemText);
+  const durationSec = getItemDurationSec(chunk);
 
   // Technical check: chunk must have an audio destination
-  if (!chunk.audioFilePath && !chunk.audioUrl) {
+  if (!chunk.audioFilePath && !chunk.audioUrl && !chunk.audioBlobUrl && !chunk.fittedAudioUrl) {
     return {
       status: "error",
       issues: [
@@ -388,7 +422,7 @@ export async function validateChunkAudioQuality(
       ],
       summary: "Chưa có âm thanh",
       checkedAt: now,
-      text: chunk.text,
+      text: itemText,
       validatorVersion: QUALITY_VALIDATOR_VERSION,
       asrModelId: effectiveAsrModel,
       audioSignature: "",
@@ -410,7 +444,7 @@ export async function validateChunkAudioQuality(
         const res = await Promise.race([
           ai.validateAudioQuality(
             chunk.audioFilePath,
-            chunk.text,
+            cleanSpeechText,
             language,
             speed,
             effectiveAsrModel,
@@ -428,7 +462,7 @@ export async function validateChunkAudioQuality(
           summary: res.summary || (res.status === "pass" ? "Đạt" : "Đã kiểm tra"),
           checkedAt: now,
           audioPath: chunk.audioFilePath,
-          text: chunk.text,
+          text: itemText,
           validatorVersion: QUALITY_VALIDATOR_VERSION,
           asrModelId: res.asrModelId || effectiveAsrModel,
           audioSignature: audioSig,
@@ -438,7 +472,7 @@ export async function validateChunkAudioQuality(
       }
     }
   } catch (err: any) {
-    console.warn(`[QualityValidator] Sidecar validation failed on chunk ${chunk.id}:`, err);
+    console.warn(`[QualityValidator] Sidecar validation failed on chunk ${chunk.id ?? chunk.cueIndex}:`, err);
     // Failure in validation tool must not discard valid audio
     return {
       status: "unverified",
@@ -446,7 +480,7 @@ export async function validateChunkAudioQuality(
       summary: `Chưa kiểm chứng (${err?.message || "Không thể kết nối bộ kiểm tra"})`,
       checkedAt: now,
       audioPath: chunk.audioFilePath,
-      text: chunk.text,
+      text: itemText,
       validatorVersion: QUALITY_VALIDATOR_VERSION,
       asrModelId: effectiveAsrModel,
       audioSignature: audioSig,
@@ -454,7 +488,7 @@ export async function validateChunkAudioQuality(
   }
 
   // Fallback for browser-only / mock environment without sidecar
-  if (typeof chunk.durationSec === "number" && chunk.durationSec < 0.2) {
+  if (typeof durationSec === "number" && durationSec < 0.2) {
     return {
       status: "error",
       issues: [
@@ -466,7 +500,7 @@ export async function validateChunkAudioQuality(
       ],
       summary: "Thời lượng âm thanh quá ngắn",
       checkedAt: now,
-      text: chunk.text,
+      text: itemText,
       validatorVersion: QUALITY_VALIDATOR_VERSION,
       asrModelId: effectiveAsrModel,
       audioSignature: audioSig,
@@ -479,7 +513,7 @@ export async function validateChunkAudioQuality(
     summary: "Chưa kiểm chứng (môi trường trình duyệt)",
     checkedAt: now,
     audioPath: chunk.audioFilePath,
-    text: chunk.text,
+    text: itemText,
     validatorVersion: QUALITY_VALIDATOR_VERSION,
     asrModelId: effectiveAsrModel,
     audioSignature: audioSig,

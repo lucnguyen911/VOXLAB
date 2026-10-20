@@ -210,25 +210,32 @@ Sidebar hỗ trợ thu gọn (collapsible) với 7 không gian làm việc phân
   - Xuất ra một **Immutable Handoff Snapshot** chứa toàn bộ cues gốc kèm timestamps và metadata media sang tab `dubbing`.
 
 #### 4.2.5 Workspace 5: Dịch & Lồng tiếng (Dedicated Dubbing Workspace)
-*Nguyên tắc: Dịch & Lồng tiếng = TRANSLATE & DUB SUBTITLE TIMELINE*.
+*Nguyên tắc: Dịch & Lồng tiếng gồm 2 chế độ độc lập phục vụ 2 bài toán sản xuất khác nhau*:
+- **Chế độ 1 — Đồng bộ video gốc (`source_sync`)**:
+  - Dành cho video có sẵn lời thoại (review xe, tin tức, phỏng vấn...) cần dịch phụ đề và lồng tiếng nhưng giữ nguyên hình ảnh, thời lượng và các mốc thoại quan trọng của video gốc.
+  - Phụ đề dịch bảo toàn 100% số lượng cue, thứ tự và timestamps của source subtitle.
+  - Lồng tiếng tổng hợp theo nhóm thoại ngữ nghĩa (`DubbingSpeechGroup`), neo tại mốc thời gian bắt đầu của nhóm trên video gốc.
+  - Cơ chế Auto-Fit (WSOLA pitch-preserving tối đa $1.20\times$) đảm bảo audio không đè lên mốc câu tiếp theo; chặn xuất Master WAV nếu còn va chạm thời lượng chưa được xử lý.
+- **Chế độ 2 — Dịch & Thuyết minh tự do (`free_narration`)**:
+  - Dành cho việc dịch SRT để lấy văn bản hoặc tạo giọng đọc mới phục vụ dựng video mới, không cần khớp thời gian video ban đầu.
+  - Bản dịch ưu tiên văn phong mạch lạc, tự nhiên của câu/đoạn hoàn chỉnh, không bị ép cắt chữ theo số giây.
+  - Giọng đọc TTS đọc theo câu hoặc đoạn hoàn chỉnh, không ngắt giọng theo ranh giới cue SRT.
+  - Ghép nối audio tuần tự (linear daisy-chain) theo thời lượng âm thanh thực tế và khoảng nghỉ tự nhiên cấu hình, không neo vào `startSec` cũ của SRT.
+  - Không hiển thị cảnh báo tràn thời lượng và không chặn xuất Master WAV vì không dùng timeline nguồn làm ràng buộc.
+  - Hỗ trợ xuất: TXT dịch hoàn chỉnh, SRT tham chiếu, Master WAV thuyết minh mới, và SRT mới đồng bộ với WAV mới dựa trên mốc thời gian âm thanh đã tổng hợp.
 - **Đầu vào (Input)**:
   - Handoff snapshot trực tiếp từ tab Phụ đề.
-  - Hoặc nhập file phụ đề có sẵn (.SRT / .VTT) từ máy tính.
+  - Hoặc nhập file phụ đề có sẵn (.SRT / .VTT / .TXT) từ máy tính.
 - **Tiêu thụ Provider (Consumer Pattern)**:
   - Chọn Provider đã cấu hình trong Settings (Google, LM Studio, Gemini, DeepSeek, Custom).
-  - Chọn Ngôn ngữ đích.
+  - Chọn Ngôn ngữ đích và Phong cách dịch (Mặc định / Điện ảnh).
   - Nếu Provider chưa cấu hình API Key hoặc Local server offline: Hiển thị badge trạng thái kèm nút `[Cấu hình trong Settings]` (deep-link). Không nhập API Key trực tiếp tại đây.
 - **Quy trình Review/Edit bắt buộc (Side-by-Side Review Grid)**:
-  - Cột trái: Cue gốc (Original Cue) — Read-only, kèm timestamps và thời lượng khả dụng.
-  - Cột phải: Cue dịch (Translated Cue) — Inline editable, hiển thị trạng thái sinh audio, thời lượng audio đã tạo, và badge cảnh báo overflow/collision nếu có.
-- **Lồng tiếng (Dubbing Execution)**:
-  - Chọn 1 giọng đọc chung (Single Voice) từ Voice Library / Voice Clone.
-  - Hàng đợi sinh audio từng câu qua `BatchConcurrencyQueue` (hỗ trợ Concurrency, Pause, Resume, Cancel).
-  - Áp dụng WSOLA time-stretch co giãn nhẹ tối đa 15–20% ($1.20\times$) nếu audio dài hơn cue gốc mà không làm méo cao độ giọng.
-  - Tách bạch Source Subtitle Timeline (bất biến) và Dubbing Audio Timeline (neo tại start time, tính toán overflow metadata, **không ripple-shift các cue phía sau**).
+  - Cột trái: Kịch bản gốc (Original Cue) — Read-only, kèm timestamps và thời lượng khả dụng.
+  - Cột phải: Bản dịch (Translated Cue) — Inline editable, hiển thị trạng thái sinh audio, thời lượng audio đã tạo, và badge cảnh báo phù hợp với chế độ đang chọn.
 - **Đầu ra (Output)**:
-  - Xuất file Audio lồng tiếng hoàn chỉnh (`.wav`) ghép nối chuẩn xác theo timeline.
-  - Xuất file Phụ đề đã dịch (`.srt`) kế thừa 100% timestamps của source subtitle.
+  - `source_sync`: Xuất Master Audio (`.wav`) đồng bộ video gốc; Xuất phụ đề đã dịch (`.srt`) kế thừa 100% timestamps gốc.
+  - `free_narration`: Xuất văn bản dịch (`.txt`); Xuất phụ đề tham chiếu (`.srt`); Xuất Master Audio (`.wav`) thuyết minh nối tiếp; Xuất phụ đề mới đồng bộ âm thanh (`.srt`).
 
 #### 4.2.6 Workspace 6: History (Utility)
 - Danh sách các phiên xử lý (sessions) gần đây kèm thời gian, tác vụ, trạng thái.
@@ -647,15 +654,15 @@ export interface DubbingProjectSession {
 
 ### 16.2 Hai Trục Thời Gian, Ngữ Nghĩa Co Giãn Tốc Độ (WSOLA Semantics) & Chính Sách Xuất Audio
 
-Hệ thống phân định rạch ròi giữa 2 trục thời gian độc lập:
+Hệ thống phân định rạch ròi giữa 2 chế độ làm việc và các trục thời gian tương ứng:
 
-1. **Source Subtitle Timeline (Trục thời gian Phụ đề Gốc)**:
-   - **Tính chất**: Bất biến (`IMMUTABLE`).
-   - `startSec` và `endSec` của mọi `OriginalCue` và `TranslatedCue` đại diện cho timeline của video/audio gốc.
-   - **Quy tắc Xuất SRT**: Khi xuất file phụ đề đã dịch (`.srt`), hệ thống **BẮT BUỘC** sử dụng `TranslatedCue.startSec` và `TranslatedCue.endSec`. Tuyệt đối không xê dịch mốc thời gian của phụ đề theo thời lượng audio lồng tiếng.
-2. **Dubbing Audio Timeline (Trục thời gian Âm thanh Lồng tiếng)**:
-   - **Tính chất**: Neo tại điểm bắt đầu (`audioStartSec = OriginalCue.startSec`).
-   - Thời lượng khả dụng của cue trên timeline gốc: `availableDuration = OriginalCue.endSec - OriginalCue.startSec`.
+1. **Chế độ 1 — Đồng bộ video gốc (`source_sync`)**:
+   - **Source Subtitle Timeline**: Bất biến (`IMMUTABLE`). `startSec` và `endSec` của mọi `OriginalCue` và `TranslatedCue` giữ nguyên 100% mốc thời gian gốc. Khi xuất `.srt` ở chế độ này, bắt buộc dùng `TranslatedCue.startSec` và `TranslatedCue.endSec`.
+   - **Dubbing Audio Timeline**: Neo tại điểm bắt đầu của nhóm thoại (`audioStartSec = SpeechGroup.startSec`). Thời lượng khả dụng: `availableDuration = nextGroupStartSec - startSec - safetyGap`. Áp dụng WSOLA time-stretch tối đa $1.20\times$ khi cần; nếu vẫn va chạm (`collision_danger`), bắt buộc chặn xuất Master WAV.
+2. **Chế độ 2 — Dịch & Thuyết minh tự do (`free_narration`)**:
+   - **Linear Narration Timeline**: Các đoạn audio được ghép nối tiếp tuần tự (daisy-chain) theo thời lượng thực tế của file âm thanh cộng khoảng nghỉ tự nhiên (`pauses.period`, mặc định $\sim 0.4 - 0.5s$). Điểm bắt đầu đoạn sau là điểm kết thúc thực tế đoạn trước cộng khoảng nghỉ. Tuyệt đối không neo vào `startSec` cũ của SRT.
+   - **Không áp dụng ràng buộc timeline nguồn**: Không kiểm tra va chạm (`collision_danger`), không giới hạn thời lượng, không co giãn WSOLA ép theo video gốc.
+   - **Đồng bộ SRT mới**: Khi người dùng yêu cầu xuất SRT mới đồng bộ với WAV mới, mốc thời gian phụ đề được tạo trực tiếp từ mốc thời gian thực tế của âm thanh đã tổng hợp trên trục Linear Narration Timeline, không lấy timestamp SRT cũ.
 3. **Ngữ Nghĩa Hệ Số Tăng Tốc WSOLA (WSOLA Speedup Factor Semantics)**:
    - Thuật toán WSOLA áp dụng hàm `timeStretchAudioBuffer(inputBuffer, speedFactor)` trong [`src/services/subtitle/timing.ts`](file:///f:/Source%20Code%20Tool/Voxlab/src/services/subtitle/timing.ts):
      - `speedFactor` là hệ số tăng tốc (speedup factor).

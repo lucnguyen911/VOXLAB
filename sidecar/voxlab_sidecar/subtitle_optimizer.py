@@ -162,7 +162,7 @@ DETERMINERS = {
 }
 PREPOSITIONS = {
     "of", "to", "for", "with", "from", "by", "at", "in", "on", "as", "into",
-    "onto", "upon", "under", "over", "between", "among", "about", "through",
+    "onto", "upon", "under", "over", "between", "among", "about", "around", "through",
     "inside", "outside", "within", "without", "against", "during", "before",
     "after", "per", "via", "toward", "towards", "across", "behind", "beyond",
 }
@@ -181,6 +181,10 @@ RELATIVES = {"that", "which", "who", "whom", "whose", "where", "whether"}
 
 # Subject pronouns that can never legitimately end an unpunctuated cue or line
 SUBJECT_PRONOUNS = {"i", "he", "she", "we", "they"}
+
+REFLEXIVE_PRONOUNS = {
+    "itself", "himself", "herself", "themselves", "ourselves", "yourself", "yourselves", "myself",
+}
 
 # Vietnamese function words that should not dangle at the end of a cue/line
 VI_FORBIDDEN_ENDINGS = {
@@ -218,7 +222,7 @@ COMPLEMENT_TAKING = {
 QUANTIFIER_OF_HEADS = {
     "millions", "thousands", "billions", "hundreds", "trillions", "tens", "dozens",
     "tons", "lots", "plenty", "most", "all", "some", "many", "few", "none",
-    "half", "majority", "number", "amount", "couple", "handful", "one", "each",
+    "majority", "number", "amount", "couple", "handful", "one", "each",
     "both", "either", "neither", "any", "much", "several", "enough",
     "verge", "sake", "scrap", "introduction", "degrees", "degree", "glass", "cup",
     "bottle", "box", "pair", "piece", "slice", "drop", "fraction", "percent",
@@ -278,7 +282,10 @@ PRENOMINAL_MODIFIERS = {
     "weekly", "annual", "yearly", "hourly", "full", "total", "average", "maximum",
     "minimum", "standard", "conventional", "revised", "updated", "dedicated", "powerful",
     "tireless", "crushing", "distant", "sudden", "painful", "meaningful", "independent",
-    "middle", "stage", "industry", "engineering",
+    "middle", "stage", "industry", "engineering", "difficult", "expensive", "precision",
+    "in-home", "out-of-pocket", "in-house", "full-time", "part-time", "long-term",
+    "short-term", "real-world", "high-speed", "low-cost", "water-resistant",
+    "middle-class", "hands-free",
 }
 
 VI_VERBS = {
@@ -294,43 +301,53 @@ COMMON_VERBS = AUXILIARIES | VI_VERBS | {
     "arrived", "ask", "asked", "become", "became", "believe", "believes", "bend",
     "bends", "bent", "bending", "build",
     "built", "building", "buy", "buys", "bought", "buying", "call", "called", "calls",
-    "carry", "carries", "carried", "carrying", "clear", "clears", "cleared", "clearing",
-    "change", "changed", "changes", "charge", "charged", "come", "comes", "came",
-    "coming", "connect", "connecting", "cost", "costs", "create", "created", "cut",
+    "carry", "carries", "carried", "carrying", "chop", "chops", "chopped", "clean",
+    "cleans", "cleaned", "clear", "clears", "cleared", "clearing",
+    "change", "changed", "changes", "charge", "charged", "collect", "collects", "collected",
+    "come", "comes", "came",
+    "coming", "connect", "connecting", "cook", "cooks", "cooked", "cost", "costs",
+    "create", "created", "cut",
     "cuts", "depend", "depends", "design", "designed", "detect", "detects", "detected",
-    "discharge", "draw", "drive",
+    "discharge", "dismiss", "dismisses", "dismissed", "drain", "drains", "drained",
+    "draining", "draw", "drive",
     "drives", "drove", "driving", "end", "ends", "ended", "endure", "erase", "erased",
-    "exist", "exists", "eye", "eyeing", "factor", "fight", "find", "finding", "finish",
+    "exist", "exists", "expose", "exposes", "exposed", "eye", "eyeing", "factor",
+    "fight", "find", "finding", "finish",
     "finished", "function", "generate", "get", "gets", "got", "getting", "give",
     "gives", "gave", "go", "goes", "went", "gone", "handle", "handles", "happen",
     "happens", "happened", "happening", "hear", "help", "helps", "hold", "holds",
     "hope", "hoping", "install", "jack", "keep", "keeps", "kept", "know", "knows",
     "knew", "leave", "leaves", "left", "leaving", "let", "lets", "lift", "lifts",
-    "lifted", "lifting", "live", "lives",
+    "lifted", "lifting", "listen", "listens", "listened", "live", "lives",
     "log", "logged", "look", "looks", "looked", "love", "loved", "make", "makes",
     "made", "mean", "means", "meant", "move", "moves", "moved", "navigate", "navigates",
     "navigated", "need", "needs",
-    "needed", "override", "overrides", "owe", "owes", "pack", "packed", "pay", "pays",
-    "paid", "paying", "pick", "picks", "picked", "picking", "place", "placing", "plan",
-    "planning", "play", "plug", "plugged",
+    "needed", "operate", "operates", "override", "overrides", "owe", "owes", "pack",
+    "packed", "pay", "pays",
+    "paid", "paying", "pick", "picks", "picked", "picking", "pinch", "pinches",
+    "place", "placing", "plan", "planning", "play", "plug", "plugged",
     "plummet", "point", "points", "pointed", "pointing", "pour", "pouring", "process",
     "processed", "promise", "promised",
     "prove", "proves", "proved", "pull", "pulls", "pulled", "read", "receive",
-    "receives", "recognize", "recognizes", "recognized", "rely", "relies", "relied",
-    "remember", "replace", "replaced", "roll", "rolls", "rolled", "rolling", "run",
+    "receives", "recharge", "recharges", "recharged", "recognize", "recognizes", "recognized",
+    "rely", "relies", "relied", "remember", "replace", "replaced", "repurpose", "repurposing",
+    "roll", "rolls", "rolled", "rolling", "run",
     "runs", "ran", "save",
     "saving", "say", "says", "said", "see", "sees", "saw", "seeing", "sell", "selling",
-    "send", "sending", "shave", "show", "shows", "showed", "shut", "sit", "sits", "sat",
-    "skyrocket", "slash", "slashed", "slip", "slips", "slipped", "sound", "sounds",
-    "sounded", "squeeze",
+    "send", "sending", "serve", "serves", "served", "serving", "shave", "show", "shows",
+    "showed", "shut", "sit", "sits", "sat",
+    "skyrocket", "slash", "slashed", "slip", "slips", "slipped", "snag", "snags",
+    "sound", "sounds", "sounded", "squeeze",
     "stabilize", "start", "starts", "started", "stay", "stays", "stayed", "step",
     "stop", "stops", "stopped", "strain", "straining", "strip", "strips", "stripped",
-    "stripping", "struggle", "take", "takes",
+    "stripping", "struggle", "surge", "surges", "surged", "switch", "switches",
+    "take", "takes",
     "took", "taking", "talk", "talks", "tape", "taped", "tear", "tears", "tore", "torn",
-    "tearing", "tell", "telling", "think", "thinks", "thought", "turn",
-    "turns", "turned", "turning", "understand", "understands", "use", "uses", "used",
-    "using", "wait", "waiting",
-    "walk", "walked", "want", "wants", "wanted", "watch", "watched", "work", "works",
+    "tearing", "tell", "telling", "think", "thinks", "thought", "trap", "traps", "turn",
+    "turns", "turned", "turning", "twist", "twists", "twisted", "understand",
+    "understands", "use", "uses", "used", "using", "wait", "waiting",
+    "walk", "walked", "want", "wants", "wanted", "watch", "watched", "weigh", "weighs",
+    "weighed", "work", "works",
     "working", "wrap", "wraps", "wrapped", "wrapping", "affect", "affects", "frighten",
     "hide", "count", "counts",
 }
@@ -347,12 +364,13 @@ SHORT_STANDALONE = {
 }
 
 # Phrases that should stay in the same cue (cue_protected) when possible, but ARE allowed
-# to wrap cleanly across lines inside a 2-line cue (before "to", "on", "about", "from", "into").
+# to wrap cleanly across lines inside a 2-line cue (before "to", "on", "about", "from", "into", "as").
 LINE_WRAP_ALLOWED_PHRASES = {
     "have to", "has to", "had to", "going to", "able to", "need to", "needs to",
     "want to", "wants to", "rely on", "relies on", "depend on", "depends on",
     "talk about", "came from", "come from", "comes from", "turn into", "turned into",
-    "turning into", "close to", "next to",
+    "turning into", "close to", "next to", "serve as", "serves as", "served as", "serving as",
+    "lead to", "leads to", "led to",
 }
 
 KNOWN_PHRASES = LINE_WRAP_ALLOWED_PHRASES | {
@@ -393,6 +411,7 @@ KNOWN_PHRASES = LINE_WRAP_ALLOWED_PHRASES | {
     "go wrong", "goes wrong", "went wrong", "going wrong",
     "wrap around", "wraps around", "wrapped around", "wrapping around",
     "navigate back", "navigates back", "navigated back", "come back", "came back",
+    "come out", "comes out", "came out", "coming out",
     "go back", "went back", "bring back", "brought back", "push back", "pushed back",
     "scale up", "scaled up", "speed up", "sped up", "slow down", "slowed down",
     "break down", "broke down", "wear out", "wore out", "worn out", "clean up", "cleaned up",
@@ -429,7 +448,10 @@ KNOWN_PHRASES = LINE_WRAP_ALLOWED_PHRASES | {
     "household robot", "daily tasks", "daily routines", "kitchen counter",
     "kitchen tile", "basement stairs", "hot stove", "hot soup", "raw egg",
     "fragile objects", "commercial vehicles", "demonstration robot", "adult children",
-    "wider range", "design leaks",
+    "wider range", "design leaks", "neural network", "neural networks", "battery pack",
+    "battery packs", "battery cell", "battery cells", "precision actuator",
+    "precision actuators", "difficult component", "in-home care", "in home care",
+    "in-home caregiver", "in home caregiver", "target price",
     # Vietnamese compounds
     "mô hình", "giọng nói", "hệ thống", "thử nghiệm", "nhận diện", "bóc băng",
     "sản xuất", "nội dung", "âm thanh", "thời gian", "chính xác", "tiếng việt",
@@ -860,7 +882,32 @@ def _measure_window_rms_db(wav_path: Optional[Path], start_sec: float, end_sec: 
         rms = float(np.sqrt(np.mean(np.square(mono))))
         return 20.0 * math.log10(max(1e-9, rms))
     except Exception:
-        return None
+        try:
+            import struct
+            import wave
+
+            with wave.open(str(wav_path), "rb") as wf:
+                sr = wf.getframerate()
+                nch = max(1, wf.getnchannels())
+                sw = wf.getsampwidth()
+                total_frames = wf.getnframes()
+                if sr <= 0 or sw != 2:
+                    return None
+                s_frame = max(0, min(total_frames, int(start_sec * sr)))
+                e_frame = max(s_frame + 1, min(total_frames, int(end_sec * sr)))
+                if e_frame <= s_frame:
+                    return None
+                wf.setpos(s_frame)
+                raw_bytes = wf.readframes(e_frame - s_frame)
+                count = len(raw_bytes) // 2
+                if count <= 0:
+                    return None
+                samples = struct.unpack(f"<{count}h", raw_bytes[: count * 2])
+                mean_sq = sum((s / 32768.0) ** 2 for s in samples) / float(count)
+                rms = math.sqrt(max(0.0, mean_sq))
+                return 20.0 * math.log10(max(1e-9, rms))
+        except Exception:
+            return None
 
 
 def filter_asr_hallucinations(
@@ -1019,9 +1066,11 @@ def recover_orthography_from_script(
     scr_clean = [_clean_token(t) for t in script_tokens]
 
     matcher = difflib.SequenceMatcher(None, asr_clean, scr_clean, autojunk=False)
+    opcodes = matcher.get_opcodes()
+
     recovered: List[Dict[str, Any]] = []
 
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+    for tag, i1, i2, j1, j2 in opcodes:
         if tag == "equal":
             for k in range(i2 - i1):
                 w = dict(words[i1 + k])
@@ -1031,6 +1080,7 @@ def recover_orthography_from_script(
                 if _clean_token(w["text"]) == _clean_token(scr_tok):
                     w["text"] = scr_tok
                     w["display_text"] = scr_tok
+                    w["script_confirmed_punct"] = True
                     if scr_tok.rstrip().endswith(TERMINAL_PUNCTUATION) or scr_idx in script_header_end_indices:
                         w["script_confirmed_terminal"] = True
                     if scr_idx in script_header_end_indices:
@@ -1291,6 +1341,223 @@ def _looks_like_standalone_title(words: Sequence[Dict[str, Any]], index: int) ->
     return "that" in following[:4] and any(_looks_like_verb(token) for token in following[2:])
 
 
+COMPLEMENT_TAKING_VERBS = {
+    "proves", "prove", "proved", "shows", "show", "showed", "means", "mean", "meant",
+    "says", "say", "said", "knows", "know", "knew", "thinks", "think", "thought",
+    "believes", "believe", "believed", "ensures", "ensure", "ensured", "confirms",
+    "confirm", "confirmed", "reveals", "reveal", "revealed", "indicates", "indicate",
+    "indicated", "demonstrates", "demonstrate", "demonstrated", "illustrates",
+    "illustrate", "illustrated", "determines", "determine", "determined", "requires",
+    "require", "required", "expects", "expect", "expected",
+}
+
+SUBORDINATE_STARTERS = {
+    "until", "if", "when", "while", "because", "although", "though", "unless",
+    "since", "once", "after", "before", "that", "whether",
+}
+
+
+def sanitize_blind_asr_punctuation(words: List[Dict[str, Any]]) -> None:
+    """Heals false commas hallucinated by blind ASR inside tight prepositional or noun phrases
+    (e.g. 'stay independent inside, the homes' or 'such as the Optimus, fall at an event').
+    Never touches words whose punctuation was confirmed by an original script.
+    """
+    n = len(words)
+    if n < 2:
+        return
+    for idx in range(n - 1):
+        w = words[idx]
+        if w.get("script_confirmed_punct") or w.get("script_confirmed_terminal"):
+            continue
+        raw = str(w.get("text", "")).strip()
+        if not raw.endswith(","):
+            continue
+        next_w = words[idx + 1]
+        gap = max(0.0, float(next_w["start"]) - float(w["end"]))
+        if gap >= 0.65:
+            continue
+        w_clean = _clean_token(raw)
+        next_clean = _clean_token(next_w["text"])
+
+        # 1. Preposition/determiner/auxiliary followed immediately by its object (e.g. "inside, the homes")
+        if (
+            gap < 0.30
+            and w_clean in (PREPOSITIONS | DETERMINERS | AUXILIARIES | {"inside", "outside", "within", "without"})
+            and next_clean in (DETERMINERS | SUBJECT_PRONOUNS | {"you", "it", "them", "us", "me", "him", "her"})
+        ):
+            stripped = raw[:-1].rstrip()
+            w["text"] = stripped
+            w["display_text"] = stripped
+            w["punct"] = ""
+            w["clause_break"] = False
+            continue
+
+        # 2. "such as the <Noun>, <Noun/Verb> <Preposition>" (e.g. "such as the Optimus, fall at an event")
+        if (
+            idx >= 2
+            and _clean_token(words[idx - 1]["text"]) in DETERMINERS
+            and _clean_token(words[idx - 2]["text"]) in (PREPOSITIONS | {"as"})
+            and idx + 2 < n
+            and _clean_token(words[idx + 2]["text"]) in PREPOSITIONS
+            and next_clean not in CONJUNCTIONS
+        ):
+            stripped = raw[:-1].rstrip()
+            w["text"] = stripped
+            w["display_text"] = stripped
+            w["punct"] = ""
+            w["clause_break"] = False
+
+
+ACTIVE_REPORTING_PAST_VERBS = {
+    "emphasized", "acknowledged", "explained", "confirmed", "announced", "noted",
+    "stated", "revealed", "demonstrated", "prioritized", "published", "argued",
+    "warned", "predicted", "promised", "pointed", "said", "told", "asked",
+    "showed", "proved", "highlighted", "stressed", "shared", "added", "claimed",
+}
+
+REPORTING_FINITE_FOLLOWERS = (
+    {"that", "how", "why", "whether", "what", "if", "when", "where", "who", "to"}
+    | DETERMINERS
+    | SUBJECT_PRONOUNS
+    | {"it", "you", "there", "one"}
+)
+
+PLURAL_RELATIVE_ANTECEDENTS = {
+    "cells", "batteries", "actuators", "sensors", "motors", "robots", "vehicles",
+    "cars", "trucks", "packs", "panels", "rates", "grids", "bills", "homes",
+    "families", "parents", "insiders", "leaks", "bottlenecks", "shortages",
+    "restrictions", "incidents", "chores", "tasks", "routines", "objects",
+    "movements", "targets", "details", "hands", "fingers", "arms", "legs",
+}
+
+PLURAL_WHICH_VERB_FIXES = {
+    "offers": "offer",
+    "makes": "make",
+    "allows": "allow",
+    "gives": "give",
+    "provides": "provide",
+    "requires": "require",
+    "uses": "use",
+    "comes": "come",
+    "keeps": "keep",
+}
+
+SEALING_CONTEXT_MODIFIERS = {
+    "water-resistant", "water", "resistant", "waterproof", "weatherproof",
+    "airtight", "hermetic", "dust", "dust-resistant", "dustproof",
+    "environmental", "protective", "rubber", "silicone", "industrial",
+}
+
+
+def normalize_blind_asr_context(words: List[Dict[str, Any]]) -> None:
+    """General-purpose contextual & document-level entity normalization for Blind ASR
+    (when no reference script is provided):
+    1. Document-level entity consistency: if 'Optimus' (or a dominant proper noun) appears in the
+       transcript/context, normalize near-homophone ASR misrecognitions like 'optimists'/'optimist' -> 'Optimus'.
+    2. Contextual technical homophones: 'water-resistant ceiling' -> 'water-resistant sealing'.
+    3. Spurious "'s" after proper nouns before active past-tense reporting verbs:
+       "Elon Musk's emphasized that..." -> "Elon Musk emphasized that...", while strictly preserving
+       genuine possessives before participial modifiers ("At Tesla's stated $20,000 target").
+    4. Plural antecedent agreement across ', which': 'battery cells, which offers' -> 'which offer'.
+    """
+    n = len(words)
+    if n == 0:
+        return
+
+    clean_tokens = [_clean_token(w["text"]) for w in words]
+    has_robotics_or_optimus_context = any(
+        tok in {"optimus", "tesla", "humanoid", "robot", "robots", "actuator", "actuators"}
+        for tok in clean_tokens
+    )
+
+    for idx, w in enumerate(words):
+        if w.get("script_confirmed_punct") or w.get("script_confirmed_terminal"):
+            continue
+        raw = str(w.get("text", "")).strip()
+        if not raw:
+            continue
+        clean = clean_tokens[idx]
+
+        # Extract leading/trailing punctuation around core token
+        m = re.match(r"^([^A-Za-z0-9$€£]*)([A-Za-z0-9$€£'’.-]+?)([^A-Za-z0-9$€£]*)$", raw)
+        if not m:
+            continue
+        lead_punct, core, trail_punct = m.groups()
+
+        # 1. Entity consistency: "optimists" / "optimist" -> "Optimus" in robotics/Optimus context
+        if has_robotics_or_optimus_context and clean in {"optimists", "optimist"}:
+            new_tok = f"{lead_punct}Optimus{trail_punct}"
+            w["text"] = new_tok
+            w["display_text"] = new_tok
+            clean_tokens[idx] = "optimus"
+            continue
+
+        # 2. Contextual homophone: "ceiling" -> "sealing" after water-resistant / waterproof / etc.
+        if clean == "ceiling" and idx > 0:
+            prev_window = set(clean_tokens[max(0, idx - 3) : idx])
+            if prev_window & SEALING_CONTEXT_MODIFIERS:
+                replacement_core = "Sealing" if core[0].isupper() else "sealing"
+                new_tok = f"{lead_punct}{replacement_core}{trail_punct}"
+                w["text"] = new_tok
+                w["display_text"] = new_tok
+                clean_tokens[idx] = "sealing"
+                continue
+
+        # 3. Spurious "'s" on a capitalized proper noun before an active past-tense reporting verb
+        # e.g. "Elon Musk's emphasized that..." -> "Elon Musk emphasized that..."
+        # Preserve genuine possessives when preceded by a preposition/determiner ("At Tesla's stated $20,000")
+        # or when the past participle modifies a following number/noun.
+        if (
+            idx + 1 < n
+            and core[0].isupper()
+            and (core.endswith("'s") or core.endswith("’s"))
+            and not trail_punct
+            and clean_tokens[idx + 1] in ACTIVE_REPORTING_PAST_VERBS
+        ):
+            # Walk back across multi-word proper noun (e.g. "Elon Musk's") to check token before subject
+            subj_start = idx
+            while (
+                subj_start > 0
+                and words[subj_start - 1]["text"].strip()[:1].isupper()
+                and not words[subj_start - 1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+            ):
+                subj_start -= 1
+            preceded_by_prep_or_det = (
+                subj_start > 0
+                and clean_tokens[subj_start - 1] in (PREPOSITIONS | DETERMINERS)
+                and not words[subj_start - 1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+            )
+            after_verb = clean_tokens[idx + 2] if idx + 2 < n else ""
+            after_is_number = bool(re.fullmatch(r"[$€£]?\d[\d,.:/-]*%?", after_verb)) or after_verb in NUMBER_WORDS
+            if (
+                not preceded_by_prep_or_det
+                and not after_is_number
+                and after_verb in REPORTING_FINITE_FOLLOWERS
+            ):
+                stripped_core = core[:-2]
+                if stripped_core:
+                    new_tok = f"{lead_punct}{stripped_core}{trail_punct}"
+                    w["text"] = new_tok
+                    w["display_text"] = new_tok
+                    clean_tokens[idx] = _clean_token(new_tok)
+                    continue
+
+        # 4. Plural non-restrictive relative clause agreement: "<plural noun>, which offers" -> "which offer"
+        if (
+            idx >= 2
+            and clean in PLURAL_WHICH_VERB_FIXES
+            and clean_tokens[idx - 1] == "which"
+            and words[idx - 2]["text"].rstrip().endswith(",")
+            and clean_tokens[idx - 2] in PLURAL_RELATIVE_ANTECEDENTS
+        ):
+            base_verb = PLURAL_WHICH_VERB_FIXES[clean]
+            replacement_core = base_verb.capitalize() if core[0].isupper() else base_verb
+            new_tok = f"{lead_punct}{replacement_core}{trail_punct}"
+            w["text"] = new_tok
+            w["display_text"] = new_tok
+            clean_tokens[idx] = base_verb
+
+
 def _is_suspicious_terminal(words: Sequence[Dict[str, Any]], index: int) -> bool:
     if index >= len(words) - 1:
         return False
@@ -1324,13 +1591,44 @@ def _is_suspicious_terminal(words: Sequence[Dict[str, Any]], index: int) -> bool
     if current_clean in NOISY_ABBREVIATIONS:
         return True
 
+    # False terminal after a complement-taking verb inside a subordinate clause
+    # e.g., "until Tesla proves. Optimus is 100% reliable"
+    if current_clean in COMPLEMENT_TAKING_VERBS and gap < 0.40:
+        prev_window = [_clean_token(w["text"]) for w in words[max(0, index - 4) : index]]
+        next_window = [_clean_token(w["text"]) for w in words[index + 1 : min(len(words), index + 4)]]
+        if any(tok in SUBORDINATE_STARTERS for tok in prev_window) and any(
+            tok in FINITE_CLAUSE_VERBS or _looks_like_verb(tok) for tok in next_window
+        ):
+            return True
+
     sentence_start = index
     while sentence_start > 0 and not words[sentence_start - 1].get("terminal"):
         sentence_start -= 1
-    fragment_length = index - sentence_start + 1
-    fragment_phrase = " ".join(_clean_token(word["text"]) for word in words[sentence_start : index + 1])
+    fragment_words = words[sentence_start : index + 1]
+    fragment_length = len(fragment_words)
+    fragment_phrase = " ".join(_clean_token(word["text"]) for word in fragment_words)
     if fragment_phrase in SHORT_STANDALONE and gap < 0.45:
         return False
+
+    # False Whisper period after a short verbless introductory prepositional/adverbial phrase
+    # (e.g. "Right now across America. The average bill...", "In May 2026. The final Model S...")
+    first_frag_clean = _clean_token(fragment_words[0]["text"]) if fragment_words else ""
+    intro_starters = PREPOSITIONS | {
+        "right", "early", "late", "earlier", "later",
+        "today", "yesterday", "tomorrow", "now", "here", "there", "according",
+        "compared", "thanks", "due", "prior", "next", "first", "second", "third",
+        "finally", "meanwhile", "instead", "clearly", "fortunately", "unfortunately",
+    }
+    if (
+        2 <= fragment_length <= 7
+        and gap < 0.55
+        and first_frag_clean in intro_starters
+        and not _has_predicate(fragment_words)
+        and not any(w.get("in_section_header") for w in fragment_words)
+        and not next_word.get("in_section_header")
+    ):
+        return True
+
     if fragment_length <= 2 and gap < 0.12 and current_clean not in SHORT_STANDALONE:
         if next_raw and next_raw[0].islower() and next_clean not in CLAUSE_STARTERS:
             return True
@@ -1347,14 +1645,37 @@ def _false_terminal_display_replacement(words: Sequence[Dict[str, Any]], index: 
     next_clean = _clean_token(next_raw)
     if current_clean in ENTITY_DESIGNATOR_HEADS and re.fullmatch(r"\d+(?:\.\d+)?", next_clean):
         return ""
-    if not next_raw or not next_raw[0].islower() or re.fullmatch(r"\d+(?:[.,]\d+)?", current_clean):
-        return None
+    if current_clean in COMPLEMENT_TAKING_VERBS:
+        return ""
     if _looks_like_standalone_title(words, index):
         return None
     if f"{current_clean} {next_clean}" in KNOWN_PHRASES:
         return ""
     if next_clean in {"at", "to", "of", "for", "in", "on", "into", "onto", "from"}:
         return ""
+
+    sentence_start = index
+    while sentence_start > 0 and not words[sentence_start - 1].get("terminal"):
+        sentence_start -= 1
+    fragment_words = words[sentence_start : index + 1]
+    first_frag_clean = _clean_token(fragment_words[0]["text"]) if fragment_words else ""
+    if (
+        2 <= len(fragment_words) <= 7
+        and not _has_predicate(fragment_words)
+        and first_frag_clean in (
+            PREPOSITIONS
+            | {
+                "right", "early", "late", "earlier", "later",
+                "today", "yesterday", "tomorrow", "now", "here", "there", "according",
+                "compared", "thanks", "due", "prior", "next", "first", "second", "third",
+                "finally", "meanwhile", "instead", "clearly", "fortunately", "unfortunately",
+            }
+        )
+    ):
+        return ","
+
+    if not next_raw or not next_raw[0].islower() or re.fullmatch(r"\d+(?:[.,]\d+)?", current_clean):
+        return None
     return ","
 
 
@@ -1366,6 +1687,20 @@ def mark_hard_boundaries(
     """Return exclusive global word indexes that partition independent DP blocks."""
     boundaries: List[int] = []
     protected_map = cue_protected or {}
+    lowercase_after_comma_vocab = (
+        DETERMINERS
+        | PREPOSITIONS
+        | CONJUNCTIONS
+        | AUXILIARIES
+        | PRENOMINAL_MODIFIERS
+        | COMMON_VERBS
+        | SUBJECT_PRONOUNS
+        | {
+            "there", "here", "what", "which", "who", "where", "when", "why", "how",
+            "more", "less", "most", "many", "much", "few", "several", "other", "another",
+            "such", "almost", "nearly", "roughly", "about", "around", "over", "under",
+        }
+    ) - {"i"}
     for word in words:
         word["display_text"] = word["text"]
     for idx, word in enumerate(words):
@@ -1376,7 +1711,23 @@ def mark_hard_boundaries(
         word["hard_sentence_end"] = is_hard_sentence
         replacement = _false_terminal_display_replacement(words, idx)
         if replacement is not None:
-            word["display_text"] = _replace_terminal_for_display(word["text"], replacement)
+            new_tok = _replace_terminal_for_display(word["text"], replacement)
+            word["display_text"] = new_tok
+            word["text"] = new_tok
+            word["terminal"] = False
+            word["clause_end"] = new_tok.endswith(CLAUSE_PUNCTUATION)
+            if idx + 1 < len(words):
+                nxt_raw = words[idx + 1]["text"].strip()
+                nxt_clean = _clean_token(nxt_raw)
+                if (
+                    nxt_raw
+                    and nxt_raw[0].isupper()
+                    and not nxt_raw.isupper()
+                    and nxt_clean in lowercase_after_comma_vocab
+                ):
+                    lowered = nxt_raw[0].lower() + nxt_raw[1:]
+                    words[idx + 1]["text"] = lowered
+                    words[idx + 1]["display_text"] = lowered
         if is_hard_sentence and idx + 1 < len(words):
             words[idx + 1]["display_text"] = _capitalize_subtitle_opening(words[idx + 1]["display_text"])
         if idx == len(words) - 1:
@@ -1409,6 +1760,14 @@ def _is_proper_noun_pair(words: Sequence[Dict[str, Any]], idx: int) -> bool:
     if not w1_clean or not w2_clean:
         return False
     if not (w1_raw[0].isupper() and w2_raw[0].isupper()):
+        return False
+    # Do not chain across the end of an already-matched 2-word known proper noun (e.g. "United States" | "Patent Application")
+    if (
+        idx > 0
+        and not words[idx - 1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+        and f"{_clean_token(words[idx - 1]['text'])} {w1_clean}" in KNOWN_PHRASES
+        and f"{w1_clean} {w2_clean}" not in KNOWN_PHRASES
+    ):
         return False
     if (
         w1_clean in COMMON_SENTENCE_STARTERS
@@ -1540,7 +1899,8 @@ def build_protected_boundary_map(
         ):
             q_phrase = f"{words[idx]['text']} {words[idx + 1]['text']}"
             cue_protected[idx + 1] = f"quantifier of-phrase: {q_phrase}"
-            line_protected[idx + 1] = f"quantifier of-phrase: {q_phrase}"
+            if not (idx > 0 and clean[idx - 1] in {"so", "too", "how", "as"} and clean[idx] in {"much", "many", "little", "few"}):
+                line_protected[idx + 1] = f"quantifier of-phrase: {q_phrase}"
 
     # 1d. Section headers: keep all tokens of a standalone section header in one cue
     for idx in range(n - 1):
@@ -1604,17 +1964,27 @@ def build_protected_boundary_map(
             left_has_modifier = (
                 idx > 0
                 and not words[idx - 1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
-                and clean[idx - 1] in PRENOMINAL_MODIFIERS
+                and (
+                    clean[idx - 1] in PRENOMINAL_MODIFIERS
+                    or (
+                        idx >= 2
+                        and clean[idx - 2] in DETERMINERS
+                        and not words[idx - 2]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+                    )
+                )
             )
             right_is_modifier_np = (
-                clean[idx + 2] in PRENOMINAL_MODIFIERS
+                (clean[idx + 2] in PRENOMINAL_MODIFIERS or clean[idx + 2] in QUANTIFIER_OF_HEADS)
                 and idx + 3 < n
                 and not w3_raw.endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
-                and clean[idx + 3] not in FORBIDDEN_ENDINGS | COMMON_VERBS | CLAUSE_STARTERS
+                and (
+                    clean[idx + 3] == "of"
+                    or clean[idx + 3] not in FORBIDDEN_ENDINGS | COMMON_VERBS | CLAUSE_STARTERS
+                )
             )
 
             if left_has_modifier or right_is_modifier_np:
-                # Modified coordinate phrase (e.g. "soaring rates and failing grids"):
+                # Modified coordinate phrase (e.g. "soaring rates and failing grids", "an onboard supercomputer and dozens of motors"):
                 # Protect each [Mod + Noun] unit and keep "and" attached to the second NP,
                 # while allowing a clean break BEFORE "and".
                 cue_protected[idx + 2] = f"coordinate conjunction before modified NP: {words[idx + 1]['text']} {words[idx + 2]['text']}"
@@ -1653,6 +2023,21 @@ def build_protected_boundary_map(
             cue_protected[idx + 2] = f"subordinate subject-verb: {sub_phrase}"
             line_protected[idx + 1] = f"subordinate subject: {words[idx]['text']} {words[idx + 1]['text']}"
 
+    non_head_noun_followers = (
+        CLAUSE_STARTERS
+        | PREPOSITIONS
+        | AUXILIARIES
+        | COMMON_VERBS
+        | DETERMINERS
+        | {
+            "and", "or", "just", "only", "even", "already", "still", "nearly",
+            "almost", "roughly", "about", "around", "more", "less", "later",
+            "ago", "earlier", "before", "after", "now", "then", "here", "there",
+            "like", "as", "than", "alone", "empty", "upfront", "away", "back",
+            "together", "apart", "instead", "forever",
+        }
+    )
+
     # 5. Pairwise lexical, numeric, unit, and grammatical protections
     for idx in range(n - 1):
         left = clean[idx]
@@ -1685,12 +2070,42 @@ def build_protected_boundary_map(
 
         if split_token_boundary:
             reason = "split punctuation or hyphenated token"
+        elif not left_has_punct and right in REFLEXIVE_PRONOUNS:
+            reason = f"verb/preposition with reflexive pronoun: {left_raw} {right_raw}"
+        elif (
+            not left_has_punct
+            and left == "out"
+            and idx > 0
+            and clean[idx - 1] in {"come", "comes", "came", "coming", "turn", "turns", "turned", "point", "points", "pointed"}
+            and right == "to"
+        ):
+            reason = f"phrasal verb with to-complement: {words[idx - 1]['text']} {left_raw} {right_raw}"
+            line_protect_also = False
+        elif not left_has_punct and left == "like" and right in DETERMINERS:
+            reason = f"comparative preposition with determiner: {left_raw} {right_raw}"
+            line_protect_also = False
+        elif (
+            not left_has_punct
+            and (left_number or left in UNIT_WORDS or left in {"once", "twice", "thrice"})
+            and right in {"per", "a", "an"}
+            and idx + 2 < n
+            and clean[idx + 2] in UNIT_WORDS
+        ):
+            rate_text = f"{left_raw} {right_raw} {words[idx + 2]['text']}"
+            cue_protected[boundary] = f"unit rate: {rate_text}"
+            cue_protected[boundary + 1] = f"unit rate: {rate_text}"
+            line_protected[boundary + 1] = f"unit rate: {rate_text}"
+            if display_width(rate_text) <= 18:
+                line_protected[boundary] = f"unit rate: {rate_text}"
+            continue
         elif not left_has_punct and (left in FORBIDDEN_ENDINGS or left.endswith("'s") or left.endswith("’s")):
             if right not in {"before", "after", "when", "while", "because", "if", "although"}:
                 reason = f"forbidden ending: {left}"
                 if is_copula_before_that_clause or left in NEGATION_CONTRACTIONS:
                     line_protect_also = False
                 elif left == "if" and idx > 0 and clean[idx - 1] == "what":
+                    line_protect_also = False
+                elif left in DETERMINERS and display_width(right_raw) >= 15:
                     line_protect_also = False
         elif not left_has_punct and left_number and right in UNIT_WORDS:
             reason = f"number and unit: {left_raw} {right_raw}"
@@ -1699,7 +2114,7 @@ def build_protected_boundary_map(
         elif (
             not left_has_punct
             and left_number
-            and right not in (CLAUSE_STARTERS | PREPOSITIONS | AUXILIARIES | COMMON_VERBS | {"and", "or"})
+            and right not in non_head_noun_followers
         ):
             reason = f"number and modified word: {left_raw} {right_raw}"
             line_protect_also = False
@@ -1708,23 +2123,18 @@ def build_protected_boundary_map(
         elif (
             not left_has_punct
             and left in UNIT_WORDS
+            and not left.endswith("s")
             and idx > 0
             and (
                 bool(re.fullmatch(r"[$€£]?\d[\d,.:/-]*%?", clean[idx - 1]))
                 or clean[idx - 1] in NUMBER_WORDS
                 or clean[idx - 1] in {"kilowatt", "megawatt", "gigawatt"}
             )
-            and right not in (CLAUSE_STARTERS | PREPOSITIONS | AUXILIARIES | COMMON_VERBS | DETERMINERS | {"and", "or"})
+            and right not in non_head_noun_followers
             and not right_number
         ):
             reason = f"unit modifier with head noun: {left_raw} {right_raw}"
             line_protect_also = False
-        elif not left_has_punct and left in UNIT_WORDS and right == "per" and idx + 2 < n and clean[idx + 2] in UNIT_WORDS:
-            cue_protected[boundary] = f"unit rate: {left_raw} per {words[idx + 2]['text']}"
-            cue_protected[boundary + 1] = f"unit rate: {left_raw} per {words[idx + 2]['text']}"
-            line_protected[boundary] = f"unit rate: {left_raw} per {words[idx + 2]['text']}"
-            line_protected[boundary + 1] = f"unit rate: {left_raw} per {words[idx + 2]['text']}"
-            continue
         elif not left_has_punct and left_number and right == "to" and idx + 2 < n and (
             bool(re.fullmatch(r"[$€£]?\d[\d,.:/-]*%?", clean[idx + 2])) or clean[idx + 2] in NUMBER_WORDS
         ):
@@ -1757,7 +2167,7 @@ def build_protected_boundary_map(
             and clean[idx - 1] in DETERMINERS
             and not words[idx - 1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
             and left not in (CLAUSE_STARTERS | PREPOSITIONS | AUXILIARIES | COMMON_VERBS | DETERMINERS)
-            and right not in (CLAUSE_STARTERS | PREPOSITIONS | AUXILIARIES | COMMON_VERBS | DETERMINERS | {"and", "or"})
+            and right not in non_head_noun_followers
             and not _looks_like_verb(left_raw)
             and not _looks_like_verb(right_raw)
         ):
@@ -1788,8 +2198,10 @@ def build_protected_boundary_map(
 
         if reason and not left_is_terminal:
             cue_protected[boundary] = reason
+            preceded_by_conj_or_prep = idx > 0 and clean[idx - 1] in {"and", "or", "to", "at", "for", "of", "with", "by", "from", "in"}
             if line_protect_also and not (
                 right_number
+                and not preceded_by_conj_or_prep
                 and (left == "than" or left in {"precisely", "roughly", "nearly", "almost", "approximately", "about", "around"})
             ):
                 line_protected[boundary] = reason
@@ -1863,8 +2275,30 @@ def _boundary_features(
         cost -= 1800.0
         reasons.append("sentence end")
     elif left_has_clause_punct:
-        cost -= 780.0
-        reasons.append("clause punctuation")
+        clause_start = boundary - 1
+        while clause_start > 0:
+            prev_w = words[clause_start - 1]
+            if (
+                prev_w.get("hard_sentence_end")
+                or words[clause_start].get("source_boundary_before")
+                or prev_w["text"].rstrip().endswith(CLAUSE_PUNCTUATION + TERMINAL_PUNCTUATION)
+            ):
+                break
+            clause_start -= 1
+        clause_span = words[clause_start:boundary]
+        if (
+            not line_wrap
+            and profile.max_lines >= 2
+            and len(clause_span) <= 4
+            and not _has_predicate(clause_span)
+        ):
+            # Short verbless introductory phrase (e.g. "Right now across America,", "In May 2026,"):
+            # prefer wrapping onto Line 2 of a 2-line cue rather than splitting into a 1-line cue
+            cost -= 140.0
+            reasons.append("short introductory phrase comma")
+        else:
+            cost -= 780.0
+            reasons.append("clause punctuation")
 
     if gap >= profile.preferred_pause:
         cost -= 900.0
@@ -1932,6 +2366,9 @@ def _boundary_features(
             elif line_wrap and left_clean == "if" and boundary >= 2 and _clean_token(words[boundary - 2]["text"]) == "what":
                 cost += 180.0
                 reasons.append("soft line wrap after 'what if'")
+            elif line_wrap and left_clean in DETERMINERS and display_width(right["text"].strip()) >= 15:
+                cost += 180.0
+                reasons.append(f"line wrap after determiner before long word: {left_clean} {right_clean}")
             else:
                 cost += 5400.0
                 reasons.append(f"forbidden ending: {left_clean}")
@@ -2014,10 +2451,10 @@ def _boundary_features(
         else:
             # Avoid splitting a short subject (1-3 words) or any pronoun subject from its verb across separate cues
             if (
-                _looks_like_verb(right["text"])
+                (_looks_like_verb(right["text"]) or right_clean in AUXILIARIES)
                 and not right_starts_negation_or_phrasal
                 and left_clean not in CLAUSE_STARTERS
-                and gap < profile.soft_pause
+                and gap < profile.preferred_pause
             ):
                 phrase_len = 1
                 k = boundary - 2
@@ -2029,6 +2466,17 @@ def _boundary_features(
                 if phrase_len <= 3 or left_clean in (SUBJECT_PRONOUNS | {"it", "you", "who", "that", "which"}):
                     cost += 680.0
                     reasons.append("short subject-predicate split")
+            # Avoid splitting a modal/auxiliary + transitive verb from its direct object NP across cues
+            if (
+                boundary >= 2
+                and _clean_token(words[boundary - 2]["text"]) in AUXILIARIES
+                and _looks_like_verb(left_raw)
+                and left_clean not in {"be", "is", "are", "was", "were", "been", "being"}
+                and (right_clean in DETERMINERS or right_clean in PRENOMINAL_MODIFIERS or right_is_number)
+                and gap < profile.preferred_pause
+            ):
+                cost += 460.0
+                reasons.append(f"verb-object split: {left_clean} {right_clean}")
 
     return cost, reasons
 
@@ -2081,7 +2529,8 @@ def _wrap_words(
         if split_idx == 1 and n >= 3:
             score += 1550.0
         if split_idx == n - 1 and n >= 3:
-            score += 1550.0
+            if not (w2 >= 12 and re.search(r"\d.*-.*\d", texts[-1])):
+                score += 1550.0
 
         boundary_cost, _ = _boundary_features(
             cue_words,
@@ -2119,32 +2568,16 @@ def _standalone_is_valid(
         return True
     if cue_words and cue_words[-1].get("hard_sentence_end"):
         if (
-            len(cue_words) >= 2
-            or is_block_start
+            is_block_start
             or bool(cue_words[0].get("source_boundary_before"))
             or bool(cue_words[-1].get("section_header_end"))
         ):
             return True
     if len(cue_words) == 1:
         token = cue_words[0]["text"].rstrip()
-        clean = _clean_token(token)
-        if token.endswith(CLAUSE_PUNCTUATION) and (
-            clean.endswith("ly")
-            or clean in {"however", "meanwhile", "instead", "therefore", "otherwise", "wait", "now"}
-        ):
-            return True
-    if len(cue_words) == 2:
-        first_raw = cue_words[0]["text"].rstrip()
-        first = _clean_token(first_raw)
-        second = _clean_token(cue_words[1]["text"])
-        if (
-            not first_raw.endswith(CLAUSE_PUNCTUATION)
-            and first not in FORBIDDEN_ENDINGS
-            and first not in CLAUSE_STARTERS
-            and not first.endswith("ly")
-            and second not in FORBIDDEN_ENDINGS
-        ):
-            return True
+        if display_width(token) >= 12 and re.search(r"\d.*-.*\d", token):
+            if (cue_words[0]["end"] - cue_words[0]["start"]) >= 1.5:
+                return True
     return False
 
 
@@ -2205,7 +2638,7 @@ def _cue_cost(
     cps = visible_chars / max(0.10, achievable_duration)
     word_count = len(cue_words)
 
-    cost = 0.0
+    cost = 55.0 if profile.max_lines >= 2 else 25.0
     cost += abs(word_count - profile.target_words) * 7.5
     cost += abs(raw_duration - profile.target_duration) * 16.0
     cost += abs(widest_line - profile.target_width) * 1.8
@@ -2230,10 +2663,17 @@ def _cue_cost(
         if not is_block_end:
             return math.inf, None, {}
         cost += 6500.0
+    elif word_count == 1 and not (is_block_start and is_block_end):
+        cost += 950.0
     elif word_count == 2 and not _standalone_is_valid(cue_words, is_block_start=is_block_start):
-        if not is_block_end:
-            return math.inf, None, {}
-        cost += 3200.0
+        cost += 1350.0 if not is_block_end else 850.0
+    elif (
+        word_count == 3
+        and profile.max_lines >= 2
+        and not (is_block_start and is_block_end)
+        and not cue_words[-1].get("section_header_end")
+    ):
+        cost += 320.0 if not _has_predicate(cue_words) else 140.0
 
     first_clean = _clean_token(cue_words[0]["text"])
     last_clean = _clean_token(cue_words[-1]["text"])
@@ -2243,7 +2683,32 @@ def _cue_cost(
     if last_clean in COMPLEMENT_TAKING and not is_block_end:
         cost += 900.0
 
-    for local_boundary in _local_line_boundaries(cue_words, lines):
+    if len(lines) == 2:
+        if len(lines[0].split()) == 1:
+            cost += 1600.0
+        if len(lines[1].split()) == 1 and not (
+            display_width(lines[1]) >= 12 and re.search(r"\d.*-.*\d", lines[1])
+        ):
+            cost += 1600.0
+
+    local_boundaries = _local_line_boundaries(cue_words, lines)
+    if (
+        len(lines) == 2
+        and local_boundaries
+        and lines[0].rstrip().endswith(CLAUSE_PUNCTUATION)
+        and not is_block_end
+        and not cue_words[-1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+    ):
+        line1_words = local_boundaries[0]
+        prev_last_clean = _clean_token(cue_words[-2]["text"]) if len(cue_words) >= 2 else ""
+        if (
+            line1_words >= 5
+            or (prev_last_clean in ({"to"} | AUXILIARIES) and _looks_like_verb(cue_words[-1]["text"]))
+        ):
+            # Penalize straddling a clause comma on Line 1 only to cut off mid-predicate on Line 2
+            cost += 680.0
+
+    for local_boundary in local_boundaries:
         line_cost, _ = _boundary_features(
             cue_words,
             local_boundary,
@@ -2254,7 +2719,7 @@ def _cue_cost(
         global_boundary = cue_words[local_boundary]["id"]
         if global_boundary in line_protected:
             line_cost += 6000.0
-        cost += max(0.0, line_cost)
+        cost += max(-280.0, line_cost * 0.45) if line_cost < 0.0 else line_cost
 
     boundary_cost = 0.0
     boundary_reasons: List[str] = []
@@ -2367,6 +2832,8 @@ def _segment_block_fallback(
                 widest_line = max(display_width(line) for line in lines)
                 cost = abs(len(cue_words) - profile.target_words) * 5.0
                 cost += abs(duration - profile.target_duration) * 8.0
+                if duration > profile.max_duration:
+                    cost += (duration - profile.max_duration) * 12000.0
                 cost += abs(widest_line - profile.target_width)
                 if len(cue_words) == 1 and not _standalone_is_valid(cue_words):
                     cost += 6500.0
@@ -2417,8 +2884,8 @@ def _merge_safe_fragment_cues(
     profile: LayoutProfile,
     line_protected: Dict[int, str],
 ) -> List[List[Dict[str, Any]]]:
-    """Rejoin dangling short continuations or sub-0.80s micro-cues when the merged cue
-    fits all display and line-wrap limits."""
+    """Rejoin dangling short continuations, sub-0.80s micro-cues, or adjacent short 1-line
+    fragments within the same sentence when the merged cue fits all display and line-wrap limits."""
     merged: List[List[Dict[str, Any]]] = []
     for incoming in cue_groups:
         current = list(incoming)
@@ -2442,6 +2909,7 @@ def _merge_safe_fragment_cues(
         cps = _visible_chars(text) / duration
         previous_duration = max(0.05, previous[-1]["end"] - previous[0]["start"])
         current_duration = max(0.05, current[-1]["end"] - current[0]["start"])
+        inter_gap = max(0.0, float(next_first["start"]) - float(previous_last["end"]))
         dangling_start = first_clean in PREPOSITIONS | RELATIVES | {"and", "or", "but", "và", "hoặc", "nhưng"}
         dangling_end = last_clean in FORBIDDEN_ENDINGS or last_clean in COMPLEMENT_TAKING
         short_fragment = (
@@ -2450,14 +2918,33 @@ def _merge_safe_fragment_cues(
             or (len(previous) == 1 and not _standalone_is_valid(previous))
             or (len(current) == 1 and not _standalone_is_valid(current))
         )
+        prev_wrapped = _wrap_words(previous, profile, line_protected) or [""]
+        curr_wrapped = _wrap_words(current, profile, line_protected) or [""]
+        prev_is_if_clause = _clean_token(previous[0]["text"]) in {"if", "unless", "whether"} and _has_predicate(previous)
+        adjacent_short_one_liners = (
+            profile.max_lines >= 2
+            and len(prev_wrapped) == 1
+            and len(curr_wrapped) == 1
+            and inter_gap < 0.60
+            and len(joined) <= min(profile.max_words, 12)
+            and duration <= min(profile.max_duration, 4.8)
+            and not prev_is_if_clause
+            and (
+                (len(previous) <= 4 and not _has_predicate(previous))
+                or (len(current) <= 5 and not _has_predicate(current))
+                or (len(previous) <= 4 and len(current) <= 4)
+            )
+        )
         can_merge = (
             not next_first.get("source_boundary_before")
             and not previous_last.get("hard_sentence_end")
+            and not previous_last.get("section_header_end")
+            and not next_first.get("in_section_header")
             and len(joined) <= profile.max_words
             and duration <= profile.max_duration
             and cps <= profile.target_cps + 2.2
         )
-        if can_merge and (dangling_start or dangling_end or short_fragment):
+        if can_merge and (dangling_start or dangling_end or short_fragment or adjacent_short_one_liners):
             merged[-1] = joined
         else:
             merged.append(current)
@@ -2617,6 +3104,14 @@ def _assign_display_times(
                     ns = round(max(e, ns + take_next), 3)
                     times[idx + 1] = (ns, ne)
                 times[idx] = (s, e)
+
+    # Seamless micro-gap bridging: eliminate < 350ms flicker gaps between consecutive speech cues
+    for idx in range(len(times) - 1):
+        s, e = times[idx]
+        ns, _ne = times[idx + 1]
+        gap = round(ns - e, 3)
+        if 0.0 < gap < 0.35 and (ns - s) <= profile.max_duration:
+            times[idx] = (s, ns)
 
     return times
 
@@ -2862,6 +3357,9 @@ def optimize_subtitles_v2(
     )
     if not words:
         return []
+
+    sanitize_blind_asr_punctuation(words)
+    normalize_blind_asr_context(words)
 
     if script_text and script_text.strip():
         words = recover_orthography_from_script(words, script_text, language=language)

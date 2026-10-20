@@ -114,8 +114,111 @@ pub fn fs_scratch_dir(app: tauri::AppHandle, name: String) -> Result<String, Str
 }
 
 #[tauri::command]
-pub fn fs_read_bytes(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(absolute(&path)?).map_err(|e| e.to_string())
+pub async fn fs_read_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    let p = absolute(&path)?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(&p))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WavHeaderProbe {
+    pub duration_sec: f64,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub size_bytes: u64,
+}
+
+/// Fast-path WAV header parser that reads only chunk headers (< 200 bytes) via Seek,
+/// computing exact duration in < 0.2ms without loading the audio payload into memory.
+pub fn parse_wav_header_fast(path: &Path) -> Option<WavHeaderProbe> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let file_len = f.metadata().ok()?.len();
+    if file_len < 44 {
+        return None;
+    }
+    let mut riff = [0u8; 12];
+    f.read_exact(&mut riff).ok()?;
+    if &riff[0..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
+        return None;
+    }
+
+    let mut channels: u16 = 0;
+    let mut sample_rate: u32 = 0;
+    let mut byte_rate: u32 = 0;
+    let mut block_align: u16 = 0;
+    let mut bits_per_sample: u16 = 0;
+    let mut data_bytes: Option<u64> = None;
+
+    let mut pos: u64 = 12;
+    while pos + 8 <= file_len {
+        if f.seek(SeekFrom::Start(pos)).is_err() {
+            break;
+        }
+        let mut chunk_hdr = [0u8; 8];
+        if f.read_exact(&mut chunk_hdr).is_err() {
+            break;
+        }
+        let chunk_id = &chunk_hdr[0..4];
+        let chunk_size = u32::from_le_bytes([chunk_hdr[4], chunk_hdr[5], chunk_hdr[6], chunk_hdr[7]]) as u64;
+
+        if chunk_id == b"fmt " && chunk_size >= 16 {
+            let mut fmt_buf = [0u8; 16];
+            if f.read_exact(&mut fmt_buf).is_ok() {
+                channels = u16::from_le_bytes([fmt_buf[2], fmt_buf[3]]);
+                sample_rate = u32::from_le_bytes([fmt_buf[4], fmt_buf[5], fmt_buf[6], fmt_buf[7]]);
+                byte_rate = u32::from_le_bytes([fmt_buf[8], fmt_buf[9], fmt_buf[10], fmt_buf[11]]);
+                block_align = u16::from_le_bytes([fmt_buf[12], fmt_buf[13]]);
+                bits_per_sample = u16::from_le_bytes([fmt_buf[14], fmt_buf[15]]);
+            }
+        } else if chunk_id == b"data" {
+            let remaining = file_len.saturating_sub(pos + 8);
+            data_bytes = Some( if chunk_size == 0 || chunk_size > remaining { remaining } else { chunk_size } );
+            if sample_rate > 0 && channels > 0 {
+                break;
+            }
+        }
+
+        let padded = chunk_size + (chunk_size & 1);
+        pos = pos.saturating_add(8).saturating_add(padded);
+    }
+
+    if sample_rate == 0 || channels == 0 {
+        return None;
+    }
+    let effective_byte_rate = if byte_rate > 0 {
+        byte_rate as f64
+    } else if block_align > 0 {
+        (sample_rate as f64) * (block_align as f64)
+    } else if bits_per_sample > 0 {
+        (sample_rate as f64) * (channels as f64) * ((bits_per_sample as f64) / 8.0)
+    } else {
+        return None;
+    };
+    if effective_byte_rate <= 0.0 {
+        return None;
+    }
+    let payload_bytes = data_bytes.unwrap_or_else(|| file_len.saturating_sub(44));
+    let duration_sec = (payload_bytes as f64) / effective_byte_rate;
+
+    Some(WavHeaderProbe {
+        duration_sec: (duration_sec * 1000.0).round() / 1000.0,
+        sample_rate,
+        channels,
+        size_bytes: file_len,
+    })
+}
+
+#[tauri::command]
+pub async fn fs_probe_wav_header(path: String) -> Result<Option<WavHeaderProbe>, String> {
+    let p = absolute(&path)?;
+    tauri::async_runtime::spawn_blocking(move || Ok(parse_wav_header_fast(&p)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

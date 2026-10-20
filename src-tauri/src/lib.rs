@@ -78,6 +78,56 @@ fn clear_local_license_if_allowed(app: tauri::AppHandle) -> Result<(), String> {
     security::license_storage::clear_license_cache(&base_dir)
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub struct NativeHttpResponse {
+    pub status: u16,
+    pub status_text: String,
+    pub body: String,
+}
+
+#[tauri::command]
+fn native_http_request(
+    method: String,
+    url: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<String>,
+    timeout_sec: Option<u64>,
+) -> Result<NativeHttpResponse, String> {
+    let timeout = std::time::Duration::from_secs(timeout_sec.unwrap_or(60));
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let mut req = agent.request(&method, &url);
+    for (k, v) in headers {
+        req = req.set(&k, &v);
+    }
+    let res = if let Some(b) = body {
+        req.send_string(&b)
+    } else {
+        req.call()
+    };
+    match res {
+        Ok(response) => {
+            let status = response.status();
+            let status_text = response.status_text().to_string();
+            let body = response.into_string().unwrap_or_default();
+            Ok(NativeHttpResponse {
+                status,
+                status_text,
+                body,
+            })
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let status_text = response.status_text().to_string();
+            let body = response.into_string().unwrap_or_default();
+            Ok(NativeHttpResponse {
+                status: code,
+                status_text,
+                body,
+            })
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 pub mod ai;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -107,6 +157,7 @@ pub fn run() {
             verify_license,
             change_license_key,
             clear_local_license_if_allowed,
+            native_http_request,
             ai::ai_request,
             ai::ai_cancel,
             ai::ai_shutdown,
@@ -122,6 +173,7 @@ pub fn run() {
             fsio::fs_remove_file,
             fsio::fs_scratch_dir,
             fsio::fs_read_bytes,
+            fsio::fs_probe_wav_header,
             fsio::fs_show_in_folder
         ])
         .build(tauri::generate_context!())

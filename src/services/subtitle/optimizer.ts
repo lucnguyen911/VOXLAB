@@ -4,8 +4,11 @@ import {
   SubtitleProfile,
 } from "./types";
 import {
+  cleanWord,
+  FORBIDDEN_ENDINGS,
   getDisplayWidth,
   getWordCount,
+  isCompoundWordSplit,
   STRONG_PUNCTUATION,
   WEAKER_PUNCTUATION,
   WEAKEST_PUNCTUATION,
@@ -14,6 +17,24 @@ import {
 export interface OptimizeOptions {
   profile: SubtitleProfile;
   maxMergeWindow?: number;
+}
+
+/**
+ * Bridges micro-gaps (< 350ms) between consecutive cues to eliminate visual flicker,
+ * matching the Python sidecar optimizer (`subtitle_optimizer.py`).
+ */
+export function bridgeSubtitleMicroGaps(cues: SubtitleCue[], maxBridgeSec = 0.35): SubtitleCue[] {
+  if (!cues || cues.length <= 1) return cues;
+  const result = cues.map((c) => ({ ...c }));
+  for (let i = 0; i < result.length - 1; i++) {
+    const gap = result[i + 1].startSec - result[i].endSec;
+    if (gap > 0 && gap < maxBridgeSec) {
+      result[i].endSec = result[i + 1].startSec;
+    } else if (gap < 0) {
+      result[i].endSec = Math.max(result[i].startSec + 0.05, result[i + 1].startSec);
+    }
+  }
+  return result;
 }
 
 /**
@@ -42,8 +63,16 @@ function scoreCandidateCue(
   // Pass 1: Strict bounds
   // Pass 2: Relaxed to maxLineCapacity / maxWords / maxDuration
   // Pass 3: Controlled overflow
-  const maxLineCapacity = profile.maxWidth * profile.maxLines;
-  const targetLineCapacity = profile.targetWidth * profile.maxLines;
+  const rawMaxCapacity = profile.maxWidth * profile.maxLines;
+  const maxLineCapacity =
+    profile.maxLines >= 2
+      ? profile.formatId === "9:16"
+        ? Math.min(48, rawMaxCapacity)
+        : profile.formatId === "1:1"
+        ? Math.min(54, rawMaxCapacity)
+        : Math.min(60, rawMaxCapacity)
+      : rawMaxCapacity;
+  const targetLineCapacity = Math.min(maxLineCapacity, profile.targetWidth * profile.maxLines);
 
   const allowedWidth =
     passLevel === 1
@@ -95,6 +124,9 @@ function scoreCandidateCue(
   } else if (words < profile.targetWords) {
     // Underlength penalty: discourages leaving tiny 1-2 word singleton cues when merge is possible
     cost += (profile.targetWords - words) * 3.0;
+    if (words === 1) {
+      cost += 45.0;
+    }
   }
 
   if (duration < profile.minDuration) {
@@ -109,17 +141,30 @@ function scoreCandidateCue(
     cost += (cps - profile.targetCps) * 3.0;
   }
 
-  // Punctuation bonuses (preferred boundaries)
+  // Punctuation bonuses & syntactic boundary checks
   const trimmed = text.trim();
   const lastChar = trimmed[trimmed.length - 1];
   if (STRONG_PUNCTUATION.includes(lastChar)) {
-    cost -= 6.0; // Strong sentence end preferred
+    cost -= 8.0; // Strong sentence end preferred
   } else if (WEAKER_PUNCTUATION.includes(lastChar)) {
-    cost -= 3.0; // Semicolon/colon
+    cost -= 4.0; // Semicolon/colon
   } else if (WEAKEST_PUNCTUATION.includes(lastChar)) {
-    cost += 2.0; // Comma
+    // If this is a short <= 4 word introductory phrase in 2-line mode, discourage splitting into a 1-line cue
+    cost += profile.maxLines >= 2 && words <= 4 ? 10.0 : 1.0;
   } else {
     cost += 15.0; // Break mid-clause heavy penalty
+    const tokens = trimmed.split(/\s+/);
+    const lastToken = tokens[tokens.length - 1] || "";
+    const lastClean = cleanWord(lastToken);
+    if (FORBIDDEN_ENDINGS.has(lastClean)) {
+      cost += 160.0; // Never end a cue on a determiner, preposition, auxiliary, or conjunction
+    }
+    if (endIdx < units.length) {
+      const nextFirstToken = units[endIdx].text.trim().split(/\s+/)[0] || "";
+      if (isCompoundWordSplit(lastToken, nextFirstToken)) {
+        cost += 300.0; // Never split a compound phrase or entity designator across cues
+      }
+    }
   }
 
   return { cost, text, startSec, endSec };
@@ -141,6 +186,15 @@ function runDpPass(
   const dp: number[] = new Array(n + 1).fill(Infinity);
   const parent: number[] = new Array(n + 1).fill(-1);
   const bestCueData: { text: string; startSec: number; endSec: number }[] = new Array(n + 1);
+  const rawMaxCueCap = profile.maxWidth * profile.maxLines;
+  const maxCueCapacity =
+    profile.maxLines >= 2
+      ? profile.formatId === "9:16"
+        ? Math.min(48, rawMaxCueCap)
+        : profile.formatId === "1:1"
+        ? Math.min(54, rawMaxCueCap)
+        : Math.min(60, rawMaxCueCap)
+      : rawMaxCueCap;
 
   dp[0] = 0;
 
@@ -152,16 +206,16 @@ function runDpPass(
       const evalResult = scoreCandidateCue(units, j, k, profile, passLevel);
 
       // Check if merge is rejected due to excessive overflow at this pass level
-      const maxWidth =
+      const maxAllowedWidth =
         passLevel === 1
-          ? profile.maxWidth
+          ? maxCueCapacity
           : passLevel === 2
-          ? profile.maxWidth + 4
+          ? maxCueCapacity
           : passLevel === 3
-          ? profile.maxWidth + 16
+          ? maxCueCapacity + 16
           : Infinity;
 
-      if (getDisplayWidth(evalResult.text) > maxWidth && k - j > 1) {
+      if (getDisplayWidth(evalResult.text) > maxAllowedWidth && k - j > 1) {
         continue;
       }
 
@@ -220,21 +274,23 @@ export function optimizeSubtitles(
 
   // Pass 1: Strict optimal segmentation
   const pass1 = runDpPass(speechUnits, profile, 1);
-  if (pass1) return pass1;
+  if (pass1) return bridgeSubtitleMicroGaps(pass1);
 
   // Pass 2: Relaxed preferences (allows up to maxWidth / maxWords)
   const pass2 = runDpPass(speechUnits, profile, 2);
-  if (pass2) return pass2;
+  if (pass2) return bridgeSubtitleMicroGaps(pass2);
 
   // Pass 3: Controlled overflow (e.g. for long URLs or long words)
   const pass3 = runDpPass(speechUnits, profile, 3);
-  if (pass3) return pass3;
+  if (pass3) return bridgeSubtitleMicroGaps(pass3);
 
   // Pass 4: Fallback to 1:1 mapping (keep each speech unit intact without breaking tokens)
-  return speechUnits.map((unit, idx) => ({
-    index: idx + 1,
-    text: unit.text.trim(),
-    startSec: unit.startSec,
-    endSec: unit.endSec,
-  }));
+  return bridgeSubtitleMicroGaps(
+    speechUnits.map((unit, idx) => ({
+      index: idx + 1,
+      text: unit.text.trim(),
+      startSec: unit.startSec,
+      endSec: unit.endSec,
+    }))
+  );
 }

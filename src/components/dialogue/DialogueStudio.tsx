@@ -2,6 +2,7 @@ import React, { useRef, useState, useCallback, useEffect } from "react";
 import {
   Layers,
   AlertCircle,
+  AlertTriangle,
   Play,
   Pause,
   RefreshCw,
@@ -10,11 +11,21 @@ import {
   ArrowLeft,
   UploadCloud,
   Volume2,
+  ChevronDown,
 } from "lucide-react";
 import { DialogueCharacter, DialogueSegment } from "../../types/dialogue";
 import { VoiceProfile } from "../../types/ui";
 import { parsePauseDurationMs } from "../../services/pause";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../../services/fileDropHelper";
+import {
+  countChunkQualityIssues,
+  isChunkError,
+  isChunkWarning,
+  isChunkChecking,
+  isChunkUnverified,
+  getChunkBadgeInfo,
+  getIssueShortLabel,
+} from "../../services/audio/qualityValidator";
 
 const AutoResizeTextarea: React.FC<{
   value: string;
@@ -72,6 +83,8 @@ export interface DialogueStudioProps {
   onNavigateToPrep?: () => void;
   onDropFile?: (file: File) => void;
   onRegenerateInvalid?: () => void;
+  onRegenerateErrors?: () => void;
+  onRegenerateWarnings?: () => void;
   isConverting?: boolean;
 }
 
@@ -91,13 +104,17 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
   onNavigateToPrep,
   onDropFile,
   onRegenerateInvalid,
+  onRegenerateErrors,
+  onRegenerateWarnings,
   isConverting = false,
 }) => {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [expandedIssuesSegments, setExpandedIssuesSegments] = useState<Record<string, boolean>>({});
   const studioDropZoneRef = useRef<HTMLDivElement>(null);
 
   useTauriDropZone(studioDropZoneRef, {
     enabled: true,
+    allowedExtensions: ["docx", "txt", "md", "srt", "vtt"],
     onDragStateChange: setIsDraggingOver,
     onDropFiles: (files) => {
       const validFile =
@@ -115,9 +132,8 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
   const charMap = new Map(characters.map((c) => [c.id, c]));
   const voiceMap = new Map(voices.map((v) => [v.id, v]));
 
-  const failedCount = segments.filter((s) => s.status === "failed").length;
+  const qualityStats = countChunkQualityIssues(segments);
   const modifiedCount = segments.filter((s) => s.status === "modified").length;
-  const readyCount = segments.filter((s) => s.status === "ready").length;
 
   return (
     <div
@@ -155,43 +171,113 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
         </div>
       )}
 
-      {/* Header Info Bar matching TTS Studio */}
-      <div className="flex items-center justify-between text-xs text-textMuted px-4 pt-4 pb-2 shrink-0">
-        <div className="flex items-center gap-2 font-mono text-xs">
-          <Layers className="w-3.5 h-3.5 text-accent" />
-          <span className="font-semibold text-textPrimary">
-            {segments.length} câu thoại
-          </span>
+      {/* Header Info Bar matching TTS Studio with 5 quality counters */}
+      <div className="flex flex-wrap items-center justify-between text-xs text-textMuted px-4 pt-4 pb-2 gap-2 shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 font-mono text-xs">
+            <Layers className="w-3.5 h-3.5 text-accent" />
+            <span className="font-semibold text-textPrimary">
+              {segments.length} câu thoại
+            </span>
+          </div>
+
+          <div className="h-3.5 w-px bg-borderDefault mx-1" />
+
+          <div className="flex items-center gap-1.5 font-sans text-xs">
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+              title="Số lượt thoại đạt chuẩn chất lượng âm thanh"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span>Đạt: {qualityStats.passCount}</span>
+            </span>
+
+            {qualityStats.warningCount > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"
+                title="Số lượt thoại có cảnh báo chất lượng"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                <span>Cảnh báo: {qualityStats.warningCount}</span>
+              </span>
+            )}
+
+            {qualityStats.errorCount > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-danger/10 text-danger border border-danger/20"
+                title="Số lượt thoại bị lỗi âm thanh"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-danger" />
+                <span>Lỗi: {qualityStats.errorCount}</span>
+              </span>
+            )}
+
+            {qualityStats.checkingCount > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 animate-pulse"
+                title="Số lượt thoại đang được đối chiếu và phân tích chất lượng âm thanh"
+              >
+                <RefreshCw className="w-3 h-3 animate-spin text-cyan-400" />
+                <span>Đang kiểm tra: {qualityStats.checkingCount}</span>
+              </span>
+            )}
+
+            {qualityStats.unverifiedCount > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-surface3 text-textSecondary border border-borderDefault"
+                title="Số lượt thoại chưa kiểm chứng qua ASR"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-textMuted" />
+                <span>Chưa kiểm chứng: {qualityStats.unverifiedCount}</span>
+              </span>
+            )}
+          </div>
         </div>
+
         <div className="flex items-center gap-2 text-xs">
-          {readyCount > 0 && (
-            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-success/15 border border-success/30 text-success font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-success" />
-              <span>{readyCount} sẵn sàng</span>
-            </span>
+          {onRegenerateErrors && qualityStats.errorCount > 0 && (
+            <button
+              type="button"
+              onClick={onRegenerateErrors}
+              disabled={isConverting}
+              className="flex items-center gap-1.5 px-2.5 py-1 bg-danger hover:bg-danger/90 text-white shadow-xs rounded-md text-xs font-semibold transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+              title="Chỉ tạo lại các lượt thoại bị lỗi đỏ"
+            >
+              <RefreshCw className="w-3 h-3 text-white" />
+              <span>Tạo lại {qualityStats.errorCount} lỗi</span>
+            </button>
           )}
-          {failedCount > 0 && (
-            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-danger/15 border border-danger/30 text-danger font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-danger" />
-              <span>{failedCount} lỗi</span>
-            </span>
+
+          {onRegenerateWarnings && qualityStats.warningCount > 0 && (
+            <button
+              type="button"
+              onClick={onRegenerateWarnings}
+              disabled={isConverting}
+              className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white shadow-xs rounded-md text-xs font-semibold transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+              title="Chỉ tạo lại các lượt thoại có cảnh báo chất lượng"
+            >
+              <RefreshCw className="w-3 h-3 text-white" />
+              <span>Tạo lại {qualityStats.warningCount} cảnh báo</span>
+            </button>
           )}
+
           {modifiedCount > 0 && (
             <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-warning/15 border border-warning/30 text-warning font-semibold">
               <span className="w-1.5 h-1.5 rounded-full bg-warning" />
               <span>{modifiedCount} đã sửa</span>
             </span>
           )}
-          {onRegenerateInvalid && (failedCount > 0 || modifiedCount > 0) && (
+
+          {onRegenerateInvalid && qualityStats.errorCount === 0 && modifiedCount > 0 && (
             <button
               type="button"
               onClick={onRegenerateInvalid}
               disabled={isConverting}
               className="flex items-center gap-1.5 px-2.5 py-1 bg-accent hover:bg-accentHover text-white shadow-xs rounded-md text-xs font-semibold transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ml-1 active:scale-95"
-              title="Chỉ tạo lại các đoạn đã chỉnh sửa hoặc bị lỗi"
+              title="Chỉ tạo lại các đoạn đã chỉnh sửa"
             >
               <RefreshCw className="w-3 h-3 text-white" />
-              <span>Tạo lại ({failedCount + modifiedCount}) đoạn sửa</span>
+              <span>Tạo lại ({modifiedCount}) đoạn sửa</span>
             </button>
           )}
         </div>
@@ -233,6 +319,10 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
             const wordCount = seg.cleanText.split(/\s+/).filter(Boolean).length;
             const speed = char?.speed ?? 1.0;
             const durationSec = seg.durationSec || Math.max(1.0, (wordCount / 3.4) / speed + (pauseMs / 1000));
+
+            const segIsError = isChunkError(seg);
+            const segIsWarning = isChunkWarning(seg);
+            const badgeInfo = getChunkBadgeInfo(seg);
 
             return (
               <div
@@ -318,13 +408,50 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
                       </span>
                     )}
 
-                    {seg.status === "failed" && (
-                      <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-danger/15 text-danger border border-danger/30 flex items-center gap-1.5 shrink-0">
-                        <AlertCircle className="w-3.5 h-3.5" />
-                        <span>Thất bại</span>
-                        {seg.errorMessage && (
-                          <span className="font-normal opacity-90">· {seg.errorMessage}</span>
-                        )}
+                    {segIsError && seg.status !== "generating" && badgeInfo && (
+                      <span
+                        className="text-xs font-semibold px-2 py-0.5 rounded-md bg-danger/15 text-danger border border-danger/30 flex items-center gap-1.5 shrink-0"
+                        title={seg.errorMessage || seg.qualityReview?.summary || badgeInfo.fullBadgeText}
+                      >
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span className="hidden sm:inline">{badgeInfo.fullBadgeText}</span>
+                        <span className="inline sm:hidden">{badgeInfo.compactBadgeText}</span>
+                      </span>
+                    )}
+
+                    {segIsWarning && seg.status !== "generating" && badgeInfo && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedIssuesSegments((prev) => ({ ...prev, [seg.id]: !prev[seg.id] }));
+                        }}
+                        className="text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 border border-amber-500/30 flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+                        title="Bấm để xem chi tiết vấn đề"
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span className="hidden sm:inline">{badgeInfo.fullBadgeText}</span>
+                        <span className="inline sm:hidden">{badgeInfo.compactBadgeText}</span>
+                      </button>
+                    )}
+
+                    {isChunkChecking(seg) && seg.status !== "generating" && (
+                      <span
+                        className="text-xs font-medium px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 flex items-center gap-1.5 shrink-0 animate-pulse"
+                        title="Đang phân tích chất lượng âm thanh và đối chiếu phụ đề qua ASR..."
+                      >
+                        <RefreshCw className="w-3 h-3 animate-spin text-cyan-400" />
+                        <span>Đang kiểm tra...</span>
+                      </span>
+                    )}
+
+                    {isChunkUnverified(seg) && seg.status !== "generating" && (
+                      <span
+                        className="text-xs font-medium px-2 py-0.5 rounded-md bg-surface3 text-textSecondary border border-borderDefault flex items-center gap-1.5 shrink-0"
+                        title={seg.qualityReview?.summary || "Đoạn âm thanh chưa được kiểm chứng qua ASR"}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-textMuted shrink-0" />
+                        <span>Chưa kiểm chứng</span>
                       </span>
                     )}
                   </div>
@@ -371,7 +498,7 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
                       </button>
                     )}
 
-                    {seg.status === "failed" && (
+                    {segIsError && (
                       <button
                         type="button"
                         onClick={() => onRegenerateSegment(seg.id)}
@@ -383,7 +510,19 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
                       </button>
                     )}
 
-                    {seg.status === "ready" && (
+                    {segIsWarning && (
+                      <button
+                        type="button"
+                        onClick={() => onRegenerateSegment(seg.id)}
+                        className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 rounded-md text-xs border border-amber-500/30 transition-colors font-semibold cursor-pointer"
+                        title="Tạo lại đoạn có cảnh báo"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Tạo lại đoạn</span>
+                      </button>
+                    )}
+
+                    {seg.status === "ready" && !segIsError && !segIsWarning && (
                       <button
                         type="button"
                         onClick={() => onRegenerateSegment(seg.id)}
@@ -418,6 +557,67 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
                     placeholder="Nhập nội dung câu thoại..."
                   />
                 </div>
+
+                {/* Expandable breakdown for detected quality issues */}
+                {seg.qualityReview?.issues && seg.qualityReview.issues.length > 0 && (
+                  <div className="pt-1.5 border-t border-borderDefault/40 text-xs" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExpandedIssuesSegments((prev) => ({ ...prev, [seg.id]: !prev[seg.id] }));
+                        }}
+                        className="text-textSecondary hover:text-accent font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                        <span>
+                          {expandedIssuesSegments[seg.id]
+                            ? "Thu gọn chi tiết"
+                            : seg.qualityReview.issues.length === 1
+                            ? "Xem chi tiết vấn đề"
+                            : `Xem tất cả ${seg.qualityReview.issues.length} vấn đề phát hiện`}
+                        </span>
+                        <ChevronDown className={`w-3 h-3 transition-transform ${expandedIssuesSegments[seg.id] ? "rotate-180" : ""}`} />
+                      </button>
+                    </div>
+                    {expandedIssuesSegments[seg.id] && (
+                      <div className="mt-2 space-y-2 pl-2 border-l-2 border-amber-500/40">
+                        {seg.qualityReview.issues.map((iss, idx) => {
+                          const shortLabel = getIssueShortLabel(iss.code);
+                          const hasTime = Array.isArray(iss.timeRange) && iss.timeRange.length === 2;
+                          const timeStr = hasTime
+                            ? `${Math.floor(iss.timeRange![0] / 60).toString().padStart(2, "0")}:${Math.floor(iss.timeRange![0] % 60).toString().padStart(2, "0")}`
+                            : "";
+                          return (
+                            <div key={idx} className="text-textSecondary leading-snug flex items-start justify-between gap-2 py-0.5">
+                              <div className="flex items-start gap-1.5 min-w-0 flex-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0 mt-1.5" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded text-[11px]">
+                                      {shortLabel}
+                                    </span>
+                                    {timeStr && (
+                                      <span className="text-[11px] font-mono text-textMuted bg-surface2 px-1 py-0.5 rounded">
+                                        {timeStr}
+                                      </span>
+                                    )}
+                                    {iss.words && iss.words.length > 0 && (
+                                      <span className="text-[11px] text-textSecondary italic">
+                                        (Từ: {iss.words.join(", ")})
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-0.5 text-textPrimary text-xs">{iss.message}</p>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })

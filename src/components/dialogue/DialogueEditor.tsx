@@ -47,6 +47,7 @@ export const DialogueEditor: React.FC<DialogueEditorProps> = ({
 
   useTauriDropZone(editorDropZoneRef, {
     enabled: true,
+    allowedExtensions: ["docx", "txt", "md", "srt", "vtt"],
     onDragStateChange: setIsDraggingOver,
     onDropFiles: (files) => {
       const validFile =

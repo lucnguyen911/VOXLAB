@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Languages,
   UploadCloud,
@@ -30,7 +30,11 @@ import {
   DubAudioSegment,
   TimingOverflowMetadata,
   DubbingHandoffSnapshot,
+  DubbingMode,
+  DubbingSpeechGroup,
+  normalizeDubbingMode,
 } from "../types/dubbing";
+import { generateNarrationAlignedSrt } from "../services/dubbing/alignedSrtGenerator";
 import { ReviewGrid } from "../components/dubbing/ReviewGrid";
 import { BottomAudioPlayer, ActiveAudioTrack } from "../components/layout/BottomAudioPlayer";
 import { VoiceSelector } from "../components/dubbing/VoiceSelector";
@@ -51,17 +55,46 @@ import {
   saveDubbingSessionBackup,
   loadDubbingSessionBackup,
 } from "../services/dubbing/sessionStorage";
-import { calculateTimingFit } from "../services/dubbing/timingFit";
 import { analyzeTimingCollision, canExportMasterWav } from "../services/dubbing/collisionDetector";
 import { resolveTimingCollisions, countCollisions } from "../services/dubbing/autoFit";
 import { mergeMasterAudio } from "../services/dubbing/masterAssembly";
-import { DubbingSynthesisQueue } from "../services/dubbing/synthesisQueue";
+import {
+  DubbingSynthesisQueue,
+  DubbingSynthesisJob,
+  synthesizeAndFitDubbingUnit,
+  verifyDubbingSegmentQuality,
+} from "../services/dubbing/synthesisQueue";
+import {
+  planDubbingSpeechGroups,
+  findSpeechGroupByCueIndex,
+  rebuildGroupAfterCueEdit,
+  expandGroupSegmentToCueSegments,
+  normalizeCueTextForSpeech,
+} from "../services/dubbing/speechPlanner";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import { useI18n } from "../i18n/context";
 import { createEffectiveVoiceSnapshot } from "../services/providers";
-import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
+import {
+  QUALITY_VALIDATOR_VERSION,
+  validateChunkAudioQuality,
+  getChunkAudioSignature,
+  isReviewOutdated,
+  isChunkError,
+  isChunkWarning,
+} from "../services/audio/qualityValidator";
+import {
+  loadSubtitleSettings,
+  getSubtitleProfile,
+  wrapCueTextBalanced,
+} from "../services/subtitle";
+import {
+  checkAsrReadiness,
+  applyAsrModelSwitch,
+  type AsrReadinessResult,
+} from "../services/ai/asrReadiness";
+import { AsrReadinessModal } from "../components/modals/AsrReadinessModal";
 
 export interface DubbingWorkspaceProps {
   handoffSnapshot?: DubbingHandoffSnapshot | null;
@@ -96,6 +129,18 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const [translatedCues, setTranslatedCues] = useState<TranslatedCue[]>([]);
   const [audioSegments, setAudioSegments] = useState<Record<number, DubAudioSegment>>({});
   const [overflowAnalysis, setOverflowAnalysis] = useState<Record<number, TimingOverflowMetadata>>({});
+  const [dubbingMode, setDubbingMode] = useState<DubbingMode>(() => {
+    try {
+      if (typeof localStorage !== "undefined") {
+        const saved = localStorage.getItem("voxlab_dubbing_mode");
+        if (saved) {
+          return normalizeDubbingMode(saved);
+        }
+      }
+    } catch {}
+    return "source_sync";
+  });
+  const [speechGroups, setSpeechGroups] = useState<DubbingSpeechGroup[]>([]);
 
   // Configuration State
   const [sourceLang, setSourceLang] = useState<string>(() => {
@@ -113,16 +158,40 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     return loadTranslationSettings().translationProviderId || "google";
   });
   const [selectedVoiceId, setSelectedVoiceId] = useState<string>(() => {
+    try {
+      if (typeof localStorage !== "undefined") {
+        const saved = localStorage.getItem("voxlab_dubbing_selected_voice");
+        if (saved && voices.some((v) => v.id === saved)) {
+          return saved;
+        }
+      }
+    } catch {}
     return activeVoiceId || voices[0]?.id || "";
   });
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     return activeModel || "Omni Voice";
   });
 
-  // Sync activeVoiceId if updated externally
+  const prevActiveVoiceIdRef = useRef<string | undefined>(activeVoiceId);
+
+  // On mount, align parent activeVoiceId with DubbingWorkspace's restored selectedVoiceId so VoiceSelectionModal highlights the right voice
   useEffect(() => {
-    if (activeVoiceId && activeVoiceId !== selectedVoiceId) {
+    if (selectedVoiceId && selectedVoiceId !== activeVoiceId) {
+      prevActiveVoiceIdRef.current = selectedVoiceId;
+      onChangeActiveVoice?.(selectedVoiceId);
+    }
+  }, []);
+
+  // Sync activeVoiceId when the user selects a new voice in VoiceSelectionModal
+  useEffect(() => {
+    if (activeVoiceId && activeVoiceId !== prevActiveVoiceIdRef.current) {
+      prevActiveVoiceIdRef.current = activeVoiceId;
       setSelectedVoiceId(activeVoiceId);
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem("voxlab_dubbing_selected_voice", activeVoiceId);
+        }
+      } catch {}
     }
   }, [activeVoiceId]);
 
@@ -133,15 +202,68 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     }
   }, [activeModel]);
 
-  const handleSelectVoice = (id: string) => {
-    setSelectedVoiceId(id);
-    onChangeActiveVoice?.(id);
-  };
+  const handleSelectVoice = useCallback(
+    (id: string) => {
+      prevActiveVoiceIdRef.current = id;
+      setSelectedVoiceId(id);
+      onChangeActiveVoice?.(id);
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem("voxlab_dubbing_selected_voice", id);
+        }
+      } catch {}
+    },
+    [onChangeActiveVoice]
+  );
 
-  const handleModelChange = (m: string) => {
-    setSelectedModel(m);
-    onChangeModel?.(m);
-  };
+  const handleModelChange = useCallback(
+    (m: string) => {
+      setSelectedModel(m);
+      onChangeModel?.(m);
+    },
+    [onChangeModel]
+  );
+
+  const handleDubbingModeChange = useCallback(
+    (modeRaw: unknown) => {
+      const mode = normalizeDubbingMode(modeRaw);
+      setDubbingMode(mode);
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem("voxlab_dubbing_mode", mode);
+        }
+      } catch {}
+
+      // Invalidate existing ready audio segments so audio is not mistakenly reused across mismatched mode timelines
+      setAudioSegments((prev) => {
+        let changed = false;
+        const updated: Record<number, DubAudioSegment> = {};
+        for (const [key, seg] of Object.entries(prev)) {
+          const id = Number(key);
+          if (seg.status === "ready" || seg.status === "modified") {
+            updated[id] = {
+              ...seg,
+              status: "needs_generation",
+            };
+            changed = true;
+          } else {
+            updated[id] = seg;
+          }
+        }
+        if (changed) {
+          setRestoredNotice(
+            mode === "free_narration"
+              ? "Đã chuyển sang Thuyết minh tự do. Vui lòng bấm 'Lồng tiếng cho kịch bản' để tạo giọng đọc tự nhiên nối tiếp."
+              : "Đã chuyển sang Đồng bộ video gốc. Vui lòng bấm 'Lồng tiếng cho kịch bản' để tạo giọng đọc khớp timeline gốc."
+          );
+        }
+        const activeSegs = changed ? updated : prev;
+        setOverflowAnalysis(analyzeTimingCollision(originalCues, activeSegs, mode));
+        return activeSegs;
+      });
+    },
+    [originalCues]
+  );
 
   // Dubbing voice settings (speed, pitch, volume, pauses). Concurrency fixed at 1.
   const [speed, setSpeed] = useState<number>(() => {
@@ -216,12 +338,48 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const [isGeneratingAudio, setIsGeneratingAudio] = useState<boolean>(false);
   const [isAudioPaused, setIsAudioPaused] = useState<boolean>(false);
   const [audioProgress, setAudioProgress] = useState<{ done: number; total: number } | null>(null);
-  const [playingCueIndex, setPlayingCueIndex] = useState<number | null>(null);
+  const [activePreviewCueIndex, setActivePreviewCueIndex] = useState<number | null>(null);
+  const [isPlayingCueAudio, setIsPlayingCueAudio] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [restoredNotice, setRestoredNotice] = useState<string>("");
   const [autoFitEnabled, setAutoFitEnabled] = useState<boolean>(false);
 
   const [isDragging, setIsDragging] = useState<boolean>(false);
+
+  // Unified ASR Model from Subtitle Settings for Post-Synthesis Quality Check
+  const [currentAsrModel, setCurrentAsrModel] = useState<string>(() => {
+    return loadSubtitleSettings().whisperModel;
+  });
+  const [isAsrReady, setIsAsrReady] = useState<boolean>(true);
+  const [asrReadinessResult, setAsrReadinessResult] = useState<AsrReadinessResult | null>(null);
+  const [isCheckingAsrReadiness, setIsCheckingAsrReadiness] = useState<boolean>(false);
+  const pendingGenerationActionRef = useRef<(() => void) | null>(null);
+  const inFlightValidationsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const syncAsrModel = () => {
+      const m = loadSubtitleSettings().whisperModel;
+      setCurrentAsrModel((prev) => (prev !== m ? m : prev));
+    };
+    window.addEventListener("focus", syncAsrModel);
+    window.addEventListener("storage", syncAsrModel);
+    return () => {
+      window.removeEventListener("focus", syncAsrModel);
+      window.removeEventListener("storage", syncAsrModel);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    checkAsrReadiness(currentAsrModel).then((res) => {
+      if (!cancelled) {
+        setIsAsrReady(res.ready);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentAsrModel]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const synthesisQueueRef = useRef<DubbingSynthesisQueue | null>(null);
@@ -235,6 +393,21 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     };
   }, []);
 
+  // Recompute speechGroups whenever originalCues are loaded/changed and speechGroups are empty or mismatched
+  useEffect(() => {
+    if (originalCues.length === 0) {
+      setSpeechGroups([]);
+      return;
+    }
+    setSpeechGroups((prev) => {
+      const totalCovered = prev.reduce((acc, g) => acc + g.sourceCueIds.length, 0);
+      if (prev.length > 0 && totalCovered === originalCues.length) {
+        return prev;
+      }
+      return planDubbingSpeechGroups(originalCues, translatedCues);
+    });
+  }, [originalCues, translatedCues]);
+
   // Restore session backup on mount if handoffSnapshot is absent
   useEffect(() => {
     if (!handoffSnapshot || !handoffSnapshot.cues || handoffSnapshot.cues.length === 0) {
@@ -242,16 +415,37 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       if (restored && restored.backup.originalCues && restored.backup.originalCues.length > 0) {
         setOriginalCues(restored.backup.originalCues);
         setTranslatedCues(restored.backup.translatedCues);
+        if (restored.backup.speechGroups && restored.backup.speechGroups.length > 0) {
+          setSpeechGroups(restored.backup.speechGroups);
+        } else {
+          setSpeechGroups(
+            planDubbingSpeechGroups(
+              restored.backup.originalCues,
+              restored.backup.translatedCues
+            )
+          );
+        }
+        if (restored.backup.dubbingMode) {
+          setDubbingMode(restored.backup.dubbingMode);
+        }
         setSourceMediaName(restored.backup.sourceMediaName || "");
         setTargetLang(restored.backup.targetLang || "vi");
         setSelectedProviderId(restored.backup.selectedProviderId || "google");
-        if (restored.backup.selectedVoiceId) {
-          setSelectedVoiceId(restored.backup.selectedVoiceId);
+        const savedLocalVoice =
+          typeof localStorage !== "undefined"
+            ? localStorage.getItem("voxlab_dubbing_selected_voice")
+            : null;
+        const voiceToRestore =
+          savedLocalVoice && voices.some((v) => v.id === savedLocalVoice)
+            ? savedLocalVoice
+            : restored.backup.selectedVoiceId;
+        if (voiceToRestore && voices.some((v) => v.id === voiceToRestore)) {
+          handleSelectVoice(voiceToRestore);
         }
         setAudioSegments(restored.restoredAudioSegments || {});
         setOverflowAnalysis(restored.backup.overflowAnalysis || {});
         setRestoredNotice(
-          "Đã khôi phục kịch bản dịch từ phiên trước. Vui lòng bấm 'Tạo audio toàn bộ kịch bản' để tổng hợp lại file thoại."
+          "Đã khôi phục kịch bản dịch từ phiên trước. Vui lòng bấm 'Lồng tiếng cho kịch bản' để tổng hợp lại file thoại."
         );
       }
     }
@@ -267,8 +461,10 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         targetLang,
         selectedProviderId,
         selectedVoiceId,
+        dubbingMode,
         originalCues,
         translatedCues,
+        speechGroups,
         audioSegments,
         overflowAnalysis,
       });
@@ -276,6 +472,8 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   }, [
     originalCues,
     translatedCues,
+    speechGroups,
+    dubbingMode,
     audioSegments,
     overflowAnalysis,
     sourceMediaName,
@@ -289,17 +487,19 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     if (handoffSnapshot && handoffSnapshot.cues.length > 0) {
       setOriginalCues(handoffSnapshot.cues);
       setSourceMediaName(handoffSnapshot.sourceMediaName || "Handoff từ Phụ đề");
-      // Initialize translated cues with same count and source timestamps
-      setTranslatedCues(
-        handoffSnapshot.cues.map((c) => ({
-          index: c.index,
-          startSec: c.startSec,
-          endSec: c.endSec,
-          originalText: c.text,
-          text: c.text,
-          isEdited: false,
-        }))
-      );
+      const initTrans: TranslatedCue[] = handoffSnapshot.cues.map((c) => ({
+        index: c.index,
+        startSec: c.startSec,
+        endSec: c.endSec,
+        originalText: c.text,
+        text: c.text,
+        subtitleText: c.text,
+        speechFragmentText: normalizeCueTextForSpeech(c.text),
+        isEdited: false,
+      }));
+      const groups = planDubbingSpeechGroups(handoffSnapshot.cues, initTrans);
+      setTranslatedCues(initTrans);
+      setSpeechGroups(groups);
       setAudioSegments({});
       setOverflowAnalysis({});
       setErrorMessage("");
@@ -325,16 +525,19 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         }
         setOriginalCues(cues);
         setSourceMediaName(file.name);
-        setTranslatedCues(
-          cues.map((c) => ({
-            index: c.index,
-            startSec: c.startSec,
-            endSec: c.endSec,
-            originalText: c.text,
-            text: c.text,
-            isEdited: false,
-          }))
-        );
+        const initTrans: TranslatedCue[] = cues.map((c) => ({
+          index: c.index,
+          startSec: c.startSec,
+          endSec: c.endSec,
+          originalText: c.text,
+          text: c.text,
+          subtitleText: c.text,
+          speechFragmentText: normalizeCueTextForSpeech(c.text),
+          isEdited: false,
+        }));
+        const groups = planDubbingSpeechGroups(cues, initTrans);
+        setTranslatedCues(initTrans);
+        setSpeechGroups(groups);
         setAudioSegments({});
         setOverflowAnalysis({});
         setErrorMessage("");
@@ -352,6 +555,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
 
   useTauriDropZone(reviewGridDropZoneRef, {
     enabled: true,
+    allowedExtensions: ["srt", "vtt", "txt"],
     onDragStateChange: setIsDragging,
     onDropFiles: (files) => {
       const subFile =
@@ -403,29 +607,122 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     }
   };
 
-  // Inline edit handler for translated cue text
+  // Inline edit handler for translated cue text — invalidates only the edited cue or its speech group
   const handleUpdateText = (index: number, newText: string) => {
-    setTranslatedCues((prev) =>
-      prev.map((c) =>
-        c.index === index ? { ...c, text: newText, isEdited: true } : c
-      )
+    const nextTranslated = translatedCues.map((c) =>
+      c.index === index
+        ? {
+            ...c,
+            text: newText,
+            subtitleText: newText,
+            speechFragmentText: normalizeCueTextForSpeech(newText),
+            isEdited: true,
+            projectionNeedsReview: false,
+          }
+        : c
+    );
+    setTranslatedCues(nextTranslated);
+
+    // Update the affected speech group's speechText and invalidate only its audio segments
+    const { updatedGroups, updatedSegments } = rebuildGroupAfterCueEdit(
+      speechGroups,
+      nextTranslated,
+      index,
+      audioSegments
+    );
+    setSpeechGroups(updatedGroups);
+    setAudioSegments(updatedSegments);
+  };
+
+  // Automatically trigger background quality validation for any ready primary segment whose review is outdated or missing
+  // Deferred when isGeneratingAudio is true so Whisper QC never competes with active TTS synthesis
+  useEffect(() => {
+    if (!isAsrReady || isGeneratingAudio) return;
+
+    const candidates = Object.values(audioSegments).filter((seg) => {
+      if (seg.isGroupPrimary === false) return false;
+      if (seg.status !== "ready" || (!seg.audioFilePath && !seg.audioUrl)) {
+        return false;
+      }
+      if (!isReviewOutdated(seg, currentAsrModel)) {
+        return false;
+      }
+      const sig = `${seg.cueIndex}::${getChunkAudioSignature(seg)}::${currentAsrModel}`;
+      return !inFlightValidationsRef.current.has(sig);
+    });
+
+    if (candidates.length === 0) return;
+
+    const target = candidates[0];
+    const sig = `${target.cueIndex}::${getChunkAudioSignature(target)}::${currentAsrModel}`;
+    inFlightValidationsRef.current.add(sig);
+
+    const memberIndices =
+      target.groupCueIndices && target.groupCueIndices.length > 0
+        ? target.groupCueIndices
+        : [target.cueIndex];
+
+    setAudioSegments((prev) => {
+      const curr = prev[target.cueIndex];
+      if (!curr || curr.status !== "ready") return prev;
+      const checkingReview = {
+        status: "checking" as const,
+        summary: "Đang kiểm tra...",
+        issues: [],
+        checkedAt: Date.now(),
+        audioSignature: getChunkAudioSignature(curr),
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: currentAsrModel,
+      };
+      const next = { ...prev };
+      for (const idx of memberIndices) {
+        if (next[idx]) {
+          next[idx] = { ...next[idx], qualityReview: checkingReview };
+        }
+      }
+      return next;
+    });
+
+    const transCue = translatedCues.find((c) => c.index === target.cueIndex);
+    const segmentForValidation: DubAudioSegment = {
+      ...target,
+      text: target.text ?? transCue?.text ?? "",
+    };
+    const langHint = target.effectiveVoiceSnapshot?.language || targetLang || "vi";
+    const speedRatio = Number(
+      ((target.effectiveVoiceSnapshot?.speed || speed || 1.0) * (target.speedFactor || 1.0)).toFixed(2)
     );
 
-    // If audio segment was ready, mark it as "modified"
-    setAudioSegments((prev) => {
-      const existing = prev[index];
-      if (existing && existing.status === "ready") {
-        return {
-          ...prev,
-          [index]: {
-            ...existing,
-            status: "modified",
-          },
-        };
-      }
-      return prev;
-    });
-  };
+    validateChunkAudioQuality(
+      segmentForValidation,
+      langHint,
+      undefined,
+      speedRatio,
+      currentAsrModel,
+      "dubbing"
+    )
+      .then((qualityReview) => {
+        setAudioSegments((prev) => {
+          const curr = prev[target.cueIndex];
+          if (!curr || getChunkAudioSignature(curr) !== getChunkAudioSignature(target)) {
+            return prev;
+          }
+          const next = { ...prev };
+          for (const idx of memberIndices) {
+            if (next[idx]) {
+              next[idx] = {
+                ...next[idx],
+                qualityReview,
+              };
+            }
+          }
+          return next;
+        });
+      })
+      .finally(() => {
+        inFlightValidationsRef.current.delete(sig);
+      });
+  }, [audioSegments, currentAsrModel, isAsrReady, isGeneratingAudio, translatedCues, targetLang, speed]);
 
   // Batch AI Translation
   const handleTranslateAll = async () => {
@@ -463,6 +760,8 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         translationStyle,
         {
           sourceLang,
+          useSpeechGroups: true,
+          dubbingMode,
           isPaused: () => translationControlRef.current.isPaused,
           isCancelled: () => translationControlRef.current.isCancelled,
         }
@@ -473,6 +772,8 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       }
 
       setTranslatedCues(translated);
+      const nextGroups = planDubbingSpeechGroups(originalCues, translated);
+      setSpeechGroups(nextGroups);
 
       // Invalidate existing audio segments: mark all as needs_generation
       setAudioSegments((prev) => {
@@ -518,11 +819,16 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const handleExportTranslatedSrt = () => {
     if (!translatedCues || translatedCues.length === 0) return;
 
+    const settings = loadSubtitleSettings();
+    const profile = getSubtitleProfile(settings.aspectRatio, settings.maxLines);
+
     const srtCues = translatedCues.map((c) => ({
       index: c.index,
       startSec: c.startSec,
       endSec: c.endSec,
-      text: c.text,
+      text: (c.subtitleText || c.text).includes("\n")
+        ? c.subtitleText || c.text
+        : wrapCueTextBalanced(c.subtitleText || c.text, profile),
     }));
 
     const srtContent = exportToSrt(srtCues);
@@ -540,12 +846,77 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // Batch Audio Generation across all cues using DubbingSynthesisQueue (TASK-13)
-  const handleStartBatchSynthesis = () => {
-    if (originalCues.length === 0) return;
+  // Export Translated Text (.TXT) for Mode 2 (free_narration)
+  const handleExportTxt = () => {
+    if (!translatedCues || translatedCues.length === 0) return;
+
+    let fullText = "";
+    if (speechGroups.length > 0) {
+      fullText = speechGroups
+        .map((g) => g.translatedText || g.speechText || "")
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    if (!fullText) {
+      fullText = translatedCues.map((c) => c.text).join("\n\n");
+    }
+
+    const baseName = sourceMediaName.replace(/\.[^/.]+$/, "") || "kich_ban_dich";
+    const filename = `${baseName}_${targetLang}.txt`;
+
+    const blob = new Blob([fullText], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Export Re-Timed Aligned SRT (.SRT) for Mode 2 (free_narration)
+  const handleExportAlignedSrt = () => {
+    if (originalCues.length === 0 || translatedCues.length === 0) return;
+
+    const res = generateNarrationAlignedSrt({
+      speechGroups:
+        speechGroups.length > 0
+          ? speechGroups
+          : planDubbingSpeechGroups(originalCues, translatedCues),
+      originalCues,
+      translatedCues,
+      audioSegments,
+      pauseBetweenGroupsSec: pauses.period ?? 0.45,
+      mode: "cue",
+    });
+
+    if (!res.ok || !res.srtContent) {
+      setErrorMessage(
+        res.reason ||
+          "Không thể tạo phụ đề đồng bộ. Hãy chắc chắn toàn bộ các đoạn thuyết minh đã được tạo âm thanh hoàn chỉnh."
+      );
+      return;
+    }
+
+    const baseName = sourceMediaName.replace(/\.[^/.]+$/, "") || "phu_de";
+    const filename = `${baseName}_aligned.srt`;
+
+    const blob = new Blob([res.srtContent], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const executeCuesBatchSynthesis = (targetCues: OriginalCue[]) => {
+    if (targetCues.length === 0) return;
     setIsGeneratingAudio(true);
     setIsAudioPaused(false);
-    setAudioProgress({ done: 0, total: originalCues.length });
     setErrorMessage("");
 
     const snapshot = createEffectiveVoiceSnapshot(selectedVoiceId, voices, {
@@ -556,55 +927,180 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     });
     const advancedSettings = getEngineAdvancedSettings(selectedModel);
 
-    const jobs = originalCues.map((orig, i) => {
-      const trans = translatedCues[i] || {
-        index: orig.index,
-        startSec: orig.startSec,
-        endSec: orig.endSec,
-        originalText: orig.text,
-        text: orig.text,
-        isEdited: false,
-      };
-      return {
-        originalCue: orig,
-        translatedCue: trans,
-        voiceId: selectedVoiceId || "voice_01",
-        nextCue: originalCues[i + 1],
-        autoFit: autoFitEnabled,
-        voiceSettings: {
-          speed,
-          pitch,
-          volume,
-        },
-        voiceSnapshot: snapshot,
-        advancedSettings,
-      };
-    });
+    const activeGroups =
+      speechGroups.length > 0
+        ? speechGroups
+        : planDubbingSpeechGroups(originalCues, translatedCues);
+    const groupByPrimaryCue = new Map<number, DubbingSpeechGroup>();
+    for (const grp of activeGroups) {
+      if (grp.sourceCueIds.length > 0) {
+        groupByPrimaryCue.set(grp.sourceCueIds[0], grp);
+      }
+    }
+
+    let jobs: DubbingSynthesisJob[];
+
+    if (activeGroups.length > 0) {
+      const targetCueSet = new Set(targetCues.map((c) => c.index));
+      const targetGroups = activeGroups.filter((g) =>
+        g.sourceCueIds.some((id) => targetCueSet.has(id))
+      );
+
+      jobs = targetGroups.map((group) => {
+        const firstCueIdx = group.sourceCueIds[0];
+        const lastCueIdx = group.sourceCueIds[group.sourceCueIds.length - 1];
+        const orig =
+          originalCues.find((c) => c.index === firstCueIdx) || originalCues[0];
+        const lastOrigArrayIdx = originalCues.findIndex(
+          (c) => c.index === lastCueIdx
+        );
+        const trans = translatedCues.find((c) => c.index === firstCueIdx) || {
+          index: orig.index,
+          startSec: orig.startSec,
+          endSec: orig.endSec,
+          originalText: orig.text,
+          text: orig.text,
+          isEdited: false,
+        };
+        return {
+          originalCue: orig,
+          translatedCue: trans,
+          speechGroup: group,
+          dubbingMode,
+          voiceId: selectedVoiceId || "voice_01",
+          nextCue:
+            lastOrigArrayIdx >= 0
+              ? originalCues[lastOrigArrayIdx + 1]
+              : undefined,
+          autoFit: dubbingMode === "free_narration" ? false : autoFitEnabled,
+          voiceSettings: {
+            speed,
+            pitch,
+            volume,
+          },
+          voiceSnapshot: snapshot,
+          advancedSettings,
+          asrModelId: currentAsrModel,
+        };
+      });
+    } else {
+      jobs = targetCues.map((orig) => {
+        const origArrayIdx = originalCues.findIndex(
+          (c) => c.index === orig.index
+        );
+        const trans = translatedCues.find((c) => c.index === orig.index) || {
+          index: orig.index,
+          startSec: orig.startSec,
+          endSec: orig.endSec,
+          originalText: orig.text,
+          text: orig.text,
+          isEdited: false,
+        };
+        return {
+          originalCue: orig,
+          translatedCue: trans,
+          dubbingMode,
+          voiceId: selectedVoiceId || "voice_01",
+          nextCue:
+            origArrayIdx >= 0 ? originalCues[origArrayIdx + 1] : undefined,
+          autoFit: dubbingMode === "free_narration" ? false : autoFitEnabled,
+          voiceSettings: {
+            speed,
+            pitch,
+            volume,
+          },
+          voiceSnapshot: snapshot,
+          advancedSettings,
+          asrModelId: currentAsrModel,
+        };
+      });
+    }
+
+    setAudioProgress({ done: 0, total: jobs.length });
+
+    const expandSegmentUpdate = (
+      prev: Record<number, DubAudioSegment>,
+      cueIndex: number,
+      segment: DubAudioSegment
+    ): Record<number, DubAudioSegment> => {
+      const grp = groupByPrimaryCue.get(cueIndex);
+      if (grp && grp.sourceCueIds.length > 0) {
+        const expanded = expandGroupSegmentToCueSegments(
+          grp,
+          segment,
+          originalCues
+        );
+        return { ...prev, ...expanded };
+      }
+      return { ...prev, [cueIndex]: segment };
+    };
 
     const queue = new DubbingSynthesisQueue(
       {
         onJobStarted: (cueIndex) => {
-          setAudioSegments((prev) => ({
-            ...prev,
-            [cueIndex]: {
-              ...(prev[cueIndex] || {
-                cueIndex,
-                rawDurationSec: 0,
-                targetDurationSec: 0,
-                fittedDurationSec: 0,
-                speedFactor: 1.0,
-                audioStartSec: 0,
-                audioEndSec: 0,
-              }),
-              status: "generating",
-            },
-          }));
+          const grp = groupByPrimaryCue.get(cueIndex);
+          const memberIds =
+            grp && grp.sourceCueIds.length > 0 ? grp.sourceCueIds : [cueIndex];
+          setAudioSegments((prev) => {
+            const next = { ...prev };
+            for (const id of memberIds) {
+              next[id] = {
+                ...(prev[id] || {
+                  cueIndex: id,
+                  rawDurationSec: 0,
+                  targetDurationSec: 0,
+                  fittedDurationSec: 0,
+                  speedFactor: 1.0,
+                  audioStartSec: 0,
+                  audioEndSec: 0,
+                }),
+                groupId: grp?.groupId,
+                groupCueIndices: grp?.sourceCueIds,
+                isGroupPrimary: id === cueIndex,
+                primaryCueIndex: cueIndex,
+                status: "generating",
+              };
+            }
+            return next;
+          });
+        },
+        onJobChecking: (cueIndex, segment) => {
+          setAudioSegments((prev) => {
+            const next = expandSegmentUpdate(prev, cueIndex, segment);
+            const newCollisions = analyzeTimingCollision(originalCues, next, dubbingMode);
+            setOverflowAnalysis(newCollisions);
+            return next;
+          });
         },
         onJobCompleted: (cueIndex, segment) => {
           setAudioSegments((prev) => {
-            const next = { ...prev, [cueIndex]: segment };
-            const newCollisions = analyzeTimingCollision(originalCues, next);
+            const next = expandSegmentUpdate(prev, cueIndex, segment);
+            const newCollisions = analyzeTimingCollision(originalCues, next, dubbingMode);
             setOverflowAnalysis(newCollisions);
+            return next;
+          });
+        },
+        onJobFailed: (cueIndex, errMsg) => {
+          const grp = groupByPrimaryCue.get(cueIndex);
+          const memberIds =
+            grp && grp.sourceCueIds.length > 0 ? grp.sourceCueIds : [cueIndex];
+          setAudioSegments((prev) => {
+            const next = { ...prev };
+            for (const id of memberIds) {
+              next[id] = {
+                ...(prev[id] || {
+                  cueIndex: id,
+                  rawDurationSec: 0,
+                  targetDurationSec: 0,
+                  fittedDurationSec: 0,
+                  speedFactor: 1.0,
+                  audioStartSec: 0,
+                  audioEndSec: 0,
+                }),
+                status: "failed",
+                errorMessage: errMsg,
+              };
+            }
             return next;
           });
         },
@@ -616,10 +1112,12 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           setIsAudioPaused(false);
           setAudioProgress(null);
           synthesisQueueRef.current = null;
-          if (autoFitEnabled) {
+          if (autoFitEnabled && dubbingMode !== "free_narration") {
             setAudioSegments((current) => {
-              const resolved = resolveTimingCollisions(originalCues, current, { maxSpeedup: 1.45 });
-              setOverflowAnalysis(analyzeTimingCollision(originalCues, resolved));
+              const resolved = resolveTimingCollisions(originalCues, current);
+              setOverflowAnalysis(
+                analyzeTimingCollision(originalCues, resolved, dubbingMode)
+              );
               return resolved;
             });
           }
@@ -631,6 +1129,84 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     synthesisQueueRef.current = queue;
     queue.setJobs(jobs);
     queue.start();
+  };
+
+  // Batch Audio Generation across all cues using DubbingSynthesisQueue (TASK-13)
+  const handleStartBatchSynthesis = async (bypassAsrCheck = false) => {
+    if (originalCues.length === 0) return;
+
+    if (!bypassAsrCheck) {
+      setIsCheckingAsrReadiness(true);
+      try {
+        const readiness = await checkAsrReadiness(currentAsrModel);
+        setIsAsrReady(readiness.ready);
+        if (!readiness.ready) {
+          pendingGenerationActionRef.current = () => {
+            void handleStartBatchSynthesis(true);
+          };
+          setAsrReadinessResult(readiness);
+          return;
+        }
+      } finally {
+        setIsCheckingAsrReadiness(false);
+      }
+    }
+
+    executeCuesBatchSynthesis(originalCues);
+  };
+
+  const handleRegenerateErrorCues = async (bypassAsrCheck = false) => {
+    const errorCues = originalCues.filter((orig) => {
+      const seg = audioSegments[orig.index];
+      return seg && seg.isGroupPrimary !== false ? isChunkError(seg) : false;
+    });
+    if (errorCues.length === 0) return;
+
+    if (!bypassAsrCheck) {
+      setIsCheckingAsrReadiness(true);
+      try {
+        const readiness = await checkAsrReadiness(currentAsrModel);
+        setIsAsrReady(readiness.ready);
+        if (!readiness.ready) {
+          pendingGenerationActionRef.current = () => {
+            void handleRegenerateErrorCues(true);
+          };
+          setAsrReadinessResult(readiness);
+          return;
+        }
+      } finally {
+        setIsCheckingAsrReadiness(false);
+      }
+    }
+
+    executeCuesBatchSynthesis(errorCues);
+  };
+
+  const handleRegenerateWarningCues = async (bypassAsrCheck = false) => {
+    const warningCues = originalCues.filter((orig) => {
+      const seg = audioSegments[orig.index];
+      return seg && seg.isGroupPrimary !== false ? isChunkWarning(seg) : false;
+    });
+    if (warningCues.length === 0) return;
+
+    if (!bypassAsrCheck) {
+      setIsCheckingAsrReadiness(true);
+      try {
+        const readiness = await checkAsrReadiness(currentAsrModel);
+        setIsAsrReady(readiness.ready);
+        if (!readiness.ready) {
+          pendingGenerationActionRef.current = () => {
+            void handleRegenerateWarningCues(true);
+          };
+          setAsrReadinessResult(readiness);
+          return;
+        }
+      } finally {
+        setIsCheckingAsrReadiness(false);
+      }
+    }
+
+    executeCuesBatchSynthesis(warningCues);
   };
 
   const handleTogglePauseAudio = () => {
@@ -653,36 +1229,73 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setAudioProgress(null);
   };
 
-  // Single Cue Generation / Regeneration
-  const handleRegenerateAudio = async (cueIndex: number) => {
+  // Single Cue / Single Speech Group Generation & Regeneration
+  const handleRegenerateAudio = async (cueIndex: number, bypassAsrCheck = false) => {
     const origIdx = originalCues.findIndex((c) => c.index === cueIndex);
     const orig = originalCues[origIdx];
     const trans = translatedCues.find((c) => c.index === cueIndex);
     if (!orig || !trans) return;
 
-    setAudioSegments((prev) => ({
-      ...prev,
-      [cueIndex]: {
-        ...(prev[cueIndex] || {
-          cueIndex,
-          rawDurationSec: 0,
-          targetDurationSec: 0,
-          fittedDurationSec: 0,
-          speedFactor: 1.0,
-          audioStartSec: orig.startSec,
-          audioEndSec: orig.endSec,
-        }),
-        status: "generating",
-      },
-    }));
+    if (!bypassAsrCheck) {
+      setIsCheckingAsrReadiness(true);
+      try {
+        const readiness = await checkAsrReadiness(currentAsrModel);
+        setIsAsrReady(readiness.ready);
+        if (!readiness.ready) {
+          pendingGenerationActionRef.current = () => {
+            void handleRegenerateAudio(cueIndex, true);
+          };
+          setAsrReadinessResult(readiness);
+          return;
+        }
+      } finally {
+        setIsCheckingAsrReadiness(false);
+      }
+    }
+
+    const activeGroups =
+      speechGroups.length > 0
+        ? speechGroups
+        : planDubbingSpeechGroups(originalCues, translatedCues);
+    const targetGroup = findSpeechGroupByCueIndex(activeGroups, cueIndex);
+    const memberIds =
+      targetGroup && targetGroup.sourceCueIds.length > 0
+        ? targetGroup.sourceCueIds
+        : [cueIndex];
+    const primaryCueIndex = memberIds[0];
+    const lastCueIndex = memberIds[memberIds.length - 1];
+    const primaryOrig =
+      originalCues.find((c) => c.index === primaryCueIndex) || orig;
+    const primaryTrans =
+      translatedCues.find((c) => c.index === primaryCueIndex) || trans;
+    const lastOrigIdx = originalCues.findIndex((c) => c.index === lastCueIndex);
+    const nextCue =
+      lastOrigIdx >= 0 ? originalCues[lastOrigIdx + 1] : undefined;
+
+    setAudioSegments((prev) => {
+      const next = { ...prev };
+      for (const id of memberIds) {
+        next[id] = {
+          ...(prev[id] || {
+            cueIndex: id,
+            rawDurationSec: 0,
+            targetDurationSec: 0,
+            fittedDurationSec: 0,
+            speedFactor: 1.0,
+            audioStartSec: primaryOrig.startSec,
+            audioEndSec: primaryOrig.endSec,
+          }),
+          groupId: targetGroup?.groupId,
+          groupCueIndices: targetGroup?.sourceCueIds,
+          isGroupPrimary: id === primaryCueIndex,
+          primaryCueIndex,
+          status: "generating",
+        };
+      }
+      return next;
+    });
 
     try {
-      const nextCue = originalCues[origIdx + 1];
-      const cueSpanSec = Number((orig.endSec - orig.startSec).toFixed(3));
-      const effectiveLimit = autoFitEnabled && nextCue
-        ? Math.max(cueSpanSec, Number((nextCue.startSec - orig.startSec - 0.02).toFixed(3)))
-        : cueSpanSec;
-
       const snapshot = createEffectiveVoiceSnapshot(selectedVoiceId, voices, {
         activeModel: selectedModel,
         speed,
@@ -691,96 +1304,95 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       });
       const advancedSettings = getEngineAdvancedSettings(selectedModel);
 
-      let realResult: { durationSec: number; outputPath: string; blobUrl: string };
-      try {
-        realResult = await synthesizeSpeechCore(trans.text, snapshot, {
-          scope: "dubbing",
-          id: `cue_${cueIndex}`,
-          advancedSettings,
-        });
-      } catch (synthErr: any) {
-        console.warn("Real speech synthesis fallback in web/preview:", synthErr);
-        const words = trans.text.trim().split(/\s+/).length;
-        const estSec = Math.max(0.5, Number((words / 3.0 / speed).toFixed(3)));
-        realResult = {
-          durationSec: estSec,
-          outputPath: `scratch/cue_${cueIndex}.wav`,
-          blobUrl: "",
-        };
-      }
+      const job: DubbingSynthesisJob = {
+        originalCue: primaryOrig,
+        translatedCue: primaryTrans,
+        speechGroup: targetGroup,
+        dubbingMode,
+        voiceId: selectedVoiceId || "voice_01",
+        nextCue,
+        autoFit: dubbingMode === "free_narration" ? false : autoFitEnabled,
+        voiceSettings: {
+          speed,
+          pitch,
+          volume,
+        },
+        voiceSnapshot: snapshot,
+        advancedSettings,
+        asrModelId: currentAsrModel,
+      };
 
-      const fit = calculateTimingFit(realResult.durationSec, effectiveLimit, autoFitEnabled ? 1.45 : undefined);
-      let fittedSec = fit.fittedDurationSec;
-      let finalUrl = realResult.blobUrl;
-      let finalPath = realResult.outputPath;
-
-      // Re-synthesize at adjusted speed if auto-fit requires acceleration
-      if (autoFitEnabled && fit.speedFactor > 1.02 && snapshot) {
-        try {
-          const speedAdjusted = Number((speed * fit.speedFactor).toFixed(2));
-          const speedSnapshot = { ...snapshot, speed: speedAdjusted };
-          const reSynth = await synthesizeSpeechCore(trans.text, speedSnapshot, {
-            scope: "dubbing",
-            id: `cue_${cueIndex}_fit`,
-            advancedSettings,
-          });
-          finalUrl = reSynth.blobUrl;
-          finalPath = reSynth.outputPath;
-          fittedSec = reSynth.durationSec;
-        } catch (reErr) {
-          console.warn("Auto-fit re-synthesis failed for cue", cueIndex, reErr);
-        }
-      }
-
-      if (autoFitEnabled && nextCue && orig.startSec + fittedSec > nextCue.startSec) {
-        fittedSec = Math.max(0.1, Number((nextCue.startSec - orig.startSec - 0.005).toFixed(3)));
-      }
+      const checkingSegment = await synthesizeAndFitDubbingUnit(job);
+      if (!checkingSegment) return;
 
       setAudioSegments((prev) => {
+        const expanded =
+          targetGroup && targetGroup.sourceCueIds.length > 0
+            ? expandGroupSegmentToCueSegments(
+                targetGroup,
+                checkingSegment,
+                originalCues
+              )
+            : { [primaryCueIndex]: checkingSegment };
         const updated: Record<number, DubAudioSegment> = {
           ...prev,
-          [cueIndex]: {
-            cueIndex,
-            status: "ready" as const,
-            rawDurationSec: realResult.durationSec,
-            targetDurationSec: cueSpanSec,
-            fittedDurationSec: fittedSec,
-            speedFactor: fit.speedFactor,
-            audioStartSec: orig.startSec,
-            audioEndSec: Number((orig.startSec + fittedSec).toFixed(3)),
-            audioUrl: finalUrl,
-            fittedAudioUrl: finalUrl,
-            audioFilePath: finalPath,
-          },
+          ...expanded,
         };
-        setOverflowAnalysis(analyzeTimingCollision(originalCues, updated));
+        setOverflowAnalysis(analyzeTimingCollision(originalCues, updated, dubbingMode));
         return updated;
       });
+
+      const verifiedSegment = await verifyDubbingSegmentQuality(
+        checkingSegment,
+        job
+      );
+
+      setAudioSegments((prev) => {
+        const expanded =
+          targetGroup && targetGroup.sourceCueIds.length > 0
+            ? expandGroupSegmentToCueSegments(
+                targetGroup,
+                verifiedSegment,
+                originalCues
+              )
+            : { [primaryCueIndex]: verifiedSegment };
+        return {
+          ...prev,
+          ...expanded,
+        };
+      });
     } catch (err: any) {
-      setErrorMessage(`Lỗi tạo âm thanh cho câu #${cueIndex}: ${err?.message || err}`);
-      setAudioSegments((prev) => ({
-        ...prev,
-        [cueIndex]: {
-          ...(prev[cueIndex] || {
-            cueIndex,
-            rawDurationSec: 0,
-            targetDurationSec: 0,
-            fittedDurationSec: 0,
-            speedFactor: 1.0,
-            audioStartSec: orig.startSec,
-            audioEndSec: orig.endSec,
-          }),
-          status: "needs_generation",
-        },
-      }));
+      setErrorMessage(
+        `Lỗi tạo âm thanh cho câu #${cueIndex}: ${err?.message || err}`
+      );
+      setAudioSegments((prev) => {
+        const next = { ...prev };
+        for (const id of memberIds) {
+          next[id] = {
+            ...(prev[id] || {
+              cueIndex: id,
+              rawDurationSec: 0,
+              targetDurationSec: 0,
+              fittedDurationSec: 0,
+              speedFactor: 1.0,
+              audioStartSec: primaryOrig.startSec,
+              audioEndSec: primaryOrig.endSec,
+            }),
+            status: "failed",
+            errorMessage: err?.message || String(err),
+          };
+        }
+        return next;
+      });
     }
   };
 
-  // One-click Auto-Fit across all colliding cues
+  // One-click Auto-Fit across all colliding cues (capped at 1.20x per SPEC AC-22)
+  // One-click Auto-Fit across all colliding cues (capped at 1.20x per SPEC AC-22)
   const handleAutoFitAll = () => {
-    if (originalCues.length === 0) return;
-    const resolved = resolveTimingCollisions(originalCues, audioSegments, { maxSpeedup: 1.45 });
-    const newCollisions = analyzeTimingCollision(originalCues, resolved);
+    if (originalCues.length === 0 || dubbingMode === "free_narration") return;
+    const resolved = resolveTimingCollisions(originalCues, audioSegments);
+    const newCollisions = analyzeTimingCollision(originalCues, resolved, dubbingMode);
     setAudioSegments(resolved);
     setOverflowAnalysis(newCollisions);
   };
@@ -789,26 +1401,34 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const handleExportMasterWav = async () => {
     if (originalCues.length === 0) return;
 
-    const activeSegments = autoFitEnabled
-      ? resolveTimingCollisions(originalCues, audioSegments)
-      : audioSegments;
-    const activeOverflow = autoFitEnabled
-      ? analyzeTimingCollision(originalCues, activeSegments)
-      : overflowAnalysis;
+    const activeSegments =
+      autoFitEnabled && dubbingMode !== "free_narration"
+        ? resolveTimingCollisions(originalCues, audioSegments)
+        : audioSegments;
+    const activeOverflow =
+      autoFitEnabled && dubbingMode !== "free_narration"
+        ? analyzeTimingCollision(originalCues, activeSegments, dubbingMode)
+        : overflowAnalysis;
 
     const incompleteCues = originalCues.filter(
-      (c) => !activeSegments[c.index] || activeSegments[c.index].status !== "ready"
+      (c) =>
+        !activeSegments[c.index] || activeSegments[c.index].status !== "ready"
     );
     if (incompleteCues.length > 0) {
       setErrorMessage(
-        `Có ${incompleteCues.length} câu chưa có âm thanh sẵn sàng (câu #${incompleteCues.map((c) => c.index).slice(0, 5).join(", ")}...). Vui lòng tạo audio toàn bộ kịch bản trước khi xuất.`
+        `Có ${incompleteCues.length} câu chưa có âm thanh sẵn sàng (câu #${incompleteCues
+          .map((c) => c.index)
+          .slice(0, 5)
+          .join(", ")}...). Vui lòng tạo audio toàn bộ kịch bản trước khi xuất.`
       );
       return;
     }
 
-    const collisionCheck = canExportMasterWav(activeOverflow);
+    const collisionCheck = canExportMasterWav(activeOverflow, dubbingMode);
     if (!collisionCheck.allowed) {
-      setErrorMessage(collisionCheck.reason || "Phát hiện nguy cơ đè tiếng (collision_danger).");
+      setErrorMessage(
+        collisionCheck.reason || "Phát hiện nguy cơ đè tiếng (collision_danger)."
+      );
       return;
     }
 
@@ -817,7 +1437,10 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       let chosenPath: string | null = null;
 
       // 1. If running under Tauri desktop environment, prompt native Save Dialog
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      if (
+        typeof window !== "undefined" &&
+        (window as any).__TAURI_INTERNALS__
+      ) {
         try {
           const { save } = await import("@tauri-apps/plugin-dialog");
           chosenPath = await save({
@@ -836,23 +1459,49 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
 
       // 2. If chosenPath and local AI sidecar available, use native timeline assembly
       const ai = await getSharedAiServices();
-      const hasAllFilePaths = originalCues.every((c) => Boolean(activeSegments[c.index]?.audioFilePath));
+      const primaryCues = originalCues.filter(
+        (c) => activeSegments[c.index]?.isGroupPrimary !== false
+      );
+      const hasAllFilePaths = primaryCues.every((c) =>
+        Boolean(activeSegments[c.index]?.audioFilePath)
+      );
 
       if (chosenPath && ai && hasAllFilePaths) {
         const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
-        const totalDurationSec = Math.max(...originalCues.map((c) => c.endSec));
-        await ai.assemble({
-          mode: "timeline",
-          inputs: originalCues.map((c) => ({
+        let inputs: Array<{ path: string; startSec: number }>;
+        let totalDurationSec: number;
+
+        if (dubbingMode === "free_narration") {
+          let currentCursor = 0;
+          inputs = [];
+          const pauseGap = pauses.period ?? 0.45;
+          for (const c of primaryCues) {
+            const seg = activeSegments[c.index];
+            const dur = seg.fittedDurationSec || seg.rawDurationSec || 0;
+            inputs.push({
+              path: seg.audioFilePath!,
+              startSec: currentCursor,
+            });
+            currentCursor += dur + pauseGap;
+          }
+          totalDurationSec = Math.max(0.1, currentCursor);
+        } else {
+          inputs = primaryCues.map((c) => ({
             path: activeSegments[c.index].audioFilePath!,
             startSec: activeSegments[c.index].audioStartSec,
-          })),
+          }));
+          totalDurationSec = Math.max(...originalCues.map((c) => c.endSec));
+        }
+
+        await ai.assemble({
+          mode: "timeline",
+          inputs,
           totalDurationSec,
           outputPath: chosenPath,
           format: isMp3 ? "mp3" : "wav",
         });
 
-        if (autoFitEnabled) {
+        if (autoFitEnabled && dubbingMode !== "free_narration") {
           setAudioSegments(activeSegments);
           setOverflowAnalysis(activeOverflow);
         }
@@ -904,7 +1553,9 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         audioSegments: activeSegments,
         overflowAnalysis: activeOverflow,
         sampleGetter: (idx) => sampleMap.get(idx) || null,
-        autoResolveCollisions: autoFitEnabled,
+        autoResolveCollisions: autoFitEnabled && dubbingMode !== "free_narration",
+        mode: dubbingMode,
+        pauseBetweenGroupsSec: pauses.period ?? 0.45,
       });
 
       if (!res.ok) {
@@ -912,7 +1563,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         return;
       }
 
-      if (res.resolvedSegments && res.resolvedOverflow) {
+      if (res.resolvedSegments && res.resolvedOverflow && dubbingMode !== "free_narration") {
         setAudioSegments(res.resolvedSegments);
         setOverflowAnalysis(res.resolvedOverflow);
       }
@@ -955,34 +1606,45 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const isProviderUnconfigured = Boolean(
     (currentProvider?.type === "gemini" && !currentProvider.apiKey) ||
     (currentProvider?.type === "deepseek" && !currentProvider.apiKey) ||
+    (currentProvider?.type === "openai" && !currentProvider.apiKey) ||
+    (currentProvider?.type === "qwen" && !currentProvider.apiKey) ||
     (currentProvider?.type === "lmstudio" && !currentProvider.endpoint) ||
-    (currentProvider?.type === "ollama" && !currentProvider.endpoint)
+    (currentProvider?.type === "ollama" && !currentProvider.endpoint) ||
+    (currentProvider?.type === "custom" && !currentProvider.endpoint)
   );
 
-  // Check if any collision exists
-  const hasCollisionDanger = Object.values(overflowAnalysis).some(
-    (m) => m.warningLevel === "collision_danger"
-  );
-  const collidingCuesCount = countCollisions(overflowAnalysis);
+  // Check if any collision exists (only relevant in source_sync mode)
+  const hasCollisionDanger =
+    dubbingMode !== "free_narration" &&
+    Object.values(overflowAnalysis).some(
+      (m) => m.warningLevel === "collision_danger"
+    );
+  const collidingCuesCount =
+    dubbingMode !== "free_narration" ? countCollisions(overflowAnalysis) : 0;
 
-  // Active Dubbing Preview Track
+  // Active Dubbing Preview Track (persists while paused until explicitly closed)
   const activeDubTrack: ActiveAudioTrack | null = useMemo(() => {
-    if (playingCueIndex === null) return null;
-    const seg = audioSegments[playingCueIndex];
-    const orig = originalCues.find((c) => c.index === playingCueIndex);
-    const trans = translatedCues.find((c) => c.index === playingCueIndex);
-    const voice = voices.find((v) => v.id === activeVoiceId);
-    const dur = seg?.fittedDurationSec || (orig ? Math.max(0.1, orig.endSec - orig.startSec) : 4.0);
+    if (activePreviewCueIndex === null) return null;
+    const seg = audioSegments[activePreviewCueIndex];
+    const audioUrl = seg?.fittedAudioUrl || seg?.audioUrl;
+    if (!audioUrl) return null;
+    const orig = originalCues.find((c) => c.index === activePreviewCueIndex);
+    const trans = translatedCues.find((c) => c.index === activePreviewCueIndex);
+    const voice = voices.find((v) => v.id === (selectedVoiceId || activeVoiceId));
+    const dur =
+      seg?.fittedDurationSec ||
+      seg?.rawDurationSec ||
+      (orig ? Math.max(0.1, orig.endSec - orig.startSec) : 4.0);
     return {
-      id: `dub_cue_${playingCueIndex}`,
-      chunkIndex: playingCueIndex,
-      title: `Câu ${playingCueIndex < 10 ? `0${playingCueIndex}` : playingCueIndex} · Lồng tiếng`,
-      voiceName: voice?.name || "Lồng tiếng",
+      id: `dub_cue_${activePreviewCueIndex}`,
+      chunkIndex: activePreviewCueIndex,
+      title: `Câu ${activePreviewCueIndex < 10 ? `0${activePreviewCueIndex}` : activePreviewCueIndex} · Lồng tiếng`,
+      voiceName: seg?.effectiveVoiceSnapshot?.voiceName || voice?.name || "Lồng tiếng",
       durationSec: dur,
-      audioUrl: seg?.fittedAudioUrl || seg?.audioUrl,
+      audioUrl,
       text: trans?.text || orig?.text,
     };
-  }, [playingCueIndex, audioSegments, originalCues, translatedCues, voices, activeVoiceId]);
+  }, [activePreviewCueIndex, audioSegments, originalCues, translatedCues, voices, selectedVoiceId, activeVoiceId]);
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-background relative">
@@ -1017,7 +1679,35 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* Mode Switcher Pill Control */}
+          <div className="flex items-center bg-surface2 p-0.5 rounded-lg border border-borderDefault">
+            <button
+              type="button"
+              onClick={() => handleDubbingModeChange("source_sync")}
+              className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                dubbingMode === "source_sync"
+                  ? "bg-accent text-white shadow-2xs"
+                  : "text-textSecondary hover:text-textPrimary"
+              }`}
+              title="Chế độ 1 — Đồng bộ video gốc: Khớp 100% mốc thời gian và thời lượng video ban đầu"
+            >
+              Đồng bộ video gốc
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDubbingModeChange("free_narration")}
+              className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                dubbingMode === "free_narration"
+                  ? "bg-accent text-white shadow-2xs"
+                  : "text-textSecondary hover:text-textPrimary"
+              }`}
+              title="Chế độ 2 — Thuyết minh tự do: Dịch tự nhiên theo câu/đoạn, không giới hạn timeline gốc"
+            >
+              Thuyết minh tự do
+            </button>
+          </div>
+
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -1111,23 +1801,41 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
             translatedCues={translatedCues}
             audioSegments={audioSegments}
             overflowAnalysis={overflowAnalysis}
-            playingCueIndex={playingCueIndex}
+            dubbingMode={dubbingMode}
+            playingCueIndex={isPlayingCueAudio ? activePreviewCueIndex : null}
             collidingCount={collidingCuesCount}
+            isGeneratingAudio={isGeneratingAudio || isCheckingAsrReadiness}
             onAutoFitAll={handleAutoFitAll}
             onUpdateText={handleUpdateText}
             onPlayAudio={(idx) => {
-              setPlayingCueIndex((prev) => (prev === idx ? null : idx));
+              if (activePreviewCueIndex === idx) {
+                setIsPlayingCueAudio((prev) => !prev);
+              } else {
+                setActivePreviewCueIndex(idx);
+                setIsPlayingCueAudio(true);
+              }
             }}
-            onRegenerateAudio={handleRegenerateAudio}
+            onRegenerateAudio={(idx) => {
+              void handleRegenerateAudio(idx);
+            }}
+            onRegenerateErrors={() => {
+              void handleRegenerateErrorCues();
+            }}
+            onRegenerateWarnings={() => {
+              void handleRegenerateWarningCues();
+            }}
             onSelectFile={() => fileInputRef.current?.click()}
             isDragging={isDragging}
             bottomPlayer={
               activeDubTrack ? (
                 <BottomAudioPlayer
                   track={activeDubTrack}
-                  isPlaying={playingCueIndex !== null}
-                  onTogglePlay={() => setPlayingCueIndex((prev) => (prev === null ? activeDubTrack.chunkIndex || 1 : null))}
-                  onClose={() => setPlayingCueIndex(null)}
+                  isPlaying={isPlayingCueAudio}
+                  onTogglePlay={() => setIsPlayingCueAudio((prev) => !prev)}
+                  onClose={() => {
+                    setIsPlayingCueAudio(false);
+                    setActivePreviewCueIndex(null);
+                  }}
                   className="mx-0 mb-0"
                 />
               ) : null
@@ -1352,17 +2060,42 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 );
               })()}
 
-              {/* Nút Xuất phụ đề đã dịch (.SRT) */}
-              <button
-                type="button"
-                disabled={translatedCues.length === 0}
-                onClick={handleExportTranslatedSrt}
-                className="w-full py-2 bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault rounded-lg font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Xuất file phụ đề đã dịch (.SRT) kế thừa 100% mốc thời gian gốc"
-              >
-                <Download className="w-3.5 h-3.5 text-textMuted" />
-                <span>Xuất phụ đề đã dịch (.SRT)</span>
-              </button>
+              {/* Nút Xuất file phụ đề / văn bản */}
+              {dubbingMode === "free_narration" ? (
+                <div className="space-y-1.5 pt-0.5">
+                  <button
+                    type="button"
+                    disabled={translatedCues.length === 0}
+                    onClick={handleExportTxt}
+                    className="w-full py-2 bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault rounded-lg font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Xuất toàn bộ kịch bản dịch dạng văn bản thuần (.TXT) để dùng dựng phim hoặc lồng tiếng tự do"
+                  >
+                    <Download className="w-3.5 h-3.5 text-textMuted" />
+                    <span>Xuất văn bản dịch (.TXT)</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={translatedCues.length === 0}
+                    onClick={handleExportTranslatedSrt}
+                    className="w-full py-2 bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault rounded-lg font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Xuất file phụ đề tham chiếu (.SRT) kế thừa mốc thời gian gốc để đối chiếu"
+                  >
+                    <Download className="w-3.5 h-3.5 text-textMuted" />
+                    <span>Xuất phụ đề tham chiếu (.SRT)</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={translatedCues.length === 0}
+                  onClick={handleExportTranslatedSrt}
+                  className="w-full py-2 bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault rounded-lg font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Xuất file phụ đề đã dịch (.SRT) kế thừa 100% mốc thời gian gốc"
+                >
+                  <Download className="w-3.5 h-3.5 text-textMuted" />
+                  <span>Xuất phụ đề đã dịch (.SRT)</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -1370,11 +2103,45 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           <div className="flex-1 min-h-0 flex flex-col">
             {/* Scrollable Settings */}
             <div className="flex-1 overflow-y-auto p-3.5 space-y-3.5">
-              <div className="flex items-center gap-2 pb-0.5">
-                <Volume2 className="w-4 h-4 text-accent" />
-                <span className="font-bold text-xs text-textPrimary uppercase tracking-wide">
-                  Lồng Tiếng
-                </span>
+              <div className="flex items-center justify-between pb-0.5">
+                <div className="flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-accent" />
+                  <span className="font-bold text-xs text-textPrimary uppercase tracking-wide">
+                    Lồng Tiếng
+                  </span>
+                </div>
+                {speechGroups.length > 0 && (
+                  <span
+                    className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25"
+                    title={`Gộp ${originalCues.length} phụ đề thành ${speechGroups.length} nhóm câu thoại hoàn chỉnh`}
+                  >
+                    {speechGroups.length} nhóm câu
+                  </span>
+                )}
+              </div>
+
+              {/* Chế độ Dịch & Lồng tiếng */}
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                  Chế Độ Dịch & Lồng Tiếng
+                </label>
+                <select
+                  value={dubbingMode}
+                  onChange={(e) => handleDubbingModeChange(e.target.value)}
+                  className="w-full h-[32px] bg-surface2/50 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
+                >
+                  <option value="source_sync">
+                    Chế độ 1: Đồng bộ video gốc (source_sync)
+                  </option>
+                  <option value="free_narration">
+                    Chế độ 2: Thuyết minh tự do (free_narration)
+                  </option>
+                </select>
+                <p className="text-[11px] text-textMuted leading-tight pt-0.5">
+                  {dubbingMode === "source_sync"
+                    ? "Giữ nguyên hình ảnh, thời lượng và mốc thoại gốc. Hỗ trợ Auto-Fit WSOLA tối đa 1.20x."
+                    : "Dịch tự nhiên theo câu/đoạn, không giới hạn timeline gốc. Ghép nối daisy-chain mượt mà."}
+                </p>
               </div>
 
               {/* Giọng lồng tiếng & Model đọc */}
@@ -1630,38 +2397,44 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
 
                 {isAdvancedOpen && (
                   <div className="space-y-3 pt-2">
-                    {/* Khớp thời gian file gốc toggle */}
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-textSecondary font-medium select-none flex items-center gap-1.5">
-                          <Zap className={`w-3.5 h-3.5 ${autoFitEnabled ? "text-accent" : "text-textMuted"}`} />
-                          Khớp thời gian file gốc
-                        </span>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={autoFitEnabled}
-                          onClick={() => setAutoFitEnabled((prev) => !prev)}
-                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                            autoFitEnabled ? "bg-accent" : "bg-surface3"
-                          }`}
-                          title={`Khớp thời gian file gốc: ${autoFitEnabled ? "Bật (ON)" : "Tắt (OFF)"}`}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                              autoFitEnabled ? "translate-x-4" : "translate-x-0"
+                    {/* Khớp thời gian file gốc toggle (Chỉ cho source_sync) */}
+                    {dubbingMode === "source_sync" ? (
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-textSecondary font-medium select-none flex items-center gap-1.5">
+                            <Zap className={`w-3.5 h-3.5 ${autoFitEnabled ? "text-accent" : "text-textMuted"}`} />
+                            Khớp thời gian file gốc
+                          </span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={autoFitEnabled}
+                            onClick={() => setAutoFitEnabled((prev) => !prev)}
+                            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                              autoFitEnabled ? "bg-accent" : "bg-surface3"
                             }`}
-                          />
-                        </button>
+                            title={`Khớp thời gian file gốc: ${autoFitEnabled ? "Bật (ON)" : "Tắt (OFF)"}`}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                autoFitEnabled ? "translate-x-4" : "translate-x-0"
+                              }`}
+                            />
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <p className="text-[11px] text-textMuted italic">
+                        Chế độ Thuyết minh tự do phát âm theo tốc độ tự nhiên, không ép mốc thời gian video gốc.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
 
-              {/* Quick action to fix all collisions if any exist */}
-              {hasCollisionDanger && (
+              {/* Quick action to fix all collisions if any exist (source_sync only) */}
+              {dubbingMode === "source_sync" && hasCollisionDanger && (
                 <button
                   type="button"
                   onClick={handleAutoFitAll}
@@ -1678,7 +2451,11 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
             <div className="p-3 border-t border-borderDefault/70 bg-surface1/95 backdrop-blur-xs flex-shrink-0 space-y-2">
               {/* Integrated Progress Button for Dubbing */}
               {(() => {
-                const audioTotal = originalCues.length;
+                const audioTotal =
+                  audioProgress?.total ||
+                  (speechGroups.length > 0
+                    ? speechGroups.length
+                    : originalCues.length);
                 const audioDone = audioProgress?.done || 0;
                 const audioPercent = audioTotal > 0 ? Math.min(100, Math.round((audioDone / audioTotal) * 100)) : 0;
 
@@ -1767,10 +2544,10 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 return (
                   <button
                     type="button"
-                    disabled={originalCues.length === 0}
-                    onClick={handleStartBatchSynthesis}
+                    disabled={originalCues.length === 0 || isCheckingAsrReadiness}
+                    onClick={() => void handleStartBatchSynthesis()}
                     className={`w-full h-[52px] px-3 rounded-xl text-xs font-semibold shadow-md transition-all flex items-center justify-center gap-2 ${
-                      originalCues.length === 0
+                      originalCues.length === 0 || isCheckingAsrReadiness
                         ? "bg-surface3 text-textMuted cursor-not-allowed border border-borderDefault/50"
                         : "bg-accent hover:bg-accentHover text-white cursor-pointer active:scale-[0.98] hover:shadow-lg hover:shadow-accent/20"
                     }`}
@@ -1781,23 +2558,51 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 );
               })()}
 
+              {/* Nút Xuất phụ đề đồng bộ âm thanh (.SRT) (Chỉ có trong chế độ free_narration) */}
+              {dubbingMode === "free_narration" && (
+                <button
+                  type="button"
+                  disabled={
+                    originalCues.length === 0 ||
+                    Object.values(audioSegments).every((s) => s.status !== "ready")
+                  }
+                  onClick={handleExportAlignedSrt}
+                  className="w-full py-2 bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault rounded-lg font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
+                  title="Xuất file phụ đề có mốc thời gian được căn chỉnh tự động theo đúng dòng thời gian âm thanh mới tạo"
+                >
+                  <Download className="w-3.5 h-3.5 text-accent" />
+                  <span>Xuất phụ đề đồng bộ âm thanh (.SRT)</span>
+                </button>
+              )}
+
               {/* Nút Xuất Master Audio (.WAV) */}
               <button
                 type="button"
-                disabled={originalCues.length === 0 || (!autoFitEnabled && hasCollisionDanger)}
+                disabled={
+                  originalCues.length === 0 ||
+                  (dubbingMode === "source_sync" && !autoFitEnabled && hasCollisionDanger)
+                }
                 onClick={handleExportMasterWav}
                 className={`w-full py-2 rounded-lg font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 shadow-2xs ${
-                  !autoFitEnabled && hasCollisionDanger
+                  dubbingMode === "source_sync" && !autoFitEnabled && hasCollisionDanger
                     ? "bg-red-500/20 text-red-400 border border-red-500/30 cursor-not-allowed"
                     : "bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 }`}
-                title="Ghép toàn bộ các đoạn thoại lồng tiếng vào file âm thanh tổng Master WAV (44.1kHz 16-bit Mono)"
+                title={
+                  dubbingMode === "free_narration"
+                    ? "Ghép toàn bộ các đoạn thuyết minh nối tiếp thành file âm thanh Master WAV (44.1kHz 16-bit Mono)"
+                    : "Ghép toàn bộ các đoạn thoại lồng tiếng vào file âm thanh tổng Master WAV (44.1kHz 16-bit Mono)"
+                }
               >
                 <Download className="w-3.5 h-3.5 text-textMuted" />
-                <span>Xuất Master Audio (.WAV)</span>
+                <span>
+                  {dubbingMode === "free_narration"
+                    ? "Xuất Master Audio Thuyết minh (.WAV)"
+                    : "Xuất Master Audio Đồng bộ (.WAV)"}
+                </span>
               </button>
 
-              {hasCollisionDanger && autoFitEnabled && (
+              {dubbingMode === "source_sync" && hasCollisionDanger && autoFitEnabled && (
                 <div className="p-2 bg-blue-500/10 border border-blue-500/20 rounded-md text-blue-400 text-[11px] flex items-start gap-1.5">
                   <Zap className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                   <span>
@@ -1806,7 +2611,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 </div>
               )}
 
-              {hasCollisionDanger && !autoFitEnabled && (
+              {dubbingMode === "source_sync" && hasCollisionDanger && !autoFitEnabled && (
                 <div className="p-2 bg-red-500/10 border border-red-500/20 rounded-md text-red-400 text-[11px] flex items-start gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                   <span>
@@ -1818,6 +2623,36 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           </div>
         </aside>
       </div>
+
+      {/* Pre-flight ASR Readiness Modal */}
+      <AsrReadinessModal
+        isOpen={Boolean(asrReadinessResult)}
+        readiness={asrReadinessResult}
+        onClose={() => {
+          setAsrReadinessResult(null);
+          pendingGenerationActionRef.current = null;
+        }}
+        onSwitchModelAndProceed={(newModelId: string) => {
+          applyAsrModelSwitch(newModelId);
+          setCurrentAsrModel(newModelId);
+          setIsAsrReady(true);
+          setAsrReadinessResult(null);
+          const action = pendingGenerationActionRef.current;
+          pendingGenerationActionRef.current = null;
+          if (action) action();
+        }}
+        onNavigateToTranscription={() => {
+          setAsrReadinessResult(null);
+          pendingGenerationActionRef.current = null;
+          try {
+            window.dispatchEvent(
+              new CustomEvent("voxlab:navigate", { detail: { tab: "transcription" } })
+            );
+          } catch {
+            // ignore
+          }
+        }}
+      />
     </div>
   );
 };

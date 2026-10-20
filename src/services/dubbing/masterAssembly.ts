@@ -2,11 +2,13 @@ import {
   OriginalCue,
   DubAudioSegment,
   TimingOverflowMetadata,
+  DubbingMode,
 } from "../../types/dubbing";
 import { canExportMasterWav, analyzeTimingCollision } from "./collisionDetector";
 import { resolveTimingCollisions } from "./autoFit";
 import { preflightMemoryCheck } from "./memoryGuardrail";
 import { encode16BitMonoWav, CANONICAL_SAMPLE_RATE } from "./audioNormalizer";
+import { timeStretchPcmSamples } from "./timingFit";
 
 export interface MasterAssemblyOptions {
   originalCues: OriginalCue[];
@@ -14,6 +16,8 @@ export interface MasterAssemblyOptions {
   overflowAnalysis: Record<number, TimingOverflowMetadata>;
   sampleGetter?: (cueIndex: number) => Float32Array | null;
   autoResolveCollisions?: boolean;
+  mode?: DubbingMode;
+  pauseBetweenGroupsSec?: number;
 }
 
 export interface MasterAssemblyResult {
@@ -29,30 +33,41 @@ export interface MasterAssemblyResult {
 
 /**
  * Assembles continuous Master Audio WAV file (Canonical 44.1kHz 16-bit Mono).
- * Hard Validation:
- * 1. 100% of cues must have audio in "ready" status.
- * 2. Zero collision_danger across all cues (auto-resolved if autoResolveCollisions=true).
- * 3. Memory preflight must pass (blocks > 120m / 635MB).
+ * - "source_sync": Anchored to source subtitle timeline; enforces collision checks and 1.20x WSOLA.
+ * - "free_narration": Daisy-chained sequentially with natural pause gaps; no source timestamp barriers.
  */
 export function mergeMasterAudio(options: MasterAssemblyOptions): MasterAssemblyResult {
-  const { originalCues, audioSegments, overflowAnalysis, sampleGetter, autoResolveCollisions } = options;
+  const {
+    originalCues,
+    audioSegments,
+    overflowAnalysis,
+    sampleGetter,
+    autoResolveCollisions,
+    mode = "source_sync",
+    pauseBetweenGroupsSec = 0.45,
+  } = options;
 
   if (!originalCues || originalCues.length === 0) {
     return { ok: false, reason: "Không có câu phụ đề nào để xuất âm thanh." };
   }
 
-  // 1. Auto-resolve collisions if enabled
-  const activeSegments = autoResolveCollisions
-    ? resolveTimingCollisions(originalCues, audioSegments)
-    : audioSegments;
-  const activeOverflow = autoResolveCollisions
-    ? analyzeTimingCollision(originalCues, activeSegments)
-    : overflowAnalysis;
+  const isFreeNarration = mode === "free_narration";
 
-  // 2. Completeness Check
-  const incompleteCues = originalCues.filter(
-    (c) => !activeSegments[c.index] || activeSegments[c.index].status !== "ready"
-  );
+  // 1. Auto-resolve collisions if enabled in source_sync mode
+  const activeSegments: Record<number, DubAudioSegment> =
+    !isFreeNarration && autoResolveCollisions
+      ? resolveTimingCollisions(originalCues, audioSegments)
+      : { ...audioSegments };
+  const activeOverflow =
+    !isFreeNarration && autoResolveCollisions
+      ? analyzeTimingCollision(originalCues, activeSegments, mode)
+      : overflowAnalysis;
+
+  // 2. Completeness Check across all primary cues
+  const incompleteCues = originalCues.filter((c) => {
+    const seg = activeSegments[c.index];
+    return seg?.isGroupPrimary !== false && (!seg || seg.status !== "ready");
+  });
   if (incompleteCues.length > 0) {
     return {
       ok: false,
@@ -60,44 +75,119 @@ export function mergeMasterAudio(options: MasterAssemblyOptions): MasterAssembly
     };
   }
 
-  // 3. Collision Check
-  const collisionCheck = canExportMasterWav(activeOverflow);
+  // 3. Collision Check (Bypassed in free_narration)
+  const collisionCheck = canExportMasterWav(activeOverflow, mode);
   if (!collisionCheck.allowed) {
     return { ok: false, reason: collisionCheck.reason };
   }
 
-  // 4. Compute Total Duration
+  // 4. Compute Timeline Offsets and Total Duration
+  const primaryCues = originalCues.filter(
+    (c) => activeSegments[c.index]?.isGroupPrimary !== false
+  );
+
   let totalDurationSec = 0;
-  for (const cue of originalCues) {
-    const seg = activeSegments[cue.index];
-    const cueAudioEnd = cue.startSec + seg.fittedDurationSec;
-    if (cueAudioEnd > totalDurationSec) {
-      totalDurationSec = cueAudioEnd;
+  const narrationOffsets = new Map<number, { startSec: number; endSec: number }>();
+
+  if (isFreeNarration) {
+    let runningSec = 0;
+    for (let i = 0; i < primaryCues.length; i++) {
+      const cue = primaryCues[i];
+      const seg = activeSegments[cue.index];
+      const dur = seg.fittedDurationSec > 0 ? seg.fittedDurationSec : seg.rawDurationSec;
+      const startSec = Number(runningSec.toFixed(3));
+      const endSec = Number((runningSec + dur).toFixed(3));
+
+      narrationOffsets.set(cue.index, { startSec, endSec });
+      runningSec = endSec;
+
+      if (i < primaryCues.length - 1) {
+        runningSec += Math.max(0, pauseBetweenGroupsSec);
+      }
+    }
+    totalDurationSec = Number(runningSec.toFixed(3));
+
+    // Update activeSegments with actual narration timeline positions
+    for (const cue of primaryCues) {
+      const off = narrationOffsets.get(cue.index);
+      if (off && activeSegments[cue.index]) {
+        activeSegments[cue.index] = {
+          ...activeSegments[cue.index],
+          audioStartSec: off.startSec,
+          audioEndSec: off.endSec,
+        };
+        const memberIds = activeSegments[cue.index].groupCueIndices;
+        if (memberIds) {
+          for (const id of memberIds) {
+            if (activeSegments[id] && id !== cue.index) {
+              activeSegments[id] = {
+                ...activeSegments[id],
+                audioStartSec: off.startSec,
+                audioEndSec: off.endSec,
+              };
+            }
+          }
+        }
+      }
+    }
+  } else {
+    for (const cue of originalCues) {
+      const seg = activeSegments[cue.index];
+      if (!seg || seg.isGroupPrimary === false) continue;
+      const startSec = typeof seg.audioStartSec === "number" ? seg.audioStartSec : cue.startSec;
+      const cueAudioEnd = startSec + seg.fittedDurationSec;
+      if (cueAudioEnd > totalDurationSec) {
+        totalDurationSec = cueAudioEnd;
+      }
+    }
+    const lastCueEnd = originalCues[originalCues.length - 1]?.endSec || 0;
+    if (totalDurationSec === 0 && lastCueEnd > 0) {
+      totalDurationSec = lastCueEnd;
     }
   }
 
-  // 4. Memory Preflight Guardrail
+  // 5. Memory Preflight Guardrail
   const memoryCheck = preflightMemoryCheck(totalDurationSec);
   if (!memoryCheck.allowed) {
     return { ok: false, reason: memoryCheck.message };
   }
 
-  // 5. Allocate Master PCM Buffer (zero-filled silence by default) & Encode
+  // 6. Allocate Master PCM Buffer & Encode
   try {
-    const totalSamples = Math.max(1, Math.floor(totalDurationSec * CANONICAL_SAMPLE_RATE));
+    const totalSamples = Math.max(1, Math.ceil(totalDurationSec * CANONICAL_SAMPLE_RATE));
     const masterSamples = new Float32Array(totalSamples);
 
-    // 6. Write each cue segment at its exact startSec offset
+    // 7. Write each primary cue/group segment at its offset
     for (const cue of originalCues) {
       const seg = activeSegments[cue.index];
-      const startSampleOffset = Math.round(cue.startSec * CANONICAL_SAMPLE_RATE);
+      if (!seg || seg.isGroupPrimary === false) continue;
+
+      const startSec = isFreeNarration
+        ? narrationOffsets.get(cue.index)?.startSec ?? 0
+        : typeof seg.audioStartSec === "number"
+        ? seg.audioStartSec
+        : cue.startSec;
+
+      const startSampleOffset = Math.round(startSec * CANONICAL_SAMPLE_RATE);
 
       let segmentSamples: Float32Array;
       if (sampleGetter) {
         const retrieved = sampleGetter(cue.index);
-        segmentSamples = retrieved || new Float32Array(Math.floor(seg.fittedDurationSec * CANONICAL_SAMPLE_RATE));
+        if (retrieved) {
+          const expectedFittedSamples = Math.round(seg.fittedDurationSec * CANONICAL_SAMPLE_RATE);
+          if (
+            !isFreeNarration &&
+            seg.speedFactor > 1.001 &&
+            Math.abs(retrieved.length - expectedFittedSamples) > CANONICAL_SAMPLE_RATE * 0.03
+          ) {
+            segmentSamples = timeStretchPcmSamples(retrieved, CANONICAL_SAMPLE_RATE, seg.speedFactor);
+          } else {
+            segmentSamples = retrieved;
+          }
+        } else {
+          segmentSamples = new Float32Array(Math.floor(seg.fittedDurationSec * CANONICAL_SAMPLE_RATE));
+        }
       } else {
-        // Synthesize clean silence/sine sample block for segment length
         const segLength = Math.floor(seg.fittedDurationSec * CANONICAL_SAMPLE_RATE);
         segmentSamples = new Float32Array(segLength);
       }
@@ -108,7 +198,7 @@ export function mergeMasterAudio(options: MasterAssemblyOptions): MasterAssembly
       }
     }
 
-    // 7. Encode to Canonical 16-bit Mono WAV
+    // 8. Encode to Canonical 16-bit Mono WAV
     const wavBuffer = encode16BitMonoWav(masterSamples, CANONICAL_SAMPLE_RATE);
     const blob = new Blob([wavBuffer], { type: "audio/wav" });
 
@@ -118,8 +208,8 @@ export function mergeMasterAudio(options: MasterAssemblyOptions): MasterAssembly
       totalDurationSec: Number(totalDurationSec.toFixed(3)),
       totalBytes: wavBuffer.byteLength,
       warningMessage: memoryCheck.message,
-      resolvedSegments: autoResolveCollisions ? activeSegments : undefined,
-      resolvedOverflow: autoResolveCollisions ? activeOverflow : undefined,
+      resolvedSegments: isFreeNarration || autoResolveCollisions ? activeSegments : undefined,
+      resolvedOverflow: !isFreeNarration && autoResolveCollisions ? activeOverflow : undefined,
     };
   } catch (err: any) {
     return {

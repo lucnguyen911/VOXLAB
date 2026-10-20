@@ -13,7 +13,16 @@ export class OpenAiTtsProvider implements TtsProviderAdapter {
   }
 
   getApiKey(): string | null {
-    if (typeof window !== "undefined") {
+    if (typeof localStorage !== "undefined") {
+      try {
+        const raw = localStorage.getItem("voxlab_provider_configs_v4");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.openai?.apiKey && String(parsed.openai.apiKey).trim()) {
+            return String(parsed.openai.apiKey).trim();
+          }
+        }
+      } catch {}
       return localStorage.getItem("voxlab_openai_api_key") || null;
     }
     return null;
@@ -35,11 +44,14 @@ export class OpenAiTtsProvider implements TtsProviderAdapter {
   }
 
   listVoices(): VoiceProfile[] {
-    if (this.cachedVoices) {
-      return this.cachedVoices;
-    }
-
     const isConfigured = this.availability() === "available";
+    if (this.cachedVoices) {
+      return this.cachedVoices.map((v) => ({
+        ...v,
+        availability: isConfigured ? "available" : "not_configured",
+        previewAvailable: isConfigured,
+      }));
+    }
 
     // Official OpenAI Speech voices: alloy, echo, fable, onyx, nova, shimmer, ash, coral, sage
     const catalog: VoiceProfile[] = [

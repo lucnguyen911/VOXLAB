@@ -3,6 +3,7 @@ import {
   DubAudioSegment,
   TimingOverflowMetadata,
 } from "../../types/dubbing";
+import { MAX_DUB_SPEEDUP, DEFAULT_SAFETY_GAP_SEC } from "./timingFit";
 
 export interface AutoFitOptions {
   maxSpeedup?: number;
@@ -11,8 +12,8 @@ export interface AutoFitOptions {
 
 /**
  * Resolves timing collisions across dubbing audio segments by adaptively
- * adjusting the speed factor so each audio segment finishes before the subsequent cue begins.
- * Preserves pitch and natural pacing while eliminating overlapping speech.
+ * adjusting the speed factor (strictly capped at MAX_DUB_SPEEDUP = 1.20x per SPEC.md v2.5.3).
+ * Never fake-clamps fittedDurationSec or audioEndSec when overflow exceeds 1.20x.
  */
 export function resolveTimingCollisions(
   originalCues: OriginalCue[],
@@ -23,21 +24,43 @@ export function resolveTimingCollisions(
     return { ...audioSegments };
   }
 
-  const maxSpeedup = options?.maxSpeedup ?? 1.45;
-  const preserveGapSec = options?.preserveGapSec ?? 0.02;
+  const maxSpeedup = Math.min(
+    MAX_DUB_SPEEDUP,
+    Math.max(1.0, options?.maxSpeedup ?? MAX_DUB_SPEEDUP)
+  );
+  const preserveGapSec = options?.preserveGapSec ?? DEFAULT_SAFETY_GAP_SEC;
 
   const result: Record<number, DubAudioSegment> = { ...audioSegments };
+  const cuePosByIndex = new Map<number, number>();
+  for (let i = 0; i < originalCues.length; i++) {
+    cuePosByIndex.set(originalCues[i].index, i);
+  }
 
   for (let i = 0; i < originalCues.length; i++) {
     const cue = originalCues[i];
     const seg = result[cue.index];
 
-    if (!seg || typeof seg.rawDurationSec !== "number" || seg.rawDurationSec <= 0) {
+    if (
+      !seg ||
+      seg.isGroupPrimary === false ||
+      typeof seg.rawDurationSec !== "number" ||
+      seg.rawDurationSec <= 0
+    ) {
       continue;
     }
 
-    const nextCue = originalCues[i + 1];
-    const audioStartSec = cue.startSec;
+    let lastCuePos = i;
+    if (seg.groupCueIndices && seg.groupCueIndices.length > 0) {
+      const lastGroupCueIdx = seg.groupCueIndices[seg.groupCueIndices.length - 1];
+      const mappedPos = cuePosByIndex.get(lastGroupCueIdx);
+      if (mappedPos !== undefined && mappedPos >= i) {
+        lastCuePos = mappedPos;
+      }
+    }
+
+    const nextCue = originalCues[lastCuePos + 1];
+    const audioStartSec =
+      typeof seg.audioStartSec === "number" ? seg.audioStartSec : cue.startSec;
     const currentEndSec =
       seg.audioEndSec || Number((audioStartSec + seg.fittedDurationSec).toFixed(3));
 
@@ -49,21 +72,13 @@ export function resolveTimingCollisions(
         Number((nextCue.startSec - audioStartSec - preserveGapSec).toFixed(3))
       );
 
-      // Desired speed factor to fit into available window
+      // Desired speed factor to fit into available window, strictly capped at 1.20x
       const desiredFactor = seg.rawDurationSec / maxWindowSec;
       const appliedSpeed = Math.min(
         maxSpeedup,
         Math.max(seg.speedFactor || 1.0, Number(desiredFactor.toFixed(3)))
       );
-      let fittedDuration = Number((seg.rawDurationSec / appliedSpeed).toFixed(3));
-
-      // Ensure it does not exceed the next cue start
-      if (audioStartSec + fittedDuration > nextCue.startSec) {
-        fittedDuration = Math.max(
-          0.1,
-          Number((nextCue.startSec - audioStartSec - 0.005).toFixed(3))
-        );
-      }
+      const fittedDuration = Number((seg.rawDurationSec / appliedSpeed).toFixed(3));
 
       result[cue.index] = {
         ...seg,

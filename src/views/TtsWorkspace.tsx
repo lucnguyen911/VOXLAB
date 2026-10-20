@@ -306,6 +306,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   const editorDropZoneRef = useRef<HTMLDivElement>(null);
   useTauriDropZone(editorDropZoneRef, {
     enabled: stage === "prep",
+    allowedExtensions: ["docx", "txt", "md", "srt", "vtt"],
     onDragStateChange: setIsDraggingOver,
     onDropFiles: (files) => {
       const validFile =
@@ -2067,23 +2068,6 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                                       <p className="mt-0.5 text-textPrimary text-xs">{iss.message}</p>
                                     </div>
                                   </div>
-                                  {chunk.status === "ready" && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        if (onPlayChunk) {
-                                          onPlayChunk(chunk);
-                                        } else {
-                                          handlePlayToggle(chunk.id);
-                                        }
-                                      }}
-                                      className="px-2 py-0.5 rounded bg-surface2 hover:bg-surface3 text-[11px] text-textPrimary font-medium border border-borderDefault shrink-0 transition-colors flex items-center gap-1 cursor-pointer"
-                                      title="Nghe lại đoạn này"
-                                    >
-                                      <Play className="w-2.5 h-2.5 fill-current text-accent" />
-                                      <span>Nghe lại</span>
-                                    </button>
-                                  )}
                                 </div>
                               );
                             })}

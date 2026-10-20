@@ -28,6 +28,10 @@ import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 import { getEffectiveRules } from "../../pronunciation";
+import {
+  validateChunkAudioQuality,
+  countChunkQualityIssues,
+} from "../../audio/qualityValidator";
 
 export interface TtsExecutorOptions {
   textContent?: string;
@@ -169,7 +173,23 @@ export class TtsExecutor {
         }
         chunk.durationSec = r.durationSec; // real audio duration → synthesized_timing subtitles
         chunk.audioUrl = r.outputPath;
+        chunk.audioFilePath = r.outputPath;
         chunk.status = "ready";
+
+        if (typeof ai.validateAudioQuality === "function") {
+          try {
+            chunk.qualityReview = await validateChunkAudioQuality(
+              chunk,
+              undefined,
+              ai,
+              speed,
+              undefined,
+              "current"
+            );
+          } catch {
+            // Non-blocking: quality check failure must not abort batch synthesis
+          }
+        }
       } catch (e) {
         const err = AiError.from(e);
         if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(Math.floor(10 + (i / totalChunks) * 60));
@@ -260,11 +280,18 @@ export class TtsExecutor {
 
     onProgress?.(100, "Hoàn tất tạo giọng đọc TTS!");
 
+    const qcStats = countChunkQualityIssues(sortedChunks);
+    const qcWarning =
+      qcStats.errorCount > 0 || qcStats.warningCount > 0
+        ? `Hậu kiểm chất lượng TTS: ${qcStats.errorCount} đoạn lỗi, ${qcStats.warningCount} đoạn cảnh báo.`
+        : undefined;
+
     return {
       task: "tts",
       status: "completed",
       progressPct: 100,
       outputArtifactPaths,
+      ...(qcWarning ? { warning: qcWarning } : {}),
       startedAt,
       completedAt: Date.now(),
     };

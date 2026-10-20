@@ -231,32 +231,37 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [referenceAudioPath, setReferenceAudioPath] = useState<string>("");
 
+  const loadReferenceAudioFromPath = async (picked: string) => {
+    setReferenceAudioPath(picked);
+    const blobUrl = await readAudioFileBlobUrl(picked);
+    const resp = await fetch(blobUrl);
+    const arr = await resp.arrayBuffer();
+    const ctx = getOrCreateAudioContext();
+    const buffer = await ctx.decodeAudioData(arr);
+    setAudioBuffer(buffer);
+    setAudioUrl(blobUrl);
+    setTrimRange(null);
+    const fileName = picked.split(/[\\/]/).pop() || "reference.wav";
+    setReferenceFileMeta({
+      name: fileName,
+      size: `${(arr.byteLength / (1024 * 1024)).toFixed(1)} MB`,
+      duration: `${buffer.duration.toFixed(1)}s`,
+    });
+    if (!voiceName.trim()) {
+      const base = fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
+      setVoiceName(base.charAt(0).toUpperCase() + base.slice(1));
+    }
+  };
+
   const handlePickReferenceAudio = async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({
         multiple: false,
-        filters: [{ name: "Audio", extensions: ["wav", "mp3", "m4a", "flac", "ogg"] }],
+        filters: [{ name: "Audio", extensions: ["wav", "mp3", "m4a", "flac", "ogg", "aac"] }],
       });
       if (typeof picked === "string") {
-        setReferenceAudioPath(picked);
-        const blobUrl = await readAudioFileBlobUrl(picked);
-        const resp = await fetch(blobUrl);
-        const arr = await resp.arrayBuffer();
-        const ctx = getOrCreateAudioContext();
-        const buffer = await ctx.decodeAudioData(arr);
-        setAudioBuffer(buffer);
-        setAudioUrl(blobUrl);
-        const fileName = picked.split(/[\\/]/).pop() || "reference.wav";
-        setReferenceFileMeta({
-          name: fileName,
-          size: `${(arr.byteLength / (1024 * 1024)).toFixed(1)} MB`,
-          duration: `${buffer.duration.toFixed(1)}s`,
-        });
-        if (!voiceName.trim()) {
-          const base = fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
-          setVoiceName(base.charAt(0).toUpperCase() + base.slice(1));
-        }
+        await loadReferenceAudioFromPath(picked);
         return;
       }
     } catch (e) {
@@ -442,6 +447,20 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
   useTauriDropZone(referenceDropZoneRef, {
     enabled: true,
     onDragStateChange: setIsDraggingOverRef,
+    onDropPaths: async (paths) => {
+      const validPath =
+        paths.find((p) => {
+          const ext = p.toLowerCase().split(".").pop() || "";
+          return ["wav", "mp3", "m4a", "flac", "ogg", "aac"].includes(ext);
+        }) || paths[0];
+      if (validPath) {
+        try {
+          await loadReferenceAudioFromPath(validPath);
+        } catch (e: any) {
+          alert(`Không thể đọc file âm thanh: ${e?.message || "File hỏng hoặc không đúng định dạng"}`);
+        }
+      }
+    },
     onDropFiles: (files) => {
       const validFile = pickValidReferenceFile(files);
       if (validFile) {

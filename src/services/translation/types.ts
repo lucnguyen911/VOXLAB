@@ -1,7 +1,9 @@
 export type TranslationProviderType =
   | "google"
   | "gemini"
+  | "openai"
   | "deepseek"
+  | "qwen"
   | "lmstudio"
   | "ollama"
   | "custom";
@@ -11,6 +13,8 @@ export interface TranslationConnectionResult {
   message?: string;
   models?: string[];
 }
+
+import { DubbingMode } from "../../types/dubbing";
 
 export type TranslationStyle = "default" | "cinema";
 
@@ -22,6 +26,25 @@ export interface TranslationContext {
   durationSec?: number;
   allCues?: { index: number; startSec: number; endSec: number; text: string }[];
   cueIndex?: number;
+  groupSourceText?: string;
+  groupId?: string;
+  dubbingMode?: DubbingMode;
+}
+
+export interface BatchItem {
+  id: number;
+  text: string;
+}
+
+export interface BatchTranslationContext {
+  /** Compact overview of the full script for topic/pronoun consistency across batches */
+  globalSummary?: string;
+  /** Preceding translated lines from the previous batch to keep pronouns & tone seamless */
+  prevLines?: { source: string; translated: string }[];
+  /** True when the entire script is sent in a single request */
+  isFullScriptSinglePass?: boolean;
+  /** Active dubbing mode: 'source_sync' or 'free_narration' */
+  dubbingMode?: DubbingMode;
 }
 
 export interface TranslationProvider {
@@ -33,6 +56,8 @@ export interface TranslationProvider {
   endpoint?: string;
   apiKey?: string;
   model?: string;
+  timeout?: number;
+  maxTokens?: number;
   supportedLanguages?: string[];
   translate(
     text: string,
@@ -40,6 +65,13 @@ export interface TranslationProvider {
     sourceLang?: string,
     context?: TranslationContext
   ): Promise<string>;
+  translateBatch?(
+    items: BatchItem[],
+    targetLang: string,
+    sourceLang?: string,
+    style?: TranslationStyle,
+    batchContext?: BatchTranslationContext
+  ): Promise<Map<number, string>>;
   testConnection?(): Promise<TranslationConnectionResult>;
 }
 
@@ -58,7 +90,18 @@ export interface CustomTranslationModel {
   endpoint: string;
   apiKey?: string;
   model: string;
+  timeout?: number;
+  maxTokens?: number;
   createdAt: number;
+}
+
+export interface ProviderRuntimeConfig {
+  name?: string;
+  apiKey?: string;
+  endpoint?: string;
+  model?: string;
+  timeout?: number;
+  maxTokens?: number;
 }
 
 export interface TranslationSettings {
@@ -70,6 +113,20 @@ export interface TranslationSettings {
   customModels: CustomTranslationModel[];
   autoTranslate?: boolean;
   translationStyle?: TranslationStyle; // default "default"
+}
+
+/**
+ * Normalizes an OpenAI-compatible base URL:
+ * - Trims whitespace and trailing slashes
+ * - Appends `/v1` if only scheme + host[:port] was provided (e.g. `http://127.0.0.1:1234` -> `http://127.0.0.1:1234/v1`)
+ */
+export function resolveOpenAiBaseUrl(rawEndpoint?: string, fallback = "http://localhost:1234/v1"): string {
+  const cleaned = (rawEndpoint || "").trim().replace(/\/+$/, "");
+  if (!cleaned) return fallback.replace(/\/+$/, "");
+  if (/^https?:\/\/[^/]+$/i.test(cleaned)) {
+    return `${cleaned}/v1`;
+  }
+  return cleaned;
 }
 
 

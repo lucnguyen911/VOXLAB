@@ -51,8 +51,9 @@ import {
 } from "../services/ai/hardwareRecommendation";
 import {
   getSharedAiServices,
+  probeWavHeaderFast,
   readAudioFileBlobUrl,
-   reloadAiRuntimeSettings,
+  reloadAiRuntimeSettings,
   showPathInFolder,
   tauriAiFs,
 } from "../services/batch/batchRuntime";
@@ -96,6 +97,7 @@ const DEFAULT_TRANSCRIPT_TEXT =
 const SUPPORTED_AUDIO_EXTS = ["wav", "mp3", "flac", "m4a", "aac", "ogg"];
 const SUPPORTED_VIDEO_EXTS = ["mp4", "mov", "mkv", "webm", "avi"];
 const ALL_SUPPORTED_MEDIA_EXTS = [...SUPPORTED_AUDIO_EXTS, ...SUPPORTED_VIDEO_EXTS];
+
 
 /**
  * Compact, auto-resizing textarea that matches subtitle text typography
@@ -391,16 +393,30 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
     return () => clearInterval(interval);
   }, [isPlaying, totalDurationSec, playbackSpeed, fileInfo?.objectUrl]);
 
-  // Sync real audio element
+  // Sync real audio element & lazy-load Blob URL on first play if needed
   useEffect(() => {
+    if (isPlaying && !fileInfo?.objectUrl && fileInfo?.nativePath) {
+      const targetPath = fileInfo.nativePath;
+      readAudioFileBlobUrl(targetPath)
+        .then((blobUrl) => {
+          setFileInfo((prev) =>
+            prev && prev.nativePath === targetPath ? { ...prev, objectUrl: blobUrl } : prev
+          );
+        })
+        .catch(() => {});
+      return;
+    }
     if (audioRef.current) {
       if (isPlaying) {
+        if (currentTimeSec > 0 && Math.abs(audioRef.current.currentTime - currentTimeSec) > 0.25) {
+          audioRef.current.currentTime = currentTimeSec;
+        }
         audioRef.current.play().catch(() => {});
       } else {
         audioRef.current.pause();
       }
     }
-  }, [isPlaying]);
+  }, [isPlaying, fileInfo?.objectUrl, fileInfo?.nativePath]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -449,6 +465,27 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
   const probeMediaFilePath = useCallback(
     async (nativePath: string, isVideo: boolean, ext: string) => {
       try {
+        // Fast-path (< 0.5ms): parse WAV header directly in Rust without loading audio or waiting for sidecar
+        if (ext === "wav" && !isVideo) {
+          const wavHdr = await probeWavHeaderFast(nativePath);
+          if (wavHdr && wavHdr.durationSec > 0) {
+            setFileInfo((prev) => {
+              if (!prev || (prev.nativePath && prev.nativePath !== nativePath)) return prev;
+              return {
+                ...prev,
+                durationSec: Number(wavHdr.durationSec.toFixed(2)),
+                sizeFormatted:
+                  wavHdr.sizeBytes > 0
+                    ? `${(wavHdr.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+                    : prev.sizeFormatted,
+                resolutionOrFormat: `WAV • ${wavHdr.channels === 1 ? "Mono" : "Stereo"}`,
+                hasAudioTrack: true,
+              };
+            });
+            return;
+          }
+        }
+
         const ai = await getSharedAiServices();
         if (!ai?.probeAudio) return;
         const info = await ai.probeAudio(nativePath);
@@ -529,25 +566,13 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
         }
       }
 
-      let sizeFormatted = "0.0 MB";
-      try {
-        const core = await import("@tauri-apps/api/core");
-        const st = await core.invoke<{ size: number; mtimeMs: number } | null>("fs_stat", {
-          path: chosenPath,
-        });
-        if (st && typeof st.size === "number") {
-          sizeFormatted = (st.size / (1024 * 1024)).toFixed(1) + " MB";
-        }
-      } catch {
-        // ignore
-      }
-
       const resolutionOrFormat = isVideo ? "1920×1080" : `${ext.toUpperCase()} • Stereo`;
       cachedAudioPathRef.current = chosenPath;
 
+      // Transition UI to READY immediately with zero blocking
       setFileInfo({
         name: fileName,
-        sizeFormatted,
+        sizeFormatted: "...",
         type: isVideo ? "video" : "audio",
         durationSec: 0,
         resolutionOrFormat,
@@ -561,16 +586,39 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
       setWorkspaceState("READY");
       setErrorMessage("");
 
-      // Load Blob URL for preview playback and probe real duration via sidecar in parallel
-      readAudioFileBlobUrl(chosenPath)
-        .then((blobUrl) => {
-          setFileInfo((prev) =>
-            prev && prev.nativePath === chosenPath ? { ...prev, objectUrl: blobUrl } : prev
-          );
-        })
-        .catch(() => {});
+      // Probe header & file size asynchronously without blocking UI interaction
+      void (async () => {
+        let byteSize = 0;
+        try {
+          const core = await import("@tauri-apps/api/core");
+          const st = await core.invoke<{ size: number; mtimeMs: number } | null>("fs_stat", {
+            path: chosenPath,
+          });
+          if (st && typeof st.size === "number") {
+            byteSize = st.size;
+            const sizeFormatted = (st.size / (1024 * 1024)).toFixed(1) + " MB";
+            setFileInfo((prev) =>
+              prev && prev.nativePath === chosenPath ? { ...prev, sizeFormatted } : prev
+            );
+          }
+        } catch {
+          // ignore
+        }
 
-      await probeMediaFilePath(chosenPath, isVideo, ext);
+        await probeMediaFilePath(chosenPath, isVideo, ext);
+
+        // Preload audio blob in background only for compact files (<= 20 MB);
+        // larger files lazy-load on Play click so dropping large WAV/video files is 100% lag-free.
+        if (byteSize > 0 && byteSize <= 20 * 1024 * 1024) {
+          readAudioFileBlobUrl(chosenPath)
+            .then((blobUrl) => {
+              setFileInfo((prev) =>
+                prev && prev.nativePath === chosenPath ? { ...prev, objectUrl: blobUrl } : prev
+              );
+            })
+            .catch(() => {});
+        }
+      })();
     },
     [fileInfo?.objectUrl, probeMediaFilePath, t.transcription.noAudioStream, t.transcription.unsupportedFile]
   );

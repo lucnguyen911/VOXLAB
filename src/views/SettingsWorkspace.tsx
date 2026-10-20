@@ -15,12 +15,20 @@ import {
   Zap,
   X,
   Sliders,
+  Plus,
 } from "lucide-react";
 import { SettingsGroup } from "../types/ui";
 import {
   loadTranslationSettings,
   saveTranslationSettings,
+  GeminiTranslateProvider,
+  DeepSeekTranslateProvider,
+  LmStudioTranslateProvider,
+  OllamaTranslateProvider,
+  CustomTranslationModel,
+  resolveOpenAiBaseUrl,
 } from "../services/translation";
+import { appHttpRequest } from "../services/http/nativeClient";
 import { LicenseService, LicenseSummary } from "../services/license/licenseService";
 import { LicenseModal } from "../components/modals/LicenseModal";
 import {
@@ -47,9 +55,21 @@ interface ProviderCardItem {
   defaultEndpoint?: string;
   requiresApiKey: boolean;
   requiresEndpoint: boolean;
+  isCustom?: boolean;
+}
+
+interface CustomProviderItem {
+  id: string;
+  name: string;
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  timeout: number;
+  maxTokens: number;
 }
 
 interface ProviderConfigValues {
+  name?: string;
   apiKey: string;
   endpoint: string;
   model: string;
@@ -57,7 +77,7 @@ interface ProviderConfigValues {
   maxTokens: number;
 }
 
-const PROVIDER_LIST: ProviderCardItem[] = [
+const BUILTIN_PROVIDERS: ProviderCardItem[] = [
   // 1. Cloud API
   {
     id: "gemini",
@@ -74,6 +94,7 @@ const PROVIDER_LIST: ProviderCardItem[] = [
     type: "cloud",
     typeLabel: "API đám mây",
     defaultModel: "gpt-4o-mini",
+    defaultEndpoint: "https://api.openai.com/v1",
     requiresApiKey: true,
     requiresEndpoint: false,
   },
@@ -83,6 +104,7 @@ const PROVIDER_LIST: ProviderCardItem[] = [
     type: "cloud",
     typeLabel: "API đám mây",
     defaultModel: "deepseek-chat",
+    defaultEndpoint: "https://api.deepseek.com/v1",
     requiresApiKey: true,
     requiresEndpoint: false,
   },
@@ -92,6 +114,7 @@ const PROVIDER_LIST: ProviderCardItem[] = [
     type: "cloud",
     typeLabel: "API đám mây",
     defaultModel: "qwen-turbo",
+    defaultEndpoint: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     requiresApiKey: true,
     requiresEndpoint: false,
   },
@@ -114,17 +137,6 @@ const PROVIDER_LIST: ProviderCardItem[] = [
     defaultModel: "qwen2.5-7b-instruct",
     defaultEndpoint: "http://127.0.0.1:1234/v1",
     requiresApiKey: false,
-    requiresEndpoint: true,
-  },
-  // 3. Custom Proxy
-  {
-    id: "custom_proxy",
-    name: "API tùy chỉnh",
-    type: "proxy",
-    typeLabel: "Tùy chỉnh",
-    defaultModel: "custom-model",
-    defaultEndpoint: "https://api.your-proxy.com/v1",
-    requiresApiKey: true,
     requiresEndpoint: true,
   },
 ];
@@ -157,26 +169,133 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   const [showApiKey, setShowApiKey] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState(() => loadTranslationSettings().geminiApiKey || "");
   const [testConnectionStatus, setTestConnectionStatus] = useState<"idle" | "testing" | "success" | "failed">("idle");
+  const [connectionMessage, setConnectionMessage] = useState<string>("");
 
-  const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfigValues>>(() => {
+  // Load custom providers from translation settings & local storage
+  const [customProviders, setCustomProviders] = useState<CustomProviderItem[]>(() => {
     try {
-      const saved = localStorage.getItem("voxlab_provider_configs_v4");
-      if (saved) return JSON.parse(saved);
+      const transSettings = loadTranslationSettings();
+      const savedConfig = localStorage.getItem("voxlab_provider_configs_v4");
+      const parsedConfig = savedConfig ? JSON.parse(savedConfig) : {};
+
+      if (transSettings.customModels && transSettings.customModels.length > 0) {
+        return transSettings.customModels.map((m) => ({
+          id: m.id,
+          name: m.name || "API tùy chỉnh",
+          endpoint: m.endpoint || "https://api.openai.com/v1",
+          apiKey: m.apiKey || parsedConfig[m.id]?.apiKey || "",
+          model: m.model || "gpt-4o-mini",
+          timeout: parsedConfig[m.id]?.timeout || 60,
+          maxTokens: parsedConfig[m.id]?.maxTokens || 4096,
+        }));
+      }
+
+      // Check legacy custom_proxy in voxlab_provider_configs_v4
+      if (parsedConfig.custom_proxy && (parsedConfig.custom_proxy.apiKey || parsedConfig.custom_proxy.endpoint)) {
+        return [
+          {
+            id: "custom_proxy",
+            name: "API tùy chỉnh",
+            endpoint: parsedConfig.custom_proxy.endpoint || "https://api.your-proxy.com/v1",
+            apiKey: parsedConfig.custom_proxy.apiKey || "",
+            model: parsedConfig.custom_proxy.model || "custom-model",
+            timeout: parsedConfig.custom_proxy.timeout || 60,
+            maxTokens: parsedConfig.custom_proxy.maxTokens || 4096,
+          },
+        ];
+      }
     } catch {}
-    const initialGeminiKey = loadTranslationSettings().geminiApiKey || "";
-    return {
-      gemini: { apiKey: initialGeminiKey, endpoint: "", model: "gemini-1.5-flash", timeout: 60, maxTokens: 4096 },
-      openai: { apiKey: "", endpoint: "", model: "gpt-4o-mini", timeout: 60, maxTokens: 4096 },
-      deepseek: { apiKey: "", endpoint: "", model: "deepseek-chat", timeout: 60, maxTokens: 4096 },
-      qwen: { apiKey: "", endpoint: "", model: "qwen-turbo", timeout: 60, maxTokens: 4096 },
-      ollama: { apiKey: "", endpoint: "http://127.0.0.1:11434/v1", model: "qwen2.5:7b", timeout: 60, maxTokens: 4096 },
-      lmstudio: { apiKey: "", endpoint: "http://127.0.0.1:1234/v1", model: "qwen2.5-7b-instruct", timeout: 60, maxTokens: 4096 },
-      custom_proxy: { apiKey: "", endpoint: "https://api.your-proxy.com/v1", model: "custom-model", timeout: 60, maxTokens: 4096 },
-    };
+    return [];
   });
 
-  const currentProvider = PROVIDER_LIST.find((p) => p.id === selectedProviderId) || PROVIDER_LIST[0];
+  const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfigValues>>(() => {
+    let parsed: Record<string, ProviderConfigValues> = {};
+    try {
+      const saved = localStorage.getItem("voxlab_provider_configs_v4");
+      if (saved) parsed = JSON.parse(saved);
+    } catch {}
+    const trans = loadTranslationSettings();
+    const initialGeminiKey = trans.geminiApiKey || "";
+    const initialDeepseekKey = trans.deepseekApiKey || "";
+
+    const result: Record<string, ProviderConfigValues> = {
+      gemini: {
+        apiKey: parsed.gemini?.apiKey ?? initialGeminiKey,
+        endpoint: parsed.gemini?.endpoint ?? "",
+        model: parsed.gemini?.model ?? "gemini-1.5-flash",
+        timeout: parsed.gemini?.timeout ?? 60,
+        maxTokens: parsed.gemini?.maxTokens ?? 4096,
+      },
+      openai: {
+        apiKey: parsed.openai?.apiKey ?? "",
+        endpoint: parsed.openai?.endpoint ?? "https://api.openai.com/v1",
+        model: parsed.openai?.model ?? "gpt-4o-mini",
+        timeout: parsed.openai?.timeout ?? 60,
+        maxTokens: parsed.openai?.maxTokens ?? 4096,
+      },
+      deepseek: {
+        apiKey: parsed.deepseek?.apiKey ?? initialDeepseekKey,
+        endpoint: parsed.deepseek?.endpoint ?? "https://api.deepseek.com/v1",
+        model: parsed.deepseek?.model ?? "deepseek-chat",
+        timeout: parsed.deepseek?.timeout ?? 60,
+        maxTokens: parsed.deepseek?.maxTokens ?? 4096,
+      },
+      qwen: {
+        apiKey: parsed.qwen?.apiKey ?? "",
+        endpoint: parsed.qwen?.endpoint ?? "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        model: parsed.qwen?.model ?? "qwen-turbo",
+        timeout: parsed.qwen?.timeout ?? 60,
+        maxTokens: parsed.qwen?.maxTokens ?? 4096,
+      },
+      ollama: {
+        apiKey: parsed.ollama?.apiKey ?? "",
+        endpoint: parsed.ollama?.endpoint ?? "http://127.0.0.1:11434/v1",
+        model: parsed.ollama?.model ?? "qwen2.5:7b",
+        timeout: parsed.ollama?.timeout ?? 60,
+        maxTokens: parsed.ollama?.maxTokens ?? 4096,
+      },
+      lmstudio: {
+        apiKey: parsed.lmstudio?.apiKey ?? "",
+        endpoint: parsed.lmstudio?.endpoint ?? "http://127.0.0.1:1234/v1",
+        model: parsed.lmstudio?.model ?? "qwen2.5-7b-instruct",
+        timeout: parsed.lmstudio?.timeout ?? 60,
+        maxTokens: parsed.lmstudio?.maxTokens ?? 4096,
+      },
+    };
+
+    if (trans.customModels && trans.customModels.length > 0) {
+      for (const m of trans.customModels) {
+        result[m.id] = {
+          name: m.name,
+          apiKey: m.apiKey || parsed[m.id]?.apiKey || "",
+          endpoint: m.endpoint || "https://api.openai.com/v1",
+          model: m.model || "gpt-4o-mini",
+          timeout: parsed[m.id]?.timeout || 60,
+          maxTokens: parsed[m.id]?.maxTokens || 4096,
+        };
+      }
+    }
+
+    return result;
+  });
+
+  const customCards: ProviderCardItem[] = customProviders.map((c) => ({
+    id: c.id,
+    name: c.name || "API tùy chỉnh",
+    type: "proxy",
+    typeLabel: "Tùy chỉnh",
+    defaultModel: c.model || "gpt-4o-mini",
+    defaultEndpoint: c.endpoint || "https://api.openai.com/v1",
+    requiresApiKey: true,
+    requiresEndpoint: true,
+    isCustom: true,
+  }));
+
+  const displayedProviders: ProviderCardItem[] = [...BUILTIN_PROVIDERS, ...customCards];
+
+  const currentProvider = displayedProviders.find((p) => p.id === selectedProviderId) || displayedProviders[0];
   const activeConfig: ProviderConfigValues = providerConfigs[selectedProviderId] || {
+    name: currentProvider.name,
     apiKey: selectedProviderId === "gemini" ? geminiApiKey : "",
     endpoint: currentProvider.defaultEndpoint || "",
     model: currentProvider.defaultModel,
@@ -184,8 +303,99 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     maxTokens: 4096,
   };
 
+  const handleAddCustomProvider = () => {
+    const newId = `custom_${Date.now()}`;
+    const defaultName = `API tùy chỉnh ${customProviders.length + 1}`;
+    const newCustom: CustomProviderItem = {
+      id: newId,
+      name: defaultName,
+      endpoint: "https://api.openai.com/v1",
+      apiKey: "",
+      model: "gpt-4o-mini",
+      timeout: 60,
+      maxTokens: 4096,
+    };
+
+    const nextCustomList = [...customProviders, newCustom];
+    setCustomProviders(nextCustomList);
+
+    // Sync with translation settings for Dubbing & Batch
+    const translationCustomModels: CustomTranslationModel[] = nextCustomList.map((c) => ({
+      id: c.id,
+      name: c.name,
+      type: "openai_compatible",
+      endpoint: c.endpoint,
+      apiKey: c.apiKey || undefined,
+      model: c.model,
+      timeout: c.timeout,
+      maxTokens: c.maxTokens,
+      createdAt: Date.now(),
+    }));
+    saveTranslationSettings({ customModels: translationCustomModels });
+
+    // Update providerConfigs and localStorage
+    setProviderConfigs((prev) => {
+      const next = {
+        ...prev,
+        [newId]: {
+          name: newCustom.name,
+          apiKey: newCustom.apiKey,
+          endpoint: newCustom.endpoint,
+          model: newCustom.model,
+          timeout: newCustom.timeout,
+          maxTokens: newCustom.maxTokens,
+        },
+      };
+      try {
+        localStorage.setItem("voxlab_provider_configs_v4", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
+    // Select the new custom provider to edit inline immediately
+    setSelectedProviderId(newId);
+    setTestConnectionStatus("idle");
+    setConnectionMessage("");
+  };
+
+  const handleDeleteCustomProvider = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const nextCustomList = customProviders.filter((c) => c.id !== id);
+    setCustomProviders(nextCustomList);
+
+    const translationCustomModels: CustomTranslationModel[] = nextCustomList.map((c) => ({
+      id: c.id,
+      name: c.name,
+      type: "openai_compatible",
+      endpoint: c.endpoint,
+      apiKey: c.apiKey || undefined,
+      model: c.model,
+      timeout: c.timeout,
+      maxTokens: c.maxTokens,
+      createdAt: Date.now(),
+    }));
+    saveTranslationSettings({ customModels: translationCustomModels });
+
+    setProviderConfigs((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      try {
+        localStorage.setItem("voxlab_provider_configs_v4", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
+    if (selectedProviderId === id) {
+      setSelectedProviderId("gemini");
+      setTestConnectionStatus("idle");
+      setConnectionMessage("");
+    }
+  };
+
   const updateActiveConfig = (field: keyof ProviderConfigValues, val: any) => {
     setTestConnectionStatus("idle");
+    setConnectionMessage("");
+
     setProviderConfigs((prev) => {
       const current = prev[selectedProviderId] || { ...activeConfig };
       const updated = { ...current, [field]: val };
@@ -199,6 +409,44 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     if (selectedProviderId === "gemini" && field === "apiKey") {
       setGeminiApiKey(val);
       saveTranslationSettings({ geminiApiKey: val });
+    }
+    if (selectedProviderId === "deepseek" && field === "apiKey") {
+      saveTranslationSettings({ deepseekApiKey: val });
+    }
+    if (selectedProviderId === "openai" && field === "apiKey") {
+      try {
+        localStorage.setItem("voxlab_openai_api_key", val);
+      } catch {}
+    }
+
+    // Sync custom provider fields
+    if (selectedProviderId.startsWith("custom_") || selectedProviderId === "custom_proxy") {
+      setCustomProviders((prev) => {
+        const nextCustom = prev.map((c) => {
+          if (c.id === selectedProviderId) {
+            return {
+              ...c,
+              [field]: val,
+            };
+          }
+          return c;
+        });
+
+        const translationCustomModels: CustomTranslationModel[] = nextCustom.map((c) => ({
+          id: c.id,
+          name: c.name,
+          type: "openai_compatible",
+          endpoint: c.endpoint,
+          apiKey: c.apiKey || undefined,
+          model: c.model,
+          timeout: c.timeout,
+          maxTokens: c.maxTokens,
+          createdAt: Date.now(),
+        }));
+        saveTranslationSettings({ customModels: translationCustomModels });
+
+        return nextCustom;
+      });
     }
   };
 
@@ -354,17 +602,117 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     setTimeout(() => setLicenseToast(null), 4000);
   };
 
-  const handleTestConnection = () => {
+  const handleTestConnection = async () => {
     setTestConnectionStatus("testing");
-    setTimeout(() => {
-      if (currentProvider.requiresApiKey && !activeConfig.apiKey.trim()) {
-        setTestConnectionStatus("failed");
-      } else if (currentProvider.requiresEndpoint && !activeConfig.endpoint.trim()) {
-        setTestConnectionStatus("failed");
-      } else {
+    setConnectionMessage("");
+
+    try {
+      if (selectedProviderId === "gemini") {
+        if (!activeConfig.apiKey.trim()) {
+          throw new Error("Chưa nhập Google Gemini API Key.");
+        }
+        const provider = new GeminiTranslateProvider(
+          activeConfig.apiKey.trim(),
+          activeConfig.model.trim() || undefined,
+          activeConfig.timeout,
+          activeConfig.maxTokens
+        );
+        const res = await provider.testConnection();
+        if (!res.ok) throw new Error(res.message || "Lỗi kết nối Gemini API");
         setTestConnectionStatus("success");
+        setConnectionMessage(res.message || "Kết nối Gemini API thành công!");
+      } else if (selectedProviderId === "deepseek") {
+        if (!activeConfig.apiKey.trim()) {
+          throw new Error("Chưa nhập DeepSeek API Key.");
+        }
+        const provider = new DeepSeekTranslateProvider(
+          activeConfig.apiKey.trim(),
+          activeConfig.model.trim() || undefined,
+          activeConfig.endpoint.trim() || undefined,
+          activeConfig.timeout,
+          activeConfig.maxTokens
+        );
+        const res = await provider.testConnection();
+        if (!res.ok) throw new Error(res.message || "Lỗi kết nối DeepSeek API");
+        setTestConnectionStatus("success");
+        setConnectionMessage(res.message || "Kết nối DeepSeek API thành công!");
+      } else if (selectedProviderId === "ollama") {
+        const endpoint = activeConfig.endpoint.trim() || "http://127.0.0.1:11434/v1";
+        const provider = new OllamaTranslateProvider(
+          endpoint,
+          activeConfig.model.trim() || undefined,
+          activeConfig.apiKey.trim() || undefined,
+          "ollama",
+          "Ollama",
+          activeConfig.timeout,
+          activeConfig.maxTokens
+        );
+        const res = await provider.testConnection();
+        if (!res.ok) throw new Error(res.message || "Không thể kết nối tới Ollama");
+        setTestConnectionStatus("success");
+        setConnectionMessage(res.message || "Kết nối Ollama thành công!");
+      } else if (selectedProviderId === "lmstudio") {
+        const endpoint = activeConfig.endpoint.trim() || "http://127.0.0.1:1234/v1";
+        const provider = new LmStudioTranslateProvider(
+          endpoint,
+          activeConfig.model.trim() || undefined,
+          activeConfig.apiKey.trim() || undefined,
+          "lmstudio",
+          "LM Studio",
+          activeConfig.timeout,
+          activeConfig.maxTokens,
+          "lmstudio"
+        );
+        const res = await provider.testConnection();
+        if (!res.ok) throw new Error(res.message || "Không thể kết nối tới LM Studio");
+        setTestConnectionStatus("success");
+        setConnectionMessage(res.message || "Kết nối LM Studio thành công!");
+      } else if (selectedProviderId === "openai") {
+        if (!activeConfig.apiKey.trim()) throw new Error("Chưa nhập OpenAI API Key.");
+        const cleanEndpoint = resolveOpenAiBaseUrl(activeConfig.endpoint, "https://api.openai.com/v1");
+        const timeoutSec = Math.max(5, activeConfig.timeout || 60);
+        const res = await appHttpRequest(`${cleanEndpoint}/models`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${activeConfig.apiKey.trim()}` },
+          timeoutSec,
+        });
+        if (!res.ok) throw new Error(`OpenAI HTTP ${res.status}: ${res.statusText}`);
+        setTestConnectionStatus("success");
+        setConnectionMessage("Kết nối OpenAI API thành công!");
+      } else if (selectedProviderId === "qwen") {
+        if (!activeConfig.apiKey.trim()) throw new Error("Chưa nhập DashScope/Qwen API Key.");
+        const cleanEndpoint = resolveOpenAiBaseUrl(activeConfig.endpoint, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1");
+        const timeoutSec = Math.max(5, activeConfig.timeout || 60);
+        const res = await appHttpRequest(`${cleanEndpoint}/models`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${activeConfig.apiKey.trim()}` },
+          timeoutSec,
+        });
+        if (!res.ok) throw new Error(`Alibaba Qwen HTTP ${res.status}: ${res.statusText}`);
+        setTestConnectionStatus("success");
+        setConnectionMessage("Kết nối Alibaba Qwen API thành công!");
+      } else {
+        // Custom Provider (OpenAI Compatible)
+        if (!activeConfig.endpoint.trim()) throw new Error("Chưa nhập Endpoint URL.");
+        const cleanEndpoint = resolveOpenAiBaseUrl(activeConfig.endpoint, activeConfig.endpoint.trim());
+        const headers: Record<string, string> = {};
+        if (activeConfig.apiKey.trim()) {
+          headers["Authorization"] = `Bearer ${activeConfig.apiKey.trim()}`;
+        }
+        const timeoutSec = Math.max(5, activeConfig.timeout || 60);
+        const res = await appHttpRequest(`${cleanEndpoint}/models`, { method: "GET", headers, timeoutSec });
+        if (!res.ok) {
+          throw new Error(`Máy chủ trả về HTTP ${res.status}: ${res.statusText}`);
+        }
+        const data = res.data;
+        const count = Array.isArray(data?.data) ? data.data.length : undefined;
+        setTestConnectionStatus("success");
+        setConnectionMessage(count !== undefined ? `Kết nối thành công! Tìm thấy ${count} mô hình.` : "Kết nối thành công!");
       }
-    }, 500);
+    } catch (err: any) {
+      setTestConnectionStatus("failed");
+      setConnectionMessage(err?.message || "Kiểm tra kết nối thất bại.");
+    }
   };
 
   // Strictly 3 function groups in final Information Architecture (Order: Chung -> Nhà cung cấp AI -> Mô hình)
@@ -437,30 +785,48 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
               <div className="space-y-2">
                 <div className="text-xs font-medium text-textSecondary">Chọn nhà cung cấp</div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
-                  {PROVIDER_LIST.map((prov) => {
+                  {displayedProviders.map((prov) => {
                     const isSelected = selectedProviderId === prov.id;
+                    const displayName = prov.isCustom
+                      ? providerConfigs[prov.id]?.name || prov.name
+                      : prov.name;
+
                     return (
-                      <button
+                      <div
                         key={prov.id}
-                        type="button"
                         data-provider-id={prov.id}
                         onClick={() => {
                           setSelectedProviderId(prov.id);
                           setTestConnectionStatus("idle");
+                          setConnectionMessage("");
                         }}
-                        className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between gap-2 cursor-pointer select-none ${
+                        className={`group relative p-3 rounded-xl border text-left transition-all flex flex-col justify-between gap-2 cursor-pointer select-none ${
                           isSelected
                             ? "bg-accent/10 border-accent shadow-xs ring-2 ring-accent/30 text-textPrimary"
                             : "bg-surface1 hover:bg-surface2/70 border-borderDefault text-textSecondary hover:text-textPrimary"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-1.5">
-                          <span className="font-semibold text-xs text-textPrimary truncate">{prov.name}</span>
-                          {isSelected && (
-                            <span className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center shrink-0">
-                              <Check className="w-2.5 h-2.5 stroke-[3]" />
-                            </span>
-                          )}
+                          <span className="font-semibold text-xs text-textPrimary truncate" title={displayName}>
+                            {displayName}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            {prov.isCustom && (
+                              <button
+                                type="button"
+                                title="Xóa nhà cung cấp này"
+                                onClick={(e) => handleDeleteCustomProvider(prov.id, e)}
+                                className="opacity-0 group-hover:opacity-100 hover:text-danger p-0.5 rounded transition-all text-textMuted cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {isSelected && (
+                              <span className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center shrink-0">
+                                <Check className="w-2.5 h-2.5 stroke-[3]" />
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <span
                           className={`text-[10px] px-1.5 py-0.5 rounded w-fit border ${
@@ -471,9 +837,24 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                         >
                           {prov.typeLabel}
                         </span>
-                      </button>
+                      </div>
                     );
                   })}
+
+                  {/* Button + Thêm API tùy chỉnh */}
+                  <button
+                    type="button"
+                    onClick={handleAddCustomProvider}
+                    className="p-3 rounded-xl border border-dashed border-accent/40 hover:border-accent bg-accent/5 hover:bg-accent/10 text-accent transition-all flex flex-col justify-between items-start gap-2 cursor-pointer select-none min-h-[72px]"
+                  >
+                    <div className="flex items-center gap-1.5 font-semibold text-xs text-accent">
+                      <Plus className="w-4 h-4" />
+                      <span>Thêm API tùy chỉnh</span>
+                    </div>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded w-fit border bg-surface2 text-textMuted border-borderDefault/60">
+                      Không giới hạn
+                    </span>
+                  </button>
                 </div>
               </div>
 
@@ -482,11 +863,39 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                 <div className="flex items-center justify-between border-b border-borderDefault/70 pb-3">
                   <div className="flex items-center gap-2">
                     <Key className="w-4 h-4 text-accent" />
-                    <h4 className="font-semibold text-xs text-textPrimary">Cấu hình: {currentProvider.name}</h4>
+                    <h4 className="font-semibold text-xs text-textPrimary">
+                      Cấu hình: {currentProvider.isCustom ? (activeConfig.name || currentProvider.name) : currentProvider.name}
+                    </h4>
                   </div>
+                  {currentProvider.isCustom && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCustomProvider(currentProvider.id)}
+                      className="flex items-center gap-1.5 px-2.5 py-1 text-danger hover:text-danger/90 hover:bg-danger/10 border border-danger/20 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Xóa API này</span>
+                    </button>
+                  )}
                 </div>
 
                 <div className="space-y-3.5">
+                  {/* Name field for custom provider */}
+                  {currentProvider.isCustom && (
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-textPrimary block">
+                        Tên nhà cung cấp / hiển thị
+                      </label>
+                      <input
+                        type="text"
+                        value={activeConfig.name || ""}
+                        onChange={(e) => updateActiveConfig("name", e.target.value)}
+                        placeholder="Ví dụ: OpenRouter, Groq, Together AI, vLLM Server..."
+                        className="w-full bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs text-textPrimary placeholder:text-textMuted/60 focus:border-accent focus:outline-none"
+                      />
+                    </div>
+                  )}
+
                   {/* Conditional API Key / Endpoint */}
                   {currentProvider.type === "proxy" ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
@@ -496,12 +905,12 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                           type="text"
                           value={activeConfig.endpoint}
                           onChange={(e) => updateActiveConfig("endpoint", e.target.value)}
-                          placeholder="https://api.your-proxy.com/v1"
+                          placeholder="https://api.openai.com/v1"
                           className="w-full bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textPrimary placeholder:text-textMuted/60 focus:border-accent focus:outline-none"
                         />
                       </div>
                       <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-textPrimary block">API Key</label>
+                        <label className="text-xs font-medium text-textPrimary block">API Key (Tùy chọn)</label>
                         <div className="relative flex items-center">
                           <input
                             type={showApiKey ? "text" : "password"}
@@ -606,22 +1015,16 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                   <div className="pt-2 flex items-center justify-between flex-wrap gap-3">
                     <div className="flex items-center gap-2">
                       {testConnectionStatus === "success" && (
-                        <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium px-2.5 py-1 bg-emerald-500/10 rounded-md border border-emerald-500/20">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Hợp lệ</span>
+                        <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium px-2.5 py-1 bg-emerald-500/10 rounded-md border border-emerald-500/20 max-w-md truncate">
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">{connectionMessage || "Hợp lệ"}</span>
                         </div>
                       )}
 
                       {testConnectionStatus === "failed" && (
-                        <div className="flex items-center gap-1.5 text-xs text-danger font-medium px-2.5 py-1 bg-danger/10 rounded-md border border-danger/20">
-                          <AlertCircle className="w-3.5 h-3.5" />
-                          <span>
-                            {currentProvider.requiresApiKey && !activeConfig.apiKey.trim()
-                              ? "Chưa nhập API Key"
-                              : currentProvider.requiresEndpoint && !activeConfig.endpoint.trim()
-                              ? "Chưa nhập Endpoint"
-                              : "Lỗi kết nối"}
-                          </span>
+                        <div className="flex items-center gap-1.5 text-xs text-danger font-medium px-2.5 py-1 bg-danger/10 rounded-md border border-danger/20 max-w-md truncate">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">{connectionMessage || "Lỗi kết nối"}</span>
                         </div>
                       )}
                     </div>
@@ -637,7 +1040,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                       ) : (
                         <Zap className="w-3.5 h-3.5" />
                       )}
-                      <span>{testConnectionStatus === "testing" ? "Đang kiểm tra..." : "Kiểm tra"}</span>
+                      <span>{testConnectionStatus === "testing" ? "Đang kiểm tra..." : "Kiểm tra kết nối"}</span>
                     </button>
                   </div>
                 </div>

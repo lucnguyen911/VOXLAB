@@ -136,8 +136,7 @@ export async function reloadAiRuntimeSettings(): Promise<void> {
 
 export const getSharedAiServices = initBatchRuntime;
 
-/** Read a file from disk into a Blob URL for webview audio playback. */
-export async function readAudioFileBlobUrl(filePath: string): Promise<string> {
+function normalizeLocalFilePath(filePath: string): string {
   let cleanPath = filePath;
   if (cleanPath.startsWith("file://")) {
     cleanPath = cleanPath.replace(/^file:\/\/\/?/, "");
@@ -146,7 +145,15 @@ export async function readAudioFileBlobUrl(filePath: string): Promise<string> {
       cleanPath = cleanPath.slice(1);
     }
   }
-  const bytes = await invoke<number[]>("fs_read_bytes", { path: cleanPath });
+  return cleanPath;
+}
+
+/** Read a file from disk into a Blob URL for webview audio playback using zero-copy binary IPC. */
+export async function readAudioFileBlobUrl(filePath: string): Promise<string> {
+  const cleanPath = normalizeLocalFilePath(filePath);
+  const raw = await invoke<ArrayBuffer | Uint8Array | number[]>("fs_read_bytes", {
+    path: cleanPath,
+  });
   const ext = cleanPath.toLowerCase().split(".").pop() || "";
   const mimeMap: Record<string, string> = {
     mp3: "audio/mpeg",
@@ -162,8 +169,35 @@ export async function readAudioFileBlobUrl(filePath: string): Promise<string> {
     avi: "video/x-msvideo",
   };
   const mime = mimeMap[ext] || "audio/wav";
-  const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+  const blobPart: BlobPart =
+    raw instanceof ArrayBuffer
+      ? raw
+      : raw instanceof Uint8Array
+      ? (raw as unknown as BlobPart)
+      : new Uint8Array(raw);
+  const blob = new Blob([blobPart], { type: mime });
   return URL.createObjectURL(blob);
+}
+
+/** Fast header-only WAV probe (< 0.5ms) via Rust without loading audio samples or starting Python sidecar. */
+export async function probeWavHeaderFast(filePath: string): Promise<{
+  durationSec: number;
+  sampleRate: number;
+  channels: number;
+  sizeBytes: number;
+} | null> {
+  const cleanPath = normalizeLocalFilePath(filePath);
+  if (!cleanPath.toLowerCase().endsWith(".wav")) return null;
+  try {
+    return await invoke<{
+      durationSec: number;
+      sampleRate: number;
+      channels: number;
+      sizeBytes: number;
+    } | null>("fs_probe_wav_header", { path: cleanPath });
+  } catch {
+    return null;
+  }
 }
 
 /** Open or reveal a file or directory in Windows Explorer. */

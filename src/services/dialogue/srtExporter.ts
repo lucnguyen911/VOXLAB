@@ -1,6 +1,13 @@
 import { DialogueTimelineEntry } from "./masterAssembly";
 import { stripPauseTokens } from "../pause";
-import { SubtitleAspectRatio, SubtitleMaxLines } from "../subtitle";
+import {
+  getSubtitleProfile,
+  splitIntoSentences,
+  splitLongSentenceIntoClauses,
+  SubtitleAspectRatio,
+  SubtitleMaxLines,
+  wrapCueTextBalanced,
+} from "../subtitle";
 
 /**
  * Formats time in seconds to SubRip timestamp format: HH:MM:SS,mmm
@@ -18,7 +25,7 @@ export function formatSrtTimestamp(seconds: number): string {
 
 /**
  * Wraps or splits dialogue speaker text into at most maxLines (1 or 2)
- * according to the target aspect ratio profile.
+ * according to the target aspect ratio profile using semantic line balancing.
  */
 export function formatDialogueSubtitleText(
   speakerText: string,
@@ -42,10 +49,19 @@ export function formatDialogueSubtitleText(
     return normalized;
   }
 
+  const profile = {
+    ...getSubtitleProfile(aspectRatio, maxLines),
+    maxWidth,
+    targetWidth: Math.min(maxWidth - 4, getSubtitleProfile(aspectRatio, maxLines).targetWidth),
+  };
+  const wrapped = wrapCueTextBalanced(normalized, profile);
+  if (wrapped.includes("\n")) {
+    return wrapped;
+  }
+
   const words = normalized.split(/\s+/);
   if (words.length <= 1) return normalized;
 
-  // Find optimal split point near middle
   const targetHalf = Math.floor(normalized.length / 2);
   let bestSplitIndex = 1;
   let minDiff = Infinity;
@@ -66,7 +82,9 @@ export function formatDialogueSubtitleText(
 }
 
 /**
- * Generates SubRip (.srt) subtitle string with speaker prefixes [Speaker]: Dialogue
+ * Generates SubRip (.srt) subtitle string with speaker prefixes [Speaker]: Dialogue.
+ * Long multi-sentence speaker turns that exceed a 2-line cue capacity are decomposed
+ * into natural clause cues with proportional timestamps.
  */
 export function generateDialogueSrt(
   timeline: DialogueTimelineEntry[],
@@ -78,17 +96,70 @@ export function generateDialogueSrt(
   const blocks: string[] = [];
   const aspectRatio = options?.aspectRatio ?? "16:9";
   const maxLines = options?.maxLines ?? 2;
+  const maxWidthMap: Record<SubtitleAspectRatio, number> = {
+    "16:9": 48,
+    "9:16": 32,
+    "1:1": 38,
+  };
+  const maxWidth = maxWidthMap[aspectRatio] ?? 48;
+  const profile = getSubtitleProfile(aspectRatio, maxLines);
+
+  let cueIndex = 1;
 
   for (let i = 0; i < timeline.length; i++) {
     const entry = timeline[i];
-    const cueIndex = i + 1;
-    const startTimeStr = formatSrtTimestamp(entry.startSec);
-    const endTimeStr = formatSrtTimestamp(entry.endSec);
-    const cleanDialogue = stripPauseTokens(entry.text);
+    const cleanDialogue = stripPauseTokens(entry.text).replace(/\s+/g, " ").trim();
     const rawSpeakerText = `[${entry.characterName}]: ${cleanDialogue}`;
-    const speakerText = formatDialogueSubtitleText(rawSpeakerText, aspectRatio, maxLines);
 
-    blocks.push(`${cueIndex}\n${startTimeStr} --> ${endTimeStr}\n${speakerText}`);
+    // When maxLines >= 2 and a turn has multiple sentences or exceeds 3 lines of capacity,
+    // split into natural sentence/clause sub-cues with proportional timing.
+    const sentences = maxLines >= 2 ? splitIntoSentences(cleanDialogue) : [cleanDialogue];
+    const needsMultiCueSplit =
+      maxLines >= 2 &&
+      ((sentences.length > 1 && rawSpeakerText.length > maxWidth * maxLines) ||
+        rawSpeakerText.length > maxWidth * 3);
+
+    if (!needsMultiCueSplit) {
+      const startTimeStr = formatSrtTimestamp(entry.startSec);
+      const endTimeStr = formatSrtTimestamp(entry.endSec);
+      const speakerText = formatDialogueSubtitleText(rawSpeakerText, aspectRatio, maxLines);
+      blocks.push(`${cueIndex++}\n${startTimeStr} --> ${endTimeStr}\n${speakerText}`);
+      continue;
+    }
+
+    const clauses = sentences
+      .flatMap((s) => splitLongSentenceIntoClauses(s, profile))
+      .map((c) => c.trim())
+      .filter(Boolean);
+
+    if (clauses.length <= 1) {
+      const startTimeStr = formatSrtTimestamp(entry.startSec);
+      const endTimeStr = formatSrtTimestamp(entry.endSec);
+      const speakerText = formatDialogueSubtitleText(rawSpeakerText, aspectRatio, maxLines);
+      blocks.push(`${cueIndex++}\n${startTimeStr} --> ${endTimeStr}\n${speakerText}`);
+      continue;
+    }
+
+    const totalDuration = Math.max(0.1, entry.endSec - entry.startSec);
+    const weights = clauses.map((c) => Math.max(1, c.length));
+    const totalWeight = weights.reduce((acc, w) => acc + w, 0) || 1;
+    let cursor = entry.startSec;
+
+    for (let k = 0; k < clauses.length; k++) {
+      const isLast = k === clauses.length - 1;
+      const subStart = cursor;
+      const subEnd = isLast
+        ? entry.endSec
+        : Math.min(entry.endSec, subStart + totalDuration * (weights[k] / totalWeight));
+      cursor = subEnd;
+
+      const subRawText =
+        k === 0 ? `[${entry.characterName}]: ${clauses[k]}` : clauses[k];
+      const speakerText = formatDialogueSubtitleText(subRawText, aspectRatio, maxLines);
+      blocks.push(
+        `${cueIndex++}\n${formatSrtTimestamp(subStart)} --> ${formatSrtTimestamp(subEnd)}\n${speakerText}`
+      );
+    }
   }
 
   return blocks.length > 0 ? blocks.join("\n\n") + "\n" : "";

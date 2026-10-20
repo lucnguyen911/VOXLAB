@@ -96,3 +96,100 @@ export function createWavBlob(
   const arrayBuffer = encode16BitMonoWav(samples, sampleRate);
   return new Blob([arrayBuffer], { type: "audio/wav" });
 }
+
+export interface DecodedWavData {
+  samples: Float32Array;
+  sampleRate: number;
+  numChannels: number;
+  bitsPerSample: number;
+  durationSec: number;
+}
+
+/**
+ * Decodes a RIFF/WAVE byte buffer (16-bit, 24-bit, 32-bit PCM or 32-bit IEEE Float)
+ * into a mono Float32Array and exact duration in seconds.
+ */
+export function decodeWavBuffer(buffer: ArrayBuffer | Uint8Array): DecodedWavData {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  if (bytes.byteLength < 44) {
+    return {
+      samples: new Float32Array(0),
+      sampleRate: CANONICAL_SAMPLE_RATE,
+      numChannels: 1,
+      bitsPerSample: 16,
+      durationSec: 0,
+    };
+  }
+
+  let audioFormat = 1;
+  let numChannels = 1;
+  let sampleRate = CANONICAL_SAMPLE_RATE;
+  let bitsPerSample = 16;
+  let dataOffset = 44;
+  let dataLength = Math.max(0, bytes.byteLength - 44);
+
+  // Parse RIFF chunks dynamically (handles extra JUNK/LIST/fact chunks safely)
+  let offset = 12;
+  while (offset + 8 <= bytes.byteLength) {
+    const chunkId = String.fromCharCode(
+      view.getUint8(offset),
+      view.getUint8(offset + 1),
+      view.getUint8(offset + 2),
+      view.getUint8(offset + 3)
+    );
+    const chunkSize = view.getUint32(offset + 4, true);
+
+    if (chunkId === "fmt " && offset + 8 + 16 <= bytes.byteLength) {
+      audioFormat = view.getUint16(offset + 8, true);
+      numChannels = Math.max(1, view.getUint16(offset + 10, true));
+      sampleRate = Math.max(8000, view.getUint32(offset + 12, true));
+      bitsPerSample = view.getUint16(offset + 22, true);
+    } else if (chunkId === "data") {
+      dataOffset = offset + 8;
+      dataLength = Math.min(chunkSize, bytes.byteLength - dataOffset);
+      break;
+    }
+
+    offset += 8 + chunkSize + (chunkSize % 2);
+  }
+
+  const bytesPerSample = Math.max(1, Math.floor(bitsPerSample / 8));
+  const frameSize = bytesPerSample * numChannels;
+  const totalFrames = Math.floor(dataLength / frameSize);
+  const mono = new Float32Array(totalFrames);
+
+  for (let i = 0; i < totalFrames; i++) {
+    let sum = 0;
+    for (let ch = 0; ch < numChannels; ch++) {
+      const samplePos = dataOffset + i * frameSize + ch * bytesPerSample;
+      let val = 0;
+      if (audioFormat === 3 && bitsPerSample === 32) {
+        val = view.getFloat32(samplePos, true);
+      } else if (bitsPerSample === 16) {
+        val = view.getInt16(samplePos, true) / 32768;
+      } else if (bitsPerSample === 24) {
+        const b0 = view.getUint8(samplePos);
+        const b1 = view.getUint8(samplePos + 1);
+        const b2 = view.getInt8(samplePos + 2);
+        val = ((b2 << 16) | (b1 << 8) | b0) / 8388608;
+      } else if (bitsPerSample === 32) {
+        val = view.getInt32(samplePos, true) / 2147483648;
+      } else if (bitsPerSample === 8) {
+        val = (view.getUint8(samplePos) - 128) / 128;
+      }
+      sum += val;
+    }
+    mono[i] = Math.max(-1, Math.min(1, sum / numChannels));
+  }
+
+  const durationSec = sampleRate > 0 ? Number((totalFrames / sampleRate).toFixed(3)) : 0;
+  return {
+    samples: mono,
+    sampleRate,
+    numChannels,
+    bitsPerSample,
+    durationSec,
+  };
+}

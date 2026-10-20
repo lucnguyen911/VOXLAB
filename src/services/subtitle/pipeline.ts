@@ -15,6 +15,7 @@ import {
   getWordCount,
   getDisplayWidth,
   wrapCueTextBalanced,
+  normalizeBlindAsrText,
 } from "./candidates";
 import { optimizeSubtitles } from "./optimizer";
 import { validateSubtitles } from "./validator";
@@ -217,7 +218,7 @@ export function generateSubtitlesFromText(
   text: string,
   options?: SubtitlePipelineOptions & { speechRateWordsPerSec?: number }
 ): SubtitleCue[] {
-  const trimmed = text.trim();
+  const trimmed = normalizeBlindAsrText(text.trim());
   if (!trimmed) return [];
 
   const settings = loadSubtitleSettings();
@@ -265,7 +266,14 @@ export function generateSubtitlesFromText(
   }
 
   // 4. Run DP optimizer to merge short units and balance layout
-  const cues = optimizeSubtitles(speechUnits, profile);
+  const rawCues = optimizeSubtitles(speechUnits, profile);
+  const shouldWrap = options?.wrapLines === true && profile.maxLines >= 2;
+  const cues = shouldWrap
+    ? rawCues.map((c) => ({
+        ...c,
+        text: wrapCueTextBalanced(c.text, profile),
+      }))
+    : rawCues;
 
   // 5. Final Validation
   const validation = validateSubtitles(cues, trimmed);

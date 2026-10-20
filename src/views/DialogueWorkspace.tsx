@@ -45,6 +45,20 @@ import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getEffectiveRules, prepareSpokenText } from "../services/pronunciation";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
 import { MOCK_VOICES } from "../mock/data";
+import {
+  QUALITY_VALIDATOR_VERSION,
+  validateChunkAudioQuality,
+  getChunkAudioSignature,
+  isReviewOutdated,
+  countChunkQualityIssues,
+  isChunkError,
+} from "../services/audio/qualityValidator";
+import {
+  checkAsrReadiness,
+  applyAsrModelSwitch,
+  type AsrReadinessResult,
+} from "../services/ai/asrReadiness";
+import { AsrReadinessModal } from "../components/modals/AsrReadinessModal";
 
 export interface DialogueWorkspaceProps {
   voices: VoiceProfile[];
@@ -159,6 +173,63 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
   const [isPronunciationModalOpen, setIsPronunciationModalOpen] = useState(false);
   const lastPronunciationRulesRef = useRef(getEffectiveRules("dialogue"));
 
+  // ASR Quality Check state
+  const inFlightValidationsRef = useRef<Set<string>>(new Set());
+  const [currentAsrModel, setCurrentAsrModel] = useState<string>(() => loadSubtitleSettings().whisperModel);
+  const [asrReadinessPrompt, setAsrReadinessPrompt] = useState<AsrReadinessResult | null>(null);
+  const [isAsrPromptOpen, setIsAsrPromptOpen] = useState(false);
+  const [pendingGenerationAction, setPendingGenerationAction] = useState<(() => void) | null>(null);
+  const [isAsrReady, setIsAsrReady] = useState(true);
+
+  useEffect(() => {
+    const handleAsrChange = (e: Event) => {
+      const custom = e as CustomEvent<string>;
+      const model = custom.detail || loadSubtitleSettings().whisperModel;
+      setCurrentAsrModel(model);
+      inFlightValidationsRef.current.clear();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_asr_model_changed", handleAsrChange);
+      return () => window.removeEventListener("voxlab_asr_model_changed", handleAsrChange);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    checkAsrReadiness(currentAsrModel)
+      .then((res) => {
+        if (!cancelled) {
+          setIsAsrReady(res.ready);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentAsrModel]);
+
+  const handleSwitchModelAndProceed = async (newModelId: string) => {
+    await applyAsrModelSwitch(newModelId);
+    setCurrentAsrModel(newModelId);
+    setIsAsrReady(true);
+    setIsAsrPromptOpen(false);
+    setAsrReadinessPrompt(null);
+    inFlightValidationsRef.current.clear();
+    if (pendingGenerationAction) {
+      const action = pendingGenerationAction;
+      setPendingGenerationAction(null);
+      setTimeout(() => action(), 50);
+    }
+  };
+
+  const handleNavigateToTranscription = () => {
+    setIsAsrPromptOpen(false);
+    setPendingGenerationAction(null);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("voxlab_navigate_workspace", { detail: "transcription" }));
+    }
+  };
+
   // Helper: Stop current playing audio
   const stopSegmentAudio = useCallback(() => {
     if (segmentAudioRef.current) {
@@ -190,7 +261,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 
     setCharacters(updatedChars);
 
-    // Preserve existing segment audio buffers when text matches
+    // Preserve existing segment audio buffers and quality review when text matches
     setSegments((prevSegments) => {
       const prevMap = new Map(prevSegments.map((s) => [`${s.characterName}_${s.cleanText}`, s]));
 
@@ -206,6 +277,10 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
             audioFilePath: existing.audioFilePath,
             durationSec: existing.durationSec,
             errorMessage: existing.errorMessage,
+            effectiveVoiceSnapshot: existing.effectiveVoiceSnapshot,
+            qualityReview: existing.qualityReview,
+            acknowledgedAt: existing.acknowledgedAt,
+            acknowledgedAudioSignature: existing.acknowledgedAudioSignature,
           };
         }
         return newSeg;
@@ -248,8 +323,13 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
               status: existing.status,
               audioBuffer: existing.audioBuffer,
               audioBlobUrl: existing.audioBlobUrl,
+              audioFilePath: existing.audioFilePath,
               durationSec: existing.durationSec,
               errorMessage: existing.errorMessage,
+              effectiveVoiceSnapshot: existing.effectiveVoiceSnapshot,
+              qualityReview: existing.qualityReview,
+              acknowledgedAt: existing.acknowledgedAt,
+              acknowledgedAudioSignature: existing.acknowledgedAudioSignature,
             };
           }
           return seg;
@@ -315,7 +395,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     );
   };
 
-  // Synthesize single segment with real speech engine (Edge TTS, OmniVoice, Cloned voices, Google)
+  // Synthesize single segment with real speech engine + post-TTS ASR Quality Check
   const synthesizeSegmentAudio = async (
     seg: DialogueSegment,
     chars: DialogueCharacter[],
@@ -343,15 +423,159 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       onProgress,
     });
 
-    return {
+    const audioSig = `${res.blobUrl || res.outputPath}::${res.durationSec}`;
+    const checkingSeg: DialogueSegment = {
       ...seg,
       status: "ready",
       durationSec: res.durationSec,
       audioBlobUrl: res.blobUrl,
       audioFilePath: res.outputPath,
       errorMessage: undefined,
+      effectiveVoiceSnapshot: snapshot,
+      qualityReview: {
+        status: "checking",
+        summary: "Đang kiểm tra...",
+        issues: [],
+        checkedAt: Date.now(),
+        audioPath: res.outputPath,
+        text: seg.cleanText || seg.rawText,
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: currentAsrModel,
+        audioSignature: audioSig,
+      },
+      acknowledgedAt: undefined,
+      acknowledgedAudioSignature: undefined,
     };
+
+    // Update immediately so UI shows WAV is ready and ASR inspection is running
+    setSegments((prev) =>
+      prev.map((s) => (s.id === seg.id ? checkingSeg : s))
+    );
+
+    try {
+      const review = await validateChunkAudioQuality(
+        checkingSeg,
+        snapshot.language,
+        undefined,
+        snapshot.speed,
+        currentAsrModel,
+        "dialogue"
+      );
+      return { ...checkingSeg, qualityReview: review };
+    } catch (qErr: any) {
+      console.warn("Dialogue segment quality validation error:", qErr);
+      return {
+        ...checkingSeg,
+        qualityReview: {
+          status: "unverified",
+          summary: `Chưa kiểm chứng (${qErr?.message || "lỗi hậu kiểm"})`,
+          issues: [],
+          checkedAt: Date.now(),
+          audioPath: res.outputPath,
+          text: seg.cleanText || seg.rawText,
+          validatorVersion: QUALITY_VALIDATOR_VERSION,
+          asrModelId: currentAsrModel,
+          audioSignature: audioSig,
+        },
+      };
+    }
   };
+
+  // Automated Background Quality Validation for Outdated / Unvalidated Segments
+  useEffect(() => {
+    if (isConverting) return;
+    if (!isAsrReady) return;
+
+    const outdatedSeg = segments.find(
+      (s) =>
+        s.status === "ready" &&
+        Boolean(s.audioFilePath || s.audioBlobUrl) &&
+        s.qualityReview?.status !== "checking" &&
+        isReviewOutdated(s, currentAsrModel, isAsrReady) &&
+        !inFlightValidationsRef.current.has(`${getChunkAudioSignature(s)}::${currentAsrModel}`)
+    );
+
+    if (!outdatedSeg) return;
+
+    const audioSig = getChunkAudioSignature(outdatedSeg);
+    if (!audioSig) return;
+    const inFlightKey = `${audioSig}::${currentAsrModel}`;
+
+    inFlightValidationsRef.current.add(inFlightKey);
+
+    setSegments((prev) =>
+      prev.map((s) =>
+        s.id === outdatedSeg.id && getChunkAudioSignature(s) === audioSig
+          ? {
+              ...s,
+              qualityReview: {
+                status: "checking",
+                issues: s.qualityReview?.issues || [],
+                metrics: s.qualityReview?.metrics,
+                summary: "Đang kiểm tra...",
+                checkedAt: Date.now(),
+                audioPath: s.audioFilePath,
+                text: s.cleanText || s.rawText,
+                validatorVersion: QUALITY_VALIDATOR_VERSION,
+                asrModelId: currentAsrModel,
+                audioSignature: audioSig,
+              },
+            }
+          : s
+      )
+    );
+
+    const runAutoValidation = async () => {
+      try {
+        const lang = outdatedSeg.effectiveVoiceSnapshot?.language;
+        const speed = outdatedSeg.effectiveVoiceSnapshot?.speed;
+        const review = await validateChunkAudioQuality(
+          outdatedSeg,
+          lang,
+          undefined,
+          speed,
+          currentAsrModel,
+          "dialogue"
+        );
+
+        setSegments((prev) =>
+          prev.map((s) => {
+            if (s.id === outdatedSeg.id && getChunkAudioSignature(s) === audioSig) {
+              return { ...s, qualityReview: review };
+            }
+            return s;
+          })
+        );
+      } catch (err: any) {
+        console.warn(`[DialogueWorkspace] Auto-validation failed for segment ${outdatedSeg.id}:`, err);
+        setSegments((prev) =>
+          prev.map((s) => {
+            if (s.id === outdatedSeg.id && getChunkAudioSignature(s) === audioSig) {
+              return {
+                ...s,
+                qualityReview: {
+                  status: "unverified",
+                  summary: `Chưa kiểm chứng (${err?.message || "lỗi kiểm tra"})`,
+                  issues: [],
+                  checkedAt: Date.now(),
+                  audioPath: s.audioFilePath,
+                  text: s.cleanText || s.rawText,
+                  validatorVersion: QUALITY_VALIDATOR_VERSION,
+                  asrModelId: currentAsrModel,
+                  audioSignature: audioSig,
+                },
+              };
+            }
+            return s;
+          })
+        );
+      } finally {
+        inFlightValidationsRef.current.delete(inFlightKey);
+      }
+    };
+
+    runAutoValidation();
+  }, [segments, isConverting, currentAsrModel, isAsrReady]);
 
   // Reassembles master audio from current ready segments
   const updateMasterAssembly = async (currentSegments: DialogueSegment[]) => {
@@ -497,6 +721,14 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 
   // Regenerate a single segment (Section 9 parity with TTS chunk regenerate)
   const handleRegenerateSegment = async (segmentId: string) => {
+    const readiness = await checkAsrReadiness(currentAsrModel);
+    if (!readiness.ready) {
+      setAsrReadinessPrompt(readiness);
+      setIsAsrPromptOpen(true);
+      setPendingGenerationAction(() => () => handleRegenerateSegment(segmentId));
+      return;
+    }
+
     stopSegmentAudio();
     setSegments((prev) =>
       prev.map((s) =>
@@ -542,6 +774,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
               rawText: newText,
               cleanText: stripStageDirections(newText),
               status: "modified" as const,
+              qualityReview: undefined,
+              acknowledgedAudioSignature: undefined,
             }
           : s
       );
@@ -562,10 +796,12 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     });
   };
 
-  // Batch regenerate invalid (modified or failed) segments
+  const qualityStats = useMemo(() => countChunkQualityIssues(segments), [segments]);
+
+  // Batch regenerate invalid (modified or failed or QC error) segments
   const invalidSegments = useMemo(() => {
     return segments.filter(
-      (s) => s.status === "modified" || s.status === "failed"
+      (s) => s.status === "modified" || isChunkError(s)
     );
   }, [segments]);
 
@@ -574,9 +810,28 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     await handleConvertDialogue(invalidSegments.map((s) => s.id));
   };
 
+  const handleRegenerateErrorSegments = async () => {
+    if (qualityStats.errorChunks.length === 0 || isConverting) return;
+    await handleConvertDialogue(qualityStats.errorChunks.map((s) => s.id));
+  };
+
+  const handleRegenerateWarningSegments = async () => {
+    if (qualityStats.warningChunks.length === 0 || isConverting) return;
+    await handleConvertDialogue(qualityStats.warningChunks.map((s) => s.id));
+  };
+
   // Full Synthesis & Master Assembly Workflow
   const handleConvertDialogue = async (targetSegmentIds?: string[]) => {
     if (isConverting) return;
+
+    const readiness = await checkAsrReadiness(currentAsrModel);
+    if (!readiness.ready) {
+      setAsrReadinessPrompt(readiness);
+      setIsAsrPromptOpen(true);
+      setPendingGenerationAction(() => () => handleConvertDialogue(targetSegmentIds));
+      return;
+    }
+
     stopSegmentAudio();
     cancelRequestedRef.current = false;
 
@@ -974,6 +1229,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
               onNavigateToPrep={() => setStage("prep")}
               onDropFile={handleProcessScriptFile}
               onRegenerateInvalid={handleRegenerateInvalidSegments}
+              onRegenerateErrors={handleRegenerateErrorSegments}
+              onRegenerateWarnings={handleRegenerateWarningSegments}
               isConverting={isConverting}
               bottomPlayer={
                 activeSegmentTrack ? (
@@ -1077,13 +1334,31 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
               const beforeSpoken = prepareSpokenText(seg.cleanText, { rules: prevRules }).spokenText;
               const afterSpoken = prepareSpokenText(seg.cleanText, { rules: nextRules }).spokenText;
               if (beforeSpoken !== afterSpoken && seg.status === "ready") {
-                return { ...seg, status: "pending" as const };
+                return {
+                  ...seg,
+                  status: "modified" as const,
+                  qualityReview: undefined,
+                  acknowledgedAudioSignature: undefined,
+                };
               }
               return seg;
             })
           );
           lastPronunciationRulesRef.current = nextRules;
+          inFlightValidationsRef.current.clear();
         }}
+      />
+
+      {/* ASR Readiness Pre-flight Modal */}
+      <AsrReadinessModal
+        isOpen={isAsrPromptOpen}
+        onClose={() => {
+          setIsAsrPromptOpen(false);
+          setPendingGenerationAction(null);
+        }}
+        readiness={asrReadinessPrompt}
+        onSwitchModelAndProceed={handleSwitchModelAndProceed}
+        onNavigateToTranscription={handleNavigateToTranscription}
       />
     </div>
   );

@@ -3,6 +3,9 @@ import {
   TranslatedCue,
   DubAudioSegment,
   TimingOverflowMetadata,
+  DubbingSpeechGroup,
+  DubbingMode,
+  normalizeDubbingMode,
 } from "../../types/dubbing";
 
 export const DUBBING_SESSION_STORAGE_KEY = "voxlab_dubbing_session_backup";
@@ -20,8 +23,10 @@ export interface DubbingSessionBackup {
   targetLang: string;
   selectedProviderId: string;
   selectedVoiceId: string;
+  dubbingMode?: DubbingMode;
   originalCues: OriginalCue[];
   translatedCues: TranslatedCue[];
+  speechGroups?: DubbingSpeechGroup[];
   audioSegmentMeta: Record<
     number,
     Omit<DubAudioSegment, "audioUrl" | "fittedAudioUrl">
@@ -40,8 +45,10 @@ export function saveDubbingSessionBackup(session: {
   targetLang: string;
   selectedProviderId: string;
   selectedVoiceId: string;
+  dubbingMode?: DubbingMode;
   originalCues: OriginalCue[];
   translatedCues: TranslatedCue[];
+  speechGroups?: DubbingSpeechGroup[];
   audioSegments: Record<number, DubAudioSegment>;
   overflowAnalysis: Record<number, TimingOverflowMetadata>;
 }): void {
@@ -67,8 +74,10 @@ export function saveDubbingSessionBackup(session: {
       targetLang: session.targetLang,
       selectedProviderId: session.selectedProviderId,
       selectedVoiceId: session.selectedVoiceId,
+      dubbingMode: session.dubbingMode,
       originalCues: session.originalCues,
       translatedCues: session.translatedCues,
+      speechGroups: session.speechGroups,
       audioSegmentMeta: lightweightMeta,
       overflowAnalysis: session.overflowAnalysis,
       updatedAt: Date.now(),
@@ -88,7 +97,7 @@ export function saveDubbingSessionBackup(session: {
  * HARD INVARIANT (SPEC.md v2.5.3 Section 16.3):
  * Because in-memory Blob/RAM buffers are lost on reload:
  * Any cue that had generated audio is restored with `status: "needs_generation"`.
- * All original cues, translated cues, and manual user edits (`isEdited: true`) are 100% restored.
+ * All original cues, translated cues, speech groups, and manual user edits (`isEdited: true`) are 100% restored.
  */
 export function loadDubbingSessionBackup(): {
   backup: DubbingSessionBackup;
@@ -104,6 +113,7 @@ export function loadDubbingSessionBackup(): {
     if (!parsed || !Array.isArray(parsed.originalCues) || parsed.originalCues.length === 0) {
       return null;
     }
+    parsed.dubbingMode = normalizeDubbingMode(parsed.dubbingMode);
 
     // Convert previously generated segments to "needs_generation"
     const restoredAudioSegments: Record<number, DubAudioSegment> = {};
@@ -117,6 +127,15 @@ export function loadDubbingSessionBackup(): {
           fittedAudioUrl: undefined,
         };
       }
+    }
+
+    if (Array.isArray(parsed.speechGroups)) {
+      parsed.speechGroups = parsed.speechGroups.map((g) => ({
+        ...g,
+        status: g.sourceCueIds.some((id) => Boolean(restoredAudioSegments[id]))
+          ? "needs_generation"
+          : g.status,
+      }));
     }
 
     return {

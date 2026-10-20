@@ -383,6 +383,21 @@ def parse_english_number_phrase(
                     break
             current += t_val
         elif w in EN_ORDINALS:
+            if current % 100 != 0:
+                break
+            if w == "second" and (
+                words[idx].strip().startswith(("-", "–"))
+                or (
+                    idx == start_idx + offset
+                    and start_idx > 0
+                    and (
+                        re.search(r"\d", words[start_idx - 1])
+                        or clean_token(words[start_idx - 1])
+                        in (set(EN_ONES) | set(EN_TENS) | set(EN_SCALES) | {"a", "one", "per", "every", "split"})
+                    )
+                )
+            ):
+                break
             current += EN_ORDINALS[w]
             words_consumed += 1
             valid_number_found = True
@@ -440,8 +455,19 @@ def parse_english_number_phrase(
                     break
                 if after_scale_w in ("thousand", "million", "billion"):
                     next_scale = EN_SCALES[after_scale_w]
-                    if current < 100 or (min_scale_applied is not None and next_scale >= min_scale_applied):
+                    if (
+                        current < 100
+                        or next_num_w in ("one", "a")
+                        or (start_idx > 0 and clean_token(words[start_idx - 1]) == "between")
+                        or (min_scale_applied is not None and next_scale >= min_scale_applied)
+                    ):
                         break
+            if (
+                start_idx > 0
+                and clean_token(words[start_idx - 1]) == "between"
+                and not (after_next_idx < n and clean_token(words[after_next_idx]) == "and")
+            ):
+                break
             words_consumed += 1
             idx += 1
         else:
@@ -867,6 +893,20 @@ def collapse_number_tokens(
                     idx = after_cents_idx
                 else:
                     break
+            elif (
+                next_c in ("cent", "cents")
+                and not has_boundary_before(idx)
+                and re.fullmatch(r"\d{1,2}", spans[-1].canonical)
+                and 1 <= int(spans[-1].canonical) <= 99
+            ):
+                cents_val = int(spans[-1].canonical)
+                spans[-1] = NormalizedSpan(
+                    canonical=f"0.{cents_val:02d}",
+                    orig_start=spans[-1].orig_start,
+                    orig_end=idx + 1,
+                    is_number=True,
+                )
+                idx += 1
             else:
                 break
 
@@ -1169,6 +1209,24 @@ def collapse_number_tokens(
                         orig_end=s1.orig_end,
                         is_number=True,
                     )
+        elif (
+            s1.is_number
+            and not s_mid.is_number
+            and s_mid.canonical in ("to", "or", "đến", "den", "tới", "toi")
+            and s2.is_number
+            and re.fullmatch(r"\d{1,2}", s1.canonical)
+            and re.fullmatch(r"0\.\d{2}", s2.canonical)
+        ):
+            v1_cents = int(s1.canonical)
+            s2_last_w = clean_token(words[s2.orig_end - 1]) if s2.orig_end > s2.orig_start else ""
+            s2_first_raw = words[s2.orig_start].strip() if s2.orig_start < len(words) else ""
+            if 1 <= v1_cents <= 99 and (s2_last_w in ("cent", "cents") or s2_first_raw.startswith("$")):
+                spans[k] = NormalizedSpan(
+                    canonical=f"0.{v1_cents:02d}",
+                    orig_start=s1.orig_start,
+                    orig_end=s1.orig_end,
+                    is_number=True,
+                )
 
     return spans
 
@@ -1216,6 +1274,6 @@ def are_number_expressions_equivalent(expr1: str, expr2: str, language: str | No
     ):
         j1 = "".join(x.canonical.replace(":", "") for x in s1)
         j2 = "".join(x.canonical.replace(":", "") for x in s2)
-        if j1.isdigit() and j1 == j2:
+        if (j1.isdigit() or is_decimal_number_string(j1)) and j1 == j2:
             return True
     return False

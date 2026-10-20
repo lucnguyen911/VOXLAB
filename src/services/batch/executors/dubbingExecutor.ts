@@ -16,9 +16,21 @@ import {
   OriginalCue,
   DubAudioSegment,
   TimingOverflowMetadata,
+  DubbingMode,
 } from "../../../types/dubbing";
 import { parseSubtitle } from "../../subtitle/parser";
 import { analyzeTimingCollision, canExportMasterWav } from "../../dubbing/collisionDetector";
+import {
+  MAX_DUB_SPEEDUP,
+  DEFAULT_SAFETY_GAP_SEC,
+  calculateTimingFit,
+  applyWsolaTimeStretchToWavFile,
+} from "../../dubbing/timingFit";
+import {
+  planDubbingSpeechGroups,
+  normalizeCueTextForSpeech,
+  expandGroupSegmentToCueSegments,
+} from "../../dubbing/speechPlanner";
 import {
   resolveJobOutputDirectory,
   resolveArtifactPath,
@@ -27,9 +39,15 @@ import {
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
+import { getEffectiveRules } from "../../pronunciation";
+import {
+  validateChunkAudioQuality,
+  countChunkQualityIssues,
+} from "../../audio/qualityValidator";
 
 export interface DubbingExecutorOptions {
   subtitleContent?: string;
+  dubbingMode?: DubbingMode;
   onProgress?: (progressPct: number, stageMessage?: string) => void;
   isCancelled?: () => boolean;
   writeFile?: (path: string, content: Uint8Array | string) => Promise<void>;
@@ -113,10 +131,11 @@ export class DubbingExecutor {
       };
     }
 
-    onProgress?.(20, `Đang tạo audio lồng tiếng cho ${cues.length} câu...`);
-
     const dubSnapshot: BatchDubbingSnapshot | undefined =
       job.effectiveConfigSnapshot?.tasks.dubbing || job.configOverrides.dubbing;
+    const dubbingMode: DubbingMode =
+      options.dubbingMode || (dubSnapshot as any)?.dubbingMode || "sentence_group";
+
     const fail = (progressPct: number, error: string): BatchStepResult => ({
       task: "dubbing",
       status: "failed",
@@ -138,75 +157,202 @@ export class DubbingExecutor {
       return fail(20, "Local AI runtime chưa sẵn sàng (sidecar không khả dụng) — không thể lồng tiếng thật.");
     }
 
-    // Shared TtsEngineAdapter: whichever local engine the job selected (never hard-coded).
     const model = dubSnapshot?.ttsModel || "";
     const voiceId = dubSnapshot?.voiceId || "";
-    let engineSupportsSpeed = false;
+    const effectiveRules = getEffectiveRules("dubbing");
     try {
-      engineSupportsSpeed = ai.resolveEngine(model, voiceId, cues.map((c) => c.text).join(" ")).caps.supportsSpeed;
+      ai.resolveEngine(model, voiceId, cues.map((c) => normalizeCueTextForSpeech(c.text)).join(" "));
     } catch (e) {
       return fail(20, AiError.from(e).message);
     }
-    const speedCeiling = Math.min(1.2, dubSnapshot?.speedMultiplier || 1.2);
+    const speedCeiling = Math.min(
+      MAX_DUB_SPEEDUP,
+      Math.max(1.0, dubSnapshot?.speedMultiplier || MAX_DUB_SPEEDUP)
+    );
 
-    // Freeze advanced settings snapshot for the entire batch task (Invariant D)
     const jobAdvancedSettings = getEngineAdvancedSettings(model);
 
-    // 2. Synthesize audio segment for each cue (fit with the engine's native speed, ceiling 1.20x)
     const audioSegments: Record<number, DubAudioSegment> = {};
-    const segmentPaths: Record<number, string> = {};
+    const primarySegmentsForQc: DubAudioSegment[] = [];
     const scratchScope = `dub-${job.id}`.replace(/[^\w-]/g, "_");
-    const total = cues.length;
 
-    for (let i = 0; i < total; i++) {
-      if (isCancelled?.()) return cancelled(Math.floor(20 + (i / total) * 50));
+    const isGroupMode =
+      dubbingMode === "source_sync" ||
+      dubbingMode === "free_narration" ||
+      (dubbingMode as any) === "sentence_group";
 
-      const cue = cues[i];
-      const cueDuration = cue.endSec - cue.startSec;
-      try {
-        const outputPath = await ai.scratchPath(scratchScope, `cue_${String(i + 1).padStart(4, "0")}.wav`);
-        const raw = await ai.synthesize({
-          model,
-          voiceId,
-          text: cue.text,
-          outputPath,
-          advancedSettings: jobAdvancedSettings,
-        });
-        let fitted = raw;
-        let speedFactor = 1.0;
-        if (raw.durationSec > cueDuration && engineSupportsSpeed && cueDuration > 0) {
-          speedFactor = Math.min(speedCeiling, raw.durationSec / cueDuration);
-          if (speedFactor > 1.0001) {
-            fitted = await ai.synthesize({
-              model,
-              voiceId,
-              text: cue.text,
-              outputPath,
-              speed: speedFactor,
-              advancedSettings: jobAdvancedSettings,
-            });
+    if (isGroupMode) {
+      const groups = planDubbingSpeechGroups(cues);
+      const totalGroups = groups.length;
+      onProgress?.(20, `Đang tạo audio thuyết minh liền mạch cho ${totalGroups} nhóm câu (${cues.length} cue)...`);
+
+      for (let gIdx = 0; gIdx < totalGroups; gIdx++) {
+        if (isCancelled?.()) return cancelled(Math.floor(20 + (gIdx / totalGroups) * 50));
+
+        const group = groups[gIdx];
+        const primaryCueIndex = group.sourceCueIds[0];
+        const cleanText = normalizeCueTextForSpeech(group.speechText || group.sourceText);
+        const groupSpanSec = Math.max(0.2, Number((group.endSec - group.startSec).toFixed(3)));
+        const availableSec = Math.max(groupSpanSec, group.availableDurationSec);
+
+        try {
+          const outputPath = await ai.scratchPath(
+            scratchScope,
+            `${group.groupId}.wav`
+          );
+          const raw = await ai.synthesize({
+            model,
+            voiceId,
+            text: cleanText,
+            outputPath,
+            advancedSettings: jobAdvancedSettings,
+            pronunciationRules: effectiveRules,
+            projectId: "dubbing",
+          });
+
+          const fit = calculateTimingFit(raw.durationSec, availableSec, speedCeiling);
+          let fittedDurationSec = fit.fittedDurationSec;
+          let speedFactor = fit.speedFactor;
+
+          if (fit.isStretched && fit.speedFactor > 1.001) {
+            const stretched = await applyWsolaTimeStretchToWavFile(raw.outputPath, fit.speedFactor);
+            if (stretched && stretched.isStretched) {
+              fittedDurationSec = stretched.fittedDurationSec;
+              speedFactor = stretched.appliedSpeedFactor;
+            }
           }
-        }
-        const audioStartSec = cue.startSec;
-        audioSegments[cue.index] = {
-          cueIndex: cue.index,
-          status: "ready",
-          targetDurationSec: cueDuration,
-          rawDurationSec: raw.durationSec,
-          speedFactor,
-          fittedDurationSec: fitted.durationSec,
-          audioStartSec,
-          audioEndSec: Number((audioStartSec + fitted.durationSec).toFixed(3)),
-        };
-        segmentPaths[cue.index] = fitted.outputPath;
-      } catch (e) {
-        const err = AiError.from(e);
-        if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(Math.floor(20 + (i / total) * 50));
-        return fail(Math.floor(20 + (i / total) * 50), `Lỗi tạo giọng câu ${i + 1}/${total}: ${err.message}`);
-      }
 
-      const pct = Math.floor(20 + ((i + 1) / total) * 50);
-      onProgress?.(pct, `Đang tạo giọng đọc câu ${i + 1}/${total}...`);
+          const primarySegment: DubAudioSegment = {
+            cueIndex: primaryCueIndex,
+            text: cleanText,
+            status: "ready",
+            targetDurationSec: groupSpanSec,
+            rawDurationSec: raw.durationSec,
+            speedFactor,
+            fittedDurationSec,
+            audioStartSec: group.startSec,
+            audioEndSec: Number((group.startSec + fittedDurationSec).toFixed(3)),
+            audioFilePath: raw.outputPath,
+            groupId: group.groupId,
+            groupCueIndices: [...group.sourceCueIds],
+            isGroupPrimary: true,
+            primaryCueIndex,
+          };
+
+          const expanded = expandGroupSegmentToCueSegments(group, primarySegment, cues);
+          Object.assign(audioSegments, expanded);
+          primarySegmentsForQc.push(audioSegments[primaryCueIndex]);
+        } catch (e) {
+          const err = AiError.from(e);
+          if (err.code === "CANCELLED" || isCancelled?.()) {
+            return cancelled(Math.floor(20 + (gIdx / totalGroups) * 50));
+          }
+          return fail(
+            Math.floor(20 + (gIdx / totalGroups) * 50),
+            `Lỗi tạo giọng nhóm câu ${gIdx + 1}/${totalGroups}: ${err.message}`
+          );
+        }
+
+        const pct = Math.floor(20 + ((gIdx + 1) / totalGroups) * 45);
+        onProgress?.(pct, `Đang tạo giọng nhóm câu ${gIdx + 1}/${totalGroups}...`);
+      }
+    } else {
+      // Mode 1: cue_strict (1:1 per-cue synthesis)
+      const total = cues.length;
+      onProgress?.(20, `Đang tạo audio lồng tiếng cho ${total} câu...`);
+
+      for (let i = 0; i < total; i++) {
+        if (isCancelled?.()) return cancelled(Math.floor(20 + (i / total) * 50));
+
+        const cue = cues[i];
+        const nextCue = cues[i + 1];
+        const cleanText = normalizeCueTextForSpeech(cue.text);
+        const cueDuration = Math.max(0.2, Number((cue.endSec - cue.startSec).toFixed(3)));
+        const availableSec = nextCue
+          ? Math.max(cueDuration, Number((nextCue.startSec - cue.startSec - DEFAULT_SAFETY_GAP_SEC).toFixed(3)))
+          : cueDuration;
+
+        try {
+          const outputPath = await ai.scratchPath(
+            scratchScope,
+            `cue_${String(i + 1).padStart(4, "0")}.wav`
+          );
+          const raw = await ai.synthesize({
+            model,
+            voiceId,
+            text: cleanText,
+            outputPath,
+            advancedSettings: jobAdvancedSettings,
+            pronunciationRules: effectiveRules,
+            projectId: "dubbing",
+          });
+
+          const fit = calculateTimingFit(raw.durationSec, availableSec, speedCeiling);
+          let fittedDurationSec = fit.fittedDurationSec;
+          let speedFactor = fit.speedFactor;
+
+          if (fit.isStretched && fit.speedFactor > 1.001) {
+            const stretched = await applyWsolaTimeStretchToWavFile(raw.outputPath, fit.speedFactor);
+            if (stretched && stretched.isStretched) {
+              fittedDurationSec = stretched.fittedDurationSec;
+              speedFactor = stretched.appliedSpeedFactor;
+            }
+          }
+
+          const segment: DubAudioSegment = {
+            cueIndex: cue.index,
+            text: cleanText,
+            status: "ready",
+            targetDurationSec: cueDuration,
+            rawDurationSec: raw.durationSec,
+            speedFactor,
+            fittedDurationSec,
+            audioStartSec: cue.startSec,
+            audioEndSec: Number((cue.startSec + fittedDurationSec).toFixed(3)),
+            audioFilePath: raw.outputPath,
+            isGroupPrimary: true,
+            primaryCueIndex: cue.index,
+          };
+
+          audioSegments[cue.index] = segment;
+          primarySegmentsForQc.push(segment);
+        } catch (e) {
+          const err = AiError.from(e);
+          if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(Math.floor(20 + (i / total) * 50));
+          return fail(Math.floor(20 + (i / total) * 50), `Lỗi tạo giọng câu ${i + 1}/${total}: ${err.message}`);
+        }
+
+        const pct = Math.floor(20 + ((i + 1) / total) * 45);
+        onProgress?.(pct, `Đang tạo giọng đọc câu ${i + 1}/${total}...`);
+      }
+    }
+
+    // Deferred post-TTS Whisper ASR quality verification pass (prevents TTS<->ASR GPU model thrashing)
+    if (typeof ai.validateAudioQuality === "function" && primarySegmentsForQc.length > 0) {
+      onProgress?.(68, "Đang hậu kiểm chất lượng giọng đọc bằng Whisper...");
+      for (const seg of primarySegmentsForQc) {
+        if (isCancelled?.()) return cancelled(68);
+        try {
+          const review = await validateChunkAudioQuality(
+            seg,
+            undefined,
+            ai,
+            seg.speedFactor || 1.0,
+            undefined,
+            "dubbing"
+          );
+          seg.qualityReview = review;
+          if (seg.groupCueIndices && seg.groupCueIndices.length > 1) {
+            for (const memberIdx of seg.groupCueIndices) {
+              if (audioSegments[memberIdx]) {
+                audioSegments[memberIdx].qualityReview = review;
+              }
+            }
+          }
+        } catch {
+          // Non-blocking: quality check failure must not abort batch synthesis
+        }
+      }
     }
 
     // 3. Technical Error Simulation Check (AC-11: failed_with_artifact)
@@ -226,10 +372,16 @@ export class DubbingExecutor {
 
     // 4. Timing Collision Analysis (AC-11) on REAL durations
     if (forceCollisionDangerForTest && cues.length >= 2) {
-      audioSegments[cues[0].index].fittedDurationSec = (cues[1].startSec - cues[0].startSec) + 2.0;
+      const firstSeg = audioSegments[cues[0].index];
+      const lastCuePos =
+        firstSeg.groupCueIndices && firstSeg.groupCueIndices.length > 0
+          ? cues.findIndex((c) => c.index === firstSeg.groupCueIndices![firstSeg.groupCueIndices!.length - 1])
+          : 0;
+      const nextCue = cues[Math.min(cues.length - 1, Math.max(1, lastCuePos + 1))];
+      firstSeg.fittedDurationSec = (nextCue.startSec - cues[0].startSec) + 2.0;
     }
-    const overflowAnalysis: Record<number, TimingOverflowMetadata> = analyzeTimingCollision(cues, audioSegments);
-    const collisionCheck = canExportMasterWav(overflowAnalysis);
+    const overflowAnalysis: Record<number, TimingOverflowMetadata> = analyzeTimingCollision(cues, audioSegments, dubbingMode);
+    const collisionCheck = canExportMasterWav(overflowAnalysis, dubbingMode);
 
     // If collision danger detected: BLOCK Master WAV export, preserve committed subtitle
     if (!collisionCheck.allowed) {
@@ -265,10 +417,40 @@ export class DubbingExecutor {
     if (audioResolution.action !== "skip") {
       onProgress?.(85, "Đang ghép nối và xuất tệp Master Audio...");
       try {
+        let runningNarrationSec = 0;
+        const pauseGapSec = 0.45;
+
+        const primarySegs = cues
+          .map((c) => audioSegments[c.index])
+          .filter((seg): seg is DubAudioSegment => Boolean(seg && seg.isGroupPrimary !== false && seg.audioFilePath));
+
+        const timelineInputs = primarySegs.map((seg, idx) => {
+          const dur = seg.fittedDurationSec || seg.rawDurationSec || 1.0;
+          const startSec = dubbingMode === "free_narration" ? runningNarrationSec : seg.audioStartSec;
+          if (dubbingMode === "free_narration") {
+            runningNarrationSec = Number((runningNarrationSec + dur).toFixed(3));
+            if (idx < primarySegs.length - 1) {
+              runningNarrationSec = Number((runningNarrationSec + pauseGapSec).toFixed(3));
+            }
+          }
+          return {
+            path: seg.audioFilePath!,
+            startSec,
+          };
+        });
+
+        const totalDurationSec =
+          dubbingMode === "free_narration"
+            ? runningNarrationSec
+            : Math.max(
+                ...cues.map((c) => c.endSec),
+                ...primarySegmentsForQc.map((s) => s.audioEndSec)
+              );
+
         await ai.assemble({
           mode: "timeline",
-          inputs: cues.map((c) => ({ path: segmentPaths[c.index], startSec: audioSegments[c.index].audioStartSec })),
-          totalDurationSec: Math.max(...cues.map((c) => c.endSec)),
+          inputs: timelineInputs,
+          totalDurationSec,
           outputPath: audioResolution.resolvedPath,
           format: targetAudioFormat,
         });
@@ -282,11 +464,18 @@ export class DubbingExecutor {
 
     onProgress?.(100, "Hoàn tất lồng tiếng Master Audio!");
 
+    const qcStats = countChunkQualityIssues(primarySegmentsForQc);
+    const qcWarning =
+      qcStats.errorCount > 0 || qcStats.warningCount > 0
+        ? `Hậu kiểm chất lượng Lồng tiếng: ${qcStats.errorCount} câu lỗi, ${qcStats.warningCount} câu cảnh báo.`
+        : undefined;
+
     return {
       task: "dubbing",
       status: "completed",
       progressPct: 100,
       outputArtifactPaths,
+      ...(qcWarning ? { warning: qcWarning } : {}),
       startedAt,
       completedAt: Date.now(),
     };

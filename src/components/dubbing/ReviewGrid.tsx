@@ -4,21 +4,27 @@ import {
   TranslatedCue,
   DubAudioSegment,
   TimingOverflowMetadata,
+  DubbingMode,
 } from "../../types/dubbing";
 import { CueRow } from "./CueRow";
-import { Zap, UploadCloud } from "lucide-react";
+import { Zap, UploadCloud, RefreshCw } from "lucide-react";
 import { useI18n } from "../../i18n/context";
+import { countChunkQualityIssues } from "../../services/audio/qualityValidator";
 
 export interface ReviewGridProps {
   originalCues: OriginalCue[];
   translatedCues: TranslatedCue[];
   audioSegments: Record<number, DubAudioSegment>;
   overflowAnalysis: Record<number, TimingOverflowMetadata>;
+  dubbingMode?: DubbingMode;
   playingCueIndex?: number | null;
   collidingCount?: number;
+  isGeneratingAudio?: boolean;
   onUpdateText: (index: number, newText: string) => void;
   onPlayAudio?: (index: number) => void;
   onRegenerateAudio?: (index: number) => void;
+  onRegenerateErrors?: () => void;
+  onRegenerateWarnings?: () => void;
   onAutoFitAll?: () => void;
   onSelectFile?: () => void;
   isDragging?: boolean;
@@ -30,17 +36,26 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
   translatedCues,
   audioSegments,
   overflowAnalysis,
+  dubbingMode = "source_sync",
   playingCueIndex,
   collidingCount = 0,
+  isGeneratingAudio = false,
   onUpdateText,
   onPlayAudio,
   onRegenerateAudio,
+  onRegenerateErrors,
+  onRegenerateWarnings,
   onAutoFitAll,
   onSelectFile,
   isDragging = false,
   bottomPlayer,
 }) => {
   const { lang } = useI18n();
+  const primarySegments = Object.values(audioSegments).filter(
+    (s) => s.isGroupPrimary !== false
+  );
+  const qualityStats = countChunkQualityIssues(primarySegments);
+  const hasReadyAudio = primarySegments.some((s) => s.status === "ready");
 
   if (!originalCues || originalCues.length === 0) {
     return (
@@ -86,19 +101,93 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
         <div className="flex items-center px-1">
           <span className="font-bold text-textPrimary text-xs">Kịch bản gốc</span>
         </div>
-        <div className="flex items-center justify-between px-1">
-          <span className="font-bold text-textPrimary text-xs">Bản Dịch</span>
-          {collidingCount > 0 && onAutoFitAll && (
-            <button
-              type="button"
-              onClick={onAutoFitAll}
-              className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs animate-in fade-in"
-              title="Tự động co giãn tốc độ các câu bị va chạm để khớp vừa khít với thời lượng"
-            >
-              <Zap className="w-3 h-3 text-amber-400" />
-              <span>Tự động khớp thời lượng ({collidingCount} câu)</span>
-            </button>
-          )}
+        <div className="flex items-center justify-between gap-2 flex-wrap px-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-bold text-textPrimary text-xs">Bản Dịch</span>
+            {hasReadyAudio && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {qualityStats.passCount > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"
+                    title="Số câu thoại đạt chuẩn hậu kiểm"
+                  >
+                    Đạt: {qualityStats.passCount}
+                  </span>
+                )}
+                {qualityStats.warningCount > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20"
+                    title="Số câu thoại có cảnh báo cần lưu ý"
+                  >
+                    Cảnh báo: {qualityStats.warningCount}
+                  </span>
+                )}
+                {qualityStats.errorCount > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-500/10 text-red-500 border border-red-500/20"
+                    title="Số câu thoại bị lỗi nghiêm trọng cần tạo lại"
+                  >
+                    Lỗi: {qualityStats.errorCount}
+                  </span>
+                )}
+                {qualityStats.checkingCount > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20"
+                    title="Số câu thoại đang hậu kiểm ASR"
+                  >
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                    Đang kiểm tra: {qualityStats.checkingCount}
+                  </span>
+                )}
+                {qualityStats.unverifiedCount > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/25"
+                    title="Số câu thoại chưa được ASR hậu kiểm đầy đủ"
+                  >
+                    Chưa kiểm chứng: {qualityStats.unverifiedCount}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {qualityStats.errorCount > 0 && onRegenerateErrors && (
+              <button
+                type="button"
+                disabled={isGeneratingAudio}
+                onClick={onRegenerateErrors}
+                className="flex items-center gap-1 px-2 py-0.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 rounded text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                title="Chỉ tạo lại các câu bị lỗi nghiêm trọng"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Tạo lại {qualityStats.errorCount} lỗi</span>
+              </button>
+            )}
+            {qualityStats.warningCount > 0 && onRegenerateWarnings && (
+              <button
+                type="button"
+                disabled={isGeneratingAudio}
+                onClick={onRegenerateWarnings}
+                className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                title="Chỉ tạo lại các câu có cảnh báo"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Tạo lại {qualityStats.warningCount} cảnh báo</span>
+              </button>
+            )}
+            {dubbingMode !== "free_narration" && collidingCount > 0 && onAutoFitAll && (
+              <button
+                type="button"
+                onClick={onAutoFitAll}
+                className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs animate-in fade-in"
+                title="Tự động co giãn tốc độ các câu bị va chạm để khớp vừa khít với thời lượng"
+              >
+                <Zap className="w-3 h-3 text-amber-400" />
+                <span>Tự động khớp thời lượng ({collidingCount} câu)</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -120,6 +209,7 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
               translated={trans}
               audioSegment={audioSegments[orig.index]}
               overflowMeta={overflowAnalysis[orig.index]}
+              dubbingMode={dubbingMode}
               isPlaying={playingCueIndex === orig.index}
               onUpdateText={onUpdateText}
               onPlayAudio={onPlayAudio}

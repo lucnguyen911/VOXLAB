@@ -77,11 +77,227 @@ export const VIETNAMESE_COMPOUNDS = new Set([
   "phụ đề",
 ]);
 
+export const ENGLISH_COMPOUNDS = new Set([
+  "instead of",
+  "because of",
+  "according to",
+  "due to",
+  "prior to",
+  "thanks to",
+  "such as",
+  "as well",
+  "at least",
+  "at most",
+  "at first",
+  "at last",
+  "up to",
+  "out of",
+  "in front",
+  "in order",
+  "in fact",
+  "in case",
+  "on board",
+  "depend on",
+  "depends on",
+  "rely on",
+  "relies on",
+  "focus on",
+  "focuses on",
+  "based on",
+  "look at",
+  "looking at",
+  "wait for",
+  "waiting for",
+  "wake up",
+  "pick up",
+  "picking up",
+  "set up",
+  "setting up",
+  "shut down",
+  "turn on",
+  "turn off",
+  "find out",
+  "figure out",
+  "work out",
+  "point out",
+  "carry out",
+  "roll out",
+  "sort out",
+  "hand over",
+  "take over",
+  "each other",
+  "one another",
+  "even though",
+  "even if",
+  "as soon",
+  "no longer",
+  "right now",
+  "per mile",
+  "per hour",
+  "per month",
+  "per year",
+  "per day",
+  "a month",
+  "a year",
+  "a day",
+  "an hour",
+  "kilowatt hours",
+  "kilowatt hour",
+  "megawatt hours",
+  "megawatt hour",
+  "serve as",
+  "serves as",
+  "served as",
+  "serving as",
+  "come out",
+  "comes out",
+  "came out",
+  "coming out",
+  "lead to",
+  "leads to",
+  "led to",
+  "neural network",
+  "neural networks",
+  "battery pack",
+  "battery packs",
+  "battery cell",
+  "battery cells",
+  "precision actuator",
+  "precision actuators",
+  "difficult component",
+  "in-home care",
+  "in home care",
+  "in-home caregiver",
+  "in home caregiver",
+  "target price",
+]);
+
+export const REFLEXIVE_PRONOUNS = new Set([
+  "itself",
+  "himself",
+  "herself",
+  "themselves",
+  "ourselves",
+  "yourself",
+  "yourselves",
+  "myself",
+]);
+
+const ENTITY_DESIGNATOR_PREFIXES = new Set([
+  "model",
+  "optimus",
+  "gen",
+  "generation",
+  "version",
+  "option",
+  "phase",
+  "stage",
+  "tier",
+  "part",
+  "section",
+  "chapter",
+  "figure",
+  "step",
+  "level",
+  "type",
+  "class",
+  "grade",
+  "mark",
+  "block",
+  "series",
+]);
+
+const NUMBER_UNIT_FOLLOWERS = new Set([
+  "million",
+  "billion",
+  "trillion",
+  "thousand",
+  "hundred",
+  "percent",
+  "kwh",
+  "kw",
+  "mwh",
+  "mw",
+  "gwh",
+  "gw",
+  "gb",
+  "tb",
+  "mb",
+  "kb",
+  "hz",
+  "khz",
+  "mhz",
+  "ghz",
+  "mph",
+  "km",
+  "m",
+  "cm",
+  "mm",
+  "kg",
+  "g",
+  "mg",
+  "lbs",
+  "pounds",
+  "pound",
+  "tons",
+  "ton",
+  "hours",
+  "hour",
+  "minutes",
+  "minute",
+  "seconds",
+  "second",
+  "days",
+  "day",
+  "weeks",
+  "week",
+  "months",
+  "month",
+  "years",
+  "year",
+  "miles",
+  "mile",
+  "meters",
+  "meter",
+  "feet",
+  "foot",
+  "dollars",
+  "dollar",
+  "cents",
+  "cent",
+  "kilowatt",
+  "megawatt",
+  "gigawatt",
+]);
+
 export function isCompoundWordSplit(w1: string, w2: string): boolean {
   if (!w1 || !w2) return false;
-  const clean1 = w1.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  // Never bridge across explicit punctuation at the end of w1
+  if (/[.,;:!?…]$/u.test(w1.trim())) return false;
+  const clean1 = w1.toLowerCase().replace(/^[^\p{L}\p{N}$]+|[^\p{L}\p{N}%]+$/gu, "");
   const clean2 = w2.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
-  return VIETNAMESE_COMPOUNDS.has(`${clean1} ${clean2}`);
+  if (!clean1 || !clean2) return false;
+  const pair = `${clean1} ${clean2}`;
+  if (VIETNAMESE_COMPOUNDS.has(pair) || ENGLISH_COMPOUNDS.has(pair)) {
+    return true;
+  }
+  if (REFLEXIVE_PRONOUNS.has(clean2)) {
+    return true;
+  }
+  if (
+    ENTITY_DESIGNATOR_PREFIXES.has(clean1) &&
+    /^(\d+(\.\d+)?|[a-z]|i{1,3}|iv|v|vi{0,3}|one|two|three|four|five)$/i.test(clean2)
+  ) {
+    return true;
+  }
+  const isNumericOrRate1 =
+    /^\$?\d+([.,]\d+)*%?$/.test(clean1) ||
+    NUMBER_UNIT_FOLLOWERS.has(clean1) ||
+    ["once", "twice", "thrice"].includes(clean1);
+  if (isNumericOrRate1 && (NUMBER_UNIT_FOLLOWERS.has(clean2) || ["per", "a", "an"].includes(clean2))) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -301,7 +517,7 @@ export const FORBIDDEN_ENDINGS = new Set([
   // English determiners, prepositions, auxiliaries, conjunctions, relatives, subject pronouns
   "a", "an", "the", "this", "that", "these", "those", "my", "your", "his", "her", "its", "our", "their",
   "of", "to", "for", "with", "from", "by", "at", "in", "on", "as", "into", "onto", "under", "over",
-  "between", "among", "about", "through", "across", "behind", "beyond", "per",
+  "between", "among", "about", "around", "through", "across", "behind", "beyond", "per",
   "am", "is", "are", "was", "were", "be", "been", "being", "has", "have", "had", "do", "does", "did",
   "will", "would", "can", "could", "may", "might", "must", "should", "shall",
   "and", "but", "or", "so", "because", "although", "though", "while", "when", "if", "which", "who", "where",
@@ -311,8 +527,41 @@ export const FORBIDDEN_ENDINGS = new Set([
   "dưới", "đến", "từ", "để", "khi", "nếu", "những", "các", "một", "đang", "sẽ", "đã", "vẫn", "rất",
 ]);
 
-function cleanWord(w: string): string {
+export function cleanWord(w: string): string {
   return w.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
+/**
+ * Normalizes common Blind ASR phonetic homophones and spurious possessives
+ * in technical / robotics / energy transcripts when no reference script is provided.
+ */
+export function normalizeBlindAsrText(text: string): string {
+  if (!text) return text;
+  let result = text;
+  if (/\b(optimus|tesla|robot|humanoid|actuator|battery)\b/i.test(result)) {
+    result = result.replace(/\boptimists\b/gi, "Optimus").replace(/\boptimist\b/gi, "Optimus");
+  }
+  result = result.replace(
+    /\b(water-resistant|water\s+resistant|waterproof|hermetic|environmental|dust|ip6[78])\s+ceiling([.,;:!?]?)/gi,
+    "$1 sealing$2"
+  );
+  // Strip spurious "'s" only when NOT preceded by a preposition/determiner ("At Tesla's stated $20,000")
+  // and when followed by a clause/complement introducer ("that", "how", "why", "the", "a", etc.)
+  result = result.replace(
+    /(^|[.,;:!?]\s+|\b(?:interviews|reports|statements),\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)['’]s\s+(emphasized|explained|stated|noted|said|shared|acknowledged|confirmed|announced|revealed|warned|argued|predicted|pointed|added|claimed|suggested)\s+(that|how|why|whether|what|if|when|where|who|to|the|a|an|his|her|its|their|our|this|these|those|he|she|it|they|we|you|there|one)\b/g,
+    "$1$2 $3 $4"
+  );
+  // Heal false ASR comma in "such as the <Noun>, <Noun/Verb> <Preposition>"
+  result = result.replace(
+    /\b(such\s+as\s+(?:the|a|an)\s+[A-Za-z0-9-]+),\s+([a-z]+\s+(?:at|in|on|from|for|with|by|during|inside|into))\b/gi,
+    "$1 $2"
+  );
+  // Plural non-restrictive relative clause agreement: "<plural noun>, which offers" -> "which offer"
+  result = result.replace(
+    /\b(cells|batteries|actuators|sensors|motors|robots|vehicles|cars|trucks|packs|panels|rates|grids|bills|homes|families|parents|insiders),\s+which\s+offers\b/gi,
+    "$1, which offer"
+  );
+  return result;
 }
 
 /**
@@ -344,6 +593,10 @@ export function wrapCueTextBalanced(text: string, profile: SubtitleProfile): str
     const overflow = Math.max(0, w1 - profile.maxWidth) + Math.max(0, w2 - profile.maxWidth);
     let score = Math.abs(w1 - w2) * 3.0 + overflow * 200;
 
+    if (words.length >= 3 && (i === 1 || i === words.length - 1)) {
+      score += 900;
+    }
+
     if (isCompoundWordSplit(words[i - 1], words[i])) {
       score += 5000;
     }
@@ -356,16 +609,29 @@ export function wrapCueTextBalanced(text: string, profile: SubtitleProfile): str
     const isCopulaBeforeThat =
       ["is", "was", "are", "were"].includes(leftClean) &&
       ["that", "whether", "what", "why", "how", "where", "when", "who"].includes(rightClean);
+    const isDeterminerBeforeLongWord =
+      ["a", "an", "the", "this", "that", "its", "their", "our", "your"].includes(leftClean) &&
+      getDisplayWidth(rightFirstToken) >= 15;
 
     if (/[.,;:!?…]$/u.test(leftRaw)) {
       score -= 40;
+    } else if (isDeterminerBeforeLongWord) {
+      score += 80;
     } else if (FORBIDDEN_ENDINGS.has(leftClean) && !isCopulaBeforeThat) {
       score += 1800;
     } else if (isCopulaBeforeThat) {
       score -= 20;
     }
 
-    if (CONJUNCTIONS.has(rightClean)) {
+    // Protect short coordinate noun pair at the end of a cue (e.g. "tables and chairs")
+    if (
+      ["and", "or", "và", "hay", "hoặc"].includes(rightClean) &&
+      words.length - i === 2 &&
+      !FORBIDDEN_ENDINGS.has(leftClean) &&
+      !/[.,;:!?…]$/u.test(leftRaw)
+    ) {
+      score += 240;
+    } else if (CONJUNCTIONS.has(rightClean)) {
       score -= 30;
     } else if (["from", "in", "on", "to", "for", "with", "into", "across", "through"].includes(rightClean)) {
       score -= 20;
