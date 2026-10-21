@@ -21,6 +21,11 @@ import {
   HistoryArtifactItem,
   HistorySubtitleCue,
 } from "../../types/history";
+import { readAudioFileBlobUrl } from "../../services/batch/batchRuntime";
+import {
+  loadArtifactCuesFromDisk,
+  openHistoryPathInFolder,
+} from "../../services/history/historyManager";
 
 export interface ResultPreviewDrawerProps {
   isOpen: boolean;
@@ -77,14 +82,18 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
   const [playbackSec, setPlaybackSec] = useState<number>(0);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
   const [volume, setVolume] = useState<number>(80);
+  const [realAudioUrl, setRealAudioUrl] = useState<string>("");
+  const [resolvedDurationSec, setResolvedDurationSec] = useState<number>(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // 3. Audio "Bật Phụ Đề" State
   const [listenWithSubtitles, setListenWithSubtitles] = useState<boolean>(false);
   const [attachedSubtitleId, setAttachedSubtitleId] = useState<string>("");
 
-  // 4. Subtitle Viewer Search & Copy State
+  // 4. Subtitle Viewer Search, Copy & Disk-loaded Cues State
   const [subSearchQuery, setSubSearchQuery] = useState<string>("");
   const [copiedDialogue, setCopiedDialogue] = useState<boolean>(false);
+  const [diskLoadedCuesMap, setDiskLoadedCuesMap] = useState<Record<string, HistorySubtitleCue[]>>({});
 
   // Cue list scroll container ref for auto-scrolling
   const cueContainerRef = useRef<HTMLDivElement>(null);
@@ -119,11 +128,63 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
     return job.artifacts.find((a) => a.id === selectedArtifactId) || job.artifacts[0] || null;
   }, [job.artifacts, selectedArtifactId]);
 
-  // Audio Playback simulation ticker with speed support
+  const effectiveMaxSec = useMemo(() => {
+    if (resolvedDurationSec > 0) return resolvedDurationSec;
+    return currentArtifact?.audioDurationSec || 180;
+  }, [resolvedDurationSec, currentArtifact?.audioDurationSec]);
+
+  // Load real audio Blob URL from disk when an audio artifact is active
   useEffect(() => {
+    let cancelled = false;
+    setRealAudioUrl("");
+    setResolvedDurationSec(currentArtifact?.audioDurationSec || 0);
+
+    if (
+      !isOpen ||
+      !currentArtifact ||
+      currentArtifact.type !== "audio" ||
+      !currentArtifact.existsOnDisk ||
+      !currentArtifact.filePath
+    ) {
+      return;
+    }
+
+    readAudioFileBlobUrl(currentArtifact.filePath)
+      .then((blobUrl) => {
+        if (!cancelled && blobUrl) {
+          setRealAudioUrl(blobUrl);
+        }
+      })
+      .catch(() => {
+        // Fallback to simulation ticker if running in mock/browser preview without disk file
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, currentArtifact]);
+
+  // Sync HTMLAudioElement play/pause, volume, and playbackRate
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || !realAudioUrl) return;
+    el.volume = Math.max(0, Math.min(1, volume / 100));
+    el.playbackRate = playbackSpeed;
+    if (isPlaying) {
+      el.play().catch(() => {
+        setIsPlaying(false);
+      });
+    } else {
+      el.pause();
+    }
+  }, [isPlaying, volume, playbackSpeed, realAudioUrl]);
+
+  // Fallback Audio Playback simulation ticker only when realAudioUrl is unavailable
+  useEffect(() => {
+    if (realAudioUrl) return;
     let timer: NodeJS.Timeout | null = null;
     if (isPlaying && currentArtifact && currentArtifact.type === "audio") {
-      const maxSec = currentArtifact.audioDurationSec || 180;
+      const maxSec = effectiveMaxSec;
       const intervalMs = Math.round(1000 / playbackSpeed);
 
       timer = setInterval(() => {
@@ -139,29 +200,87 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [isPlaying, currentArtifact, playbackSpeed]);
+  }, [isPlaying, currentArtifact, playbackSpeed, realAudioUrl, effectiveMaxSec]);
 
   // Switch artifact tab handler
   const handleSelectArtifact = (artId: string) => {
     if (artId === selectedArtifactId) return;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
     setIsPlaying(false);
     setPlaybackSec(0);
     setSubSearchQuery("");
     setSelectedArtifactId(artId);
   };
 
+  // Seek audio to an exact second
+  const handleSeekTo = (targetSec: number) => {
+    if (!currentArtifact) return;
+    const clamped = Math.max(0, Math.min(effectiveMaxSec, targetSec));
+    setPlaybackSec(clamped);
+    if (audioRef.current && realAudioUrl) {
+      audioRef.current.currentTime = clamped;
+    }
+  };
+
   // Seek audio back/forward 5s
   const handleSeekDelta = (deltaSec: number) => {
-    if (!currentArtifact) return;
-    const maxSec = currentArtifact.audioDurationSec || 180;
-    setPlaybackSec((prev) => Math.max(0, Math.min(maxSec, prev + deltaSec)));
+    handleSeekTo(playbackSec + deltaSec);
   };
 
   // Subtitle attached to audio when "Nghe kèm phụ đề" is checked
   const activeAttachedSubtitle = useMemo(() => {
     if (!listenWithSubtitles) return null;
-    return job.artifacts.find((a) => a.id === attachedSubtitleId && a.type === "subtitle") || null;
+    return job.artifacts.find((a) => a.id === attachedSubtitleId && (a.type === "subtitle" || a.type === "text")) || null;
   }, [listenWithSubtitles, job.artifacts, attachedSubtitleId]);
+
+  // Lazy-load cues from disk if currentArtifact or activeAttachedSubtitle has empty cues
+  useEffect(() => {
+    let cancelled = false;
+    const targetSub =
+      currentArtifact && (currentArtifact.type === "subtitle" || currentArtifact.type === "text")
+        ? currentArtifact
+        : activeAttachedSubtitle;
+
+    if (
+      !isOpen ||
+      !targetSub ||
+      !targetSub.existsOnDisk ||
+      (targetSub.cues && targetSub.cues.length > 0) ||
+      diskLoadedCuesMap[targetSub.id]
+    ) {
+      return;
+    }
+
+    loadArtifactCuesFromDisk(targetSub)
+      .then((cues) => {
+        if (!cancelled && cues.length > 0) {
+          setDiskLoadedCuesMap((prev) => ({ ...prev, [targetSub.id]: cues }));
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, currentArtifact, activeAttachedSubtitle, diskLoadedCuesMap]);
+
+  // Cues for currently viewed subtitle (either main view or attached subtitle)
+  const displayCues: HistorySubtitleCue[] = useMemo(() => {
+    if (currentArtifact && (currentArtifact.type === "subtitle" || currentArtifact.type === "text")) {
+      return currentArtifact.cues && currentArtifact.cues.length > 0
+        ? currentArtifact.cues
+        : diskLoadedCuesMap[currentArtifact.id] || [];
+    }
+    if (currentArtifact?.type === "audio" && listenWithSubtitles && activeAttachedSubtitle) {
+      return activeAttachedSubtitle.cues && activeAttachedSubtitle.cues.length > 0
+        ? activeAttachedSubtitle.cues
+        : diskLoadedCuesMap[activeAttachedSubtitle.id] || [];
+    }
+    return [];
+  }, [currentArtifact, listenWithSubtitles, activeAttachedSubtitle, diskLoadedCuesMap]);
 
   // Timeline reliability evaluation
   const isTimelineSyncReliable = useMemo(() => {
@@ -172,32 +291,25 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
     if (job.statusWarning && job.statusWarning.toLowerCase().includes("timeline")) {
       return false;
     }
-    if (!activeAttachedSubtitle.cues || activeAttachedSubtitle.cues.length === 0) {
+    const subCues =
+      activeAttachedSubtitle.cues && activeAttachedSubtitle.cues.length > 0
+        ? activeAttachedSubtitle.cues
+        : diskLoadedCuesMap[activeAttachedSubtitle.id] || [];
+    if (subCues.length === 0) {
       return false;
     }
     // Check if cues have timestamps within reasonable range of audio
-    const lastCue = activeAttachedSubtitle.cues[activeAttachedSubtitle.cues.length - 1];
+    const lastCue = subCues[subCues.length - 1];
     const parsed = parseTimestampToSeconds(lastCue.time);
     if (!parsed) return false;
 
-    const audioDur = currentArtifact.audioDurationSec || 180;
+    const audioDur = effectiveMaxSec;
     // Allow up to 10% or 5s variance
     if (parsed.startSec > audioDur + 5) {
       return false;
     }
     return true;
-  }, [currentArtifact, activeAttachedSubtitle, job.statusWarning]);
-
-  // Cues for currently viewed subtitle (either main view or attached subtitle)
-  const displayCues: HistorySubtitleCue[] = useMemo(() => {
-    if (currentArtifact?.type === "subtitle") {
-      return currentArtifact.cues || [];
-    }
-    if (currentArtifact?.type === "audio" && listenWithSubtitles && activeAttachedSubtitle) {
-      return activeAttachedSubtitle.cues || [];
-    }
-    return [];
-  }, [currentArtifact, listenWithSubtitles, activeAttachedSubtitle]);
+  }, [currentArtifact, activeAttachedSubtitle, job.statusWarning, diskLoadedCuesMap, effectiveMaxSec]);
 
   // Filtered cues based on subSearchQuery
   const filteredCues = useMemo(() => {
@@ -345,6 +457,28 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
           {/* ======================================================== */}
           {currentArtifact.type === "audio" && (
             <div className="space-y-3.5">
+              {realAudioUrl && (
+                <audio
+                  ref={audioRef}
+                  src={realAudioUrl}
+                  preload="metadata"
+                  onLoadedMetadata={(e) => {
+                    const dur = e.currentTarget.duration;
+                    if (Number.isFinite(dur) && dur > 0) {
+                      setResolvedDurationSec(Math.round(dur));
+                    }
+                  }}
+                  onTimeUpdate={(e) => {
+                    setPlaybackSec(e.currentTarget.currentTime);
+                  }}
+                  onEnded={() => {
+                    setIsPlaying(false);
+                    setPlaybackSec(0);
+                  }}
+                  className="hidden"
+                />
+              )}
+
               {/* Audio Player Card */}
               <div className="p-4 bg-surface2/60 rounded-2xl border border-borderDefault space-y-3.5">
                 {/* Time Display Header */}
@@ -354,22 +488,23 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
                     <span>Trình phát Âm thanh</span>
                   </div>
                   <span className="text-[11px] text-textMuted font-mono">
-                    {formatSeconds(playbackSec)} / {formatSeconds(currentArtifact.audioDurationSec || 180)}
+                    {formatSeconds(playbackSec)} / {formatSeconds(effectiveMaxSec)}
                   </span>
                 </div>
 
                 {/* Scrubber Progress Slider */}
                 {(() => {
-                  const maxSec = currentArtifact.audioDurationSec || 180;
+                  const maxSec = effectiveMaxSec;
                   const progressPct = maxSec > 0 ? Math.min(100, Math.max(0, (playbackSec / maxSec) * 100)) : 0;
                   return (
                     <input
                       type="range"
                       min="0"
                       max={maxSec}
+                      step="0.1"
                       value={playbackSec}
                       disabled={!currentArtifact.existsOnDisk}
-                      onChange={(e) => setPlaybackSec(parseInt(e.target.value) || 0)}
+                      onChange={(e) => handleSeekTo(parseFloat(e.target.value) || 0)}
                       style={{
                         background: `linear-gradient(to right, var(--theme-accent) 0%, var(--theme-accent) ${progressPct}%, var(--theme-surface3) ${progressPct}%, var(--theme-surface3) 100%)`,
                       }}
@@ -528,7 +663,7 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
                               data-cue-idx={cue.index}
                               onClick={() => {
                                 if (isTimelineSyncReliable && parsed) {
-                                  setPlaybackSec(parsed.startSec);
+                                  handleSeekTo(parsed.startSec);
                                 }
                               }}
                               className={`p-2 rounded-xl border transition-all text-xs ${
@@ -563,9 +698,9 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
           )}
 
           {/* ======================================================== */}
-          {/* CASE B: SUBTITLE VIEWER (when selected artifact is subtitle) */}
+          {/* CASE B: SUBTITLE / TEXT VIEWER */}
           {/* ======================================================== */}
-          {currentArtifact.type === "subtitle" && (
+          {(currentArtifact.type === "subtitle" || currentArtifact.type === "text") && (
             <div className="p-4 bg-surface2/50 rounded-2xl border border-borderDefault space-y-3.5">
               {/* Search & Copy Header */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -657,11 +792,17 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
         <div className="p-3.5 border-t border-borderDefault flex items-center justify-between bg-surface1 flex-shrink-0">
           {/* [Mở thư mục] */}
           <button
-            onClick={() => {
-              if (onOpenFolder) {
-                onOpenFolder(job.outputDirectory);
-              } else {
-                alert(`Đang mở thư mục chứa kết quả:\n${job.outputDirectory}`);
+            onClick={async () => {
+              const opened = await openHistoryPathInFolder(
+                currentArtifact?.filePath,
+                job.outputDirectory
+              );
+              if (!opened) {
+                if (onOpenFolder) {
+                  onOpenFolder(job.outputDirectory);
+                } else {
+                  alert(`Thư mục chứa kết quả:\n${job.outputDirectory}`);
+                }
               }
             }}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary border border-borderDefault rounded-xl text-xs transition-colors cursor-pointer"

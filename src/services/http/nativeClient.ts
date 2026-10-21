@@ -11,6 +11,7 @@ export interface AppHttpResponse {
   statusText: string;
   data: any;
   text: string;
+  retryAfter?: string;
 }
 
 export async function appHttpRequest(
@@ -20,8 +21,12 @@ export async function appHttpRequest(
     headers?: Record<string, string>;
     body?: any;
     timeoutSec?: number;
+    signal?: AbortSignal;
   }
 ): Promise<AppHttpResponse> {
+  if (options?.signal?.aborted) {
+    throw new Error("CANCELLED: Request aborted by user.");
+  }
   const method = (options?.method || "GET").toUpperCase();
   const headers = options?.headers || {};
   const timeoutSec = options?.timeoutSec || 60;
@@ -39,16 +44,20 @@ export async function appHttpRequest(
   ) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const res = await invoke<{ status: number; statusText: string; body: string }>(
-        "native_http_request",
-        {
-          method,
-          url,
-          headers,
-          body: bodyStr,
-          timeoutSec,
-        }
-      );
+      const res = await invoke<{
+        status: number;
+        statusText?: string;
+        status_text?: string;
+        body: string;
+        retryAfter?: string;
+        retry_after?: string;
+      }>("native_http_request", {
+        method,
+        url,
+        headers,
+        body: bodyStr,
+        timeoutSec,
+      });
       let parsedData: any = null;
       try {
         parsedData = JSON.parse(res.body);
@@ -58,9 +67,10 @@ export async function appHttpRequest(
       return {
         ok: res.status >= 200 && res.status < 300,
         status: res.status,
-        statusText: res.statusText,
+        statusText: res.statusText || res.status_text || "",
         data: parsedData,
         text: res.body,
+        retryAfter: res.retryAfter || res.retry_after || undefined,
       };
     } catch (err: any) {
       console.warn("native_http_request error, falling back to fetch:", err?.message || err);
@@ -74,9 +84,10 @@ export async function appHttpRequest(
   }
 
   const signal =
-    typeof AbortSignal !== "undefined" && AbortSignal.timeout
+    options?.signal ||
+    (typeof AbortSignal !== "undefined" && AbortSignal.timeout
       ? AbortSignal.timeout(timeoutSec * 1000)
-      : undefined;
+      : undefined);
 
   const res = await fetch(url, {
     method,
@@ -93,11 +104,17 @@ export async function appHttpRequest(
     parsedData = rawText;
   }
 
+  const retryAfterHeader =
+    typeof res.headers?.get === "function"
+      ? res.headers.get("retry-after") || res.headers.get("Retry-After") || undefined
+      : undefined;
+
   return {
     ok: res.ok,
     status: res.status,
     statusText: res.statusText,
     data: parsedData,
     text: rawText,
+    retryAfter: retryAfterHeader,
   };
 }

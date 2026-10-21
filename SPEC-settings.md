@@ -104,9 +104,9 @@ Hiển thị trực tiếp các khối Card theo thứ tự trên cùng một tr
 
 ### 3.2 Tab 2: Nhà cung cấp AI (AI Providers)
 - **Cấu hình AI dùng chung toàn ứng dụng (Global AI Configuration)**: Cấu hình provider hiện tại là cấu hình AI mặc định cho toàn bộ các chức năng AI văn bản / dịch thuật trong VoxLab.
-- **Cấu trúc 7 nhà cung cấp**:
-  1. *API Đám Mây (Cloud API)*: Google Gemini, OpenAI GPT, DeepSeek, Alibaba Qwen.
-  2. *Dịch vụ Nội bộ (Local Services)*: Ollama (Local), LM Studio.
+- **Cấu trúc nhà cung cấp**:
+  1. *API Đám Mây (Cloud API)*: Google Gemini, OpenAI GPT, Anthropic Claude, DeepSeek, Alibaba Qwen.
+  2. *Dịch vụ Nội bộ (Local Services)*: Ollama, LM Studio.
   3. *API Tùy chỉnh (Custom API)*: API tùy chỉnh tương thích chuẩn OpenAI (`OpenAI-compatible`).
 - **Thẻ lựa chọn nhà cung cấp (Minimalist Cards)**:
   - Chỉ hiển thị: Tên nhà cung cấp, nhãn nhỏ loại kết nối (`API đám mây`, `Nội bộ`, `Tùy chỉnh`), và trạng thái active.

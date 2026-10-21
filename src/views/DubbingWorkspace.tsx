@@ -76,6 +76,7 @@ import { useI18n } from "../i18n/context";
 import { createEffectiveVoiceSnapshot } from "../services/providers";
 import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
+import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import {
   QUALITY_VALIDATOR_VERSION,
   validateChunkAudioQuality,
@@ -836,6 +837,42 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     const filename = `${baseName}_${targetLang}.srt`;
 
     const blob = new Blob([srtContent], { type: "text/plain;charset=utf-8" });
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      void (async () => {
+        try {
+          const { save } = await import("@tauri-apps/plugin-dialog");
+          const chosenPath = await save({
+            defaultPath: filename,
+            filters: [{ name: "SubRip Subtitle (*.srt)", extensions: ["srt"] }],
+          });
+          if (!chosenPath) return;
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("fs_write_text", { path: chosenPath, content: srtContent });
+          recordCompletedJobToHistory({
+            jobKey: `dub_${baseName}`,
+            title: `${baseName} (${sourceLang} → ${targetLang})`,
+            category: "dubbing",
+            tasks: ["translation"],
+            status: "completed",
+            chunkCount: translatedCues.length,
+            artifacts: [
+              {
+                label: `Phụ đề đã dịch (.SRT - ${targetLang.toUpperCase()})`,
+                filePath: chosenPath,
+                type: "subtitle",
+                task: "translation",
+                subtitleContent: srtContent,
+                isTimelineSynced: true,
+              },
+            ],
+          });
+          await invoke("fs_show_in_folder", { path: chosenPath }).catch(() => {});
+        } catch (err) {
+          console.warn("Could not save translated SRT via Tauri:", err);
+        }
+      })();
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -865,6 +902,42 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     const filename = `${baseName}_${targetLang}.txt`;
 
     const blob = new Blob([fullText], { type: "text/plain;charset=utf-8" });
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      void (async () => {
+        try {
+          const { save } = await import("@tauri-apps/plugin-dialog");
+          const chosenPath = await save({
+            defaultPath: filename,
+            filters: [{ name: "Plain Text (*.txt)", extensions: ["txt"] }],
+          });
+          if (!chosenPath) return;
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("fs_write_text", { path: chosenPath, content: fullText });
+          recordCompletedJobToHistory({
+            jobKey: `dub_${baseName}`,
+            title: `${baseName} (${sourceLang} → ${targetLang})`,
+            category: "dubbing",
+            tasks: ["translation"],
+            status: "completed",
+            chunkCount: translatedCues.length,
+            artifacts: [
+              {
+                label: `Kịch bản dịch (.TXT - ${targetLang.toUpperCase()})`,
+                filePath: chosenPath,
+                type: "text",
+                task: "translation",
+                subtitleContent: fullText,
+                isTimelineSynced: false,
+              },
+            ],
+          });
+          await invoke("fs_show_in_folder", { path: chosenPath }).catch(() => {});
+        } catch (err) {
+          console.warn("Could not save translated TXT via Tauri:", err);
+        }
+      })();
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -903,6 +976,42 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     const filename = `${baseName}_aligned.srt`;
 
     const blob = new Blob([res.srtContent], { type: "text/plain;charset=utf-8" });
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      void (async () => {
+        try {
+          const { save } = await import("@tauri-apps/plugin-dialog");
+          const chosenPath = await save({
+            defaultPath: filename,
+            filters: [{ name: "SubRip Subtitle (*.srt)", extensions: ["srt"] }],
+          });
+          if (!chosenPath) return;
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("fs_write_text", { path: chosenPath, content: res.srtContent });
+          recordCompletedJobToHistory({
+            jobKey: `dub_${baseName}`,
+            title: `${baseName} (${sourceLang} → ${targetLang})`,
+            category: "dubbing",
+            tasks: ["translation", "dubbing"],
+            status: "completed",
+            chunkCount: translatedCues.length,
+            artifacts: [
+              {
+                label: "Phụ đề đồng bộ giọng đọc (.SRT)",
+                filePath: chosenPath,
+                type: "subtitle",
+                task: "dubbing",
+                subtitleContent: res.srtContent,
+                isTimelineSynced: true,
+              },
+            ],
+          });
+          await invoke("fs_show_in_folder", { path: chosenPath }).catch(() => {});
+        } catch (err) {
+          console.warn("Could not save aligned SRT via Tauri:", err);
+        }
+      })();
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1512,6 +1621,37 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         } catch (folderErr) {
           console.warn("Could not reveal file in folder:", folderErr);
         }
+
+        const voiceProfile = voices.find((v) => v.id === selectedVoiceId);
+        const warningCount = Object.values(activeOverflow).filter(
+          (o) => o && o.warningLevel !== "none"
+        ).length;
+        recordCompletedJobToHistory({
+          jobKey: `dub_${baseStem}`,
+          title: `${baseStem} (${sourceLang} → ${targetLang})`,
+          category: "dubbing",
+          tasks: ["translation", "dubbing"],
+          durationSec: totalDurationSec,
+          chunkCount: primaryCues.length,
+          status:
+            warningCount > 0 && dubbingMode !== "free_narration"
+              ? "completed_with_warning"
+              : "completed",
+          statusWarning:
+            warningCount > 0 && dubbingMode !== "free_narration"
+              ? `Có ${warningCount} câu thoại đã được nén tốc độ (WSOLA Auto-Fit) để khớp thời lượng gốc.`
+              : undefined,
+          artifacts: [
+            {
+              label: `Master Dubbed Audio (${voiceProfile?.name || selectedVoiceId})`,
+              filePath: chosenPath,
+              type: "audio",
+              task: "dubbing",
+              audioDurationSec: totalDurationSec,
+              isTimelineSynced: true,
+            },
+          ],
+        });
 
         alert(`Đã xuất Master Audio thành công:\n${chosenPath}`);
         return;

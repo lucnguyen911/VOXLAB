@@ -8,6 +8,7 @@ import {
 } from "./types";
 import { GoogleTranslateProvider } from "./providers/google";
 import { GeminiTranslateProvider } from "./providers/gemini";
+import { ClaudeTranslateProvider } from "./providers/claude";
 import { DeepSeekTranslateProvider } from "./providers/deepseek";
 import { LmStudioTranslateProvider } from "./providers/lmstudio";
 import { OllamaTranslateProvider } from "./providers/ollama";
@@ -35,6 +36,13 @@ import {
   chunkArrayAdaptive,
   buildGlobalScriptSummary,
 } from "./batchTranslationHelper";
+import { getPrimaryGeminiApiKeySync } from "./geminiKeyStore";
+import { geminiKeyPool } from "./geminiKeyPool";
+import {
+  geminiTranslationCoordinator,
+  GeminiTranslationUnit,
+  GeminiTranslationMetrics,
+} from "./geminiTranslationCoordinator";
 
 export class TranslationManager {
   private static instance: TranslationManager;
@@ -57,11 +65,16 @@ export class TranslationManager {
     return this.lastSpeechGroups;
   }
 
+  getLastGeminiMetrics(): GeminiTranslationMetrics | null {
+    return geminiTranslationCoordinator.getLastMetrics();
+  }
+
   private initBuiltIn() {
     this.builtInProviders.set("google", new GoogleTranslateProvider());
     this.builtInProviders.set("lmstudio", new LmStudioTranslateProvider());
     this.builtInProviders.set("ollama", new OllamaTranslateProvider());
     this.builtInProviders.set("gemini", new GeminiTranslateProvider());
+    this.builtInProviders.set("claude", new ClaudeTranslateProvider());
     this.builtInProviders.set("deepseek", new DeepSeekTranslateProvider());
 
     const openaiProvider = new LmStudioTranslateProvider(
@@ -110,11 +123,28 @@ export class TranslationManager {
 
     if (provider.id === "gemini") {
       const p = provider as GeminiTranslateProvider;
-      p.apiKey = cfg?.apiKey !== undefined ? cfg.apiKey : (settings.geminiApiKey || p.apiKey);
+      const resolvedKey =
+        getPrimaryGeminiApiKeySync() ||
+        (cfg?.apiKey !== undefined ? cfg.apiKey : settings.geminiApiKey || p.apiKey || "");
+      p.apiKey = resolvedKey;
       if (cfg?.model) p.model = cfg.model;
       if (cfg?.timeout !== undefined) p.timeout = Number(cfg.timeout) || 60;
       if (cfg?.maxTokens !== undefined) p.maxTokens = Number(cfg.maxTokens);
-      p.description = `Google Gemini (${p.model || "gemini-1.5-flash"})`;
+      geminiKeyPool.syncBucketsWithStore(resolvedKey);
+      const poolCount = geminiKeyPool.getUsableKeyCount(resolvedKey);
+      p.description =
+        poolCount > 1
+          ? `Google Gemini (${p.model || "gemini-1.5-flash"} • ${poolCount} API Keys)`
+          : `Google Gemini (${p.model || "gemini-1.5-flash"})`;
+    } else if (provider.id === "claude") {
+      const p = provider as ClaudeTranslateProvider;
+      const legacyClaudeKey = typeof localStorage !== "undefined" ? localStorage.getItem("voxlab_claude_api_key") || "" : "";
+      p.apiKey = cfg?.apiKey !== undefined ? cfg.apiKey : (legacyClaudeKey || p.apiKey);
+      if (cfg?.endpoint) p.endpoint = cfg.endpoint;
+      if (cfg?.model) p.model = cfg.model;
+      if (cfg?.timeout !== undefined) p.timeout = Number(cfg.timeout) || 60;
+      if (cfg?.maxTokens !== undefined) p.maxTokens = Number(cfg.maxTokens);
+      p.description = `Anthropic Claude (${p.model || "claude-3-5-haiku-20241022"})`;
     } else if (provider.id === "deepseek") {
       const p = provider as DeepSeekTranslateProvider;
       p.apiKey = cfg?.apiKey !== undefined ? cfg.apiKey : (settings.deepseekApiKey || p.apiKey);
@@ -317,6 +347,7 @@ export class TranslationManager {
       strict?: boolean;
       dubbingMode?: DubbingMode;
       useSpeechGroups?: boolean;
+      maxConcurrency?: number;
     }
   ): Promise<TranslatedCue[]> {
     if (!cues || cues.length === 0) {
@@ -335,6 +366,24 @@ export class TranslationManager {
       options?.useSpeechGroups !== undefined
         ? options.useSpeechGroups
         : true;
+
+    // Dedicated concurrent coordinator path exclusively for Google Gemini
+    if (
+      provider instanceof GeminiTranslateProvider &&
+      typeof provider.executeBatchAttemptWithPool === "function"
+    ) {
+      return this.translateOriginalCuesWithGeminiCoordinator(
+        cues,
+        provider,
+        targetLang,
+        activeSourceLang,
+        activeStyle,
+        dubbingMode,
+        useGroups,
+        onProgress,
+        options
+      );
+    }
 
     const cuePosByIndex = new Map<number, number>();
     for (let i = 0; i < cues.length; i++) {
@@ -740,6 +789,286 @@ export class TranslationManager {
   }
 
   /**
+   * Dedicated concurrent Gemini coordinator execution path for `translateOriginalCues`.
+   * Preserves all `source_sync` and `free_narration` invariants:
+   * - Groups complete sentences via `planDubbingSpeechGroups`.
+   * - Splits into token-aware batches and dispatches concurrently across `GeminiKeyPool`.
+   * - Reassembles deterministically by stable ID regardless of batch completion order.
+   * - Projects group translations back to constituent cues while keeping full group `speechText` for TTS.
+   * - Never silently masks Gemini failures as translated source text.
+   */
+  private async translateOriginalCuesWithGeminiCoordinator(
+    cues: OriginalCue[],
+    provider: GeminiTranslateProvider,
+    targetLang: string,
+    activeSourceLang: string,
+    activeStyle: TranslationStyle,
+    dubbingMode: DubbingMode,
+    useGroups: boolean,
+    onProgress?: (done: number, total: number) => void,
+    options?: {
+      isPaused?: () => boolean;
+      isCancelled?: () => boolean;
+      strict?: boolean;
+      maxConcurrency?: number;
+    }
+  ): Promise<TranslatedCue[]> {
+    const cuePosByIndex = new Map<number, number>();
+    for (let i = 0; i < cues.length; i++) {
+      cuePosByIndex.set(cues[i].index, i);
+    }
+
+    const plannedGroups = planDubbingSpeechGroups(cues);
+    const translatedCues: TranslatedCue[] = [];
+    const updatedGroups: DubbingSpeechGroup[] = [];
+
+    if (!useGroups) {
+      const groupByCueIdx = new Map<number, DubbingSpeechGroup>();
+      for (const g of plannedGroups) {
+        for (const id of g.sourceCueIds) groupByCueIdx.set(id, g);
+      }
+
+      const units: GeminiTranslationUnit[] = cues.map((c) => ({
+        unitId: c.index,
+        sourceText: normalizeCueTextForSpeech(c.text),
+        cueWeight: 1,
+      }));
+
+      const coordRes = await geminiTranslationCoordinator.executeUnits(
+        provider,
+        units,
+        {
+          targetLang,
+          sourceLang: activeSourceLang,
+          style: activeStyle,
+          dubbingMode,
+          maxConcurrency: options?.maxConcurrency,
+          onProgressCues: onProgress,
+          isPaused: options?.isPaused,
+          isCancelled: options?.isCancelled,
+        }
+      );
+
+      if (options?.isCancelled?.()) {
+        return [];
+      }
+
+      for (let i = 0; i < cues.length; i++) {
+        const cue = cues[i];
+        const parentGroup = groupByCueIdx.get(cue.index);
+        const prevCues = cues.slice(Math.max(0, i - 3), i);
+        const nextCues = cues.slice(i + 1, i + 4);
+        let translatedText =
+          coordRes.translationsById.get(cue.index) ||
+          normalizeCueTextForSpeech(cue.text);
+
+        if (activeStyle === "cinema") {
+          translatedText = adaptCueToCinemaStyle({
+            cue,
+            prevCues,
+            nextCues,
+            rawTranslation: translatedText,
+            targetLang,
+          });
+        }
+
+        const cleanSpeech = normalizeCueTextForSpeech(translatedText);
+        translatedCues.push({
+          index: cue.index,
+          startSec: cue.startSec,
+          endSec: cue.endSec,
+          originalText: cue.text,
+          text: translatedText,
+          subtitleText: translatedText,
+          speechFragmentText: cleanSpeech,
+          groupId: parentGroup?.groupId,
+          isEdited: false,
+        });
+      }
+
+      this.lastSpeechGroups = planDubbingSpeechGroups(cues, translatedCues);
+    } else {
+      // Group mode (`source_sync` & `free_narration`): each group has a stable 1-based unitId
+      const units: GeminiTranslationUnit[] = plannedGroups.map((g, idx) => ({
+        unitId: idx + 1,
+        sourceText: g.sourceText,
+        cueWeight: Math.max(1, g.sourceCueIds.length),
+      }));
+
+      const coordRes = await geminiTranslationCoordinator.executeUnits(
+        provider,
+        units,
+        {
+          targetLang,
+          sourceLang: activeSourceLang,
+          style: activeStyle,
+          dubbingMode,
+          maxConcurrency: options?.maxConcurrency,
+          onProgressCues: onProgress,
+          isPaused: options?.isPaused,
+          isCancelled: options?.isCancelled,
+        }
+      );
+
+      if (options?.isCancelled?.()) {
+        return [];
+      }
+
+      for (let gIdx = 0; gIdx < plannedGroups.length; gIdx++) {
+        const group = plannedGroups[gIdx];
+        const unitId = gIdx + 1;
+        const groupCues = group.sourceCueIds
+          .map((id) => {
+            const pos = cuePosByIndex.get(id);
+            return pos !== undefined ? cues[pos] : undefined;
+          })
+          .filter((c): c is OriginalCue => Boolean(c));
+
+        if (groupCues.length === 0) continue;
+
+        const firstPos = cuePosByIndex.get(groupCues[0].index) ?? 0;
+        const lastPos =
+          cuePosByIndex.get(groupCues[groupCues.length - 1].index) ?? firstPos;
+        const prevCues = cues.slice(Math.max(0, firstPos - 3), firstPos);
+        const nextCues = cues.slice(lastPos + 1, lastPos + 4);
+
+        let groupTranslated =
+          coordRes.translationsById.get(unitId) || group.sourceText;
+
+        if (groupCues.length === 1) {
+          const cue = groupCues[0];
+          if (activeStyle === "cinema") {
+            groupTranslated = adaptCueToCinemaStyle({
+              cue,
+              prevCues,
+              nextCues,
+              rawTranslation: groupTranslated,
+              targetLang,
+            });
+          }
+
+          const cleanSpeech = normalizeCueTextForSpeech(groupTranslated);
+          translatedCues.push({
+            index: cue.index,
+            startSec: cue.startSec,
+            endSec: cue.endSec,
+            originalText: cue.text,
+            text: groupTranslated,
+            subtitleText: groupTranslated,
+            speechFragmentText: cleanSpeech,
+            groupId: group.groupId,
+            projectionNeedsReview: false,
+            isEdited: false,
+          });
+          updatedGroups.push({
+            ...group,
+            translatedText: groupTranslated,
+            speechText: cleanSpeech,
+          });
+          continue;
+        }
+
+        // Multi-cue group: project full sentence translation onto constituent cues
+        const projection = projectGroupTranslationToCues(
+          groupCues,
+          groupTranslated
+        );
+
+        if (
+          projection.reliable &&
+          projection.projectedTexts.length === groupCues.length
+        ) {
+          for (let k = 0; k < groupCues.length; k++) {
+            const cue = groupCues[k];
+            const projectedText = projection.projectedTexts[k];
+            translatedCues.push({
+              index: cue.index,
+              startSec: cue.startSec,
+              endSec: cue.endSec,
+              originalText: cue.text,
+              text: projectedText,
+              subtitleText: projectedText,
+              speechFragmentText: projectedText,
+              groupId: group.groupId,
+              projectionNeedsReview: false,
+              isEdited: false,
+            });
+          }
+
+          updatedGroups.push({
+            ...group,
+            translatedText: groupTranslated || projection.speechText,
+            speechText: projection.speechText,
+          });
+        } else {
+          // Safe fallback: translate each cue in the group using GeminiKeyPool with full sentence context
+          const fallbackFragments: string[] = [];
+          for (let k = 0; k < groupCues.length; k++) {
+            const cue = groupCues[k];
+            const cuePos = cuePosByIndex.get(cue.index) ?? firstPos + k;
+            const cueContext: TranslationContext = {
+              style: activeStyle,
+              cue: { ...cue, text: normalizeCueTextForSpeech(cue.text) },
+              prevCues: cues.slice(Math.max(0, cuePos - 3), cuePos),
+              nextCues: cues.slice(cuePos + 1, cuePos + 4),
+              durationSec: Number((cue.endSec - cue.startSec).toFixed(3)),
+              allCues: cues,
+              cueIndex: cuePos,
+              groupSourceText: group.sourceText,
+              groupId: group.groupId,
+              dubbingMode,
+            };
+
+            const fallbackTrans = await provider.translateWithKeyPool(
+              cue.text,
+              targetLang,
+              activeSourceLang,
+              cueContext,
+              {
+                strict: true,
+                isPaused: options?.isPaused,
+                isCancelled: options?.isCancelled,
+              }
+            );
+
+            fallbackFragments.push(fallbackTrans);
+            translatedCues.push({
+              index: cue.index,
+              startSec: cue.startSec,
+              endSec: cue.endSec,
+              originalText: cue.text,
+              text: fallbackTrans,
+              subtitleText: fallbackTrans,
+              speechFragmentText: normalizeCueTextForSpeech(fallbackTrans),
+              groupId: group.groupId,
+              projectionNeedsReview: true,
+              isEdited: false,
+            });
+          }
+
+          const combinedSpeech = joinCueTextsForSpeech(fallbackFragments, true);
+          updatedGroups.push({
+            ...group,
+            translatedText: groupTranslated || combinedSpeech,
+            speechText: groupTranslated || combinedSpeech,
+          });
+        }
+      }
+
+      this.lastSpeechGroups = updatedGroups;
+    }
+
+    const validation = validateTranslationResponse1to1(cues, translatedCues);
+    if (!validation.valid) {
+      throw new Error(
+        `Xác thực 1:1 dịch thuật không hợp lệ: ${validation.errors.join("; ")}`
+      );
+    }
+
+    return translatedCues;
+  }
+
+  /**
    * Translates an array of legacy SubtitleCues using Adaptive Full-Context Batching.
    * Preserves timestamps and indices while stripping display newlines before sending to provider.
    */
@@ -753,6 +1082,29 @@ export class TranslationManager {
 
     const activeId = providerId || loadTranslationSettings().translationProviderId || "google";
     const provider = this.getProvider(activeId);
+
+    if (
+      provider instanceof GeminiTranslateProvider &&
+      typeof provider.executeBatchAttemptWithPool === "function"
+    ) {
+      const units: GeminiTranslationUnit[] = cues.map((c) => ({
+        unitId: c.index,
+        sourceText: normalizeCueTextForSpeech(c.text),
+        cueWeight: 1,
+      }));
+      const coordRes = await geminiTranslationCoordinator.executeUnits(
+        provider,
+        units,
+        {
+          targetLang,
+          onProgressCues: onProgress,
+        }
+      );
+      return cues.map((c) => ({
+        ...c,
+        text: coordRes.translationsById.get(c.index) || normalizeCueTextForSpeech(c.text),
+      }));
+    }
 
     const translatedCues: SubtitleCue[] = [];
     const total = cues.length;
@@ -824,6 +1176,82 @@ export class TranslationManager {
     }
 
     return translatedCues;
+  }
+
+  /**
+   * Translates a full script text (used by TTS Workspace or script preparation)
+   * using the unified TranslationManager & GeminiTranslationCoordinator pipeline.
+   * Only returns the translated script after all segments are completed and validated.
+   */
+  async translateScriptText(
+    scriptText: string,
+    targetLang: string,
+    providerId?: string,
+    options?: {
+      sourceLang?: string;
+      style?: TranslationStyle;
+      onProgress?: (done: number, total: number) => void;
+      isPaused?: () => boolean;
+      isCancelled?: () => boolean;
+      maxConcurrency?: number;
+    }
+  ): Promise<string> {
+    const raw = (scriptText || "").trim();
+    if (!raw) return "";
+
+    const lines = raw.split(/\r?\n/);
+    const nonEmptyIndices: number[] = [];
+    const pseudoCues: OriginalCue[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (!trimmed) continue;
+      const cueIdx = pseudoCues.length + 1;
+      nonEmptyIndices.push(i);
+      pseudoCues.push({
+        index: cueIdx,
+        startSec: (cueIdx - 1) * 4,
+        endSec: cueIdx * 4 - 0.2,
+        text: trimmed,
+      });
+    }
+
+    if (pseudoCues.length === 0) return scriptText;
+
+    const translatedCues = await this.translateOriginalCues(
+      pseudoCues,
+      targetLang,
+      providerId,
+      options?.onProgress,
+      options?.style || "default",
+      {
+        sourceLang: options?.sourceLang || "auto",
+        dubbingMode: "free_narration",
+        useSpeechGroups: false,
+        strict: true,
+        maxConcurrency: options?.maxConcurrency,
+        isPaused: options?.isPaused,
+        isCancelled: options?.isCancelled,
+      }
+    );
+
+    if (options?.isCancelled?.()) {
+      throw new Error("CANCELLED: Đã hủy dịch kịch bản TTS.");
+    }
+
+    if (translatedCues.length !== pseudoCues.length) {
+      throw new Error(
+        `Bản dịch kịch bản TTS chưa hoàn chỉnh (${translatedCues.length}/${pseudoCues.length} đoạn).`
+      );
+    }
+
+    const outputLines = [...lines];
+    for (let k = 0; k < translatedCues.length; k++) {
+      const lineIdx = nonEmptyIndices[k];
+      outputLines[lineIdx] = translatedCues[k].text;
+    }
+
+    return outputLines.join("\n");
   }
 }
 

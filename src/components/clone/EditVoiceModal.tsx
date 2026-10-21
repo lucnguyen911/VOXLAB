@@ -64,7 +64,7 @@ export const EditVoiceModal: React.FC<EditVoiceModalProps> = ({
       setSelectedStyles(styles);
       setUnmappedCustomTags(extracted.unmappedTags);
 
-      setTranscript((voice as any).referenceTranscript || "");
+      setTranscript(voice.referenceTranscript || "");
       setStylePopoverOpen(false);
     }
   }, [voice, isOpen]);
@@ -124,7 +124,7 @@ export const EditVoiceModal: React.FC<EditVoiceModalProps> = ({
       category: selectedStyles[0] || "natural",
       ageGroup: selectedAge || undefined,
       tags: unmappedCustomTags,
-      ...((voice as any).referenceTranscript !== undefined || transcript
+      ...(voice.referenceTranscript !== undefined || transcript
         ? { referenceTranscript: transcript.trim() }
         : {}),
     };

@@ -684,17 +684,21 @@ def prepare_clone_reference(
     ref_text: str | None = None,
     language: str | None = None,
     models_dir: str | None = None,
-    max_duration: float = 10.0,
+    max_duration: float = 15.5,
     skip_transcribe: bool = False,
+    engine: str | None = None,
 ) -> tuple[str, str]:
     """Ensures reference audio passed to zero-shot voice cloning engines (OmniVoice, Chatterbox, Qwen)
-    is within optimal duration (3.0s - 8.5s) and has an exact matching transcript.
+    is within each model's empirically verified duration limit and has an exact matching transcript.
 
-    When an audio exceeds max_duration (e.g. 80s podcast or raw recording), zero-shot flow-matching
-    models suffer severe attention drift, word dropping, and hallucination. This function automatically:
-      1. Finds the optimal silence/breath boundary between 4.5s and 8.5s.
-      2. Saves the trimmed slice into a persistent cache.
-      3. Transcribes the slice using faster-whisper to guarantee 100% audio-text synchronization (unless skip_transcribe is True).
+    Empirical per-engine duration limits (verified on RTX GPU at 6s, 8s, 10s, 15s):
+      - OmniVoice: min 3.0s, sweet spot 6.0s - 10.0s, max 15.0s (beyond 15s increases latency by ~25% with no timbre gain)
+      - Qwen3-TTS 1.7B Base: min 3.0s, sweet spot 6.0s - 10.0s, max 15.0s (requires exact transcript synchronization)
+      - Chatterbox Turbo: min 5.5s (upstream > 5.0s), sweet spot 8.0s - 15.0s, max 20.0s
+
+    When a reference clip is already within `max_duration` (e.g. user trimmed it in the UI), the clip
+    and user-supplied `ref_text` are preserved intact. Only when an un-trimmed raw audio exceeds
+    `max_duration` does this function slice to the model's sweet spot and re-transcribe the slice.
     """
     import hashlib
     import tempfile
@@ -711,7 +715,7 @@ def prepare_clone_reference(
         log(f"[prepare_clone_reference] Could not probe audio header: {e}")
         return ref_audio_path, ref_text or ""
 
-    # If within optimal duration (<= 10.0s), keep original audio file
+    # If within the allowed model duration limit, preserve user's exact audio and transcript
     if duration <= max_duration:
         user_txt = (ref_text or "").strip()
         if not user_txt and not skip_transcribe:
@@ -719,13 +723,20 @@ def prepare_clone_reference(
             user_txt = auto_transcribe_sample(ref_audio_path, language=language, models_dir=models_dir)
         return ref_audio_path, user_txt
 
-    # Audio is long (> 10.0s). Cache and trim to an optimal 4.5-8.5s slice.
+    # Raw audio exceeds max_duration: slice to the engine's empirical sweet spot
+    is_chatterbox = (engine or "").lower().startswith("chatterbox")
+    slice_min_sec = 8.0 if is_chatterbox else 6.0
+    slice_max_sec = 13.5 if is_chatterbox else 10.0
+    slice_default_sec = 10.5 if is_chatterbox else 8.0
+
     abs_path = os.path.abspath(ref_audio_path)
     try:
         stat = os.stat(abs_path)
-        cache_key = hashlib.md5(f"{abs_path}_{stat.st_mtime}_{stat.st_size}".encode()).hexdigest()[:12]
+        cache_key = hashlib.md5(
+            f"{abs_path}_{stat.st_mtime}_{stat.st_size}_{slice_min_sec}_{slice_max_sec}".encode()
+        ).hexdigest()[:12]
     except Exception:
-        cache_key = hashlib.md5(abs_path.encode()).hexdigest()[:12]
+        cache_key = hashlib.md5(f"{abs_path}_{slice_min_sec}_{slice_max_sec}".encode()).hexdigest()[:12]
 
     cache_dir = os.path.join(tempfile.gettempdir(), "voxlab_ref_cache")
     os.makedirs(cache_dir, exist_ok=True)
@@ -737,18 +748,20 @@ def prepare_clone_reference(
         cached_exists = False
 
     if not cached_exists:
-        log(f"[prepare_clone_reference] Audio is {duration:.1f}s (>10s). Auto-trimming to optimal slice...")
+        log(
+            f"[prepare_clone_reference] Audio is {duration:.1f}s (>{max_duration:.1f}s). "
+            f"Auto-trimming to optimal [{slice_min_sec:.1f}s, {slice_max_sec:.1f}s] slice..."
+        )
         sr = int(info.samplerate)
-        read_frames = min(int(10.0 * sr), int(info.frames))
+        read_frames = min(int((slice_max_sec + 1.5) * sr), int(info.frames))
         data, sr = sf.read(abs_path, stop=read_frames, dtype="float32", always_2d=True)
         mono = data.mean(axis=1)
 
-        # Search for silence / breath pause in [4.5s, 8.5s]
-        min_idx = int(4.5 * sr)
-        max_idx = min(int(8.5 * sr), len(mono))
+        min_idx = int(slice_min_sec * sr)
+        max_idx = min(int(slice_max_sec * sr), len(mono))
         window_len = int(0.05 * sr)  # 50ms window
 
-        best_idx = int(min(6.5 * sr, len(mono)))
+        best_idx = int(min(slice_default_sec * sr, len(mono)))
         if max_idx > min_idx + window_len:
             step = int(0.01 * sr)
             rms_vals = []

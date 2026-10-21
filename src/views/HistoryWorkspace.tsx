@@ -29,9 +29,11 @@ import {
 } from "../types/history";
 import {
   loadHistoryItems,
+  loadHistoryFromFileAsync,
   deleteHistoryItem,
   clearAllHistory,
   filterHistoryItems,
+  openHistoryPathInFolder,
 } from "../services/history/historyManager";
 import { ResultPreviewDrawer } from "../components/preview/ResultPreviewDrawer";
 import { useI18n } from "../i18n/context";
@@ -49,6 +51,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
 
   // History State
   const [historyItems, setHistoryItems] = useState<UnifiedHistoryItem[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [activeFilter, setActiveFilter] = useState<HistoryFilterType>("all");
   const [expandedJobIds, setExpandedJobIds] = useState<Set<string>>(new Set());
@@ -62,13 +65,37 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
   const [showClearAllModal, setShowClearAllModal] = useState<boolean>(false);
   const [itemToDelete, setItemToDelete] = useState<UnifiedHistoryItem | null>(null);
 
-  // Load history on mount
+  const refreshHistoryFromBackend = async () => {
+    setIsRefreshing(true);
+    try {
+      const hydrated = await loadHistoryFromFileAsync();
+      setHistoryItems(hydrated);
+      setExpandedJobIds((prev) => {
+        if (prev.size === 0 && hydrated.length > 0) {
+          return new Set([hydrated[0].id]);
+        }
+        return prev;
+      });
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  // Load history on mount & subscribe to live history updates
   useEffect(() => {
-    const loaded = loadHistoryItems();
-    setHistoryItems(loaded);
-    // Expand the first batch job by default for immediate previewability
-    if (loaded.length > 0) {
-      setExpandedJobIds(new Set([loaded[0].id]));
+    const initial = loadHistoryItems();
+    setHistoryItems(initial);
+    if (initial.length > 0) {
+      setExpandedJobIds(new Set([initial[0].id]));
+    }
+    void refreshHistoryFromBackend();
+
+    const handleUpdated = () => {
+      void refreshHistoryFromBackend();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_history_updated", handleUpdated);
+      return () => window.removeEventListener("voxlab_history_updated", handleUpdated);
     }
   }, []);
 
@@ -116,12 +143,15 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
     setPreviewDrawerOpen(false);
   };
 
-  // Open Output folder action
-  const handleOpenFolder = (dirPath: string) => {
-    if (onOpenOutput) {
-      onOpenOutput();
-    } else {
-      alert(`Đang mở thư mục kết quả:\n${dirPath}`);
+  // Open Output folder action via real Tauri FS backend
+  const handleOpenFolder = async (dirPath: string, targetFilePath?: string) => {
+    const opened = await openHistoryPathInFolder(targetFilePath, dirPath);
+    if (!opened) {
+      if (onOpenOutput) {
+        onOpenOutput();
+      } else {
+        alert(`Thư mục kết quả:\n${dirPath}`);
+      }
     }
   };
 
@@ -184,6 +214,15 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={() => void refreshHistoryFromBackend()}
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-borderDefault text-textSecondary hover:text-textPrimary hover:bg-surface2 transition-colors cursor-pointer disabled:opacity-50"
+            title="Kiểm tra lại trạng thái tệp trên ổ đĩa"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-accent" : ""}`} />
+            <span>Làm mới</span>
+          </button>
           <button
             onClick={() => setShowClearAllModal(true)}
             disabled={historyItems.length === 0}
@@ -425,7 +464,10 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
 
                     {/* [Mở thư mục] */}
                     <button
-                      onClick={() => handleOpenFolder(job.outputDirectory)}
+                      onClick={() => {
+                        const existingArt = job.artifacts.find((a) => a.existsOnDisk && a.filePath);
+                        void handleOpenFolder(job.outputDirectory, existingArt?.filePath);
+                      }}
                       className="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary border border-borderDefault rounded-xl text-xs transition-colors cursor-pointer"
                       title="Mở thư mục chứa kết quả xuất trên đĩa"
                     >

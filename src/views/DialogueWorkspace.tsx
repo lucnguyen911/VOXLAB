@@ -30,6 +30,7 @@ import {
 } from "../services/dialogue/srtExporter";
 import { downloadAudioBlob, generateMasterSrtWithAsr } from "../services/audio/masterExport";
 import { loadSubtitleSettings } from "../services/subtitle";
+import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import { DialogueEditor } from "../components/dialogue/DialogueEditor";
 import { DialogueStudio } from "../components/dialogue/DialogueStudio";
 import { DialogueInspector } from "../components/dialogue/DialogueInspector";
@@ -943,6 +944,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 
       if (chosenPath && ai) {
         const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
+        let exportedSrtPath: string | null = null;
+        let exportedSrtContent: string | undefined;
         await ai.assemble({
           inputs: readySegs.map((seg, i) => ({
             path: seg.audioFilePath!,
@@ -971,6 +974,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
                     maxLines: subtitleSettings.maxLines,
                   });
             const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
+            exportedSrtPath = srtPath;
+            exportedSrtContent = srt;
             const { invoke } = await import("@tauri-apps/api/core");
             await invoke("fs_write_text", {
               path: srtPath,
@@ -983,6 +988,36 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 
         try {
           const { invoke } = await import("@tauri-apps/api/core");
+          const exportFileName = chosenPath.split(/[\\/]/).pop() || "VoxLab_HoiThoai_Master.wav";
+          recordCompletedJobToHistory({
+            title: exportFileName,
+            category: "dialogue",
+            isBatch: false,
+            tasks: exportedSrtPath ? ["dialogue", "transcription"] : ["dialogue"],
+            durationSec: plan.totalDurationSec,
+            chunkCount: readySegs.length,
+            artifacts: [
+              {
+                filePath: chosenPath,
+                type: "audio",
+                task: "dialogue",
+                label: `Audio Hội thoại Phân vai (${characters.length} nhân vật)`,
+                audioDurationSec: plan.totalDurationSec,
+              },
+              ...(exportedSrtPath
+                ? [
+                    {
+                      filePath: exportedSrtPath,
+                      type: "subtitle" as const,
+                      task: "transcription" as const,
+                      label: "Phụ đề Hội thoại đồng bộ (.SRT)",
+                      subtitleContent: exportedSrtContent,
+                      isTimelineSynced: true,
+                    },
+                  ]
+                : []),
+            ],
+          });
           await invoke("fs_show_in_folder", { path: chosenPath });
         } catch (folderErr) {
           console.warn("Could not reveal file in folder:", folderErr);

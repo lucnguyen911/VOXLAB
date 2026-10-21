@@ -42,6 +42,7 @@ import {
 import { loadStoredTtsSettings } from "../components/inspector/TtsInspector";
 import { exportTtsLog } from "../services/audio/ttsLogExporter";
 import { loadSubtitleSettings } from "../services/subtitle";
+import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import {
@@ -1231,6 +1232,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       if (chosenPath && ai && allHaveDiskPaths) {
         const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
         setProgressStage("Đang ghép Master Audio...");
+        let exportedSrtPath: string | null = null;
+        let exportedSrtContent: string | undefined;
         await ai.assemble({
           inputs: sortedChunks.map((c, i) => ({
             path: c.audioFilePath!,
@@ -1267,6 +1270,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               path: srtPath,
               content: srtRes.srt,
             });
+            exportedSrtPath = srtPath;
+            exportedSrtContent = srtRes.srt;
             setProgressStage("Hoàn tất xuất WAV + SRT");
           } catch (err: any) {
             console.error("SRT export error:", err);
@@ -1279,6 +1284,41 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
         try {
           const { invoke } = await import("@tauri-apps/api/core");
+          const totalDurSec = sortedChunks.reduce(
+            (acc, c, i) => acc + (c.durationSec || 0) + (chunkPausesMs[i] || 0) / 1000,
+            0
+          );
+          const activeVoiceObj = voices.find((v) => v.id === activeVoiceId);
+          const exportFileName = chosenPath.split(/[\\/]/).pop() || `${safeTitle}.wav`;
+          recordCompletedJobToHistory({
+            title: exportFileName,
+            category: "tts",
+            isBatch: false,
+            tasks: exportedSrtPath ? ["tts", "transcription"] : ["tts"],
+            durationSec: totalDurSec,
+            chunkCount: sortedChunks.length,
+            artifacts: [
+              {
+                filePath: chosenPath,
+                type: "audio",
+                task: "tts",
+                label: `Audio TTS (${activeVoiceObj?.name || "Master"})`,
+                audioDurationSec: totalDurSec,
+              },
+              ...(exportedSrtPath
+                ? [
+                    {
+                      filePath: exportedSrtPath,
+                      type: "subtitle" as const,
+                      task: "transcription" as const,
+                      label: "Phụ đề đồng bộ TTS (.SRT)",
+                      subtitleContent: exportedSrtContent,
+                      isTimelineSynced: true,
+                    },
+                  ]
+                : []),
+            ],
+          });
           await invoke("fs_show_in_folder", { path: chosenPath });
         } catch (folderErr) {
           console.warn("Could not reveal file in folder:", folderErr);

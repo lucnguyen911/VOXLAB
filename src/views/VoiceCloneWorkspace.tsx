@@ -14,6 +14,7 @@ import {
   Edit2,
   Sparkles,
   CheckCircle2,
+  AlertTriangle,
   Plus,
   X,
   Tag,
@@ -41,6 +42,9 @@ import { HiddenTagsBadge } from "../components/common/HiddenTagsBadge";
 import {
   decodeAudioFile,
   getOrCreateAudioContext,
+  audioBufferToWavBlob,
+  analyzeAudioQuality,
+  getCloneEngineDurationRules,
 } from "../services/audio/audioDsp";
 import { AudioTrimModal } from "../components/clone/AudioTrimModal";
 import { TestVoiceModal } from "../components/clone/TestVoiceModal";
@@ -49,8 +53,8 @@ import { DeleteVoiceModal } from "../components/clone/DeleteVoiceModal";
 import { CompactWaveform } from "../components/waveform";
 import { SearchableLanguageSelect } from "../components/common/SearchableLanguageSelect";
 import { ALL_STANDARD_LANGUAGES, findLanguage, LanguageItem } from "../services/subtitle/languages";
-import { upsertCloneVoice } from "../services/ai/cloneVoiceRegistry";
-import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
+import { persistCloneReferenceWav, upsertCloneVoice } from "../services/ai/cloneVoiceRegistry";
+import { readAudioFileBlobUrl } from "../services/batch/batchRuntime";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 
 // Model definition with real capabilities
@@ -202,6 +206,8 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
   const [audioUrl, setAudioUrl] = useState<string>("");
   const [trimRange, setTrimRange] = useState<{ startSec: number; endSec: number } | null>(null);
+  const [trimmedWavBlob, setTrimmedWavBlob] = useState<Blob | null>(null);
+  const [transcriptNeedsVerifyAfterTrim, setTranscriptNeedsVerifyAfterTrim] = useState<boolean>(false);
 
   // Reference Player State
   const [isPlayingReference, setIsPlayingReference] = useState<boolean>(false);
@@ -229,10 +235,8 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
   const [activeVoiceForModal, setActiveVoiceForModal] = useState<VoiceProfile | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [referenceAudioPath, setReferenceAudioPath] = useState<string>("");
 
   const loadReferenceAudioFromPath = async (picked: string) => {
-    setReferenceAudioPath(picked);
     const blobUrl = await readAudioFileBlobUrl(picked);
     const resp = await fetch(blobUrl);
     const arr = await resp.arrayBuffer();
@@ -241,6 +245,8 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
     setAudioBuffer(buffer);
     setAudioUrl(blobUrl);
     setTrimRange(null);
+    setTrimmedWavBlob(null);
+    setTranscriptNeedsVerifyAfterTrim(false);
     const fileName = picked.split(/[\\/]/).pop() || "reference.wav";
     setReferenceFileMeta({
       name: fileName,
@@ -274,6 +280,15 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
   const currentModel = useMemo(() => {
     return CLONE_MODELS.find((m) => m.id === selectedModelId) || CLONE_MODELS[0];
   }, [selectedModelId]);
+
+  const durationRules = useMemo(() => {
+    return getCloneEngineDurationRules(currentModel.engine);
+  }, [currentModel.engine]);
+
+  const qualityReport = useMemo(() => {
+    if (!audioBuffer) return null;
+    return analyzeAudioQuality(audioBuffer, currentModel.engine);
+  }, [audioBuffer, currentModel.engine]);
 
   const cloneModelLanguages: LanguageItem[] = useMemo(() => {
     return currentModel.supportedLanguages.map((l) => {
@@ -402,28 +417,13 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
       setAudioBuffer(buffer);
       setAudioUrl(objectUrl);
       setTrimRange(null);
+      setTrimmedWavBlob(null);
+      setTranscriptNeedsVerifyAfterTrim(false);
       setReferenceFileMeta({
         name: file.name,
         size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
         duration: `${buffer.duration.toFixed(1)}s`,
       });
-
-      let p = (file as any).path || "";
-      if (!p) {
-        try {
-          const ai = await getSharedAiServices();
-          if (ai) {
-            const scratch = await ai.scratchPath("clone_ref", "");
-            p = `${scratch}\\ref_${Date.now()}_${file.name}`;
-            const arr = await file.arrayBuffer();
-            const { invoke } = await import("@tauri-apps/api/core");
-            await invoke("fs_write_bytes", { path: p, bytes: Array.from(new Uint8Array(arr)) });
-          }
-        } catch {
-          // ignore
-        }
-      }
-      setReferenceAudioPath(p);
 
       // Suggest voice name if empty
       if (!voiceName.trim()) {
@@ -549,7 +549,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
   // Apply Trim result
   const handleApplyTrim = (
     trimmedBuffer: AudioBuffer,
-    _trimmedBlob: Blob,
+    trimmedBlob: Blob,
     trimmedUrl: string,
     range: { startSec: number; endSec: number }
   ) => {
@@ -557,6 +557,10 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
     setAudioBuffer(trimmedBuffer);
     setAudioUrl(trimmedUrl);
     setTrimRange(range);
+    setTrimmedWavBlob(trimmedBlob);
+    if (referenceTranscript.trim().length > 0) {
+      setTranscriptNeedsVerifyAfterTrim(true);
+    }
     if (referenceFileMeta) {
       setReferenceFileMeta({
         ...referenceFileMeta,
@@ -576,46 +580,74 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
     setSelectedStyles((prev) => prev.filter((s) => s !== styleId));
   };
 
-  // Create Voice Action
-  const handleCreateVoice = () => {
+  // Create Voice Action (real async WAV persistence + durable registry registration)
+  const handleCreateVoice = async () => {
     if (!voiceName.trim() || !audioBuffer) return;
 
-    if (currentModel.requiresTranscript && !referenceTranscript.trim()) {
+    if (audioBuffer.duration < durationRules.minSec) {
       alert(
         lang === "vi"
-          ? `Mô hình ${currentModel.name} bắt buộc phải có văn bản tham chiếu.`
-          : `Model ${currentModel.name} requires reference transcript.`
+          ? `Mẫu âm thanh hiện tại (${audioBuffer.duration.toFixed(1)}s) quá ngắn cho ${currentModel.name}. Vui lòng chọn mẫu tối thiểu ${durationRules.minSec.toFixed(1)}s.`
+          : `Reference audio (${audioBuffer.duration.toFixed(1)}s) is too short for ${currentModel.name}. Minimum required is ${durationRules.minSec.toFixed(1)}s.`
       );
       return;
     }
 
+    if (currentModel.requiresTranscript && !referenceTranscript.trim()) {
+      alert(
+        lang === "vi"
+          ? `Mô hình ${currentModel.name} bắt buộc phải có văn bản tham chiếu khớp với đoạn audio mẫu.`
+          : `Model ${currentModel.name} requires a reference transcript matching the sample audio.`
+      );
+      return;
+    }
+
+    const voiceId = `clone_${Date.now()}`;
+    const trimmedName = voiceName.trim();
+    const sampleDurationSec = Number(audioBuffer.duration.toFixed(2));
+
     setIsCreating(true);
-    setCreationProgress(15);
+    setCreationProgress(20);
     setCreationStatusText(
-      lang === "vi" ? "Đang phân tích âm sắc mẫu..." : "Analyzing reference timbre..."
+      lang === "vi"
+        ? "Đang chuẩn hóa & đóng gói WAV 16-bit PCM..."
+        : "Encoding 16-bit PCM WAV reference..."
     );
 
-    setTimeout(() => {
+    try {
+      const wavBlob = trimmedWavBlob || audioBufferToWavBlob(audioBuffer);
+
       setCreationProgress(55);
       setCreationStatusText(
         lang === "vi"
-          ? "Trích xuất embedding & timbre đặc trưng..."
-          : "Extracting speaker embedding & acoustic characteristics..."
+          ? "Đang lưu tệp mẫu giọng vào thư mục dữ liệu VoxLab..."
+          : "Persisting reference audio to VoxLab storage..."
       );
-    }, 450);
 
-    setTimeout(() => {
-      setCreationProgress(90);
+      const persistedWavPath = await persistCloneReferenceWav(voiceId, wavBlob);
+
+      setCreationProgress(85);
       setCreationStatusText(
-        lang === "vi" ? "Đóng gói Voice Profile..." : "Packaging Voice Profile..."
+        lang === "vi"
+          ? "Đang đăng ký hồ sơ giọng nhân bản..."
+          : "Registering clone voice profile..."
       );
-    }, 900);
 
-    setTimeout(() => {
+      await upsertCloneVoice({
+        id: voiceId,
+        name: trimmedName,
+        refAudioPath: persistedWavPath,
+        refText: referenceTranscript.trim(),
+        language: selectedLang === "auto" ? undefined : selectedLang,
+        engine: currentModel.engine,
+        durationSec: sampleDurationSec,
+        createdAt: Date.now(),
+      });
+
       const nowIso = new Date().toISOString();
       const newVoice: VoiceProfile = {
-        id: `clone_${Date.now()}`,
-        name: voiceName.trim(),
+        id: voiceId,
+        name: trimmedName,
         source: "local_clone",
         origin: "clone",
         engine: currentModel.engine,
@@ -637,40 +669,40 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
         lastUsedAt: nowIso,
         isFavorite: false,
         avatarColor: "from-accent to-teal-500",
-        sampleAudioPath: referenceAudioPath || referenceFileMeta?.name || "reference_clone.wav",
+        sampleAudioPath: persistedWavPath,
+        sampleDurationSec,
         ...(referenceTranscript.trim() ? { referenceTranscript: referenceTranscript.trim() } : {}),
       };
-
-      // Register in durable Clone Voice Registry
-      if (referenceAudioPath) {
-        upsertCloneVoice({
-          id: newVoice.id,
-          name: newVoice.name,
-          refAudioPath: referenceAudioPath,
-          refText: referenceTranscript.trim(),
-          language: selectedLang === "auto" ? undefined : selectedLang,
-          createdAt: Date.now(),
-        }).catch((err) => console.error("upsertCloneVoice error:", err));
-      }
 
       handleSaveToState(newVoice);
 
       setIsCreating(false);
       setCreationProgress(100);
       setCreationStatusText("");
+      setTranscriptNeedsVerifyAfterTrim(false);
 
       // Toast feedback
       setToastMessage(
         lang === "vi"
-          ? `Đã tạo thành công giọng "${voiceName.trim()}"`
-          : `Voice "${voiceName.trim()}" created successfully`
+          ? `Đã lưu mẫu (${sampleDurationSec}s) & tạo giọng "${trimmedName}"`
+          : `Saved sample (${sampleDurationSec}s) & created "${trimmedName}"`
       );
       setTimeout(() => setToastMessage(null), 3500);
 
-      // Reset form
+      // Reset form text
       setVoiceName("");
       setReferenceTranscript("");
-    }, 1250);
+    } catch (err: any) {
+      console.error("Failed to create clone voice:", err);
+      setIsCreating(false);
+      setCreationProgress(0);
+      setCreationStatusText("");
+      alert(
+        lang === "vi"
+          ? `Không thể lưu hồ sơ giọng nhân bản: ${err?.message || String(err)}`
+          : `Failed to save cloned voice profile: ${err?.message || String(err)}`
+      );
+    }
   };
 
   // Play a voice card sample
@@ -684,7 +716,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
           id: voice.id,
           voiceName: cleanName,
           title: `Bản thử · ${cleanName}`,
-          durationSec: 18.5,
+          durationSec: voice.sampleDurationSec || 8.0,
           audioUrl: voice.sampleAudioPath,
           text: `Bản nghe thử giọng ${cleanName}`,
         });
@@ -692,15 +724,37 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
     }
   };
 
-  // Download reference audio
-  const handleDownloadReference = (voice: VoiceProfile) => {
+  // Download the selected voice's own reference audio (not the left-column form state)
+  const handleDownloadReference = async (voice: VoiceProfile) => {
     const cleanName = voice.name.replace(/\s*\(Clone\)$/i, "");
-    const a = document.createElement("a");
-    a.href = audioUrl || "#";
-    a.download = `${cleanName.toLowerCase().replace(/\s+/g, "_")}_reference.wav`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const targetPath = voice.sampleAudioPath;
+    if (!targetPath) {
+      alert(
+        lang === "vi"
+          ? "Giọng nói này chưa có đường dẫn tệp mẫu hợp lệ."
+          : "This voice does not have a valid reference audio path."
+      );
+      return;
+    }
+
+    try {
+      const downloadUrl =
+        targetPath.startsWith("blob:") || targetPath.startsWith("http")
+          ? targetPath
+          : await readAudioFileBlobUrl(targetPath);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = `${cleanName.toLowerCase().replace(/\s+/g, "_")}_reference.wav`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err: any) {
+      alert(
+        lang === "vi"
+          ? `Không thể tải tệp mẫu tại "${targetPath}": ${err?.message || String(err)}`
+          : `Failed to download reference audio from "${targetPath}": ${err?.message || String(err)}`
+      );
+    }
   };
 
   return (
@@ -781,7 +835,9 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <label className="text-textSecondary font-medium">Âm thanh tham chiếu</label>
-                  <span className="text-[11px] text-textMuted">10s – 30s</span>
+                  <span className="text-[11px] text-accent font-medium" title={`Tối thiểu ${durationRules.minSec}s · Khuyến nghị tối đa ${durationRules.maxRecommendedSec}s`}>
+                    {durationRules.badgeLabel}
+                  </span>
                 </div>
 
                 <input
@@ -863,6 +919,48 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                         />
                       </div>
 
+                      {/* Real-time Audio Quality & Model Duration Assessment */}
+                      {qualityReport && (
+                        <div
+                          className={`p-2.5 rounded-lg border text-[11px] space-y-1.5 ${
+                            qualityReport.status === "good"
+                              ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-300"
+                              : qualityReport.status === "warning"
+                              ? "bg-amber-500/10 border-amber-500/25 text-amber-300"
+                              : "bg-rose-500/10 border-rose-500/25 text-rose-300"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 font-semibold">
+                            <span className="flex items-center gap-1.5">
+                              {qualityReport.status === "good" ? (
+                                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                              ) : (
+                                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                              )}
+                              <span>{qualityReport.statusText}</span>
+                            </span>
+                            <span className="font-mono text-[10px] opacity-85 shrink-0">
+                              {qualityReport.durationSec.toFixed(1)}s
+                            </span>
+                          </div>
+                          {qualityReport.details.some((m) => m.status !== "pass") ? (
+                            <div className="space-y-0.5 pl-5 text-[10px] opacity-90">
+                              {qualityReport.details
+                                .filter((m) => m.status !== "pass")
+                                .map((m) => (
+                                  <div key={m.id}>
+                                    • <strong>{m.label} ({m.value}):</strong> {m.description}
+                                  </div>
+                                ))}
+                            </div>
+                          ) : (
+                            <div className="pl-5 text-[10px] opacity-85">
+                              {qualityReport.details.find((m) => m.id === "duration")?.description}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {/* Action Bar: Trim & Change File */}
                       <div className="flex items-center justify-between pt-1">
                         <button
@@ -899,7 +997,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                           Kéo thả file âm thanh vào đây hoặc ấn để chọn
                         </p>
                         <p className="text-[11px] text-textMuted mt-1">
-                          Hỗ trợ WAV, MP3, M4A, FLAC (khuyến nghị 10s – 30s)
+                          Hỗ trợ WAV, MP3, M4A, FLAC ({durationRules.badgeLabel})
                         </p>
                       </div>
                     </div>
@@ -919,14 +1017,27 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                     <span className="text-[11px] text-textMuted">Tùy chọn</span>
                   )}
                 </div>
+                {(transcriptNeedsVerifyAfterTrim || (trimRange && currentModel.requiresTranscript)) && (
+                  <div className="flex items-start gap-1.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px]">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>
+                      Bạn đã cắt đoạn audio mẫu ({trimRange ? `${trimRange.startSec.toFixed(1)}s – ${trimRange.endSec.toFixed(1)}s` : `${audioBuffer?.duration.toFixed(1)}s`}). Hãy đảm bảo văn bản tham chiếu khớp chính xác với đoạn đã cắt.
+                    </span>
+                  </div>
+                )}
                 <textarea
                   rows={2}
                   value={referenceTranscript}
-                  onChange={(e) => setReferenceTranscript(e.target.value)}
+                  onChange={(e) => {
+                    setReferenceTranscript(e.target.value);
+                    if (transcriptNeedsVerifyAfterTrim) {
+                      setTranscriptNeedsVerifyAfterTrim(false);
+                    }
+                  }}
                   placeholder={
                     currentModel.requiresTranscript
-                      ? "Bắt buộc nhập chính xác lời thoại trong file audio mẫu để mô hình Qwen clone..."
-                      : "Nội dung lời nói trong file âm thanh (giúp mô hình clone chính xác hơn)..."
+                      ? "Bắt buộc nhập chính xác lời thoại trong đoạn audio mẫu đã chọn để mô hình Qwen clone..."
+                      : "Nội dung lời nói trong đoạn âm thanh đã chọn (giúp mô hình clone chính xác hơn)..."
                   }
                   className="w-full bg-surface2 border border-borderDefault rounded-lg p-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none resize-none leading-relaxed cursor-text caret-accent"
                 />
@@ -1094,7 +1205,8 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
               )}
 
               {(() => {
-                const isFormReady = !isCreating && Boolean(voiceName.trim()) && Boolean(audioBuffer);
+                const hasMinDuration = Boolean(audioBuffer && audioBuffer.duration >= durationRules.minSec);
+                const isFormReady = !isCreating && Boolean(voiceName.trim()) && hasMinDuration;
                 return (
                   <button
                     onClick={handleCreateVoice}
@@ -1382,6 +1494,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
         onClose={() => setTrimModalOpen(false)}
         audioBuffer={audioBuffer}
         objectUrl={audioUrl}
+        engine={currentModel.engine}
         initialRange={trimRange || undefined}
         onApplyTrim={handleApplyTrim}
       />

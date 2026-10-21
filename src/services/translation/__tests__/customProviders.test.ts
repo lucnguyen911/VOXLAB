@@ -6,6 +6,7 @@ import {
   TranslationManager,
   CustomTranslationModel,
   resolveOpenAiBaseUrl,
+  ClaudeTranslateProvider,
 } from "../index";
 import { OpenAiTtsProvider } from "../../providers/openaiProvider";
 
@@ -128,6 +129,13 @@ describe("Custom Translation Providers & Runtime Settings Sync Suite", () => {
         timeout: 50,
         maxTokens: 4096,
       },
+      claude: {
+        apiKey: "sk-ant-test-key",
+        endpoint: "https://api.anthropic.com/v1",
+        model: "claude-3-5-haiku-20241022",
+        timeout: 40,
+        maxTokens: 4096,
+      },
       deepseek: {
         apiKey: "sk-deepseek-test-key",
         endpoint: "https://api.deepseek.com",
@@ -160,6 +168,7 @@ describe("Custom Translation Providers & Runtime Settings Sync Suite", () => {
     const manager = TranslationManager.getInstance();
     const gemini = manager.getProvider("gemini") as any;
     const openai = manager.getProvider("openai") as any;
+    const claude = manager.getProvider("claude") as any;
     const deepseek = manager.getProvider("deepseek") as any;
     const qwen = manager.getProvider("qwen") as any;
     const ollama = manager.getProvider("ollama") as any;
@@ -172,6 +181,10 @@ describe("Custom Translation Providers & Runtime Settings Sync Suite", () => {
 
     assert.equal(openai.apiKey, "sk-openai-test-key");
     assert.equal(openai.model, "gpt-4o");
+
+    assert.equal(claude.apiKey, "sk-ant-test-key");
+    assert.equal(claude.model, "claude-3-5-haiku-20241022");
+    assert.equal(claude.timeout, 40);
 
     assert.equal(deepseek.apiKey, "sk-deepseek-test-key");
     assert.equal(deepseek.model, "deepseek-reasoner");
@@ -222,6 +235,45 @@ describe("Custom Translation Providers & Runtime Settings Sync Suite", () => {
 
     const providers = manager.listProviders();
     assert.equal(providers.some((p) => p.id === "custom_temp"), false);
+  });
+
+  it("translates text and tests connection using ClaudeTranslateProvider", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: any, init: any) => {
+        const body = JSON.parse(init.body);
+        if (body.max_tokens === 10) {
+          return new Response(
+            JSON.stringify({
+              id: "msg_test",
+              type: "message",
+              role: "assistant",
+              content: [{ type: "text", text: "Hello" }],
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            id: "msg_translated",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "Xin chào thế giới" }],
+          }),
+          { status: 200 }
+        );
+      }) as any;
+
+      const provider = new ClaudeTranslateProvider("sk-ant-test-key", "claude-3-5-haiku-20241022");
+      const conn = await provider.testConnection();
+      assert.equal(conn.ok, true);
+      assert.ok(conn.message?.includes("thành công"));
+
+      const translated = await provider.translate("Hello world", "vi");
+      assert.equal(translated, "Xin chào thế giới");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

@@ -5,6 +5,9 @@ import {
   filterHistoryItems,
   deleteHistoryItem,
   syncBatchJobToHistory,
+  recordCompletedJobToHistory,
+  parseSubtitleContentToHistoryCues,
+  loadHistoryItems,
 } from "../../services/history/historyManager";
 
 describe("Gate D: History Workspace — Job-Centric & Filter Specification", () => {
@@ -153,5 +156,64 @@ describe("Gate D: History Workspace — Job-Centric & Filter Specification", () 
     assert.ok(subArt, "Must have subtitle artifact");
     assert.strictEqual(subArt.cues?.length, 1);
     assert.strictEqual(subArt.cues[0].text, "Xin chào các bạn.");
+  });
+
+  it("CRITERION 9: Single-Workspace Recording & Multi-Artifact Merging via recordCompletedJobToHistory", () => {
+    const srtText = `1\n00:00:00,500 --> 00:00:02,500\nChào mừng bạn đến với VoxLab.\n\n2\n00:00:03,000 --> 00:00:05,500\nHệ thống lồng tiếng tự động.`;
+    const parsedCues = parseSubtitleContentToHistoryCues(srtText);
+    assert.strictEqual(parsedCues.length, 2);
+    assert.strictEqual(parsedCues[0].startSec, 0.5);
+    assert.strictEqual(parsedCues[0].endSec, 2.5);
+    assert.strictEqual(parsedCues[1].text, "Hệ thống lồng tiếng tự động.");
+
+    // Step 1: Export translated SRT in Dubbing workspace
+    const firstRecord = recordCompletedJobToHistory({
+      jobKey: "dub_review_xe_2026",
+      title: "review_xe_2026 (en → vi)",
+      category: "dubbing",
+      tasks: ["translation"],
+      status: "completed",
+      chunkCount: 2,
+      artifacts: [
+        {
+          filePath: "D:/VoxLabOutput/review_xe_2026_vi.srt",
+          type: "subtitle",
+          task: "translation",
+          label: "Phụ đề đã dịch (.SRT - VI)",
+          subtitleContent: srtText,
+          isTimelineSynced: true,
+        },
+      ],
+    });
+
+    assert.strictEqual(firstRecord.artifacts.length, 1);
+    assert.strictEqual(firstRecord.artifacts[0].cues?.length, 2);
+
+    // Step 2: Export Master Audio in the same session with the same jobKey
+    const mergedRecord = recordCompletedJobToHistory({
+      jobKey: "dub_review_xe_2026",
+      title: "review_xe_2026 (en → vi)",
+      category: "dubbing",
+      tasks: ["translation", "dubbing"],
+      durationSec: 65,
+      status: "completed_with_warning",
+      statusWarning: "Có 1 câu thoại đã được nén tốc độ (WSOLA Auto-Fit).",
+      artifacts: [
+        {
+          filePath: "D:/VoxLabOutput/review_xe_2026_master.wav",
+          type: "audio",
+          task: "dubbing",
+          label: "Master Dubbed Audio",
+          audioDurationSec: 65,
+          isTimelineSynced: true,
+        },
+      ],
+    });
+
+    assert.strictEqual(mergedRecord.id, firstRecord.id, "Must merge into the same job card ID");
+    assert.strictEqual(mergedRecord.artifacts.length, 2, "Must contain both SRT and Master WAV artifacts");
+    assert.ok(mergedRecord.tasks.includes("translation") && mergedRecord.tasks.includes("dubbing"));
+    assert.strictEqual(mergedRecord.status, "completed_with_warning");
+    assert.strictEqual(loadHistoryItems()[0].id, mergedRecord.id, "Newest merged record must be at top of history");
   });
 });

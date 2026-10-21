@@ -71,6 +71,129 @@ export function chunkArrayAdaptive<T>(
   return chunkArray(items, balancedSize);
 }
 
+/**
+ * Estimates LLM token count for a string (conservative ~1 token per 3.4 characters
+ * or 1.35x word count, plus overhead).
+ */
+export function estimateTokenCount(text: string): number {
+  if (!text) return 0;
+  const charBased = Math.ceil(text.length / 3.4);
+  const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+  const wordBased = Math.ceil(wordCount * 1.35);
+  return Math.max(charBased, wordBased);
+}
+
+/**
+ * Extracts recurring proper nouns, capitalized entities, technical acronyms, and numbers+units
+ * across the entire script so parallel batches maintain 100% terminology and entity consistency.
+ */
+export function extractScriptGlossaryAndEntities(
+  allTexts: string[],
+  maxTerms = 24
+): string[] {
+  const counts = new Map<string, number>();
+  const displayForm = new Map<string, string>();
+  const commonIgnore = new Set([
+    "the", "and", "for", "with", "that", "this", "from", "have", "what", "when",
+    "where", "which", "while", "your", "they", "their", "there", "here", "today",
+    "welcome", "hello", "thank", "thanks", "but", "not", "you", "are", "was", "were",
+    "can", "will", "just", "now", "how", "why", "who", "all", "one", "two", "three",
+  ]);
+
+  for (const raw of allTexts) {
+    const cleaned = (raw || "").replace(/\r\n|\r|\n/g, " ").trim();
+    if (!cleaned) continue;
+
+    // Match multi-word capitalized entities, acronyms, or alphanumeric model names (e.g., "BMW M3", "RTX 5070", "Porsche 911")
+    const entityRegex = /\b([A-Z][A-Za-z0-9_-]{1,}(?:\s+[A-Z0-9][A-Za-z0-9_.-]*)*)\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = entityRegex.exec(cleaned)) !== null) {
+      const candidate = match[1].trim();
+      if (candidate.length < 2) continue;
+      const lower = candidate.toLowerCase();
+      if (commonIgnore.has(lower)) continue;
+      counts.set(lower, (counts.get(lower) || 0) + 1);
+      if (!displayForm.has(lower)) {
+        displayForm.set(lower, candidate);
+      }
+    }
+  }
+
+  // Keep terms that appear >= 2 times, or multi-word / alphanumeric technical terms
+  const ranked = Array.from(counts.entries())
+    .filter(([key, count]) => count >= 2 || key.includes(" ") || /\d/.test(key))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxTerms)
+    .map(([key]) => displayForm.get(key) || key);
+
+  return ranked;
+}
+
+/**
+ * Splits items into batches respecting BOTH item count (`chunkArrayAdaptive`)
+ * and input/output token budgets (`maxInputTokens`, `maxOutputTokens`).
+ * Never splits a single item across multiple batches.
+ */
+export function chunkItemsTokenAware<T>(
+  items: T[],
+  getText: (item: T) => string,
+  options?: {
+    singlePassMax?: number;
+    targetBatchSize?: number;
+    maxInputTokens?: number;
+    maxOutputTokens?: number;
+  }
+): T[][] {
+  if (items.length === 0) return [];
+
+  const singlePassMax = options?.singlePassMax ?? SINGLE_PASS_MAX_ITEMS;
+  const targetBatchSize = options?.targetBatchSize ?? ADAPTIVE_BATCH_TARGET_SIZE;
+  const maxOutputTokens =
+    options?.maxOutputTokens && options.maxOutputTokens > 0
+      ? options.maxOutputTokens
+      : 4096;
+  const maxInputTokens =
+    options?.maxInputTokens && options.maxInputTokens > 0
+      ? options.maxInputTokens
+      : Math.max(1800, Math.floor(maxOutputTokens * 0.75));
+  // Reserve 25% of output token budget for expansion in target language (e.g. English -> Vietnamese)
+  const safeBatchTokenBudget = Math.min(
+    maxInputTokens,
+    Math.max(400, Math.floor((maxOutputTokens - 250) / 1.35))
+  );
+
+  const initialBatches = chunkArrayAdaptive(items, singlePassMax, targetBatchSize);
+  const finalBatches: T[][] = [];
+
+  for (const batch of initialBatches) {
+    let currentSubBatch: T[] = [];
+    let currentTokens = 0;
+
+    for (const item of batch) {
+      const itemText = getText(item) || "";
+      const itemTokens = Math.max(8, estimateTokenCount(itemText) + 6);
+
+      if (
+        currentSubBatch.length > 0 &&
+        currentTokens + itemTokens > safeBatchTokenBudget
+      ) {
+        finalBatches.push(currentSubBatch);
+        currentSubBatch = [item];
+        currentTokens = itemTokens;
+      } else {
+        currentSubBatch.push(item);
+        currentTokens += itemTokens;
+      }
+    }
+
+    if (currentSubBatch.length > 0) {
+      finalBatches.push(currentSubBatch);
+    }
+  }
+
+  return finalBatches;
+}
+
 export function buildBatchTranslationPrompt(
   items: BatchItem[],
   targetLang: string,
@@ -103,12 +226,38 @@ export function buildBatchTranslationPrompt(
         `Global Video Context (for topic & tone reference only — DO NOT translate):\n${batchContext.globalSummary}`
       );
     }
+    if (batchContext?.glossaryTerms && batchContext.glossaryTerms.length > 0) {
+      contextBlocks.push(
+        `Shared Glossary & Proper Nouns (keep these exact names, units, and terms consistent across the script — DO NOT output this list):\n${batchContext.glossaryTerms.join(", ")}`
+      );
+    }
     if (batchContext?.prevLines && batchContext.prevLines.length > 0) {
       const prevFormatted = batchContext.prevLines
         .map((p) => `- "${p.source}" -> "${p.translated}"`)
         .join("\n");
       contextBlocks.push(
         `Preceding Translated Lines (match these exact pronouns & terminology — DO NOT repeat in output):\n${prevFormatted}`
+      );
+    } else if (
+      batchContext?.surroundingContextBefore &&
+      batchContext.surroundingContextBefore.length > 0
+    ) {
+      const beforeFormatted = batchContext.surroundingContextBefore
+        .map((line) => `- "${line}"`)
+        .join("\n");
+      contextBlocks.push(
+        `Preceding Source Lines (READ-ONLY context for pronoun & flow continuity — DO NOT translate or include in output):\n${beforeFormatted}`
+      );
+    }
+    if (
+      batchContext?.surroundingContextAfter &&
+      batchContext.surroundingContextAfter.length > 0
+    ) {
+      const afterFormatted = batchContext.surroundingContextAfter
+        .map((line) => `- "${line}"`)
+        .join("\n");
+      contextBlocks.push(
+        `Following Source Lines (READ-ONLY lookahead context — DO NOT translate or include in output):\n${afterFormatted}`
       );
     }
   }

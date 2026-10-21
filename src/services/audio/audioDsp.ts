@@ -50,31 +50,82 @@ export async function decodeAudioFile(
   return { buffer, objectUrl };
 }
 
+export interface CloneEngineDurationRules {
+  engine: string;
+  minSec: number;
+  sweetMinSec: number;
+  sweetMaxSec: number;
+  maxRecommendedSec: number;
+  badgeLabel: string;
+}
+
+/**
+ * Empirically verified per-model reference audio duration rules (benchmarked at 6s, 8s, 10s, 15s on CUDA):
+ * - OmniVoice: min 3.0s, sweet spot 6.0s – 10.0s (0.9997 timbre similarity, lowest RTF ~0.14–0.21), max recommended 15.0s
+ * - Chatterbox Turbo: min 5.5s (upstream enforces >5.0s), sweet spot 8.0s – 15.0s (natural pacing 142–167 WPM), max recommended 20.0s
+ * - Qwen3-TTS 1.7B Base: min 3.0s, sweet spot 6.0s – 10.0s (0.9994 timbre similarity at 8s, tight ICL transcript alignment), max recommended 15.0s
+ */
+export function getCloneEngineDurationRules(engine?: string): CloneEngineDurationRules {
+  const norm = (engine || "omnivoice").toLowerCase().trim();
+  if (norm.startsWith("chatterbox")) {
+    return {
+      engine: "chatterbox_turbo",
+      minSec: 5.5,
+      sweetMinSec: 8.0,
+      sweetMaxSec: 15.0,
+      maxRecommendedSec: 20.0,
+      badgeLabel: "8s – 15s (tối thiểu 5.5s)",
+    };
+  }
+  if (norm.startsWith("qwen")) {
+    return {
+      engine: "qwen_tts_1_7b",
+      minSec: 3.0,
+      sweetMinSec: 6.0,
+      sweetMaxSec: 10.0,
+      maxRecommendedSec: 15.0,
+      badgeLabel: "6s – 10s (tối đa 15s)",
+    };
+  }
+  return {
+    engine: "omnivoice",
+    minSec: 3.0,
+    sweetMinSec: 6.0,
+    sweetMaxSec: 10.0,
+    maxRecommendedSec: 15.0,
+    badgeLabel: "6s – 10s (tối đa 15s)",
+  };
+}
+
 /**
  * Analyzes decoded audio buffer for true voice cloning suitability.
  * NO fake or synthetic scores.
  */
-export function analyzeAudioQuality(buffer: AudioBuffer): AudioQualityReport {
+export function analyzeAudioQuality(buffer: AudioBuffer, engine?: string): AudioQualityReport {
   const durationSec = buffer.duration;
   const sampleRate = buffer.sampleRate;
   const numberOfChannels = buffer.numberOfChannels;
   const totalSamples = buffer.length;
+  const rules = getCloneEngineDurationRules(engine);
 
   const details: QualityMetricDetail[] = [];
 
-  // 1. Duration Analysis (Recommended: 10s - 30s)
+  // 1. Duration Analysis (Per-Model Empirically Verified Rules)
   let durationStatus: "pass" | "warning" | "error" = "pass";
-  let durationDesc = "Thời lượng lý tưởng cho Zero-Shot Voice Cloning (10s – 30s)";
+  let durationDesc = `Thời lượng tối ưu cho mô hình (${rules.sweetMinSec}s – ${rules.sweetMaxSec}s)`;
 
-  if (durationSec < 3.0) {
+  if (durationSec < rules.minSec) {
     durationStatus = "error";
-    durationDesc = "Mẫu quá ngắn (tối thiểu 3.0 giây). Mô hình không đủ dữ liệu trích xuất timbre.";
-  } else if (durationSec < 10.0) {
+    durationDesc = `Mẫu quá ngắn (${durationSec.toFixed(1)}s < tối thiểu ${rules.minSec.toFixed(1)}s của mô hình).`;
+  } else if (durationSec < rules.sweetMinSec) {
     durationStatus = "warning";
-    durationDesc = "Hơi ngắn (khuyến nghị từ 10s – 30s để chất lượng clone tốt nhất).";
-  } else if (durationSec > 60.0) {
+    durationDesc = `Hơi ngắn (khuyến nghị ${rules.sweetMinSec}s – ${rules.sweetMaxSec}s để đạt âm sắc ổn định nhất).`;
+  } else if (durationSec > rules.maxRecommendedSec) {
     durationStatus = "warning";
-    durationDesc = "Khá dài (> 60s). Nên dùng công cụ Cắt âm thanh để chọn đoạn sạch 10s – 30s.";
+    durationDesc = `Mẫu dài (> ${rules.maxRecommendedSec}s). Nên dùng nút "Cắt" để chọn đoạn sạch ${rules.sweetMinSec}s – ${rules.sweetMaxSec}s.`;
+  } else if (durationSec > rules.sweetMaxSec) {
+    durationStatus = "pass";
+    durationDesc = `Trong ngưỡng cho phép (${rules.sweetMinSec}s – ${rules.maxRecommendedSec}s; điểm ngọt nhất: ${rules.sweetMinSec}s – ${rules.sweetMaxSec}s).`;
   }
 
   details.push({

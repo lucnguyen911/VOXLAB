@@ -1,4 +1,5 @@
 import { TranslationSettings } from "./types";
+import { getPrimaryGeminiApiKeySync } from "./geminiKeyStore";
 
 export const TRANSLATION_SETTINGS_KEY = "voxlab_translation_settings";
 
@@ -17,20 +18,29 @@ export const DEFAULT_TRANSLATION_SETTINGS: TranslationSettings = {
  * Loads TranslationSettings from localStorage with safe fallback to defaults.
  */
 export function loadTranslationSettings(): TranslationSettings {
+  const vaultPrimaryKey = getPrimaryGeminiApiKeySync();
   if (typeof localStorage === "undefined") {
-    return { ...DEFAULT_TRANSLATION_SETTINGS };
+    return {
+      ...DEFAULT_TRANSLATION_SETTINGS,
+      geminiApiKey: vaultPrimaryKey || "",
+    };
   }
 
   try {
     const raw = localStorage.getItem(TRANSLATION_SETTINGS_KEY);
-    if (!raw) return { ...DEFAULT_TRANSLATION_SETTINGS };
+    if (!raw) {
+      return {
+        ...DEFAULT_TRANSLATION_SETTINGS,
+        geminiApiKey: vaultPrimaryKey || "",
+      };
+    }
 
     const parsed = JSON.parse(raw);
     return {
       sourceLanguage: parsed.sourceLanguage || DEFAULT_TRANSLATION_SETTINGS.sourceLanguage || "auto",
       targetLanguage: parsed.targetLanguage || DEFAULT_TRANSLATION_SETTINGS.targetLanguage,
       translationProviderId: parsed.translationProviderId || DEFAULT_TRANSLATION_SETTINGS.translationProviderId,
-      geminiApiKey: parsed.geminiApiKey || "",
+      geminiApiKey: vaultPrimaryKey || parsed.geminiApiKey || "",
       deepseekApiKey: parsed.deepseekApiKey || "",
       customModels: Array.isArray(parsed.customModels) ? parsed.customModels : [],
       autoTranslate: typeof parsed.autoTranslate === "boolean" ? parsed.autoTranslate : false,
@@ -38,12 +48,16 @@ export function loadTranslationSettings(): TranslationSettings {
     };
   } catch (err) {
     console.warn("Failed to load translation settings, using defaults:", err);
-    return { ...DEFAULT_TRANSLATION_SETTINGS };
+    return {
+      ...DEFAULT_TRANSLATION_SETTINGS,
+      geminiApiKey: vaultPrimaryKey || "",
+    };
   }
 }
 
 /**
  * Saves partial or complete TranslationSettings into localStorage.
+ * Never persists raw Gemini API keys back to localStorage once vault storage is active.
  */
 export function saveTranslationSettings(settings: Partial<TranslationSettings>): TranslationSettings {
   const current = loadTranslationSettings();
@@ -55,7 +69,11 @@ export function saveTranslationSettings(settings: Partial<TranslationSettings>):
 
   if (typeof localStorage !== "undefined") {
     try {
-      localStorage.setItem(TRANSLATION_SETTINGS_KEY, JSON.stringify(updated));
+      const storageCopy: TranslationSettings = {
+        ...updated,
+        geminiApiKey: "",
+      };
+      localStorage.setItem(TRANSLATION_SETTINGS_KEY, JSON.stringify(storageCopy));
     } catch (err) {
       console.warn("Failed to save translation settings to localStorage:", err);
     }

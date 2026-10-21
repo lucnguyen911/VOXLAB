@@ -161,6 +161,37 @@ pub fn load_license_cache(base_dir: &Path) -> Result<Option<LicenseCacheData>, S
     Ok(Some(data))
 }
 
+pub const GEMINI_KEYS_VAULT_FILE: &str = "gemini_keys.enc";
+
+/// Saves an encrypted UTF-8 JSON payload atomically using Windows DPAPI.
+/// Never deletes the existing vault file before the new temp file is flushed and renamed.
+pub fn save_encrypted_secret_file(
+    base_dir: &Path,
+    filename: &str,
+    payload_utf8: &str,
+) -> Result<(), String> {
+    std::fs::create_dir_all(base_dir).map_err(|e| e.to_string())?;
+    let encrypted_bytes = encrypt_data(payload_utf8.as_bytes())?;
+    let target_path = base_dir.join(filename);
+    crate::fsio::atomic_write(&target_path, &encrypted_bytes)
+}
+
+/// Loads and decrypts an encrypted UTF-8 JSON payload using Windows DPAPI.
+pub fn load_encrypted_secret_file(
+    base_dir: &Path,
+    filename: &str,
+) -> Result<Option<String>, String> {
+    let target_path = base_dir.join(filename);
+    if !target_path.exists() {
+        return Ok(None);
+    }
+    let encrypted_bytes = std::fs::read(&target_path).map_err(|e| e.to_string())?;
+    let decrypted_bytes = decrypt_data(&encrypted_bytes)?;
+    String::from_utf8(decrypted_bytes)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
 /// Removes license cache if allowed
 pub fn clear_license_cache(base_dir: &Path) -> Result<(), String> {
     let target_path = base_dir.join(LICENSE_CACHE_FILE);

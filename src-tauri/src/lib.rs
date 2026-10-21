@@ -78,11 +78,31 @@ fn clear_local_license_if_allowed(app: tauri::AppHandle) -> Result<(), String> {
     security::license_storage::clear_license_cache(&base_dir)
 }
 
+#[tauri::command]
+fn save_gemini_keys_secure(app: tauri::AppHandle, payload_json: String) -> Result<(), String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    security::license_storage::save_encrypted_secret_file(
+        &base_dir,
+        security::license_storage::GEMINI_KEYS_VAULT_FILE,
+        &payload_json,
+    )
+}
+
+#[tauri::command]
+fn load_gemini_keys_secure(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    security::license_storage::load_encrypted_secret_file(
+        &base_dir,
+        security::license_storage::GEMINI_KEYS_VAULT_FILE,
+    )
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct NativeHttpResponse {
     pub status: u16,
     pub status_text: String,
     pub body: String,
+    pub retry_after: Option<String>,
 }
 
 #[tauri::command]
@@ -108,20 +128,24 @@ fn native_http_request(
         Ok(response) => {
             let status = response.status();
             let status_text = response.status_text().to_string();
+            let retry_after = response.header("retry-after").map(|s| s.to_string());
             let body = response.into_string().unwrap_or_default();
             Ok(NativeHttpResponse {
                 status,
                 status_text,
                 body,
+                retry_after,
             })
         }
         Err(ureq::Error::Status(code, response)) => {
             let status_text = response.status_text().to_string();
+            let retry_after = response.header("retry-after").map(|s| s.to_string());
             let body = response.into_string().unwrap_or_default();
             Ok(NativeHttpResponse {
                 status: code,
                 status_text,
                 body,
+                retry_after,
             })
         }
         Err(e) => Err(e.to_string()),
@@ -157,6 +181,8 @@ pub fn run() {
             verify_license,
             change_license_key,
             clear_local_license_if_allowed,
+            save_gemini_keys_secure,
+            load_gemini_keys_secure,
             native_http_request,
             ai::ai_request,
             ai::ai_cancel,

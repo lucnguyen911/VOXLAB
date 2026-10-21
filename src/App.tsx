@@ -25,6 +25,11 @@ import { I18nProvider, useI18n } from "./i18n/context";
 import { migrateLegacyVoice } from "./constants/voiceFilters";
 import { LicenseModal } from "./components/modals/LicenseModal";
 import { LicenseSummary } from "./services/license/licenseService";
+import {
+  reconcileCloneVoicesWithProfiles,
+  updateCloneVoiceMetadata,
+  removeCloneVoice,
+} from "./services/ai/cloneVoiceRegistry";
 import { CheckCircle2, X } from "lucide-react";
 
 // Run synchronous migrations before components mount and read localStorage
@@ -119,6 +124,21 @@ function loadInitialVoices(): VoiceProfile[] {
   const [activeVoiceId, setActiveVoiceId] = useState<string>("voice_01");
   const [activeModel, setActiveModel] = useState<string>("Omni Voice");
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
+
+  // Reconcile durable cloneVoiceRegistry (voices/clone_voices.json) with UI VoiceProfile state on startup
+  useEffect(() => {
+    let cancelled = false;
+    reconcileCloneVoicesWithProfiles(loadInitialVoices())
+      .then((reconciled) => {
+        if (!cancelled) {
+          setVoices(reconciled);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Sync voices to localStorage
   useEffect(() => {
@@ -229,10 +249,32 @@ function loadInitialVoices(): VoiceProfile[] {
     setVoices((prev) =>
       prev.map((v) => (v.id === updatedVoice.id ? updatedVoice : v))
     );
+    const isClone =
+      updatedVoice.origin === "clone" ||
+      updatedVoice.source === "local_clone" ||
+      updatedVoice.id.startsWith("clone_");
+    if (isClone) {
+      updateCloneVoiceMetadata(updatedVoice.id, {
+        name: updatedVoice.name,
+        refText: updatedVoice.referenceTranscript ?? "",
+        language: updatedVoice.supportedLanguages?.[0],
+        engine: updatedVoice.engine,
+        durationSec: updatedVoice.sampleDurationSec,
+      }).catch((err) => console.error("Failed to sync updated clone voice metadata:", err));
+    }
   };
 
   const handleDeleteVoice = (id: string) => {
     setVoices((prev) => prev.filter((v) => v.id !== id));
+    if (activeVoiceId === id) {
+      setActiveVoiceId("voice_01");
+    }
+    if (activeAudioTrack?.id === id) {
+      handleCloseAudioPlayer();
+    }
+    removeCloneVoice(id).catch((err) =>
+      console.error("Failed to remove clone voice from registry:", err)
+    );
   };
 
   const [ttsIncomingScript, setTtsIncomingScript] = useState<string | null>(null);
@@ -454,7 +496,7 @@ function loadInitialVoices(): VoiceProfile[] {
               {activeWorkspace === "history" && (
                 <HistoryWorkspace
                   onResumeSession={(_id) => handleSelectWorkspace("tts")}
-                  onOpenOutput={() => alert("Mở thư mục xuất: D:/VoxLabOutput")}
+
                 />
               )}
 

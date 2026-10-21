@@ -14,6 +14,7 @@ import {
   audioBufferToWavBlob,
   formatAudioTimeWithSubseconds,
   getOrCreateAudioContext,
+  getCloneEngineDurationRules,
 } from "../../services/audio/audioDsp";
 import { useI18n } from "../../i18n/context";
 import { TrimWaveform } from "../waveform/TrimWaveform";
@@ -23,6 +24,7 @@ interface AudioTrimModalProps {
   onClose: () => void;
   audioBuffer: AudioBuffer | null;
   objectUrl: string | null;
+  engine?: string;
   initialRange?: { startSec: number; endSec: number };
   onApplyTrim: (
     trimmedBuffer: AudioBuffer,
@@ -38,14 +40,16 @@ export const AudioTrimModal: React.FC<AudioTrimModalProps> = ({
   isOpen,
   onClose,
   audioBuffer,
+  engine,
   initialRange,
   onApplyTrim,
 }) => {
   const { lang } = useI18n();
+  const rules = getCloneEngineDurationRules(engine);
   const totalDuration = audioBuffer ? audioBuffer.duration : 20;
 
   const [startSec, setStartSec] = useState<number>(0);
-  const [endSec, setEndSec] = useState<number>(() => Math.min(20, totalDuration));
+  const [endSec, setEndSec] = useState<number>(() => Math.min(rules.maxRecommendedSec, totalDuration));
   const [zoom, setZoom] = useState<number>(1.0);
   const [isPlayingRegion, setIsPlayingRegion] = useState<boolean>(false);
   const [currentPlaySec, setCurrentPlaySec] = useState<number>(0);
@@ -62,12 +66,10 @@ export const AudioTrimModal: React.FC<AudioTrimModalProps> = ({
         setEndSec(Math.min(audioBuffer.duration, Math.max(initialRange.endSec, initialRange.startSec + 0.5)));
       } else {
         const dur = audioBuffer.duration;
-        if (dur > 14) {
-          setStartSec(1.5);
-          setEndSec(Math.min(dur - 1.0, 16.5));
-        } else if (dur > 6) {
-          setStartSec(0.8);
-          setEndSec(dur - 0.8);
+        const targetSweet = (rules.sweetMinSec + rules.sweetMaxSec) / 2;
+        if (dur > rules.maxRecommendedSec) {
+          setStartSec(0.5);
+          setEndSec(Math.min(dur, 0.5 + targetSweet));
         } else {
           setStartSec(0);
           setEndSec(dur);
@@ -77,9 +79,10 @@ export const AudioTrimModal: React.FC<AudioTrimModalProps> = ({
       setIsPlayingRegion(false);
       setCurrentPlaySec(0);
     }
-  }, [isOpen, audioBuffer, initialRange]);
+  }, [isOpen, audioBuffer, initialRange, rules.maxRecommendedSec, rules.sweetMaxSec, rules.sweetMinSec]);
 
   const selectedDuration = Math.max(0.1, endSec - startSec);
+  const isTooShort = selectedDuration < rules.minSec;
 
   // Stop playback on unmount or close
   const stopPlayback = useCallback(() => {
@@ -232,25 +235,40 @@ export const AudioTrimModal: React.FC<AudioTrimModalProps> = ({
 
             {/* Recommendation Guidance Badge */}
             <div className="flex items-center gap-1.5">
-              {selectedDuration >= 10.0 && selectedDuration <= 30.0 ? (
+              {selectedDuration >= rules.sweetMinSec && selectedDuration <= rules.sweetMaxSec ? (
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
                   <Check className="w-3.5 h-3.5" />
-                  <span>{selectedDuration.toFixed(1)}s · Trong khoảng khuyến nghị (10s – 30s)</span>
+                  <span>
+                    {selectedDuration.toFixed(1)}s · Tối ưu ({rules.sweetMinSec}s – {rules.sweetMaxSec}s)
+                  </span>
                 </div>
-              ) : selectedDuration < 3.0 ? (
+              ) : isTooShort ? (
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/25">
                   <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>{selectedDuration.toFixed(1)}s · Quá ngắn (tối thiểu 3.0s)</span>
+                  <span>
+                    {selectedDuration.toFixed(1)}s · Quá ngắn (tối thiểu {rules.minSec}s)
+                  </span>
                 </div>
-              ) : selectedDuration < 10.0 ? (
+              ) : selectedDuration < rules.sweetMinSec ? (
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/25">
                   <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>{selectedDuration.toFixed(1)}s · Hơi ngắn (khuyến nghị 10s – 30s)</span>
+                  <span>
+                    {selectedDuration.toFixed(1)}s · Dùng được (tối ưu {rules.sweetMinSec}s – {rules.sweetMaxSec}s)
+                  </span>
+                </div>
+              ) : selectedDuration <= rules.maxRecommendedSec ? (
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/25">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>
+                    {selectedDuration.toFixed(1)}s · Chấp nhận được (tối ưu {rules.sweetMinSec}s – {rules.sweetMaxSec}s)
+                  </span>
                 </div>
               ) : (
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-500/15 text-slate-300 border border-slate-500/25">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/25">
                   <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>{selectedDuration.toFixed(1)}s · Khá dài (khuyến nghị 10s – 30s)</span>
+                  <span>
+                    {selectedDuration.toFixed(1)}s · Khá dài (nên cắt xuống {rules.sweetMinSec}s – {rules.maxRecommendedSec}s)
+                  </span>
                 </div>
               )}
             </div>
@@ -358,7 +376,12 @@ export const AudioTrimModal: React.FC<AudioTrimModalProps> = ({
           </button>
           <button
             onClick={handleApply}
-            className="flex items-center gap-1.5 px-5 py-2 bg-accent hover:bg-accent/90 text-background rounded-lg text-xs font-bold shadow-xs transition-colors"
+            disabled={isTooShort}
+            className={`flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-bold shadow-xs transition-colors ${
+              isTooShort
+                ? "bg-surface3 text-textMuted cursor-not-allowed opacity-60"
+                : "bg-accent hover:bg-accent/90 text-background"
+            }`}
           >
             <Check className="w-3.5 h-3.5" />
             <span>Áp dụng đoạn cắt</span>

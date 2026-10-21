@@ -39,6 +39,7 @@ import {
   WHISPER_AUDIO_LANGUAGES,
 } from "../services/subtitle";
 import { DubbingHandoffSnapshot } from "../types/dubbing";
+import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import {
    extractFilesFromDropEvent,
   expandTauriPaths,
@@ -1101,6 +1102,30 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
         });
         if (savePath && typeof savePath === "string") {
           await tauriAiFs.writeText(savePath, content);
+          recordCompletedJobToHistory({
+            jobKey: `trans_${(fileInfo?.name || defaultFilename).replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+            title: fileInfo?.name || defaultFilename,
+            sourceFilePath: cachedAudioPathRef.current || undefined,
+            sourceFileSize: fileInfo?.sizeFormatted || undefined,
+            category: "transcription",
+            isBatch: false,
+            tasks: ["transcription"],
+            durationSec: totalDurationSec || undefined,
+            chunkCount: cues.length,
+            artifacts: [
+              {
+                filePath: savePath,
+                type: ext === "txt" ? "text" : "subtitle",
+                task: "transcription",
+                label:
+                  ext === "txt"
+                    ? "Văn bản bóc băng (.TXT)"
+                    : `Phụ đề trích xuất (${subtitleSettings.whisperModel})`,
+                subtitleContent: content,
+                isTimelineSynced: ext !== "txt",
+              },
+            ],
+          });
           await showPathInFolder(savePath).catch(() => {});
         }
         return;

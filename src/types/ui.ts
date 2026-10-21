@@ -114,6 +114,8 @@ export interface VoiceProfile {
   tags: string[];
   supportedLanguages: string[];
   sampleAudioPath?: string;
+  sampleDurationSec?: number;
+  referenceTranscript?: string;
   isOnline?: boolean;
   providerName?: string;
   modelCompatibility: string[];

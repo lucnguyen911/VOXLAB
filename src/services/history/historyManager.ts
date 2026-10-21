@@ -2,6 +2,9 @@ import {
   UnifiedHistoryItem,
   HistoryArtifactItem,
   HistoryFilterType,
+  HistorySubtitleCue,
+  HistoryTaskCategory,
+  HistoryItemStatus,
 } from "../../types/history";
 import { BatchJob } from "../../types/batch";
 import {
@@ -9,6 +12,7 @@ import {
   readAppDataFile,
   existsAppDataFile,
 } from "../storage/tauriFsBridge";
+import { isTauriRuntime } from "../ai/tauriBackend";
 
 export const HISTORY_STORAGE_KEY = "voxlab_history_records_v2";
 export const HISTORY_FILE = "history.json";
@@ -290,7 +294,150 @@ export const SAMPLE_UNIFIED_HISTORY: UnifiedHistoryItem[] = [
   },
 ];
 
+const SAMPLE_IDS = new Set(SAMPLE_UNIFIED_HISTORY.map((item) => item.id));
+
 let inMemoryHistory: UnifiedHistoryItem[] | null = null;
+
+function notifyHistoryUpdated(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    try {
+      window.dispatchEvent(new CustomEvent("voxlab_history_updated"));
+    } catch {
+      // ignore in non-DOM test environments
+    }
+  }
+}
+
+export function formatBytesLabel(bytes?: number): string | undefined {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) return undefined;
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+export function formatDurationLabel(durationSec?: number): string | undefined {
+  if (typeof durationSec !== "number" || !Number.isFinite(durationSec) || durationSec <= 0) {
+    return undefined;
+  }
+  const total = Math.round(durationSec);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  if (mins > 0) {
+    return `${mins} phút ${secs.toString().padStart(2, "0")} giây`;
+  }
+  return `${secs} giây`;
+}
+
+export function formatMmSsLabel(durationSec?: number): string | undefined {
+  if (typeof durationSec !== "number" || !Number.isFinite(durationSec) || durationSec <= 0) {
+    return undefined;
+  }
+  const total = Math.round(durationSec);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+}
+
+export function formatHistoryCreatedAt(timestampMs: number): string {
+  const d = new Date(timestampMs);
+  const now = new Date();
+  const timeStr = `${d.getHours().toString().padStart(2, "0")}:${d
+    .getMinutes()
+    .toString()
+    .padStart(2, "0")}`;
+
+  const isToday =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (isToday) {
+    return `Hôm nay, ${timeStr}`;
+  }
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const isYesterday =
+    d.getFullYear() === yesterday.getFullYear() &&
+    d.getMonth() === yesterday.getMonth() &&
+    d.getDate() === yesterday.getDate();
+  if (isYesterday) {
+    return `Hôm qua, ${timeStr}`;
+  }
+
+  const dayStr = d.getDate().toString().padStart(2, "0");
+  const monthStr = (d.getMonth() + 1).toString().padStart(2, "0");
+  return `${dayStr}/${monthStr}/${d.getFullYear()}, ${timeStr}`;
+}
+
+function parseSrtTimePartToSec(raw: string): number {
+  const clean = raw.trim().replace(",", ".");
+  const parts = clean.split(":");
+  if (parts.length === 3) {
+    return (parseFloat(parts[0]) || 0) * 3600 + (parseFloat(parts[1]) || 0) * 60 + (parseFloat(parts[2]) || 0);
+  }
+  if (parts.length === 2) {
+    return (parseFloat(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
+  }
+  return parseFloat(clean) || 0;
+}
+
+/**
+ * Parses SRT, VTT, or plain text content into structured HistorySubtitleCue items.
+ */
+export function parseSubtitleContentToHistoryCues(content: string): HistorySubtitleCue[] {
+  const normalized = (content || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const blocks = normalized.split(/\n{2,}/);
+  const cues: HistorySubtitleCue[] = [];
+
+  for (const block of blocks) {
+    const lines = block
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length === 0) continue;
+    if (lines[0].toUpperCase().startsWith("WEBVTT")) continue;
+
+    const timeLineIdx = lines.findIndex((l) => l.includes("-->") || l.includes("→"));
+    if (timeLineIdx !== -1) {
+      const timeLine = lines[timeLineIdx];
+      const textLines = lines.slice(timeLineIdx + 1);
+      const text = textLines.join(" ").trim();
+      if (!text) continue;
+      const parts = timeLine.split(/-->|→/);
+      const startSec = parts[0] ? parseSrtTimePartToSec(parts[0]) : undefined;
+      const endSec = parts[1] ? parseSrtTimePartToSec(parts[1]) : undefined;
+      cues.push({
+        index: cues.length + 1,
+        time: timeLine,
+        text,
+        startSec,
+        endSec,
+      });
+    } else {
+      // Plain text paragraph fallback (.txt exports)
+      const text = lines.join(" ").trim();
+      if (text) {
+        cues.push({
+          index: cues.length + 1,
+          time: `Đoạn #${cues.length + 1}`,
+          text,
+        });
+      }
+    }
+  }
+
+  return cues;
+}
+
+export function extractDirectoryFromPath(filePath: string): string {
+  const normalized = (filePath || "").replace(/\\/g, "/");
+  const lastSlash = normalized.lastIndexOf("/");
+  if (lastSlash <= 0) return filePath;
+  return filePath.slice(0, lastSlash);
+}
 
 export function loadHistoryItems(): UnifiedHistoryItem[] {
   if (inMemoryHistory !== null) {
@@ -302,12 +449,20 @@ export function loadHistoryItems(): UnifiedHistoryItem[] {
       const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
       if (raw) {
         const parsed: UnifiedHistoryItem[] = JSON.parse(raw);
-        inMemoryHistory = parsed.sort((a, b) => b.timestamp - a.timestamp);
+        const filtered = isTauriRuntime()
+          ? parsed.filter((item) => !SAMPLE_IDS.has(item.id))
+          : parsed;
+        inMemoryHistory = filtered.sort((a, b) => b.timestamp - a.timestamp);
         return [...inMemoryHistory];
       }
     } catch {
       // ignore
     }
+  }
+
+  if (isTauriRuntime()) {
+    inMemoryHistory = [];
+    return [];
   }
 
   inMemoryHistory = [...SAMPLE_UNIFIED_HISTORY];
@@ -329,24 +484,375 @@ export function saveHistoryItems(items: UnifiedHistoryItem[]): void {
   saveAppDataFile(HISTORY_FILE, JSON.stringify(items, null, 2)).catch(() => {
     // Non-blocking in browser / test environments
   });
+  notifyHistoryUpdated();
 }
 
 /**
- * Loads history items directly from durable history.json file if available
+ * Verifies real disk existence, file size, WAV header duration, and subtitle cues
+ * for all history items when running inside the Tauri desktop runtime.
+ */
+export async function hydrateHistoryItemsFromDisk(
+  items: UnifiedHistoryItem[]
+): Promise<UnifiedHistoryItem[]> {
+  if (!isTauriRuntime() || items.length === 0) {
+    return items;
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    const hydrated = await Promise.all(
+      items.map(async (job) => {
+        // Probe source file size if missing and sourceFilePath is absolute
+        let sourceFileSize = job.sourceFileSize;
+        if (!sourceFileSize && job.sourceFilePath) {
+          try {
+            const stat = await invoke<{ size: number; mtimeMs: number } | null>("fs_stat", {
+              path: job.sourceFilePath,
+            });
+            if (stat && stat.size > 0) {
+              sourceFileSize = formatBytesLabel(stat.size);
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        const updatedArtifacts = await Promise.all(
+          job.artifacts.map(async (art) => {
+            if (!art.filePath) {
+              return { ...art, existsOnDisk: false };
+            }
+            try {
+              const stat = await invoke<{ size: number; mtimeMs: number } | null>("fs_stat", {
+                path: art.filePath,
+              });
+              if (!stat) {
+                return { ...art, existsOnDisk: false };
+              }
+
+              let fileSize = formatBytesLabel(stat.size) || art.fileSize;
+              let audioDurationSec = art.audioDurationSec;
+              let duration = art.duration;
+              let cues = art.cues;
+
+              if (
+                art.type === "audio" &&
+                art.filePath.toLowerCase().endsWith(".wav") &&
+                (!audioDurationSec || audioDurationSec === 60)
+              ) {
+                try {
+                  const probe = await invoke<{
+                    durationSec: number;
+                    sampleRate: number;
+                    channels: number;
+                    sizeBytes: number;
+                  } | null>("fs_probe_wav_header", { path: art.filePath });
+                  if (probe && probe.durationSec > 0) {
+                    audioDurationSec = Math.round(probe.durationSec);
+                    duration = formatMmSsLabel(probe.durationSec) || duration;
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+
+              if (
+                (art.type === "subtitle" || art.type === "text") &&
+                (!cues || cues.length === 0)
+              ) {
+                try {
+                  const rawText = await invoke<string>("fs_read_text", { path: art.filePath });
+                  const parsedCues = parseSubtitleContentToHistoryCues(rawText);
+                  if (parsedCues.length > 0) {
+                    cues = parsedCues;
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+
+              return {
+                ...art,
+                existsOnDisk: true,
+                fileSize,
+                audioDurationSec,
+                duration,
+                cues,
+              };
+            } catch {
+              return { ...art, existsOnDisk: false };
+            }
+          })
+        );
+
+        const primaryAudio = updatedArtifacts.find((a) => a.type === "audio" && a.audioDurationSec);
+        const jobDuration =
+          job.duration ||
+          (primaryAudio?.audioDurationSec
+            ? formatDurationLabel(primaryAudio.audioDurationSec)
+            : undefined);
+
+        return {
+          ...job,
+          createdAt: job.timestamp ? formatHistoryCreatedAt(job.timestamp) : job.createdAt,
+          sourceFileSize,
+          duration: jobDuration,
+          artifacts: updatedArtifacts,
+        };
+      })
+    );
+
+    return hydrated;
+  } catch {
+    return items;
+  }
+}
+
+/**
+ * Loads history items directly from durable history.json file if available,
+ * reconciles with localStorage, and hydrates real disk state in Tauri.
  */
 export async function loadHistoryFromFileAsync(): Promise<UnifiedHistoryItem[]> {
+  let rawItems: UnifiedHistoryItem[] = [];
   try {
     const exists = await existsAppDataFile(HISTORY_FILE);
-    if (!exists) {
-      return loadHistoryItems();
+    if (exists) {
+      const content = await readAppDataFile(HISTORY_FILE);
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        rawItems = parsed;
+      }
+    } else {
+      rawItems = loadHistoryItems();
     }
-    const content = await readAppDataFile(HISTORY_FILE);
-    const parsed: UnifiedHistoryItem[] = JSON.parse(content);
-    inMemoryHistory = parsed.sort((a, b) => b.timestamp - a.timestamp);
-    return [...inMemoryHistory];
   } catch {
-    return loadHistoryItems();
+    rawItems = loadHistoryItems();
   }
+
+  if (isTauriRuntime()) {
+    rawItems = rawItems.filter((item) => !SAMPLE_IDS.has(item.id));
+  }
+
+  const sorted = rawItems.sort((a, b) => b.timestamp - a.timestamp);
+  const hydrated = await hydrateHistoryItemsFromDisk(sorted);
+  inMemoryHistory = [...hydrated];
+
+  if (typeof window !== "undefined" && window.localStorage) {
+    try {
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(hydrated));
+    } catch {
+      // ignore
+    }
+  }
+
+  return [...hydrated];
+}
+
+/**
+ * Reads and parses subtitle/text cues directly from disk for a single artifact if needed.
+ */
+export async function loadArtifactCuesFromDisk(
+  artifact: HistoryArtifactItem
+): Promise<HistorySubtitleCue[]> {
+  if (artifact.cues && artifact.cues.length > 0) {
+    return artifact.cues;
+  }
+  if (!isTauriRuntime() || !artifact.filePath) {
+    return [];
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const rawText = await invoke<string>("fs_read_text", { path: artifact.filePath });
+    return parseSubtitleContentToHistoryCues(rawText);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Opens a file or directory in the OS native file explorer (Windows Explorer).
+ */
+export async function openHistoryPathInFolder(
+  targetPath?: string,
+  fallbackDirectory?: string
+): Promise<boolean> {
+  const candidate = (targetPath || fallbackDirectory || "").trim();
+  if (!candidate) return false;
+
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      // Check if primary target exists; if not, fallback to parent/output directory
+      if (targetPath) {
+        const exists = await invoke<boolean>("fs_exists", { path: targetPath }).catch(() => false);
+        if (exists) {
+          await invoke<void>("fs_show_in_folder", { path: targetPath });
+          return true;
+        }
+      }
+      const dirToOpen = fallbackDirectory || extractDirectoryFromPath(candidate);
+      await invoke<void>("fs_show_in_folder", { path: dirToOpen });
+      return true;
+    } catch (err) {
+      console.warn("[History] fs_show_in_folder failed:", err);
+      return false;
+    }
+  }
+
+  return false;
+}
+
+export interface RecordCompletedJobParams {
+  jobKey?: string; // Optional stable key to merge artifacts from the same session/media
+  title: string;
+  sourceFilePath?: string;
+  sourceFileSize?: string;
+  category: HistoryTaskCategory;
+  isBatch?: boolean;
+  tasks: ("tts" | "dialogue" | "transcription" | "translation" | "dubbing")[];
+  status?: HistoryItemStatus;
+  statusWarning?: string;
+  durationSec?: number;
+  chunkCount?: number;
+  outputDirectory?: string;
+  artifacts: Array<{
+    filePath: string;
+    fileName?: string;
+    fileSize?: string;
+    type: "audio" | "subtitle" | "text" | "video";
+    task: "tts" | "dialogue" | "transcription" | "translation" | "dubbing";
+    label?: string;
+    audioDurationSec?: number;
+    subtitleContent?: string;
+    cues?: HistorySubtitleCue[];
+    isTimelineSynced?: boolean;
+  }>;
+}
+
+/**
+ * Records a completed export from any workspace (TTS, Dialogue, Transcription, Dubbing)
+ * into durable History (`history.json` + `localStorage`).
+ * If `jobKey` matches an existing recent record (< 2 hours old), merges new artifacts
+ * and tasks into that job record so multi-artifact workflows (e.g. Dubbing SRT + WAV)
+ * stay unified under a single job card.
+ */
+export function recordCompletedJobToHistory(params: RecordCompletedJobParams): UnifiedHistoryItem {
+  const existing = loadHistoryItems();
+  const nowMs = Date.now();
+  const histId = params.jobKey ? `hist-${params.jobKey}` : `hist-${nowMs}-${Math.random().toString(36).slice(2, 7)}`;
+
+  const existingMatch = params.jobKey
+    ? existing.find((item) => item.id === histId && nowMs - item.timestamp < 2 * 3600 * 1000)
+    : undefined;
+
+  const newArtifacts: HistoryArtifactItem[] = params.artifacts.map((a, idx) => {
+    const fileName =
+      a.fileName ||
+      a.filePath.split("/").pop() ||
+      a.filePath.split("\\").pop() ||
+      `artifact_${idx + 1}`;
+    const parsedCues =
+      a.cues && a.cues.length > 0
+        ? a.cues
+        : a.subtitleContent
+        ? parseSubtitleContentToHistoryCues(a.subtitleContent)
+        : undefined;
+
+    return {
+      id: `${histId}-art-${nowMs}-${idx}`,
+      fileName,
+      filePath: a.filePath,
+      fileSize: a.fileSize,
+      duration: a.audioDurationSec ? formatMmSsLabel(a.audioDurationSec) : undefined,
+      type: a.type,
+      task: a.task,
+      label: a.label,
+      existsOnDisk: true,
+      audioDurationSec: a.audioDurationSec ? Math.round(a.audioDurationSec) : undefined,
+      cues: parsedCues,
+      isTimelineSynced: a.isTimelineSynced,
+    };
+  });
+
+  const firstPath = params.artifacts[0]?.filePath || "";
+  const resolvedOutputDir =
+    params.outputDirectory || (firstPath ? extractDirectoryFromPath(firstPath) : "");
+
+  let finalItem: UnifiedHistoryItem;
+
+  if (existingMatch) {
+    // Merge artifacts by filePath (replace if same filePath was re-exported, append if new)
+    const mergedArtifacts = [...existingMatch.artifacts];
+    for (const incoming of newArtifacts) {
+      const idx = mergedArtifacts.findIndex(
+        (m) => m.filePath.toLowerCase() === incoming.filePath.toLowerCase()
+      );
+      if (idx !== -1) {
+        mergedArtifacts[idx] = { ...incoming, id: mergedArtifacts[idx].id };
+      } else {
+        mergedArtifacts.push(incoming);
+      }
+    }
+
+    const mergedTasks = Array.from(new Set([...existingMatch.tasks, ...params.tasks]));
+    const primaryDurationSec =
+      params.durationSec ||
+      mergedArtifacts.find((a) => a.type === "audio" && a.audioDurationSec)?.audioDurationSec;
+
+    finalItem = {
+      ...existingMatch,
+      title: params.title || existingMatch.title,
+      sourceFilePath: params.sourceFilePath || existingMatch.sourceFilePath,
+      sourceFileSize: params.sourceFileSize || existingMatch.sourceFileSize,
+      tasks: mergedTasks,
+      createdAt: formatHistoryCreatedAt(nowMs),
+      timestamp: nowMs,
+      status: params.status || existingMatch.status,
+      statusWarning: params.statusWarning ?? existingMatch.statusWarning,
+      duration: primaryDurationSec ? formatDurationLabel(primaryDurationSec) : existingMatch.duration,
+      chunkCount: params.chunkCount ?? existingMatch.chunkCount,
+      outputDirectory: resolvedOutputDir || existingMatch.outputDirectory,
+      artifacts: mergedArtifacts,
+    };
+  } else {
+    const primaryDurationSec =
+      params.durationSec ||
+      newArtifacts.find((a) => a.type === "audio" && a.audioDurationSec)?.audioDurationSec;
+
+    finalItem = {
+      id: histId,
+      title: params.title,
+      sourceFilePath: params.sourceFilePath,
+      sourceFileSize: params.sourceFileSize,
+      category: params.category,
+      isBatch: Boolean(params.isBatch),
+      tasks: [...params.tasks],
+      createdAt: formatHistoryCreatedAt(nowMs),
+      timestamp: nowMs,
+      status: params.status || "completed",
+      statusWarning: params.statusWarning,
+      duration: primaryDurationSec ? formatDurationLabel(primaryDurationSec) : undefined,
+      chunkCount: params.chunkCount,
+      outputDirectory: resolvedOutputDir,
+      artifacts: newArtifacts,
+    };
+  }
+
+  const remaining = existing.filter((item) => item.id !== finalItem.id);
+  const updated = [finalItem, ...remaining].sort((a, b) => b.timestamp - a.timestamp);
+  saveHistoryItems(updated);
+
+  // Trigger background disk hydration so file sizes & WAV headers are immediately populated
+  if (isTauriRuntime()) {
+    hydrateHistoryItemsFromDisk(updated)
+      .then((hydrated) => {
+        saveHistoryItems(hydrated);
+      })
+      .catch(() => {});
+  }
+
+  return finalItem;
 }
 
 /**
@@ -366,9 +872,10 @@ export function deleteHistoryItem(id: string, current: UnifiedHistoryItem[]): Un
 export function clearAllHistory(): void {
   inMemoryHistory = [];
   if (typeof window !== "undefined" && window.localStorage) {
-    localStorage.removeItem(HISTORY_STORAGE_KEY);
+    localStorage.setItem(HISTORY_STORAGE_KEY, "[]");
   }
   saveAppDataFile(HISTORY_FILE, "[]").catch(() => {});
+  notifyHistoryUpdated();
 }
 
 export function filterHistoryItems(
@@ -559,6 +1066,15 @@ export function syncBatchJobToHistory(job: BatchJobOrHistorical): UnifiedHistory
   );
   const updated = [historyItem, ...filtered].sort((a, b) => b.timestamp - a.timestamp);
   saveHistoryItems(updated);
+
+  if (isTauriRuntime()) {
+    hydrateHistoryItemsFromDisk(updated)
+      .then((hydrated) => {
+        saveHistoryItems(hydrated);
+      })
+      .catch(() => {});
+  }
+
   return historyItem;
 }
 

@@ -303,7 +303,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
           id: voice.id,
           voiceName: cleanVoiceName,
           title: `Bản thử · ${cleanVoiceName}`,
-          durationSec: 18.5,
+          durationSec: voice.sampleDurationSec || 18.5,
           audioUrl: voice.sampleAudioPath,
           text: `Bản nghe thử giọng ${cleanVoiceName}`,
         });

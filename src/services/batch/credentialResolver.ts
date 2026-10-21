@@ -8,6 +8,7 @@
  */
 
 import { loadTranslationSettings } from "../translation/settings";
+import { getPrimaryGeminiApiKeySync } from "../translation/geminiKeyStore";
 
 export interface ProviderCredentials {
   apiKey?: string;
@@ -30,8 +31,12 @@ export class CredentialResolver {
       if (raw) {
         const configs = JSON.parse(raw);
         if (configs && configs[providerId]) {
+          const resolvedApiKey =
+            providerId === "gemini"
+              ? getPrimaryGeminiApiKeySync() || configs[providerId].apiKey || undefined
+              : configs[providerId].apiKey || undefined;
           return {
-            apiKey: configs[providerId].apiKey || undefined,
+            apiKey: resolvedApiKey,
             endpoint: configs[providerId].endpoint || undefined,
             model: configs[providerId].model || undefined,
           };
@@ -43,11 +48,18 @@ export class CredentialResolver {
 
     // Fallback to translation settings
     const translationSettings = loadTranslationSettings();
-    if (providerId === "gemini" && translationSettings.geminiApiKey) {
-      return { apiKey: translationSettings.geminiApiKey };
+    if (providerId === "gemini") {
+      const geminiKey = getPrimaryGeminiApiKeySync() || translationSettings.geminiApiKey;
+      if (geminiKey) {
+        return { apiKey: geminiKey };
+      }
     }
     if (providerId === "deepseek" && translationSettings.deepseekApiKey) {
       return { apiKey: translationSettings.deepseekApiKey };
+    }
+    if (providerId === "claude") {
+      const claudeKey = typeof localStorage !== "undefined" ? localStorage.getItem("voxlab_claude_api_key") || "" : "";
+      if (claudeKey) return { apiKey: claudeKey };
     }
     const customModel = translationSettings.customModels?.find((m) => m.id === providerId);
     if (customModel) {

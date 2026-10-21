@@ -21,12 +21,19 @@ import { SettingsGroup } from "../types/ui";
 import {
   loadTranslationSettings,
   saveTranslationSettings,
-  GeminiTranslateProvider,
+  ClaudeTranslateProvider,
   DeepSeekTranslateProvider,
   LmStudioTranslateProvider,
   OllamaTranslateProvider,
   CustomTranslationModel,
   resolveOpenAiBaseUrl,
+  loadGeminiKeyEntriesFromVault,
+  saveGeminiKeyEntries,
+  getGeminiKeyEntriesSync,
+  geminiKeyPool,
+  MAX_GEMINI_TOTAL_KEYS,
+  type GeminiKeyEntry,
+  type GeminiKeyHealthStatus,
 } from "../services/translation";
 import { appHttpRequest } from "../services/http/nativeClient";
 import { LicenseService, LicenseSummary } from "../services/license/licenseService";
@@ -99,6 +106,16 @@ const BUILTIN_PROVIDERS: ProviderCardItem[] = [
     requiresEndpoint: false,
   },
   {
+    id: "claude",
+    name: "Anthropic Claude",
+    type: "cloud",
+    typeLabel: "API đám mây",
+    defaultModel: "claude-3-5-haiku-20241022",
+    defaultEndpoint: "https://api.anthropic.com/v1",
+    requiresApiKey: true,
+    requiresEndpoint: false,
+  },
+  {
     id: "deepseek",
     name: "DeepSeek",
     type: "cloud",
@@ -121,7 +138,7 @@ const BUILTIN_PROVIDERS: ProviderCardItem[] = [
   // 2. Local Services
   {
     id: "ollama",
-    name: "Ollama (Local)",
+    name: "Ollama",
     type: "local",
     typeLabel: "Nội bộ",
     defaultModel: "qwen2.5:7b",
@@ -170,6 +187,197 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   const [geminiApiKey, setGeminiApiKey] = useState(() => loadTranslationSettings().geminiApiKey || "");
   const [testConnectionStatus, setTestConnectionStatus] = useState<"idle" | "testing" | "success" | "failed">("idle");
   const [connectionMessage, setConnectionMessage] = useState<string>("");
+
+  // Gemini Multi-Key Pool state (Google Gemini ONLY)
+  const [geminiKeySlots, setGeminiKeySlots] = useState<GeminiKeyEntry[]>(() => getGeminiKeyEntriesSync());
+  const [visibleGeminiKeyIds, setVisibleGeminiKeyIds] = useState<Record<string, boolean>>({});
+  const [geminiKeyStatuses, setGeminiKeyStatuses] = useState<
+    Record<string, { status: GeminiKeyHealthStatus; message?: string }>
+  >({});
+  const [geminiDuplicateSlotIds, setGeminiDuplicateSlotIds] = useState<string[]>([]);
+  const [geminiSaveError, setGeminiSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    loadGeminiKeyEntriesFromVault()
+      .then((entries) => {
+        if (!mounted) return;
+        setGeminiKeySlots(entries);
+        const primary = entries.find((e) => e.role === "primary")?.apiKey || "";
+        setGeminiApiKey(primary);
+        setProviderConfigs((prev) => ({
+          ...prev,
+          gemini: {
+            ...(prev.gemini || {
+              apiKey: "",
+              endpoint: "",
+              model: "gemini-1.5-flash",
+              timeout: 60,
+              maxTokens: 4096,
+            }),
+            apiKey: primary,
+          },
+        }));
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const persistProviderConfigsSafely = (nextConfigs: Record<string, ProviderConfigValues>) => {
+    try {
+      const sanitized: Record<string, ProviderConfigValues> = { ...nextConfigs };
+      if (sanitized.gemini) {
+        // Never store raw Gemini API keys in localStorage
+        sanitized.gemini = {
+          ...sanitized.gemini,
+          apiKey: "",
+        };
+      }
+      localStorage.setItem("voxlab_provider_configs_v4", JSON.stringify(sanitized));
+    } catch {}
+  };
+
+  const computeDuplicateSlotIds = (slots: GeminiKeyEntry[]): string[] => {
+    const seen = new Set<string>();
+    const dupIds: string[] = [];
+    for (const slot of slots) {
+      const trimmed = (slot.apiKey || "").trim();
+      if (!trimmed) continue;
+      if (seen.has(trimmed)) {
+        dupIds.push(slot.id);
+      } else {
+        seen.add(trimmed);
+      }
+    }
+    return dupIds;
+  };
+
+  const syncAndSaveGeminiSlots = async (nextSlots: GeminiKeyEntry[]) => {
+    const reindexed: GeminiKeyEntry[] = [];
+    const primarySlot = nextSlots.find((s) => s.role === "primary") ||
+      nextSlots[0] || {
+        id: "gemini_primary",
+        label: "API Key chính",
+        apiKey: "",
+        role: "primary" as const,
+      };
+    reindexed.push({
+      ...primarySlot,
+      id: "gemini_primary",
+      label: "API Key chính",
+      role: "primary",
+    });
+
+    let secIdx = 1;
+    for (const slot of nextSlots) {
+      if (slot === primarySlot || slot.role === "primary") continue;
+      reindexed.push({
+        ...slot,
+        id: slot.id || `gemini_secondary_${secIdx}`,
+        label: `API Key phụ ${secIdx}`,
+        role: "secondary",
+      });
+      secIdx++;
+    }
+
+    const dupIds = computeDuplicateSlotIds(reindexed);
+    setGeminiDuplicateSlotIds(dupIds);
+    setGeminiKeySlots(reindexed);
+
+    const primaryKeyVal = reindexed[0].apiKey.trim();
+    setGeminiApiKey(primaryKeyVal);
+    setProviderConfigs((prev) => {
+      const current = prev.gemini || {
+        apiKey: "",
+        endpoint: "",
+        model: "gemini-1.5-flash",
+        timeout: 60,
+        maxTokens: 4096,
+      };
+      const next = {
+        ...prev,
+        gemini: {
+          ...current,
+          apiKey: primaryKeyVal,
+        },
+      };
+      persistProviderConfigsSafely(next);
+      return next;
+    });
+
+    // Exclude duplicate keys before saving to vault
+    const nonDuplicateSlots = reindexed.filter((s) => !dupIds.includes(s.id));
+    try {
+      await saveGeminiKeyEntries(nonDuplicateSlots);
+      setGeminiSaveError(null);
+      geminiKeyPool.syncBucketsWithStore();
+    } catch (err: any) {
+      setGeminiSaveError(err?.message || "Không thể lưu khóa mã hóa.");
+    }
+  };
+
+  const handleChangeGeminiSlotValue = (slotId: string, newValue: string) => {
+    setTestConnectionStatus("idle");
+    setConnectionMessage("");
+    // Reset edited key status to untested immediately without auto-testing
+    setGeminiKeyStatuses((prev) => ({
+      ...prev,
+      [slotId]: { status: "untested" },
+    }));
+
+    const nextSlots = geminiKeySlots.map((slot) =>
+      slot.id === slotId ? { ...slot, apiKey: newValue } : slot
+    );
+    void syncAndSaveGeminiSlots(nextSlots);
+  };
+
+  const handleAddGeminiSecondaryKey = () => {
+    if (geminiKeySlots.length >= MAX_GEMINI_TOTAL_KEYS) return;
+    const secondaryCount = geminiKeySlots.filter((s) => s.role === "secondary").length;
+    const newId = `gemini_secondary_${Date.now()}_${secondaryCount + 1}`;
+    const nextSlots: GeminiKeyEntry[] = [
+      ...geminiKeySlots,
+      {
+        id: newId,
+        label: `API Key phụ ${secondaryCount + 1}`,
+        apiKey: "",
+        role: "secondary",
+      },
+    ];
+    setGeminiKeyStatuses((prev) => ({
+      ...prev,
+      [newId]: { status: "untested" },
+    }));
+    void syncAndSaveGeminiSlots(nextSlots);
+  };
+
+  const handleRemoveGeminiSecondaryKey = (slotId: string) => {
+    // Strictly prevent accidental removal of primary key
+    const target = geminiKeySlots.find((s) => s.id === slotId);
+    if (!target || target.role === "primary") return;
+
+    const nextSlots = geminiKeySlots.filter((s) => s.id !== slotId);
+    setGeminiKeyStatuses((prev) => {
+      const copy = { ...prev };
+      delete copy[slotId];
+      return copy;
+    });
+    setVisibleGeminiKeyIds((prev) => {
+      const copy = { ...prev };
+      delete copy[slotId];
+      return copy;
+    });
+    void syncAndSaveGeminiSlots(nextSlots);
+  };
+
+  const toggleGeminiSlotVisibility = (slotId: string) => {
+    setVisibleGeminiKeyIds((prev) => ({
+      ...prev,
+      [slotId]: !prev[slotId],
+    }));
+  };
 
   // Load custom providers from translation settings & local storage
   const [customProviders, setCustomProviders] = useState<CustomProviderItem[]>(() => {
@@ -232,6 +440,13 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
         model: parsed.openai?.model ?? "gpt-4o-mini",
         timeout: parsed.openai?.timeout ?? 60,
         maxTokens: parsed.openai?.maxTokens ?? 4096,
+      },
+      claude: {
+        apiKey: parsed.claude?.apiKey ?? "",
+        endpoint: parsed.claude?.endpoint ?? "https://api.anthropic.com/v1",
+        model: parsed.claude?.model ?? "claude-3-5-haiku-20241022",
+        timeout: parsed.claude?.timeout ?? 60,
+        maxTokens: parsed.claude?.maxTokens ?? 4096,
       },
       deepseek: {
         apiKey: parsed.deepseek?.apiKey ?? initialDeepseekKey,
@@ -400,15 +615,13 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       const current = prev[selectedProviderId] || { ...activeConfig };
       const updated = { ...current, [field]: val };
       const next = { ...prev, [selectedProviderId]: updated };
-      try {
-        localStorage.setItem("voxlab_provider_configs_v4", JSON.stringify(next));
-      } catch {}
+      persistProviderConfigsSafely(next);
       return next;
     });
 
     if (selectedProviderId === "gemini" && field === "apiKey") {
-      setGeminiApiKey(val);
-      saveTranslationSettings({ geminiApiKey: val });
+      handleChangeGeminiSlotValue("gemini_primary", String(val || ""));
+      return;
     }
     if (selectedProviderId === "deepseek" && field === "apiKey") {
       saveTranslationSettings({ deepseekApiKey: val });
@@ -416,6 +629,11 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     if (selectedProviderId === "openai" && field === "apiKey") {
       try {
         localStorage.setItem("voxlab_openai_api_key", val);
+      } catch {}
+    }
+    if (selectedProviderId === "claude" && field === "apiKey") {
+      try {
+        localStorage.setItem("voxlab_claude_api_key", val);
       } catch {}
     }
 
@@ -608,19 +826,55 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
 
     try {
       if (selectedProviderId === "gemini") {
-        if (!activeConfig.apiKey.trim()) {
+        const nonDuplicateSlots = geminiKeySlots.filter(
+          (s) => s.apiKey.trim().length > 0 && !geminiDuplicateSlotIds.includes(s.id)
+        );
+        if (nonDuplicateSlots.length === 0) {
           throw new Error("Chưa nhập Google Gemini API Key.");
         }
-        const provider = new GeminiTranslateProvider(
+        const summary = await geminiKeyPool.testAllConfiguredKeys({
+          entries: nonDuplicateSlots,
+          modelName: activeConfig.model.trim() || "gemini-1.5-flash",
+          timeoutSec: Math.max(5, Math.min(30, activeConfig.timeout || 20)),
+        });
+
+        const nextStatuses: Record<string, { status: GeminiKeyHealthStatus; message?: string }> = {};
+        for (const item of summary.results) {
+          nextStatuses[item.id] = {
+            status: item.status,
+            message: item.message,
+          };
+        }
+        // Any empty or duplicate slot stays untested
+        for (const slot of geminiKeySlots) {
+          if (!nextStatuses[slot.id]) {
+            nextStatuses[slot.id] = { status: "untested" };
+          }
+        }
+        setGeminiKeyStatuses(nextStatuses);
+
+        if (summary.validCount > 0) {
+          setTestConnectionStatus("success");
+          setConnectionMessage(summary.summaryText);
+        } else {
+          setTestConnectionStatus("failed");
+          setConnectionMessage(summary.summaryText);
+        }
+      } else if (selectedProviderId === "claude") {
+        if (!activeConfig.apiKey.trim()) {
+          throw new Error("Chưa nhập Anthropic Claude API Key.");
+        }
+        const provider = new ClaudeTranslateProvider(
           activeConfig.apiKey.trim(),
           activeConfig.model.trim() || undefined,
+          activeConfig.endpoint.trim() || undefined,
           activeConfig.timeout,
           activeConfig.maxTokens
         );
         const res = await provider.testConnection();
-        if (!res.ok) throw new Error(res.message || "Lỗi kết nối Gemini API");
+        if (!res.ok) throw new Error(res.message || "Lỗi kết nối Anthropic Claude API");
         setTestConnectionStatus("success");
-        setConnectionMessage(res.message || "Kết nối Gemini API thành công!");
+        setConnectionMessage(res.message || "Kết nối Anthropic Claude API thành công!");
       } else if (selectedProviderId === "deepseek") {
         if (!activeConfig.apiKey.trim()) {
           throw new Error("Chưa nhập DeepSeek API Key.");
@@ -929,6 +1183,115 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                         </div>
                       </div>
                     </div>
+                  ) : currentProvider.id === "gemini" ? (
+                    <div className="space-y-3" data-testid="gemini-key-pool-section">
+                      {geminiKeySlots.map((slot, idx) => {
+                        const isPrimary = slot.role === "primary" || idx === 0;
+                        const labelText = isPrimary ? "API Key chính" : `API Key phụ ${idx}`;
+                        const isVisible = Boolean(visibleGeminiKeyIds[slot.id]);
+                        const isDuplicate = geminiDuplicateSlotIds.includes(slot.id);
+                        const hasKeyText = slot.apiKey.trim().length > 0;
+                        const slotStatusObj = geminiKeyStatuses[slot.id] || { status: "untested" as GeminiKeyHealthStatus };
+                        const slotStatus = hasKeyText ? slotStatusObj.status : "untested";
+
+                        return (
+                          <div key={slot.id} className="space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <label className="text-xs font-medium text-textPrimary block">
+                                {labelText}
+                              </label>
+                              {hasKeyText && !isDuplicate && (
+                                <span
+                                  title={slotStatusObj.message || ""}
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border ${
+                                    slotStatus === "valid"
+                                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                                      : slotStatus === "invalid"
+                                      ? "bg-danger/10 text-danger border-danger/20"
+                                      : slotStatus === "rate_limited" || slotStatus === "quota_exhausted"
+                                      ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+                                      : "bg-surface2 text-textMuted border-borderDefault"
+                                  }`}
+                                >
+                                  {slotStatus === "valid" && "Hợp lệ"}
+                                  {slotStatus === "invalid" && "Không hợp lệ"}
+                                  {(slotStatus === "rate_limited" || slotStatus === "quota_exhausted") &&
+                                    "Đang bị giới hạn hoặc tạm thời không khả dụng"}
+                                  {(slotStatus === "untested" || slotStatus === "testing") && "Chưa kiểm tra"}
+                                </span>
+                              )}
+                              {isDuplicate && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                  Khóa trùng lặp (không đưa vào danh sách hoạt động)
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <div className="relative flex-1 flex items-center">
+                                <input
+                                  type={isVisible ? "text" : "password"}
+                                  value={slot.apiKey}
+                                  onChange={(e) => handleChangeGeminiSlotValue(slot.id, e.target.value)}
+                                  placeholder="AIzaSy..."
+                                  className={`w-full bg-surface2 border rounded-lg px-3 py-2 pr-9 text-xs font-mono text-textPrimary placeholder:text-textMuted/60 focus:outline-none ${
+                                    isDuplicate
+                                      ? "border-amber-500/60 focus:border-amber-500"
+                                      : "border-borderDefault focus:border-accent"
+                                  }`}
+                                />
+                                <button
+                                  type="button"
+                                  title={isVisible ? "Ẩn khóa" : "Hiện khóa"}
+                                  onClick={() => toggleGeminiSlotVisibility(slot.id)}
+                                  className="absolute right-2.5 p-1 text-textMuted hover:text-textPrimary cursor-pointer"
+                                >
+                                  {isVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
+
+                              {!isPrimary && (
+                                <button
+                                  type="button"
+                                  title={`Xóa ${labelText}`}
+                                  onClick={() => handleRemoveGeminiSecondaryKey(slot.id)}
+                                  className="p-2 rounded-lg bg-surface2 hover:bg-danger/10 text-textMuted hover:text-danger border border-borderDefault hover:border-danger/30 transition-colors cursor-pointer shrink-0"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {geminiSaveError && (
+                        <div className="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-md px-2.5 py-1.5">
+                          {geminiSaveError}
+                        </div>
+                      )}
+
+                      <div className="pt-0.5 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={handleAddGeminiSecondaryKey}
+                          disabled={geminiKeySlots.length >= MAX_GEMINI_TOTAL_KEYS}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface2 hover:bg-surface3 border border-borderDefault text-xs font-medium text-accent hover:text-accent/90 transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Thêm API Key</span>
+                        </button>
+                        <span className="text-[11px] text-textMuted">
+                          Đang hoạt động:{" "}
+                          {
+                            geminiKeySlots.filter(
+                              (s) => s.apiKey.trim().length > 0 && !geminiDuplicateSlotIds.includes(s.id)
+                            ).length
+                          }{" "}
+                          khóa
+                        </span>
+                      </div>
+                    </div>
                   ) : currentProvider.requiresApiKey ? (
                     <div className="space-y-1.5">
                       <label className="text-xs font-medium text-textPrimary block">API Key</label>
@@ -938,10 +1301,10 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                           value={activeConfig.apiKey}
                           onChange={(e) => updateActiveConfig("apiKey", e.target.value)}
                           placeholder={
-                            currentProvider.id === "gemini"
-                              ? "AIzaSy..."
-                              : currentProvider.id === "openai"
+                            currentProvider.id === "openai"
                               ? "sk-proj-..."
+                              : currentProvider.id === "claude"
+                              ? "sk-ant-..."
                               : "Nhập API Key..."
                           }
                           className="w-full bg-surface2 border border-borderDefault rounded-lg px-3 py-2 pr-9 text-xs font-mono text-textPrimary placeholder:text-textMuted/60 focus:border-accent focus:outline-none"
@@ -1460,7 +1823,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     {/* GPU */}
                     <div className="p-3 bg-surface2/60 rounded-xl border border-borderDefault space-y-1">
                       <span className="text-[10px] font-bold text-textMuted uppercase tracking-wider block">GPU</span>
-                      <div className="text-xs font-semibold text-accent truncate" title={hardwareInfo.gpu}>
+                      <div className="text-xs font-semibold text-textPrimary truncate" title={hardwareInfo.gpu}>
                         {hardwareInfo.gpu}
                       </div>
                     </div>
@@ -1476,7 +1839,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     {/* VRAM */}
                     <div className="p-3 bg-surface2/60 rounded-xl border border-borderDefault space-y-1">
                       <span className="text-[10px] font-bold text-textMuted uppercase tracking-wider block">VRAM</span>
-                      <div className="text-xs font-semibold text-accent">
+                      <div className="text-xs font-semibold text-textPrimary">
                         {hardwareInfo.vram}
                       </div>
                     </div>
@@ -1562,11 +1925,8 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                 </div>
               </div>
 
-              {/* Hàng Đặt lại cài đặt ở chân trang (không có đường kẻ ngang background) */}
-              <div className="pt-2 flex items-center justify-between flex-wrap gap-2">
-                <span className="font-medium text-xs text-textPrimary">
-                  Đặt lại cài đặt
-                </span>
+              {/* Nút Đặt lại cài đặt ở chân trang */}
+              <div className="pt-2 flex items-center justify-end">
                 <button
                   type="button"
                   onClick={() => setIsResetConfirmOpen(true)}

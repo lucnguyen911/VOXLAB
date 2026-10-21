@@ -358,12 +358,15 @@ class TtsService:
             # - Chatterbox Turbo does not use ref_text at all
             # - Qwen in x_vector_only_mode does not use ref_text
             skip_transcribe = (caps.engine == "chatterbox") or (caps.engine == "qwen" and x_vec_mode)
+            engine_max_ref_sec = 20.5 if caps.engine == "chatterbox" else 15.5
             ref_audio, ref_text = prepare_clone_reference(
                 ref_audio,
                 ref_text,
                 language=language,
                 models_dir=models_dir,
+                max_duration=engine_max_ref_sec,
                 skip_transcribe=skip_transcribe,
+                engine=caps.engine,
             )
             # In clone modes that require transcript (e.g. Qwen clone without x-vector, or OmniVoice clone):
             clone_needs_transcript = (caps.reference_text_required and not (caps.engine == "qwen" and x_vec_mode)) or (caps.engine == "omnivoice")

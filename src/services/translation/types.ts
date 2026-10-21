@@ -2,6 +2,7 @@ export type TranslationProviderType =
   | "google"
   | "gemini"
   | "openai"
+  | "claude"
   | "deepseek"
   | "qwen"
   | "lmstudio"
@@ -45,6 +46,12 @@ export interface BatchTranslationContext {
   isFullScriptSinglePass?: boolean;
   /** Active dubbing mode: 'source_sync' or 'free_narration' */
   dubbingMode?: DubbingMode;
+  /** Shared glossary of proper nouns, technical terms, and addressing rules across parallel batches */
+  glossaryTerms?: string[];
+  /** Read-only preceding source lines for context in concurrent batch execution */
+  surroundingContextBefore?: string[];
+  /** Read-only following source lines for context in concurrent batch execution */
+  surroundingContextAfter?: string[];
 }
 
 export interface TranslationProvider {
