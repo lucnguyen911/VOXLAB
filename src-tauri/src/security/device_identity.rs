@@ -14,6 +14,38 @@ pub fn normalize_anchor(anchor: &str) -> String {
         .to_uppercase()
 }
 
+/// Validates that a normalized hardware anchor is genuine and not an OEM placeholder
+/// or all-repeating character sequence (e.g. all zeros or all Fs).
+pub fn is_valid_normalized_anchor(norm: &str) -> bool {
+    if norm.len() < 8 {
+        return false;
+    }
+
+    const INVALID_PLACEHOLDERS: &[&str] = &[
+        "TOBEFILLEDBYOEM",
+        "DEFAULTSTRING",
+        "NONE",
+        "UNKNOWN",
+        "NOTAPPLICABLE",
+        "NOTSPECIFIED",
+        "SYSTEMSERIALNUMBER",
+        "SYSTEMPRODUCTNAME",
+        "INVALID",
+        "VOXLABFALLBACKDEVICESTABLEANCHOR",
+    ];
+    if INVALID_PLACEHOLDERS.contains(&norm) {
+        return false;
+    }
+
+    if let Some(first) = norm.chars().next() {
+        if norm.chars().all(|c| c == first) {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Generates namespaced SHA-256 hash in format v1:{hex}
 pub fn hash_hwid(normalized_anchor: &str) -> String {
     let mut hasher = Sha256::new();
@@ -31,7 +63,12 @@ fn query_smbios_uuid() -> Option<String> {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystemProduct).UUID"])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .ok()?;
@@ -39,8 +76,7 @@ fn query_smbios_uuid() -> Option<String> {
         if output.status.success() {
             let uuid = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let norm = normalize_anchor(&uuid);
-            // Ignore invalid/empty UUIDs (e.g. 00000000, FFFFFFFF)
-            if !norm.is_empty() && norm != "00000000000000000000000000000000" && norm != "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" {
+            if is_valid_normalized_anchor(&norm) {
                 return Some(norm);
             }
         }
@@ -56,7 +92,12 @@ fn query_machine_guid() -> Option<String> {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
         let output = Command::new("reg")
-            .args(["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"])
+            .args([
+                "query",
+                "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+                "/v",
+                "MachineGuid",
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .ok()?;
@@ -68,7 +109,7 @@ fn query_machine_guid() -> Option<String> {
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     if let Some(guid) = parts.last() {
                         let norm = normalize_anchor(guid);
-                        if !norm.is_empty() {
+                        if is_valid_normalized_anchor(&norm) {
                             return Some(norm);
                         }
                     }
@@ -82,38 +123,48 @@ fn query_machine_guid() -> Option<String> {
 /// Evaluates HWID using strict primary/fallback invariant (LICENSE-AC-04):
 /// Primary: SMBIOS / Motherboard UUID
 /// Fallback: Windows MachineGuid (only if SMBIOS is unavailable or invalid)
-/// NEVER combines both, never takes CPU ID or MAC address into a composite hash.
-pub fn resolve_hwid_from_anchors(smbios: Option<&str>, machine_guid: Option<&str>) -> String {
+/// NEVER combines both, never takes CPU ID or MAC address into a composite hash,
+/// and NEVER returns a static shared fallback HWID when both anchors fail.
+pub fn try_resolve_hwid_from_anchors(
+    smbios: Option<&str>,
+    machine_guid: Option<&str>,
+) -> Result<String, String> {
     if let Some(s) = smbios {
         let norm = normalize_anchor(s);
-        if !norm.is_empty()
-            && norm != "00000000000000000000000000000000"
-            && norm != "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
-        {
-            return hash_hwid(&norm);
+        if is_valid_normalized_anchor(&norm) {
+            return Ok(hash_hwid(&norm));
         }
     }
 
     if let Some(guid) = machine_guid {
         let norm = normalize_anchor(guid);
-        if !norm.is_empty() {
-            return hash_hwid(&norm);
+        if is_valid_normalized_anchor(&norm) {
+            return Ok(hash_hwid(&norm));
         }
     }
 
-    // Ultimate fallback for test environments
-    hash_hwid("VOXLAB-FALLBACK-DEVICE-STABLE-ANCHOR")
+    Err(
+        "DEVICE_ID_UNAVAILABLE: Không thể xác định định danh phần cứng đáng tin cậy (SMBIOS UUID / MachineGuid)."
+            .to_string(),
+    )
 }
 
-/// Generates stable Windows HWID v1:
-/// Primary anchor: SMBIOS UUID
-/// Fallback anchor: Windows MachineGuid (only if UUID is unavailable)
-/// Never combines both into a composite HWID (LICENSE-AC-04).
-pub fn generate_hwid() -> String {
-    resolve_hwid_from_anchors(
+/// Compatibility wrapper returning empty string if hardware identity is unavailable.
+pub fn resolve_hwid_from_anchors(smbios: Option<&str>, machine_guid: Option<&str>) -> String {
+    try_resolve_hwid_from_anchors(smbios, machine_guid).unwrap_or_default()
+}
+
+/// Generates stable Windows HWID v1 or returns an explicit error if hardware identity cannot be read.
+pub fn try_generate_hwid() -> Result<String, String> {
+    try_resolve_hwid_from_anchors(
         query_smbios_uuid().as_deref(),
         query_machine_guid().as_deref(),
     )
+}
+
+/// Generates stable Windows HWID v1 (empty string if unavailable).
+pub fn generate_hwid() -> String {
+    try_generate_hwid().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -136,12 +187,12 @@ mod tests {
         let hwid2 = hash_hwid(anchor);
         assert_eq!(hwid1, hwid2);
         assert!(hwid1.starts_with("v1:"));
-        assert_eq!(hwid1.len(), 3 + 64); // "v1:" + 64 hex chars
+        assert_eq!(hwid1.len(), 3 + 64);
     }
 
     #[test]
     fn test_generate_hwid_valid() {
-        let hwid = generate_hwid();
+        let hwid = try_generate_hwid().expect("Windows machine should yield valid HWID");
         assert!(hwid.starts_with("v1:"));
         assert_eq!(hwid.len(), 67);
     }
@@ -162,28 +213,36 @@ mod tests {
     }
 
     #[test]
-    fn test_smbios_invalid_zero_falls_back_to_machine_guid() {
+    fn test_smbios_invalid_zero_or_oem_placeholder_falls_back_to_machine_guid() {
         let invalid_smbios = "00000000-0000-0000-0000-000000000000";
         let machine_guid = "9b646c2f-e053-4889-8d76-cb8e980315f4";
         let hwid = resolve_hwid_from_anchors(Some(invalid_smbios), Some(machine_guid));
         assert_eq!(hwid, hash_hwid(&normalize_anchor(machine_guid)));
+
+        let oem_placeholder = "To be filled by O.E.M.";
+        let hwid2 = resolve_hwid_from_anchors(Some(oem_placeholder), Some(machine_guid));
+        assert_eq!(hwid2, hash_hwid(&normalize_anchor(machine_guid)));
+    }
+
+    #[test]
+    fn test_rejects_when_both_anchors_missing_never_uses_shared_fallback() {
+        let err = try_resolve_hwid_from_anchors(None, None).unwrap_err();
+        assert!(err.contains("DEVICE_ID_UNAVAILABLE"));
+        assert_eq!(resolve_hwid_from_anchors(None, None), "");
+        assert_eq!(
+            resolve_hwid_from_anchors(Some("To be filled by O.E.M."), Some("00000000-0000-0000-0000-000000000000")),
+            ""
+        );
     }
 
     #[test]
     fn test_hwid_non_composite_independent_of_mac_and_cpuid() {
-        // HWID depends strictly on primary SMBIOS or fallback MachineGuid.
-        // Changing MAC address or CPU ID never enters the hash payload.
         let smbios = "4C4C4544-004B-4E10-804D-C2C04F343232";
         let guid = "9b646c2f-e053-4889-8d76-cb8e980315f4";
         let hwid_mac_a = resolve_hwid_from_anchors(Some(smbios), Some(guid));
-
-        // Simulated scenario: MAC changed from 00:1A:2B:3C:4D:5E to AA:BB:CC:DD:EE:FF
-        // or CPU ID changed: resolve_hwid_from_anchors has no parameter for MAC or CPU ID.
         let hwid_mac_b = resolve_hwid_from_anchors(Some(smbios), Some(guid));
         assert_eq!(hwid_mac_a, hwid_mac_b);
 
-        // Even with different fallback machine_guid, as long as SMBIOS is present,
-        // it strictly uses SMBIOS without composite mixing.
         let hwid_diff_guid = resolve_hwid_from_anchors(Some(smbios), Some("different-guid-value"));
         assert_eq!(hwid_mac_a, hwid_diff_guid);
     }

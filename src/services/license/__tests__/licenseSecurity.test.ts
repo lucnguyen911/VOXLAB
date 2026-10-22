@@ -33,14 +33,22 @@ describe("TASK-15: License Security Test Suite (LICENSE-AC-01 to LICENSE-AC-14)"
     assert.match(sanitized, /\[MASKED_LICENSE_KEY\]/);
   });
 
-  test("LICENSE-AC-06 & LICENSE-AC-07: Definitive rejection for Expired or Disabled keys", async () => {
+  test("LICENSE-AC-06 & LICENSE-AC-07: Definitive rejection for Expired, Disabled, or Device Limit keys", async () => {
     const expiredSummary = await LicenseService.activate("VOXL-EXPIRED-TEST-KEY-0001");
     assert.strictEqual(expiredSummary.is_valid, false);
     assert.strictEqual(expiredSummary.status, "EXPIRED");
     assert.strictEqual(expiredSummary.can_use_app, false);
-
-    // Definitive rejection must never grant offline grace
     assert.notStrictEqual(expiredSummary.status, "OFFLINE_GRACE");
+
+    const disabledSummary = await LicenseService.activate("VOXL-DISABLED-TEST-KEY-0002");
+    assert.strictEqual(disabledSummary.is_valid, false);
+    assert.strictEqual(disabledSummary.status, "DISABLED");
+    assert.strictEqual(disabledSummary.can_use_app, false);
+
+    const limitSummary = await LicenseService.activate("VOXL-LIMIT-TEST-KEY-0003");
+    assert.strictEqual(limitSummary.is_valid, false);
+    assert.strictEqual(limitSummary.status, "DEVICE_LIMIT");
+    assert.strictEqual(limitSummary.can_use_app, false);
   });
 
   test("LICENSE-AC-08: Device Mismatch rejection", async () => {
@@ -51,11 +59,9 @@ describe("TASK-15: License Security Test Suite (LICENSE-AC-01 to LICENSE-AC-14)"
   });
 
   test("LICENSE-AC-11: Key masking protects keys of varying lengths", () => {
-    // Normal 16-24 char key
     const normalMasked = maskLicenseKey("VOXL-9876-5432-1098");
     assert.strictEqual(normalMasked, "VOXL-****-****-1098");
 
-    // Short key fallback
     const shortMasked = maskLicenseKey("SHORT");
     assert.strictEqual(shortMasked, "VOXL-****-****-KEY");
   });
@@ -69,5 +75,21 @@ describe("TASK-15: License Security Test Suite (LICENSE-AC-01 to LICENSE-AC-14)"
     assert.strictEqual(changed.is_valid, true);
     assert.strictEqual(changed.status, "ACTIVATED");
     assert.strictEqual(changed.masked_key, maskLicenseKey("VOXL-COMMERCIAL-REPLACEMENT-KEY-2"));
+  });
+
+  test("STAGE 3.4: Production build strictly blocks mock activation when Tauri native runtime is absent", async () => {
+    LicenseService._setForceProductionModeForTest(true);
+    try {
+      const prodActivate = await LicenseService.activate("VOXL-COMMERCIAL-PROD-KEY-9999");
+      assert.strictEqual(prodActivate.is_valid, false);
+      assert.strictEqual(prodActivate.can_use_app, false);
+      assert.strictEqual(prodActivate.status, "SERVER_ERROR");
+
+      const prodVerify = await LicenseService.verify();
+      assert.strictEqual(prodVerify.is_valid, false);
+      assert.strictEqual(prodVerify.can_use_app, false);
+    } finally {
+      LicenseService._setForceProductionModeForTest(false);
+    }
   });
 });

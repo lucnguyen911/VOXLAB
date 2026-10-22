@@ -28,7 +28,7 @@ import { MOCK_VOICES, MOCK_CHUNKS } from "./mock/data";
 import { I18nProvider, useI18n } from "./i18n/context";
 import { migrateLegacyVoice } from "./constants/voiceFilters";
 import { LicenseModal } from "./components/modals/LicenseModal";
-import { LicenseSummary } from "./services/license/licenseService";
+import { LicenseService, LicenseSummary } from "./services/license/licenseService";
 import {
   reconcileCloneVoicesWithProfiles,
   updateCloneVoiceMetadata,
@@ -55,9 +55,30 @@ function AppContent() {
       });
   }, []);
 
-  // Initial license check: Tạm thời vô hiệu hóa theo yêu cầu PO (sẽ xử lý sau khi hoàn thành toàn bộ app)
+  // Startup license check: verifies cached DPAPI license in background and opens LicenseModal
+  // when commercial enforcement gate (`VITE_VOXLAB_ENFORCE_LICENSE=1`) is enabled.
   const [initialLicenseModalOpen, setInitialLicenseModalOpen] = useState(false);
   const [appToast, setAppToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    LicenseService.verify()
+      .then((summary) => {
+        if (cancelled) return;
+        if (LicenseService.isCommercialGateEnabled() && !summary.can_use_app) {
+          setInitialLicenseModalOpen(true);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        if (LicenseService.isCommercialGateEnabled()) {
+          setInitialLicenseModalOpen(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleInitialLicenseSuccess = (license: LicenseSummary) => {
     setAppToast(`Kích hoạt bản quyền thành công! Hạn dùng: ${license.expires_at_formatted}`);
@@ -113,22 +134,22 @@ function AppContent() {
     });
   };
 
-const VOICES_STORAGE_KEY = "voxlab_voices_v1";
+  const VOICES_STORAGE_KEY = "voxlab_voices_v1";
 
-function loadInitialVoices(): VoiceProfile[] {
-  try {
-    const raw = localStorage.getItem(VOICES_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map(migrateLegacyVoice);
+  function loadInitialVoices(): VoiceProfile[] {
+    try {
+      const raw = localStorage.getItem(VOICES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(migrateLegacyVoice);
+        }
       }
+    } catch (e) {
+      // fallback to mock voices
     }
-  } catch (e) {
-    // fallback to mock voices
+    return MOCK_VOICES.map(migrateLegacyVoice);
   }
-  return MOCK_VOICES.map(migrateLegacyVoice);
-}
 
   // Voice State
   const [voices, setVoices] = useState<VoiceProfile[]>(loadInitialVoices);

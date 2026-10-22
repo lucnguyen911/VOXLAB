@@ -127,6 +127,8 @@ pub fn decrypt_data(encrypted: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// Saves license cache data atomically using DPAPI encryption (LICENSE-AC-02, LICENSE-AC-03).
+/// Uses `crate::fsio::atomic_write` (`MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`)
+/// so the existing `license.enc` is NEVER deleted before the replacement file is safely flushed.
 pub fn save_license_cache(base_dir: &Path, data: &LicenseCacheData) -> Result<(), String> {
     std::fs::create_dir_all(base_dir).map_err(|e| e.to_string())?;
 
@@ -134,17 +136,7 @@ pub fn save_license_cache(base_dir: &Path, data: &LicenseCacheData) -> Result<()
     let encrypted_bytes = encrypt_data(&json_bytes)?;
 
     let target_path = base_dir.join(LICENSE_CACHE_FILE);
-    let tmp_path = base_dir.join("license.tmp");
-
-    // Atomic write pattern
-    std::fs::write(&tmp_path, &encrypted_bytes).map_err(|e| e.to_string())?;
-
-    if target_path.exists() {
-        let _ = std::fs::remove_file(&target_path);
-    }
-
-    std::fs::rename(&tmp_path, &target_path).map_err(|e| e.to_string())?;
-    Ok(())
+    crate::fsio::atomic_write(&target_path, &encrypted_bytes)
 }
 
 /// Loads and decrypts license cache data from disk.
@@ -157,7 +149,8 @@ pub fn load_license_cache(base_dir: &Path) -> Result<Option<LicenseCacheData>, S
     let encrypted_bytes = std::fs::read(&target_path).map_err(|e| e.to_string())?;
     let decrypted_bytes = decrypt_data(&encrypted_bytes)?;
 
-    let data: LicenseCacheData = serde_json::from_slice(&decrypted_bytes).map_err(|e| e.to_string())?;
+    let data: LicenseCacheData =
+        serde_json::from_slice(&decrypted_bytes).map_err(|e| e.to_string())?;
     Ok(Some(data))
 }
 
@@ -226,7 +219,13 @@ mod tests {
 
     #[test]
     fn test_save_and_load_license_cache() {
-        let temp_dir = std::env::temp_dir().join(format!("voxlab_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "voxlab_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let cache_data = LicenseCacheData {
             schema_version: 1,
             license_key: "VOXL-PRO-2026-KEY1".to_string(),
@@ -242,11 +241,15 @@ mod tests {
         };
 
         save_license_cache(&temp_dir, &cache_data).expect("save failed");
-        let loaded = load_license_cache(&temp_dir).expect("load failed").expect("missing cache");
+        let loaded = load_license_cache(&temp_dir)
+            .expect("load failed")
+            .expect("missing cache");
         assert_eq!(cache_data, loaded);
 
         clear_license_cache(&temp_dir).expect("clear failed");
-        assert!(load_license_cache(&temp_dir).expect("load after clear").is_none());
+        assert!(load_license_cache(&temp_dir)
+            .expect("load after clear")
+            .is_none());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

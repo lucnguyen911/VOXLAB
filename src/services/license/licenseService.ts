@@ -6,6 +6,7 @@
  * - Never persists raw license keys in localStorage, sessionStorage, or state.
  * - Only handles sanitized LicenseSummary containing masked keys.
  * - Sanitizes all diagnostic logs to ensure zero secret leakage.
+ * - Isolates test/dev mock fallback from production builds so missing Tauri IPC never fakes activation.
  */
 
 export type LicenseStatus =
@@ -16,6 +17,9 @@ export type LicenseStatus =
   | 'NOT_FOUND'
   | 'DEVICE_MISMATCH'
   | 'DEVICE_LIMIT'
+  | 'DEVICE_ID_UNAVAILABLE'
+  | 'CLOCK_ROLLBACK'
+  | 'OFFLINE_GRACE_EXPIRED'
   | 'NETWORK_ERROR'
   | 'SERVER_ERROR'
   | 'NO_KEY'
@@ -32,7 +36,7 @@ export interface LicenseSummary {
   can_use_app: boolean;
 }
 
-// In-memory mock state for web development and automated testing environments
+// In-memory mock state strictly for automated Node tests and non-production Vite dev preview
 let mockSummary: LicenseSummary = {
   is_valid: false,
   status: 'NO_KEY',
@@ -43,8 +47,40 @@ let mockSummary: LicenseSummary = {
   can_use_app: false,
 };
 
+let forceProductionModeForTest = false;
+
 function isTauriEnvironment(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+function isProductionBuild(): boolean {
+  if (forceProductionModeForTest) return true;
+  try {
+    const metaEnv = (import.meta as unknown as { env?: { PROD?: boolean } })?.env;
+    if (metaEnv && metaEnv.PROD === true) {
+      return true;
+    }
+  } catch {
+    // ignore in Node test runner
+  }
+  return false;
+}
+
+function isMockFallbackAllowed(): boolean {
+  return !isTauriEnvironment() && !isProductionBuild();
+}
+
+function missingNativeRuntimeSummary(): LicenseSummary {
+  return {
+    is_valid: false,
+    status: 'SERVER_ERROR',
+    masked_key: 'Chưa kích hoạt',
+    license_type: 'N/A',
+    expires_at_formatted: 'N/A',
+    error_message:
+      'Môi trường bảo mật gốc (Tauri DPAPI) không khả dụng. Bản thương mại không cho phép kích hoạt giả lập.',
+    can_use_app: false,
+  };
 }
 
 async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -73,10 +109,43 @@ export function maskLicenseKey(key: string): string {
  * Replaces any license key pattern with [MASKED_LICENSE_KEY].
  */
 export function sanitizeDiagnostics(log: string): string {
-  return log.replace(/[A-Z0-9]{3,5}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}(?:-[A-Z0-9]{4})?/gi, '[MASKED_LICENSE_KEY]');
+  return log.replace(
+    /[A-Z0-9]{3,5}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}(?:-[A-Z0-9]{4})?/gi,
+    '[MASKED_LICENSE_KEY]'
+  );
 }
 
 export class LicenseService {
+  /**
+   * Returns whether mandatory startup & commercial task gating is enabled.
+   * Controlled by `VITE_VOXLAB_ENFORCE_LICENSE=1` or `voxlab_enforce_license_policy=1`
+   * pending Gate E commercial policy confirmation.
+   */
+  static isCommercialGateEnabled(): boolean {
+    try {
+      const metaEnv = (
+        import.meta as unknown as { env?: Record<string, string | boolean | undefined> }
+      )?.env;
+      const envVal = String(metaEnv?.VITE_VOXLAB_ENFORCE_LICENSE || '').trim().toLowerCase();
+      if (envVal === '1' || envVal === 'true' || envVal === 'strict') {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const stored = localStorage.getItem('voxlab_enforce_license_policy');
+        if (stored === '1' || stored === 'true') {
+          return true;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  }
+
   /**
    * Retrieves the current license summary from native Rust DPAPI cache.
    */
@@ -84,6 +153,9 @@ export class LicenseService {
     try {
       if (isTauriEnvironment()) {
         return await invokeTauri<LicenseSummary>('get_license_summary');
+      }
+      if (!isMockFallbackAllowed()) {
+        return missingNativeRuntimeSummary();
       }
       return { ...mockSummary };
     } catch (err: unknown) {
@@ -125,7 +197,11 @@ export class LicenseService {
         });
       }
 
-      // Mock handling for non-tauri / test environments
+      if (!isMockFallbackAllowed()) {
+        return missingNativeRuntimeSummary();
+      }
+
+      // Mock handling strictly for non-production test environments
       if (trimmed.toUpperCase().includes('INVALID') || trimmed.toUpperCase().includes('EXPIRED')) {
         mockSummary = {
           is_valid: false,
@@ -134,6 +210,26 @@ export class LicenseService {
           license_type: 'N/A',
           expires_at_formatted: 'Hết hạn',
           error_message: 'Mã bản quyền đã hết hạn.',
+          can_use_app: false,
+        };
+      } else if (trimmed.toUpperCase().includes('DISABLED')) {
+        mockSummary = {
+          is_valid: false,
+          status: 'DISABLED',
+          masked_key: maskLicenseKey(trimmed),
+          license_type: 'N/A',
+          expires_at_formatted: 'N/A',
+          error_message: 'Mã bản quyền đã bị vô hiệu hóa.',
+          can_use_app: false,
+        };
+      } else if (trimmed.toUpperCase().includes('LIMIT')) {
+        mockSummary = {
+          is_valid: false,
+          status: 'DEVICE_LIMIT',
+          masked_key: maskLicenseKey(trimmed),
+          license_type: 'N/A',
+          expires_at_formatted: 'N/A',
+          error_message: 'Mã bản quyền đã vượt quá giới hạn thiết bị cho phép.',
           can_use_app: false,
         };
       } else if (trimmed.toUpperCase().includes('MISMATCH')) {
@@ -180,6 +276,9 @@ export class LicenseService {
       if (isTauriEnvironment()) {
         return await invokeTauri<LicenseSummary>('verify_license');
       }
+      if (!isMockFallbackAllowed()) {
+        return missingNativeRuntimeSummary();
+      }
       return { ...mockSummary };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -217,6 +316,9 @@ export class LicenseService {
         return await invokeTauri<LicenseSummary>('change_license_key', {
           newLicenseKey: trimmed,
         });
+      }
+      if (!isMockFallbackAllowed()) {
+        return missingNativeRuntimeSummary();
       }
       return await this.activate(trimmed);
     } catch (err: unknown) {
@@ -256,5 +358,12 @@ export class LicenseService {
    */
   static _setMockSummaryForTest(summary: Partial<LicenseSummary>): void {
     mockSummary = { ...mockSummary, ...summary };
+  }
+
+  /**
+   * Testing helper to simulate production build behavior (blocking mock activation when Tauri IPC is absent).
+   */
+  static _setForceProductionModeForTest(enabled: boolean): void {
+    forceProductionModeForTest = enabled;
   }
 }
