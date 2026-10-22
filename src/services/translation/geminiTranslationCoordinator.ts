@@ -97,6 +97,11 @@ export interface GeminiCoordinatorOptions {
   /** Single-pass max items (default 45) */
   singlePassMax?: number;
   onProgressCues?: (completedCues: number, totalCues: number) => void;
+  onUnitCompleted?: (
+    unitId: number,
+    translatedText: string,
+    translationsById: ReadonlyMap<number, string>
+  ) => void;
   isPaused?: () => boolean;
   isCancelled?: () => boolean;
   signal?: AbortSignal;
@@ -232,6 +237,7 @@ export class GeminiTranslationCoordinator {
           totalCueWeight
         );
       }
+      options.onUnitCompleted?.(unitId, clean, rawTranslatedById);
     };
 
     const recordKeyTelemetry = (info: {

@@ -339,6 +339,10 @@ export class TranslationManager {
       dubbingMode?: DubbingMode;
       useSpeechGroups?: boolean;
       maxConcurrency?: number;
+      onPartialResult?: (
+        partialCues: TranslatedCue[],
+        partialGroups: DubbingSpeechGroup[]
+      ) => void;
     }
   ): Promise<TranslatedCue[]> {
     if (!cues || cues.length === 0) {
@@ -391,6 +395,43 @@ export class TranslationManager {
     const updatedGroups: DubbingSpeechGroup[] = [];
     const total = cues.length;
     let completedCues = 0;
+
+    const emitPartialSnapshot = () => {
+      if (!options?.onPartialResult) return;
+      const cueByIdx = new Map<number, TranslatedCue>();
+      for (const tc of translatedCues) {
+        cueByIdx.set(tc.index, tc);
+      }
+      const groupById = new Map<string, DubbingSpeechGroup>();
+      for (const ug of updatedGroups) {
+        groupById.set(ug.groupId, ug);
+      }
+      const partialCues: TranslatedCue[] = cues.map(
+        (c) =>
+          cueByIdx.get(c.index) || {
+            index: c.index,
+            startSec: c.startSec,
+            endSec: c.endSec,
+            originalText: c.text,
+            text: "",
+            subtitleText: "",
+            speechFragmentText: "",
+            isEdited: false,
+          }
+      );
+      const partialGroups: DubbingSpeechGroup[] =
+        updatedGroups.length > 0
+          ? plannedGroups.map(
+              (g) =>
+                groupById.get(g.groupId) || {
+                  ...g,
+                  translatedText: "",
+                  speechText: "",
+                }
+            )
+          : planDubbingSpeechGroups(cues, partialCues);
+      options.onPartialResult(partialCues, partialGroups);
+    };
 
     if (!useGroups) {
       // Mode 1 (cue_strict): 1:1 per-cue translation with display \n stripped
@@ -506,6 +547,7 @@ export class TranslationManager {
 
           completedCues++;
           if (onProgress) onProgress(completedCues, total);
+          emitPartialSnapshot();
         }
 
         prevLines = currentBatchPairs.slice(-3);
@@ -641,6 +683,7 @@ export class TranslationManager {
 
             completedCues++;
             if (onProgress) onProgress(completedCues, total);
+            emitPartialSnapshot();
             continue;
           }
 
@@ -700,6 +743,7 @@ export class TranslationManager {
               translatedText: groupTranslated,
               speechText: cleanSpeech,
             });
+            emitPartialSnapshot();
             continue;
           }
 
@@ -735,6 +779,7 @@ export class TranslationManager {
               translatedText: groupTranslated || projection.speechText,
               speechText: projection.speechText,
             });
+            emitPartialSnapshot();
           } else {
             // Safe fallback: translate each cue in the group with full sentence context
             const fallbackFragments: string[] = [];
@@ -789,6 +834,7 @@ export class TranslationManager {
               translatedText: combinedSpeech,
               speechText: combinedSpeech,
             });
+            emitPartialSnapshot();
           }
         }
 
@@ -834,6 +880,10 @@ export class TranslationManager {
       isCancelled?: () => boolean;
       strict?: boolean;
       maxConcurrency?: number;
+      onPartialResult?: (
+        partialCues: TranslatedCue[],
+        partialGroups: DubbingSpeechGroup[]
+      ) => void;
     }
   ): Promise<TranslatedCue[]> {
     const cuePosByIndex = new Map<number, number>();
@@ -867,6 +917,29 @@ export class TranslationManager {
           dubbingMode,
           maxConcurrency: options?.maxConcurrency,
           onProgressCues: onProgress,
+          onUnitCompleted: options?.onPartialResult
+            ? (_unitId, _text, translationsById) => {
+                const partialCues: TranslatedCue[] = cues.map((c) => {
+                  const tText = translationsById.get(c.index) || "";
+                  const clean = normalizeCueTextForSpeech(tText);
+                  return {
+                    index: c.index,
+                    startSec: c.startSec,
+                    endSec: c.endSec,
+                    originalText: c.text,
+                    text: tText,
+                    subtitleText: tText,
+                    speechFragmentText: clean,
+                    groupId: groupByCueIdx.get(c.index)?.groupId,
+                    isEdited: false,
+                  };
+                });
+                options.onPartialResult!(
+                  partialCues,
+                  planDubbingSpeechGroups(cues, partialCues)
+                );
+              }
+            : undefined,
           isPaused: options?.isPaused,
           isCancelled: options?.isCancelled,
         }
@@ -928,6 +1001,59 @@ export class TranslationManager {
           dubbingMode,
           maxConcurrency: options?.maxConcurrency,
           onProgressCues: onProgress,
+          onUnitCompleted: options?.onPartialResult
+            ? (_unitId, _text, translationsById) => {
+                const partialCuesByIdx = new Map<number, TranslatedCue>();
+                const partialGroups: DubbingSpeechGroup[] = plannedGroups.map(
+                  (grp, idx) => {
+                    const uId = idx + 1;
+                    const gTrans = translationsById.get(uId) || "";
+                    if (!gTrans.trim()) {
+                      return {
+                        ...grp,
+                        translatedText: "",
+                        speechText: "",
+                      };
+                    }
+                    const grpCues = grp.sourceCueIds
+                      .map((id) => {
+                        const pos = cuePosByIndex.get(id);
+                        return pos !== undefined ? cues[pos] : undefined;
+                      })
+                      .filter((c): c is OriginalCue => Boolean(c));
+                    const cleanSpeech = normalizeCueTextForSpeech(gTrans);
+                    const refCues = distributeNarrationGroupToReferenceCues(
+                      grpCues,
+                      gTrans,
+                      grp.groupId,
+                      false
+                    );
+                    for (const rc of refCues) {
+                      partialCuesByIdx.set(rc.index, rc);
+                    }
+                    return {
+                      ...grp,
+                      translatedText: gTrans,
+                      speechText: cleanSpeech,
+                    };
+                  }
+                );
+                const partialCues: TranslatedCue[] = cues.map(
+                  (c) =>
+                    partialCuesByIdx.get(c.index) || {
+                      index: c.index,
+                      startSec: c.startSec,
+                      endSec: c.endSec,
+                      originalText: c.text,
+                      text: "",
+                      subtitleText: "",
+                      speechFragmentText: "",
+                      isEdited: false,
+                    }
+                );
+                options.onPartialResult!(partialCues, partialGroups);
+              }
+            : undefined,
           isPaused: options?.isPaused,
           isCancelled: options?.isCancelled,
         }

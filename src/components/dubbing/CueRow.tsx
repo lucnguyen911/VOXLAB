@@ -64,6 +64,12 @@ export const CueRow: React.FC<CueRowProps> = ({
   const segIsChecking = audioSegment ? isChunkChecking(audioSegment) : false;
   const segIsUnverified = audioSegment ? isChunkUnverified(audioSegment) : false;
   const badgeInfo = audioSegment ? getChunkBadgeInfo(audioSegment) : null;
+  const hasTranslatedContent = Boolean(
+    (translated.text && translated.text.trim().length > 0) ||
+      translated.isEdited ||
+      audioSegment
+  );
+  const formattedIndex = String(original.index).padStart(2, "0");
 
   // Audio status pill rendering
   const renderAudioStatusBadge = () => {
@@ -182,35 +188,22 @@ export const CueRow: React.FC<CueRowProps> = ({
       >
         {/* Top Header: Index & Timestamps & Duration */}
         <div className="flex items-center justify-between text-[11px] font-mono text-textMuted select-none flex-shrink-0 h-5">
-          {dubbingMode === "free_narration" ? (
-            <>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-accent">
-                  Đoạn #{String(original.index).padStart(2, "0")}
-                </span>
-                <span className="text-[10px] font-sans text-textMuted">
-                  Câu hoàn chỉnh đã khôi phục
-                </span>
-              </div>
-              {narrationSourceCueCount && narrationSourceCueCount > 1 && (
-                <span className="px-1.5 py-0.5 bg-surface2 rounded text-textSecondary text-[10px] font-sans">
-                  Gộp {narrationSourceCueCount} cue gốc
-                </span>
-              )}
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-accent">#{String(original.index).padStart(2, "0")}</span>
-                <span>
-                  {formatSrtTimestamp(original.startSec)} → {formatSrtTimestamp(original.endSec)}
-                </span>
-              </div>
-              <span className="px-1.5 py-0.5 bg-surface2 rounded text-textSecondary text-[10px]">
-                {availableDuration}s
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-accent">{formattedIndex}</span>
+            <span>
+              {formatSrtTimestamp(original.startSec)} → {formatSrtTimestamp(original.endSec)}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {dubbingMode === "free_narration" && narrationSourceCueCount && narrationSourceCueCount > 1 && (
+              <span className="px-1.5 py-0.5 bg-surface2 rounded text-textSecondary text-[10px] font-sans">
+                Gộp {narrationSourceCueCount} câu
               </span>
-            </>
-          )}
+            )}
+            <span className="px-1.5 py-0.5 bg-surface2 rounded text-textSecondary text-[10px]">
+              {availableDuration}s
+            </span>
+          </div>
         </div>
 
         {/* Middle Body: Text vertically centered */}
@@ -221,39 +214,43 @@ export const CueRow: React.FC<CueRowProps> = ({
         </div>
       </div>
 
-      {/* CỘT 2: BẢN DỊCH (Pure Text Editing & Optional Audio Playback) */}
-      <div
-        className={`p-3 bg-surface1 rounded-xl border transition-all flex flex-col justify-between gap-2 shadow-2xs ${
-          isPlaying ? "border-accent shadow-sm" : "border-borderDefault hover:border-accent/40"
-        }`}
-      >
-        {/* Top Header: Status Badges, Overflows & Audio Playback if exists */}
-        <div className="flex items-center justify-between gap-2 select-none flex-shrink-0 min-h-[20px] flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap">
-            {audioSegment?.groupCueIndices && audioSegment.groupCueIndices.length > 1 && (
-              <span
-                className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25"
-                title={`Đoạn thuyết minh gộp liền mạch các câu #${audioSegment.groupCueIndices[0]}–#${audioSegment.groupCueIndices[audioSegment.groupCueIndices.length - 1]}`}
-              >
-                {audioSegment.isGroupPrimary === false ? "↳ " : ""}
-                Nhóm #{audioSegment.groupCueIndices[0]}–#{audioSegment.groupCueIndices[audioSegment.groupCueIndices.length - 1]}
+      {/* CỘT 2: BẢN DỊCH (Chỉ hiển thị khi câu đã được dịch hoặc chỉnh sửa) */}
+      {hasTranslatedContent ? (
+        <div
+          className={`p-3 bg-surface1 rounded-xl border transition-all flex flex-col justify-between gap-2 shadow-2xs ${
+            isPlaying ? "border-accent shadow-sm" : "border-borderDefault hover:border-accent/40"
+          }`}
+        >
+          {/* Top Header: Status Badges, Overflows & Audio Playback if exists */}
+          <div className="flex items-center justify-between gap-2 select-none flex-shrink-0 min-h-[20px] flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] font-mono font-bold text-accent">
+                {formattedIndex}
               </span>
-            )}
-            {renderAudioStatusBadge()}
-            {translated.projectionNeedsReview && (
-              <span
-                className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/25"
-                title="Câu dịch theo ngữ cảnh cần kiểm tra nhanh vị trí ngắt dòng phụ đề"
-              >
-                Cần rà soát tách câu
-              </span>
-            )}
-            {translated.isEdited && (
-              <span className="text-[10px] text-accent font-medium">
-                • Đã chỉnh sửa
-              </span>
-            )}
-          </div>
+              {audioSegment?.groupCueIndices && audioSegment.groupCueIndices.length > 1 && (
+                <span
+                  className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/25"
+                  title={`Đoạn thuyết minh gộp liền mạch các câu ${audioSegment.groupCueIndices[0]}–${audioSegment.groupCueIndices[audioSegment.groupCueIndices.length - 1]}`}
+                >
+                  {audioSegment.isGroupPrimary === false ? "↳ " : ""}
+                  Nhóm {audioSegment.groupCueIndices[0]}–{audioSegment.groupCueIndices[audioSegment.groupCueIndices.length - 1]}
+                </span>
+              )}
+              {renderAudioStatusBadge()}
+              {translated.projectionNeedsReview && (
+                <span
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/25"
+                  title="Câu dịch theo ngữ cảnh cần kiểm tra nhanh vị trí ngắt dòng phụ đề"
+                >
+                  Cần rà soát tách câu
+                </span>
+              )}
+              {translated.isEdited && (
+                <span className="text-[10px] text-accent font-medium">
+                  • Đã chỉnh sửa
+                </span>
+              )}
+            </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             {/* Timing overflow and collision indicator badges (hidden in free_narration mode) */}
@@ -408,6 +405,9 @@ export const CueRow: React.FC<CueRowProps> = ({
           </div>
         )}
       </div>
+      ) : (
+        <div className="hidden md:block" aria-hidden="true" />
+      )}
     </div>
   );
 };

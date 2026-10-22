@@ -18,6 +18,7 @@ import { loadCloneVoiceRegistry } from "../ai/cloneVoiceRegistry";
 import { resolveUnifiedVoiceReference, ensurePresetVoiceSamples } from "../ai/presetVoiceRegistry";
 import { getAppDataDir } from "../storage/tauriFsBridge";
 import { ensureGeminiKeyStoreInitialized, geminiKeyPool } from "../translation";
+import { extractTextFromDocxBytes } from "../document/scriptLoader";
 
 async function invoke<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
   const core = await import("@tauri-apps/api/core");
@@ -31,6 +32,29 @@ export const tauriAiFs: AiFs = {
   removeFile: (path) => invoke<void>("fs_remove_file", { path }),
   scratchDir: (name) => invoke<string>("fs_scratch_dir", { name }),
 };
+
+/**
+ * Reads a script or subtitle file from disk for Batch staging and execution.
+ * - For `.docx` files (binary ZIP OpenXML), reads bytes via `fs_read_bytes` and extracts text via `mammoth`.
+ * - For plain text / subtitle files (`.txt`, `.md`, `.srt`, `.vtt`), reads UTF-8 text via `fs_read_text` and strips BOM.
+ */
+export async function readBatchTextOrDocxFile(path: string): Promise<string> {
+  const lower = path.toLowerCase();
+  const fileName = path.split(/[\\/]/).pop() || path;
+  if (lower.endsWith(".doc")) {
+    throw new Error(
+      "Định dạng .doc (Word 97-2003) cũ không được hỗ trợ. Vui lòng mở tài liệu và chọn Lưu thành (Save As) dạng .docx hoặc .txt."
+    );
+  }
+  if (lower.endsWith(".docx")) {
+    const rawBytes = await invoke<ArrayBuffer | Uint8Array | number[]>("fs_read_bytes", {
+      path,
+    });
+    return extractTextFromDocxBytes(rawBytes, fileName);
+  }
+  const text = await tauriAiFs.readText(path);
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text; // strip UTF-8 BOM
+}
 
 function normalizeKey(p: string): string {
   return p.replace(/\\/g, "/").toLowerCase();
@@ -106,10 +130,7 @@ export function initBatchRuntime(): Promise<LocalAiServices | null> {
     const index = new OutputExistenceIndex();
 
     orchestrator.ai = ai;
-    orchestrator.fileReader = async (path) => {
-      const text = await tauriAiFs.readText(path);
-      return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text; // strip UTF-8 BOM
-    };
+    orchestrator.fileReader = readBatchTextOrDocxFile;
     orchestrator.fileWriter = async (path, content) => {
       if (typeof content !== "string") {
         await invoke<void>("fs_write_bytes", { path, bytes: Array.from(content) });

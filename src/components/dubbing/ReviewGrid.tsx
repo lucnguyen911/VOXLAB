@@ -88,6 +88,11 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
   );
   const qualityStats = countChunkQualityIssues(primarySegments);
   const hasReadyAudio = primarySegments.some((s) => s.status === "ready");
+  const hasAnyTranslatedText =
+    translatedCues.some((c) => Boolean(c.text && c.text.trim().length > 0)) ||
+    activeNarrationGroups.some((g) =>
+      Boolean((g.translatedText || g.speechText || "").trim().length > 0)
+    );
 
   if (!originalCues || originalCues.length === 0) {
     return (
@@ -136,18 +141,13 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
       <div className="px-4 py-2 bg-surface2/40 border-b border-borderDefault grid grid-cols-1 md:grid-cols-2 gap-3 text-xs select-none flex-shrink-0">
         <div className="flex items-center justify-between px-1 gap-2">
           <span className="font-bold text-textPrimary text-xs">
-            {isFreeNarration ? "Kịch bản gốc (Đã khôi phục câu hoàn chỉnh)" : "Kịch bản gốc"}
+            Bản gốc
           </span>
-          {isFreeNarration && activeNarrationGroups.length > 0 && (
-            <span className="text-[11px] text-textMuted">
-              {activeNarrationGroups.length} câu/đoạn hoàn chỉnh (từ {originalCues.length} cue SRT)
-            </span>
-          )}
         </div>
         <div className="flex items-center justify-between gap-2 flex-wrap px-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-bold text-textPrimary text-xs">
-              {isFreeNarration ? "Kịch bản thuyết minh" : "Bản Dịch"}
+              Bản dịch
             </span>
             {hasReadyAudio && (
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -197,7 +197,7 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
-            {isFreeNarration && (
+            {isFreeNarration && hasAnyTranslatedText && (
               <button
                 type="button"
                 onClick={() => setIsFullTxtEditorOpen((prev) => !prev)}
@@ -358,13 +358,14 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
       ) : (
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {originalCues.map((orig, i) => {
-            const trans = translatedCues[i] || {
-              index: orig.index,
-              startSec: orig.startSec,
-              endSec: orig.endSec,
-              originalText: orig.text,
-              text: orig.text,
-            };
+            const trans = translatedCues.find((tc) => tc.index === orig.index) ||
+              translatedCues[i] || {
+                index: orig.index,
+                startSec: orig.startSec,
+                endSec: orig.endSec,
+                originalText: orig.text,
+                text: "",
+              };
 
             return (
               <CueRow

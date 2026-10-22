@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { loadScriptFromFile } from "../scriptLoader";
+import { loadScriptFromFile, extractTextFromDocxBytes } from "../scriptLoader";
 
 describe("Script Loader File Parser Suite", () => {
   it("loads and parses standard .txt plain text file", async () => {
@@ -63,6 +63,18 @@ Chào mừng quay trở lại với chương trình.`;
     await assert.rejects(
       async () => loadScriptFromFile(file),
       /không chứa nội dung văn bản hợp lệ/
+    );
+  });
+
+  it("extractTextFromDocxBytes rejects 0-byte or corrupted binary streams with friendly Vietnamese error", async () => {
+    await assert.rejects(
+      async () => extractTextFromDocxBytes(new Uint8Array(0), "content.docx"),
+      /hoàn toàn trống \(dung lượng 0 byte\)/
+    );
+
+    await assert.rejects(
+      async () => extractTextFromDocxBytes(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), "content.docx"),
+      /Không thể đọc file Word \(\.docx\)/
     );
   });
 });

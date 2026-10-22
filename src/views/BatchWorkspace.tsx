@@ -23,7 +23,12 @@ import { PerFileConfigDrawer } from "./batch/PerFileConfigDrawer";
 import { GlobalDefaultsModal } from "./batch/GlobalDefaultsModal";
 import { BatchArtifactPreviewModal } from "./batch/BatchArtifactPreviewModal";
 import { BatchFooter } from "../components/batch/BatchFooter";
-import { initBatchRuntime, tauriAiFs, getDefaultBatchOutputDir } from "../services/batch/batchRuntime";
+import {
+  initBatchRuntime,
+  readBatchTextOrDocxFile,
+  getDefaultBatchOutputDir,
+} from "../services/batch/batchRuntime";
+import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { isTauriRuntime } from "../services/ai/tauriBackend";
 import { expandTauriPaths, extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 
@@ -234,13 +239,13 @@ export const BatchWorkspace: React.FC = () => {
       const incoming = await Promise.all(
         targetPaths.map(async (p): Promise<IncomingFile> => {
           const st = await invoke<{ size: number; mtimeMs: number } | null>("fs_stat", { path: p }).catch(() => null);
-          const isText = /\.(txt|md)$/i.test(p);
+          const isText = /\.(txt|md|docx)$/i.test(p);
           return {
             path: p,
             name: baseName(p),
             size: st?.size ?? 0,
             mtime: st?.mtimeMs ?? Date.now(),
-            textContent: isText ? await tauriAiFs.readText(p).catch(() => undefined) : undefined,
+            textContent: isText ? await readBatchTextOrDocxFile(p).catch(() => undefined) : undefined,
           };
         })
       );
@@ -267,7 +272,25 @@ export const BatchWorkspace: React.FC = () => {
       const picked = await open({
         multiple: true,
         filters: [
-          { name: "VoxLab", extensions: ["txt", "srt", "vtt", "mp3", "wav", "m4a", "flac", "ogg", "mp4", "mkv", "mov", "webm"] },
+          {
+            name: "VoxLab",
+            extensions: [
+              "txt",
+              "docx",
+              "md",
+              "srt",
+              "vtt",
+              "mp3",
+              "wav",
+              "m4a",
+              "flac",
+              "ogg",
+              "mp4",
+              "mkv",
+              "mov",
+              "webm",
+            ],
+          },
         ],
       });
       const paths = picked === null ? [] : Array.isArray(picked) ? picked : [picked];
@@ -424,7 +447,11 @@ export const BatchWorkspace: React.FC = () => {
                 name: f.name,
                 size: f.size,
                 mtime: f.lastModified,
-                textContent: /\.txt$/i.test(f.name) ? await f.text() : undefined,
+                textContent: /\.(txt|md|docx)$/i.test(f.name)
+                  ? await loadScriptFromFile(f)
+                      .then((r) => r.text)
+                      .catch(() => undefined)
+                  : undefined,
               }))
             ).then(handleAddFiles);
             e.target.value = "";
@@ -496,7 +523,11 @@ export const BatchWorkspace: React.FC = () => {
                 name: f.name,
                 size: f.size,
                 mtime: f.lastModified || Date.now(),
-                textContent: /\.(txt|md)$/i.test(f.name) ? await f.text().catch(() => undefined) : undefined,
+                textContent: /\.(txt|md|docx)$/i.test(f.name)
+                  ? await loadScriptFromFile(f)
+                      .then((r) => r.text)
+                      .catch(() => undefined)
+                  : undefined,
               }))
             );
             if (incoming.length > 0) handleAddFiles(incoming);

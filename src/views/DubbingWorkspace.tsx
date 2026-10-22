@@ -419,15 +419,37 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     if (!handoffSnapshot || !handoffSnapshot.cues || handoffSnapshot.cues.length === 0) {
       const restored = loadDubbingSessionBackup();
       if (restored && restored.backup.originalCues && restored.backup.originalCues.length > 0) {
+        const rawTrans = restored.backup.translatedCues || [];
+        const isAllUneditedSourceCopy =
+          rawTrans.length > 0 &&
+          rawTrans.every(
+            (tc) =>
+              !tc.isEdited &&
+              normalizeCueTextForSpeech(tc.text) ===
+                normalizeCueTextForSpeech(tc.originalText)
+          );
+        const sanitizedTrans: TranslatedCue[] = isAllUneditedSourceCopy
+          ? rawTrans.map((tc) => ({
+              ...tc,
+              text: "",
+              subtitleText: "",
+              speechFragmentText: "",
+            }))
+          : rawTrans;
+
         setOriginalCues(restored.backup.originalCues);
-        setTranslatedCues(restored.backup.translatedCues);
-        if (restored.backup.speechGroups && restored.backup.speechGroups.length > 0) {
+        setTranslatedCues(sanitizedTrans);
+        if (
+          !isAllUneditedSourceCopy &&
+          restored.backup.speechGroups &&
+          restored.backup.speechGroups.length > 0
+        ) {
           setSpeechGroups(restored.backup.speechGroups);
         } else {
           setSpeechGroups(
             planDubbingSpeechGroups(
               restored.backup.originalCues,
-              restored.backup.translatedCues
+              sanitizedTrans
             )
           );
         }
@@ -498,9 +520,9 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         startSec: c.startSec,
         endSec: c.endSec,
         originalText: c.text,
-        text: c.text,
-        subtitleText: c.text,
-        speechFragmentText: normalizeCueTextForSpeech(c.text),
+        text: "",
+        subtitleText: "",
+        speechFragmentText: "",
         isEdited: false,
       }));
       const groups = planDubbingSpeechGroups(handoffSnapshot.cues, initTrans);
@@ -536,9 +558,9 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           startSec: c.startSec,
           endSec: c.endSec,
           originalText: c.text,
-          text: c.text,
-          subtitleText: c.text,
-          speechFragmentText: normalizeCueTextForSpeech(c.text),
+          text: "",
+          subtitleText: "",
+          speechFragmentText: "",
           isEdited: false,
         }));
         const groups = planDubbingSpeechGroups(cues, initTrans);
@@ -804,6 +826,20 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setTranslationProgress({ done: 0, total: originalCues.length });
     setErrorMessage("");
 
+    // Clear right-column translations at start so segments appear progressively as they finish translating
+    const blankTrans: TranslatedCue[] = originalCues.map((c) => ({
+      index: c.index,
+      startSec: c.startSec,
+      endSec: c.endSec,
+      originalText: c.text,
+      text: "",
+      subtitleText: "",
+      speechFragmentText: "",
+      isEdited: false,
+    }));
+    setTranslatedCues(blankTrans);
+    setSpeechGroups(planDubbingSpeechGroups(originalCues, blankTrans));
+
     try {
       const translated = await translationManager.translateOriginalCues(
         originalCues,
@@ -820,6 +856,12 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           strict: true,
           isPaused: () => translationControlRef.current.isPaused,
           isCancelled: () => translationControlRef.current.isCancelled,
+          onPartialResult: (partialCues, partialGroups) => {
+            if (!translationControlRef.current.isCancelled) {
+              setTranslatedCues(partialCues);
+              setSpeechGroups(partialGroups);
+            }
+          },
         }
       );
 
@@ -1816,6 +1858,12 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     );
   const collidingCuesCount =
     dubbingMode !== "free_narration" ? countCollisions(overflowAnalysis) : 0;
+  const hasTranslatedContent = useMemo(
+    () =>
+      translatedCues.some((c) => Boolean(c.text && c.text.trim().length > 0)) ||
+      speechGroups.some((g) => Boolean(g.translatedText && g.translatedText.trim().length > 0)),
+    [translatedCues, speechGroups]
+  );
 
   // Active Dubbing Preview Track (persists while paused until explicitly closed)
   const activeDubTrack: ActiveAudioTrack | null = useMemo(() => {
@@ -1875,34 +1923,6 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Mode Switcher Pill Control */}
-          <div className="flex items-center bg-surface2 p-0.5 rounded-lg border border-borderDefault">
-            <button
-              type="button"
-              onClick={() => handleDubbingModeChange("source_sync")}
-              className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                dubbingMode === "source_sync"
-                  ? "bg-accent text-white shadow-2xs"
-                  : "text-textSecondary hover:text-textPrimary"
-              }`}
-              title="Chế độ 1 — Đồng bộ video gốc: Khớp 100% mốc thời gian và thời lượng video ban đầu"
-            >
-              Đồng bộ video gốc
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDubbingModeChange("free_narration")}
-              className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                dubbingMode === "free_narration"
-                  ? "bg-accent text-white shadow-2xs"
-                  : "text-textSecondary hover:text-textPrimary"
-              }`}
-              title="Chế độ 2 — Thuyết minh tự do: Dịch tự nhiên theo câu/đoạn, không giới hạn timeline gốc"
-            >
-              Thuyết minh tự do
-            </button>
-          </div>
-
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -2263,7 +2283,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 <div className="space-y-1.5 pt-0.5">
                   <button
                     type="button"
-                    disabled={translatedCues.length === 0}
+                    disabled={!hasTranslatedContent}
                     onClick={handleExportTxt}
                     className="w-full py-2 bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault rounded-lg font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     title="Xuất toàn bộ kịch bản dịch dạng văn bản thuần (.TXT) để dùng dựng phim hoặc lồng tiếng tự do"
@@ -2273,7 +2293,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                   </button>
                   <button
                     type="button"
-                    disabled={translatedCues.length === 0}
+                    disabled={!hasTranslatedContent}
                     onClick={handleExportTranslatedSrt}
                     className="w-full py-2 bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault rounded-lg font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     title="Xuất file phụ đề tham chiếu (.SRT) kế thừa mốc thời gian gốc để đối chiếu"
@@ -2285,7 +2305,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
               ) : (
                 <button
                   type="button"
-                  disabled={translatedCues.length === 0}
+                  disabled={!hasTranslatedContent}
                   onClick={handleExportTranslatedSrt}
                   className="w-full py-2 bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault rounded-lg font-medium text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Xuất file phụ đề đã dịch (.SRT) kế thừa 100% mốc thời gian gốc"
@@ -2318,27 +2338,23 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 )}
               </div>
 
-              {/* Chế độ Dịch & Lồng tiếng */}
+              {/* Chế độ Lồng tiếng */}
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-                  Chế Độ Dịch & Lồng Tiếng
+                  Chế Độ Lồng Tiếng
                 </label>
                 <select
                   value={dubbingMode}
                   onChange={(e) => handleDubbingModeChange(e.target.value)}
                   className="w-full h-[32px] bg-surface2/50 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
                 >
-                  <option value="source_sync">
-                    Chế độ 1: Đồng bộ video gốc (source_sync)
-                  </option>
-                  <option value="free_narration">
-                    Chế độ 2: Thuyết minh tự do (free_narration)
-                  </option>
+                  <option value="source_sync">Đồng bộ video gốc</option>
+                  <option value="free_narration">Thuyết minh tự do</option>
                 </select>
                 <p className="text-[11px] text-textMuted leading-tight pt-0.5">
                   {dubbingMode === "source_sync"
-                    ? "Giữ nguyên hình ảnh, thời lượng và mốc thoại gốc. Hỗ trợ Auto-Fit WSOLA tối đa 1.20x."
-                    : "Dịch tự nhiên theo câu/đoạn, không giới hạn timeline gốc. Ghép nối daisy-chain mượt mà."}
+                    ? "Giữ nguyên mốc thời gian phụ đề gốc, tự động căn chỉnh tốc độ đọc khớp với hình ảnh video."
+                    : "Gộp và dịch theo câu hoàn chỉnh tự nhiên, đọc liền mạch và tạo phụ đề mới khớp theo giọng đọc."}
                 </p>
               </div>
 
@@ -2742,10 +2758,10 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 return (
                   <button
                     type="button"
-                    disabled={originalCues.length === 0 || isCheckingAsrReadiness}
+                    disabled={originalCues.length === 0 || !hasTranslatedContent || isCheckingAsrReadiness}
                     onClick={() => void handleStartBatchSynthesis()}
                     className={`w-full h-[52px] px-3 rounded-xl text-xs font-semibold shadow-md transition-all flex items-center justify-center gap-2 ${
-                      originalCues.length === 0 || isCheckingAsrReadiness
+                      originalCues.length === 0 || !hasTranslatedContent || isCheckingAsrReadiness
                         ? "bg-surface3 text-textMuted cursor-not-allowed border border-borderDefault/50"
                         : "bg-accent hover:bg-accentHover text-white cursor-pointer active:scale-[0.98] hover:shadow-lg hover:shadow-accent/20"
                     }`}

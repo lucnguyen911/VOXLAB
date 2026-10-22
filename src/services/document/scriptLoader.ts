@@ -40,6 +40,54 @@ function extractSubtitleDialogue(rawText: string): string {
 }
 
 /**
+ * Extracts and normalizes plain text from raw .docx binary bytes (ArrayBuffer / Uint8Array / number[]).
+ * Works identically in browser/Tauri WebView and Node.js runtimes.
+ */
+export async function extractTextFromDocxBytes(
+  rawBytes: ArrayBuffer | Uint8Array | number[],
+  filename = "document.docx"
+): Promise<string> {
+  const u8 =
+    rawBytes instanceof Uint8Array
+      ? rawBytes
+      : rawBytes instanceof ArrayBuffer
+      ? new Uint8Array(rawBytes)
+      : new Uint8Array(rawBytes || []);
+
+  if (!u8 || u8.byteLength === 0) {
+    throw new Error(
+      `File "${filename}" hoàn toàn trống (dung lượng 0 byte). Vui lòng lưu nội dung vào file trước khi tải lên.`
+    );
+  }
+
+  try {
+    const arrayBuffer = u8.buffer.slice(
+      u8.byteOffset,
+      u8.byteOffset + u8.byteLength
+    ) as ArrayBuffer;
+    const input: { arrayBuffer: ArrayBuffer; buffer?: Buffer } = { arrayBuffer };
+    if (typeof Buffer !== "undefined") {
+      input.buffer = Buffer.from(u8);
+    }
+    const result = await mammoth.extractRawText(input as any);
+    const extracted = (result.value || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    return extracted;
+  } catch (err: any) {
+    const rawMsg = err?.message || "";
+    let friendlyMsg = rawMsg;
+    if (rawMsg.includes("Corrupted zip") || rawMsg.includes("End of data reached")) {
+      friendlyMsg =
+        "File Word bị rỗng hoặc không đúng định dạng chuẩn .docx. Hãy mở file trong Microsoft Word và nhấn Lưu (Ctrl+S) rồi thử lại.";
+    }
+    throw new Error(`Không thể đọc file Word (.docx): ${friendlyMsg}`);
+  }
+}
+
+/**
  * Loads and extracts clean script text from various file formats (.docx, .txt, .md, .srt, .vtt).
  */
 export async function loadScriptFromFile(file: File): Promise<ScriptLoadResult> {
@@ -61,23 +109,8 @@ export async function loadScriptFromFile(file: File): Promise<ScriptLoadResult> 
   let extractedText = "";
 
   if (extension === "docx") {
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-        throw new Error(
-          `File "${filename}" hoàn toàn trống (dung lượng 0 byte). Vui lòng lưu nội dung vào file trước khi tải lên.`
-        );
-      }
-      const result = await mammoth.extractRawText({ arrayBuffer });
-      extractedText = result.value || "";
-    } catch (err: any) {
-      const rawMsg = err?.message || "";
-      let friendlyMsg = rawMsg;
-      if (rawMsg.includes("Corrupted zip") || rawMsg.includes("End of data reached")) {
-        friendlyMsg = "File Word bị rỗng hoặc không đúng định dạng chuẩn .docx. Hãy mở file trong Microsoft Word và nhấn Lưu (Ctrl+S) rồi thử lại.";
-      }
-      throw new Error(`Không thể đọc file Word (.docx): ${friendlyMsg}`);
-    }
+    const arrayBuffer = await file.arrayBuffer();
+    extractedText = await extractTextFromDocxBytes(arrayBuffer, filename);
   } else if (extension === "srt" || extension === "vtt") {
     const rawText = await file.text();
     extractedText = extractSubtitleDialogue(rawText);
