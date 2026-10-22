@@ -85,7 +85,7 @@ describe("ASR Transcription Step Executor (TASK-08 / AC-09, AC-10, AC-20)", () =
     const t = backend.calls.find((c) => c.method === "asr.transcribe");
     assert.equal(t?.params.audioPath, "D:/Videos/interview.mp4");
     assert.equal(t?.params.wordTimestamps, true);
-    assert.deepEqual(backend.methods(), ["asr.load", "asr.transcribe"]);
+    assert.deepEqual(backend.methods(), ["asr.load", "asr.transcribe", "subtitle.optimize"]);
   });
 
   it("fails explicitly when the local AI runtime is unavailable (no fixed segments)", async () => {

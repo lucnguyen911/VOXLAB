@@ -14,12 +14,14 @@
       {
         "label": "main",
         "title": "VoxLab",
-        "width": 1024,
-        "height": 720
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 680
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' tauri: asset: http://tauri.localhost https://tauri.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob: https:; media-src 'self' asset: http://asset.localhost https://asset.localhost data: blob: http://127.0.0.1:* http://localhost:*; connect-src 'self' ipc: http://ipc.localhost tauri: http://tauri.localhost https://tauri.localhost http://127.0.0.1:* http://localhost:* http://*:* https://*"
     }
   },
   "bundle": {

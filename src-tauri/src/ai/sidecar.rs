@@ -29,7 +29,10 @@ pub struct AiError {
 
 impl AiError {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
-        Self { code: code.to_string(), message: message.into() }
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+        }
     }
 }
 
@@ -76,7 +79,11 @@ impl SidecarProcess {
         if !spec.program.exists() {
             return Err(AiError::new(
                 "SIDECAR_NOT_FOUND",
-                format!("sidecar runtime '{}' not installed ({})", runtime, spec.program.display()),
+                format!(
+                    "sidecar runtime '{}' not installed ({})",
+                    runtime,
+                    spec.program.display()
+                ),
             ));
         }
         let mut cmd = Command::new(&spec.program);
@@ -99,9 +106,18 @@ impl SidecarProcess {
             .spawn()
             .map_err(|e| AiError::new("SIDECAR_SPAWN_FAILED", format!("{}: {}", runtime, e)))?;
         let pid = child.id();
-        let stdin = child.stdin.take().ok_or_else(|| AiError::new("SIDECAR_SPAWN_FAILED", "no stdin"))?;
-        let stdout = child.stdout.take().ok_or_else(|| AiError::new("SIDECAR_SPAWN_FAILED", "no stdout"))?;
-        let stderr = child.stderr.take().ok_or_else(|| AiError::new("SIDECAR_SPAWN_FAILED", "no stderr"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AiError::new("SIDECAR_SPAWN_FAILED", "no stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AiError::new("SIDECAR_SPAWN_FAILED", "no stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| AiError::new("SIDECAR_SPAWN_FAILED", "no stderr"))?;
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let alive = Arc::new(AtomicBool::new(true));
@@ -136,7 +152,11 @@ impl SidecarProcess {
                                     runtime: runtime.clone(),
                                     request_id: id,
                                     pct: data.get("pct").and_then(Value::as_f64).unwrap_or(0.0),
-                                    stage: data.get("stage").and_then(Value::as_str).unwrap_or("").to_string(),
+                                    stage: data
+                                        .get("stage")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string(),
                                 });
                             }
                             continue;
@@ -150,7 +170,9 @@ impl SidecarProcess {
                         let err = msg.get("error").cloned().unwrap_or(json!({}));
                         Err(AiError::new(
                             err.get("code").and_then(Value::as_str).unwrap_or("INTERNAL"),
-                            err.get("message").and_then(Value::as_str).unwrap_or("unknown error"),
+                            err.get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown error"),
                         ))
                     };
                     if let Some(tx) = pending.lock().unwrap().remove(&id) {
@@ -180,10 +202,20 @@ impl SidecarProcess {
             });
         }
 
-        let mut proc = SidecarProcess { child, stdin, pending, alive, hard_cancelled, pid };
+        let mut proc = SidecarProcess {
+            child,
+            stdin,
+            pending,
+            alive,
+            hard_cancelled,
+            pid,
+        };
         if ready_rx.recv_timeout(READY_TIMEOUT).is_err() {
             let _ = proc.child.kill();
-            return Err(AiError::new("SIDECAR_TIMEOUT", format!("runtime '{}' did not become ready", runtime)));
+            return Err(AiError::new(
+                "SIDECAR_TIMEOUT",
+                format!("runtime '{}' did not become ready", runtime),
+            ));
         }
         Ok(proc)
     }
@@ -211,7 +243,12 @@ pub struct SidecarManager {
 
 impl SidecarManager {
     pub fn new(resolver: RuntimeResolver, sink: ProgressSink) -> Self {
-        Self { runtimes: Mutex::new(HashMap::new()), resolver, sink, counter: AtomicU64::new(0) }
+        Self {
+            runtimes: Mutex::new(HashMap::new()),
+            resolver,
+            sink,
+            counter: AtomicU64::new(0),
+        }
     }
 
     pub fn next_request_id(&self) -> String {
@@ -219,7 +256,13 @@ impl SidecarManager {
     }
 
     /// Sends a request and blocks until its terminal response (or process death).
-    pub fn request(&self, runtime: &str, method: &str, params: Value, request_id: Option<String>) -> Result<Value, AiError> {
+    pub fn request(
+        &self,
+        runtime: &str,
+        method: &str,
+        params: Value,
+        request_id: Option<String>,
+    ) -> Result<Value, AiError> {
         if method == "tts.load" {
             self.unload_tts_elsewhere(runtime);
         }
@@ -246,19 +289,25 @@ impl SidecarManager {
             }
             rx
         };
-        rx.recv().unwrap_or_else(|_| Err(AiError::new("SIDECAR_CRASHED", "reply channel closed")))
+        rx.recv()
+            .unwrap_or_else(|_| Err(AiError::new("SIDECAR_CRASHED", "reply channel closed")))
     }
 
     /// Soft cancel asks the sidecar to stop at its next checkpoint. Hard cancel terminates the
     /// process (for engine calls that cannot be interrupted); it is respawned on next use.
     pub fn cancel(&self, runtime: &str, request_id: &str, hard: bool) -> Result<bool, AiError> {
         let mut map = self.runtimes.lock().unwrap();
-        let Some(proc) = map.get_mut(runtime) else { return Ok(false) };
+        let Some(proc) = map.get_mut(runtime) else {
+            return Ok(false);
+        };
         if !proc.pending.lock().unwrap().contains_key(request_id) {
             return Ok(false);
         }
         if hard {
-            proc.hard_cancelled.lock().unwrap().insert(request_id.to_string());
+            proc.hard_cancelled
+                .lock()
+                .unwrap()
+                .insert(request_id.to_string());
             let _ = proc.child.kill();
         } else {
             let cancel_id = format!("{}-cancel", request_id);
@@ -291,7 +340,11 @@ impl SidecarManager {
     pub fn status(&self) -> Vec<RuntimeStatus> {
         let mut map = self.runtimes.lock().unwrap();
         map.iter_mut()
-            .map(|(k, p)| RuntimeStatus { runtime: k.clone(), pid: p.pid, alive: p.is_alive() })
+            .map(|(k, p)| RuntimeStatus {
+                runtime: k.clone(),
+                pid: p.pid,
+                alive: p.is_alive(),
+            })
             .collect()
     }
 
@@ -317,17 +370,93 @@ impl Drop for SidecarManager {
 }
 
 /// Runtime id → Python environment directory name (dev) / sidecar binary name (prod).
-pub const RUNTIMES: &[(&str, &str)] = &[("core", ".venv"), ("chatterbox", ".venv-chatterbox"), ("qwen", ".venv-qwen")];
+pub const RUNTIMES: &[(&str, &str)] = &[
+    ("core", ".venv"),
+    ("chatterbox", ".venv-chatterbox"),
+    ("qwen", ".venv-qwen"),
+];
+
+/// Resolves a packaged sidecar runtime relative to the application executable directory.
+/// Supports:
+/// 1. PyInstaller `--onedir` bundle at `<exe_dir>/sidecar/voxlab-sidecar-<id>/voxlab-sidecar-<id>(.exe)`
+///    or `<exe_dir>/resources/sidecar/voxlab-sidecar-<id>/voxlab-sidecar-<id>(.exe)`.
+/// 2. Bundled portable Python venv at `<exe_dir>/sidecar/<venv>/Scripts/python.exe`
+///    or `<exe_dir>/resources/sidecar/<venv>/Scripts/python.exe`.
+/// 3. Direct executable at `<exe_dir>/voxlab-sidecar-<id>(.exe)`.
+/// Always passes `--runtime <id>` so `chatterbox` and `qwen` runtimes register their own adapters.
+pub fn resolve_packaged_runtime_from_dir(
+    exe_dir: &std::path::Path,
+    runtime: &str,
+    venv: &str,
+) -> RuntimeSpec {
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    let stem = format!("voxlab-sidecar-{}", runtime);
+    let bin_name = format!("{}{}", stem, ext);
+
+    let onedir_candidates = [
+        exe_dir.join("sidecar").join(&stem).join(&bin_name),
+        exe_dir
+            .join("resources")
+            .join("sidecar")
+            .join(&stem)
+            .join(&bin_name),
+    ];
+    for candidate in &onedir_candidates {
+        if candidate.exists() {
+            let cwd = candidate
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| exe_dir.to_path_buf());
+            return RuntimeSpec {
+                program: candidate.clone(),
+                args: vec!["--runtime".into(), runtime.into()],
+                cwd: Some(cwd),
+            };
+        }
+    }
+
+    let venv_roots = [
+        exe_dir.join("sidecar"),
+        exe_dir.join("resources").join("sidecar"),
+    ];
+    for root in &venv_roots {
+        let python = if cfg!(windows) {
+            root.join(venv).join("Scripts").join("python.exe")
+        } else {
+            root.join(venv).join("bin").join("python")
+        };
+        if python.exists() {
+            return RuntimeSpec {
+                program: python,
+                args: vec![
+                    "-m".into(),
+                    "voxlab_sidecar".into(),
+                    "--runtime".into(),
+                    runtime.into(),
+                ],
+                cwd: Some(root.clone()),
+            };
+        }
+    }
+
+    RuntimeSpec {
+        program: exe_dir.join(bin_name),
+        args: vec!["--runtime".into(), runtime.into()],
+        cwd: Some(exe_dir.to_path_buf()),
+    }
+}
 
 /// Development resolver: `<repo>/sidecar/<venv>/Scripts/python.exe -m voxlab_sidecar --runtime <id>`.
-/// Production resolver: `<exe dir>/voxlab-sidecar-<id>(.exe)` built with PyInstaller.
+/// Production resolver: `<exe dir>/sidecar/voxlab-sidecar-<id>/voxlab-sidecar-<id>(.exe)` or `<exe dir>/voxlab-sidecar-<id>(.exe)`.
 pub fn default_resolver(sidecar_root: Option<PathBuf>) -> RuntimeResolver {
     Arc::new(move |runtime: &str| {
         let venv = RUNTIMES
             .iter()
             .find(|(id, _)| *id == runtime)
             .map(|(_, v)| *v)
-            .ok_or_else(|| AiError::new("INVALID_REQUEST", format!("unknown runtime '{}'", runtime)))?;
+            .ok_or_else(|| {
+                AiError::new("INVALID_REQUEST", format!("unknown runtime '{}'", runtime))
+            })?;
         if let Some(root) = &sidecar_root {
             let python = if cfg!(windows) {
                 root.join(venv).join("Scripts").join("python.exe")
@@ -336,16 +465,22 @@ pub fn default_resolver(sidecar_root: Option<PathBuf>) -> RuntimeResolver {
             };
             return Ok(RuntimeSpec {
                 program: python,
-                args: vec!["-m".into(), "voxlab_sidecar".into(), "--runtime".into(), runtime.into()],
+                args: vec![
+                    "-m".into(),
+                    "voxlab_sidecar".into(),
+                    "--runtime".into(),
+                    runtime.into(),
+                ],
                 cwd: Some(root.clone()),
             });
         }
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .ok_or_else(|| AiError::new("SIDECAR_NOT_FOUND", "cannot locate executable directory"))?;
-        let name = format!("voxlab-sidecar-{}{}", runtime, if cfg!(windows) { ".exe" } else { "" });
-        Ok(RuntimeSpec { program: exe_dir.join(name), args: vec![], cwd: Some(exe_dir) })
+            .ok_or_else(|| {
+                AiError::new("SIDECAR_NOT_FOUND", "cannot locate executable directory")
+            })?;
+        Ok(resolve_packaged_runtime_from_dir(&exe_dir, runtime, venv))
     })
 }
 
@@ -354,7 +489,9 @@ mod tests {
     use super::*;
 
     fn dev_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("sidecar")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("sidecar")
     }
 
     fn manager(events: Arc<Mutex<Vec<ProgressEvent>>>) -> SidecarManager {
@@ -369,17 +506,62 @@ mod tests {
     #[test]
     fn unknown_runtime_is_structured_error() {
         let m = manager(Arc::new(Mutex::new(vec![])));
-        let err = m.request("nope", "system.ping", json!({}), None).unwrap_err();
+        let err = m
+            .request("nope", "system.ping", json!({}), None)
+            .unwrap_err();
         assert_eq!(err.code, "INVALID_REQUEST");
     }
 
     #[test]
     fn missing_runtime_binary_reports_not_found() {
         let resolver: RuntimeResolver = Arc::new(|_| {
-            Ok(RuntimeSpec { program: PathBuf::from("Z:/missing/python.exe"), args: vec![], cwd: None })
+            Ok(RuntimeSpec {
+                program: PathBuf::from("Z:/missing/python.exe"),
+                args: vec![],
+                cwd: None,
+            })
         });
         let m = SidecarManager::new(resolver, Arc::new(|_| {}));
-        assert_eq!(m.request("core", "system.ping", json!({}), None).unwrap_err().code, "SIDECAR_NOT_FOUND");
+        assert_eq!(
+            m.request("core", "system.ping", json!({}), None)
+                .unwrap_err()
+                .code,
+            "SIDECAR_NOT_FOUND"
+        );
+    }
+
+    #[test]
+    fn packaged_resolver_locates_onedir_and_passes_runtime_arg() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "voxlab_pkg_resolver_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let ext = if cfg!(windows) { ".exe" } else { "" };
+
+        // 1. Default direct binary fallback passes `--runtime chatterbox`
+        let direct = resolve_packaged_runtime_from_dir(&temp_dir, "chatterbox", ".venv-chatterbox");
+        assert_eq!(
+            direct.program,
+            temp_dir.join(format!("voxlab-sidecar-chatterbox{}", ext))
+        );
+        assert_eq!(direct.args, vec!["--runtime", "chatterbox"]);
+
+        // 2. When PyInstaller --onedir exists at <exe_dir>/sidecar/voxlab-sidecar-qwen/voxlab-sidecar-qwen.exe, it is preferred
+        let onedir_bin = temp_dir
+            .join("sidecar")
+            .join("voxlab-sidecar-qwen")
+            .join(format!("voxlab-sidecar-qwen{}", ext));
+        std::fs::create_dir_all(onedir_bin.parent().unwrap()).unwrap();
+        std::fs::write(&onedir_bin, b"stub").unwrap();
+
+        let resolved_onedir = resolve_packaged_runtime_from_dir(&temp_dir, "qwen", ".venv-qwen");
+        assert_eq!(resolved_onedir.program, onedir_bin);
+        assert_eq!(resolved_onedir.args, vec!["--runtime", "qwen"]);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     /// Real process: ping, structured error, crash (kill) → SIDECAR_CRASHED → transparent respawn.
@@ -390,10 +572,15 @@ mod tests {
             return;
         }
         let m = manager(Arc::new(Mutex::new(vec![])));
-        assert_eq!(m.request("core", "system.ping", json!({}), None).unwrap()["pong"], json!(true));
+        assert_eq!(
+            m.request("core", "system.ping", json!({}), None).unwrap()["pong"],
+            json!(true)
+        );
         let pid1 = m.status()[0].pid;
 
-        let err = m.request("core", "no.such.method", json!({}), None).unwrap_err();
+        let err = m
+            .request("core", "no.such.method", json!({}), None)
+            .unwrap_err();
         assert_eq!(err.code, "UNKNOWN_METHOD");
 
         // Simulate a crash by killing the process out-of-band.
@@ -404,7 +591,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         assert!(!m.status()[0].alive);
 
-        assert_eq!(m.request("core", "system.ping", json!({}), None).unwrap()["pong"], json!(true));
+        assert_eq!(
+            m.request("core", "system.ping", json!({}), None).unwrap()["pong"],
+            json!(true)
+        );
         let pid2 = m.status()[0].pid;
         assert_ne!(pid1, pid2, "sidecar must be respawned after crash");
         m.shutdown_all();
@@ -423,7 +613,12 @@ mod tests {
         m.request("core", "system.ping", json!({}), None).unwrap();
         let m2 = m.clone();
         let h = std::thread::spawn(move || {
-            m2.request("core", "system.debug_sleep", json!({"seconds": 30}), Some("sleep-1".into()))
+            m2.request(
+                "core",
+                "system.debug_sleep",
+                json!({"seconds": 30}),
+                Some("sleep-1".into()),
+            )
         });
         std::thread::sleep(Duration::from_millis(500));
         assert!(m.cancel("core", "sleep-1", true).unwrap());
@@ -431,7 +626,12 @@ mod tests {
 
         let m3 = m.clone();
         let h = std::thread::spawn(move || {
-            m3.request("core", "system.debug_sleep", json!({"seconds": 30}), Some("sleep-2".into()))
+            m3.request(
+                "core",
+                "system.debug_sleep",
+                json!({"seconds": 30}),
+                Some("sleep-2".into()),
+            )
         });
         std::thread::sleep(Duration::from_millis(1500));
         {
@@ -454,15 +654,28 @@ mod tests {
         m.request("core", "system.ping", json!({}), None).unwrap();
         let m2 = m.clone();
         let h = std::thread::spawn(move || {
-            m2.request("core", "system.debug_sleep", json!({"seconds": 30}), Some("soft-1".into()))
+            m2.request(
+                "core",
+                "system.debug_sleep",
+                json!({"seconds": 30}),
+                Some("soft-1".into()),
+            )
         });
         std::thread::sleep(Duration::from_millis(1200));
         assert!(m.cancel("core", "soft-1", false).unwrap());
         assert_eq!(h.join().unwrap().unwrap_err().code, "CANCELLED");
-        assert!(events.lock().unwrap().iter().any(|e| e.request_id == "soft-1" && e.stage == "sleeping"));
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e.request_id == "soft-1" && e.stage == "sleeping"));
         let pid = m.status()[0].pid;
         m.request("core", "system.ping", json!({}), None).unwrap();
-        assert_eq!(m.status()[0].pid, pid, "soft cancel must not restart the process");
+        assert_eq!(
+            m.status()[0].pid,
+            pid,
+            "soft cancel must not restart the process"
+        );
         m.shutdown_all();
     }
 }
