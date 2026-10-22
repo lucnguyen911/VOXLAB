@@ -486,6 +486,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
   useEffect(() => {
     if (isConverting) return;
     if (!isAsrReady) return;
+    if (inFlightValidationsRef.current.size > 0) return;
+    if (segments.some((s) => s.qualityReview?.status === "checking")) return;
 
     const outdatedSeg = segments.find(
       (s) =>
@@ -506,7 +508,10 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 
     setSegments((prev) =>
       prev.map((s) =>
-        s.id === outdatedSeg.id && getChunkAudioSignature(s) === audioSig
+        s.id === outdatedSeg.id &&
+        s.status === "ready" &&
+        (s.cleanText || s.rawText) === (outdatedSeg.cleanText || outdatedSeg.rawText) &&
+        getChunkAudioSignature(s) === audioSig
           ? {
               ...s,
               qualityReview: {
@@ -520,6 +525,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
                 validatorVersion: QUALITY_VALIDATOR_VERSION,
                 asrModelId: currentAsrModel,
                 audioSignature: audioSig,
+                retryCount: s.qualityReview?.retryCount,
               },
             }
           : s
@@ -539,9 +545,16 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
           "dialogue"
         );
 
+        inFlightValidationsRef.current.delete(inFlightKey);
+
         setSegments((prev) =>
           prev.map((s) => {
-            if (s.id === outdatedSeg.id && getChunkAudioSignature(s) === audioSig) {
+            if (
+              s.id === outdatedSeg.id &&
+              s.status === "ready" &&
+              (s.cleanText || s.rawText) === (outdatedSeg.cleanText || outdatedSeg.rawText) &&
+              getChunkAudioSignature(s) === audioSig
+            ) {
               return { ...s, qualityReview: review };
             }
             return s;
@@ -549,9 +562,15 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         );
       } catch (err: any) {
         console.warn(`[DialogueWorkspace] Auto-validation failed for segment ${outdatedSeg.id}:`, err);
+        inFlightValidationsRef.current.delete(inFlightKey);
         setSegments((prev) =>
           prev.map((s) => {
-            if (s.id === outdatedSeg.id && getChunkAudioSignature(s) === audioSig) {
+            if (
+              s.id === outdatedSeg.id &&
+              s.status === "ready" &&
+              (s.cleanText || s.rawText) === (outdatedSeg.cleanText || outdatedSeg.rawText) &&
+              getChunkAudioSignature(s) === audioSig
+            ) {
               return {
                 ...s,
                 qualityReview: {
@@ -564,6 +583,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
                   validatorVersion: QUALITY_VALIDATOR_VERSION,
                   asrModelId: currentAsrModel,
                   audioSignature: audioSig,
+                  retryCount: (s.qualityReview?.retryCount ?? outdatedSeg.qualityReview?.retryCount ?? 0) + 1,
                 },
               };
             }

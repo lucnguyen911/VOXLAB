@@ -11,6 +11,7 @@ import {
   isReviewCurrent,
   isReviewOutdated,
   QUALITY_VALIDATOR_VERSION,
+  MAX_AUTO_VALIDATION_RETRIES,
   validateChunkAudioQuality,
   getIssueShortLabel,
   getChunkBadgeInfo,
@@ -806,19 +807,19 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "2.6.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "2.8.6");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
       index: 1,
       text: "Testing versioning",
       originalText: "Testing versioning",
-      status: "pending",
+      status: "ready",
       pauseAfterMs: "auto",
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "2.6.0");
+    assert.equal(review.validatorVersion, "2.8.6");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
@@ -1147,6 +1148,139 @@ describe("Audio Quality Validator Tests", () => {
       },
     };
     assert.equal(isReviewOutdated(passedChunk, "small", true), false);
+  });
+
+  it("V26: isReviewCurrent and isReviewOutdated invalidate review when chunk text is cleared to empty string", () => {
+    const validChunk: ChunkItem = {
+      id: "chunk_v26",
+      index: 1,
+      text: "Original sentence",
+      originalText: "Original sentence",
+      status: "ready",
+      durationSec: 2.0,
+      audioUrl: "blob:http://localhost/audio_v26",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "pass",
+        issues: [],
+        summary: "Đạt",
+        checkedAt: Date.now(),
+        text: "Original sentence",
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        audioSignature: "blob:http://localhost/audio_v26::2",
+      },
+    };
+
+    assert.equal(isReviewCurrent(validChunk), true);
+    assert.equal(isReviewOutdated(validChunk), false);
+
+    // Clearing text to empty string or whitespace must invalidate the review
+    const clearedChunk: ChunkItem = {
+      ...validChunk,
+      text: "",
+    };
+    assert.equal(isReviewCurrent(clearedChunk), false);
+    assert.equal(isReviewOutdated(clearedChunk), true);
+
+    const whitespaceChunk: ChunkItem = {
+      ...validChunk,
+      text: "   ",
+    };
+    assert.equal(isReviewCurrent(whitespaceChunk), false);
+    assert.equal(isReviewOutdated(whitespaceChunk), true);
+  });
+
+  it("V27: getChunkAudioSignature includes audioRevision to invalidate in-place regenerated files with identical path and duration", () => {
+    const rev1Chunk: ChunkItem = {
+      id: "chunk_v27",
+      index: 1,
+      text: "Same text regenerated",
+      originalText: "Same text regenerated",
+      status: "ready",
+      durationSec: 2.5,
+      audioFilePath: "C:\\scratch\\tts\\chunk_v27.wav",
+      audioRevision: 1,
+      pauseAfterMs: "auto",
+    };
+
+    const sig1 = getChunkAudioSignature(rev1Chunk);
+    assert.equal(sig1, "C:\\scratch\\tts\\chunk_v27.wav::2.5::v1");
+
+    const reviewedRev1: ChunkItem = {
+      ...rev1Chunk,
+      acknowledgedAt: Date.now(),
+      acknowledgedAudioSignature: sig1,
+      qualityReview: {
+        status: "warning",
+        issues: [
+          {
+            severity: "warning",
+            code: "SUSPECTED_SWALLOWED",
+            message: "Nghi vấn nuốt chữ",
+          },
+        ],
+        summary: "Nghi vấn nuốt chữ",
+        checkedAt: Date.now(),
+        text: "Same text regenerated",
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        audioSignature: sig1,
+      },
+    };
+
+    assert.equal(isReviewCurrent(reviewedRev1), true);
+    assert.equal(isChunkConfirmed(reviewedRev1), true);
+
+    // Regenerated in-place: same file path and same duration (2.5s), but audioRevision incremented to 2
+    const rev2Chunk: ChunkItem = {
+      ...reviewedRev1,
+      audioRevision: 2,
+    };
+    const sig2 = getChunkAudioSignature(rev2Chunk);
+    assert.equal(sig2, "C:\\scratch\\tts\\chunk_v27.wav::2.5::v2");
+    assert.notEqual(sig1, sig2);
+    assert.equal(isReviewCurrent(rev2Chunk), false);
+    assert.equal(isReviewOutdated(rev2Chunk), true);
+    assert.equal(isChunkConfirmed(rev2Chunk), false);
+  });
+
+  it("V28: isReviewOutdated matches uppercase 'Quá thời gian' timeout summary and caps auto-retries at MAX_AUTO_VALIDATION_RETRIES", () => {
+    const timedOutChunk: ChunkItem = {
+      id: "chunk_v28",
+      index: 1,
+      text: "Chunk that timed out during ASR",
+      originalText: "Chunk that timed out during ASR",
+      status: "ready",
+      durationSec: 4.0,
+      audioFilePath: "C:\\scratch\\tts\\chunk_v28.wav",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "unverified",
+        issues: [],
+        summary: "Chưa kiểm chứng (Quá thời gian chờ ASR (25s))",
+        checkedAt: Date.now(),
+        text: "Chunk that timed out during ASR",
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: "small",
+        audioSignature: "C:\\scratch\\tts\\chunk_v28.wav::4",
+        retryCount: 0,
+      },
+    };
+
+    // With retryCount = 0 (< MAX_AUTO_VALIDATION_RETRIES) and ASR ready, it is marked outdated for auto-recovery
+    assert.equal(isReviewOutdated(timedOutChunk, "small", true), true);
+
+    // Once retryCount reaches MAX_AUTO_VALIDATION_RETRIES, it stops auto-retrying to prevent infinite timeout loops
+    const exhaustedChunk: ChunkItem = {
+      ...timedOutChunk,
+      qualityReview: {
+        ...timedOutChunk.qualityReview!,
+        retryCount: MAX_AUTO_VALIDATION_RETRIES,
+      },
+    };
+    assert.equal(isReviewOutdated(exhaustedChunk, "small", true), false);
+
+    // Changing ASR model still triggers re-validation even after retry exhaustion on old model
+    assert.equal(isReviewOutdated(exhaustedChunk, "large-v3-turbo", true), true);
   });
 });
 

@@ -63,6 +63,7 @@ export interface AudioQualityReview {
   validatorVersion?: string;
   asrModelId?: string;
   audioSignature?: string;
+  retryCount?: number;
 }
 
 export interface ChunkItem {
@@ -76,6 +77,7 @@ export interface ChunkItem {
   voiceOverrideId?: string;
   audioUrl?: string;
   audioFilePath?: string;
+  audioRevision?: number;
   errorMessage?: string;
   trailingSilenceMs?: number;
   leadingSilenceMs?: number;

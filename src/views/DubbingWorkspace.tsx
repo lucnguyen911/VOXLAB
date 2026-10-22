@@ -703,13 +703,14 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   // Deferred when isGeneratingAudio is true so Whisper QC never competes with active TTS synthesis
   useEffect(() => {
     if (!isAsrReady || isGeneratingAudio) return;
+    if (inFlightValidationsRef.current.size > 0) return;
 
     const candidates = Object.values(audioSegments).filter((seg) => {
       if (seg.isGroupPrimary === false) return false;
       if (seg.status !== "ready" || (!seg.audioFilePath && !seg.audioUrl)) {
         return false;
       }
-      if (!isReviewOutdated(seg, currentAsrModel)) {
+      if (!isReviewOutdated(seg, currentAsrModel, isAsrReady)) {
         return false;
       }
       const sig = `${seg.cueIndex}::${getChunkAudioSignature(seg)}::${currentAsrModel}`;

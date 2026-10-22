@@ -447,14 +447,21 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     voiceSnapshot: EffectiveVoiceSnapshot,
     firstFinishedCallback?: (readyChunk: ChunkItem) => void
   ): Promise<ChunkItem> => {
-    const audioSig = `${res.blobUrl || res.outputPath}::${res.durationSec}`;
-    const checkingChunk: ChunkItem = {
+    const nextRevision = (target.audioRevision ?? 0) + 1;
+    const baseChunk: ChunkItem = {
       ...target,
       status: "ready",
       durationSec: res.durationSec,
       audioUrl: res.blobUrl,
       audioFilePath: res.outputPath,
+      audioRevision: nextRevision,
       effectiveVoiceSnapshot: voiceSnapshot,
+      acknowledgedAt: undefined,
+      acknowledgedAudioSignature: undefined,
+    };
+    const audioSig = getChunkAudioSignature(baseChunk);
+    const checkingChunk: ChunkItem = {
+      ...baseChunk,
       qualityReview: {
         status: "checking",
         summary: "Đang kiểm tra...",
@@ -466,13 +473,14 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         asrModelId: currentAsrModel,
         audioSignature: audioSig,
       },
-      acknowledgedAt: undefined,
-      acknowledgedAudioSignature: undefined,
     };
 
     // Update chunk immediately so user sees WAV is ready and ASR inspection has started
+    // Guard against overwriting user edits made while synthesis was in progress
     setChunks((prev) =>
-      prev.map((c) => (c.id === target.id ? checkingChunk : c))
+      prev.map((c) =>
+        c.id === target.id && c.text === target.text ? checkingChunk : c
+      )
     );
 
     try {
@@ -484,29 +492,45 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         currentAsrModel
       );
       const readyChunk: ChunkItem = { ...checkingChunk, qualityReview: review };
+      // Only attach QC result if the chunk's text, status, and audio signature have not changed during async validation
       setChunks((prev) =>
-        prev.map((c) => (c.id === target.id ? readyChunk : c))
+        prev.map((c) =>
+          c.id === target.id &&
+          c.status === "ready" &&
+          c.text === checkingChunk.text &&
+          getChunkAudioSignature(c) === audioSig
+            ? { ...c, qualityReview: review }
+            : c
+        )
       );
       firstFinishedCallback?.(readyChunk);
       return readyChunk;
     } catch (qErr: any) {
       console.warn("Quality validation error:", qErr);
+      const fallbackReview: NonNullable<ChunkItem["qualityReview"]> = {
+        status: "unverified",
+        summary: `Chưa kiểm chứng (${qErr?.message || "lỗi hậu kiểm"})`,
+        issues: [],
+        checkedAt: Date.now(),
+        audioPath: res.outputPath,
+        text: target.text,
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: currentAsrModel,
+        audioSignature: audioSig,
+      };
       const fallbackChunk: ChunkItem = {
         ...checkingChunk,
-        qualityReview: {
-          status: "unverified",
-          summary: `Chưa kiểm chứng (${qErr?.message || "lỗi hậu kiểm"})`,
-          issues: [],
-          checkedAt: Date.now(),
-          audioPath: res.outputPath,
-          text: target.text,
-          validatorVersion: QUALITY_VALIDATOR_VERSION,
-          asrModelId: currentAsrModel,
-          audioSignature: audioSig,
-        },
+        qualityReview: fallbackReview,
       };
       setChunks((prev) =>
-        prev.map((c) => (c.id === target.id ? fallbackChunk : c))
+        prev.map((c) =>
+          c.id === target.id &&
+          c.status === "ready" &&
+          c.text === checkingChunk.text &&
+          getChunkAudioSignature(c) === audioSig
+            ? { ...c, qualityReview: fallbackReview }
+            : c
+        )
       );
       firstFinishedCallback?.(fallbackChunk);
       return fallbackChunk;
@@ -571,6 +595,9 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   useEffect(() => {
     if (isGenerating) return;
     if (!isAsrReady) return;
+    // Enforce global concurrency = 1 across the auto-validation queue so multiple chunks never run Whisper concurrently
+    if (inFlightValidationsRef.current.size > 0) return;
+    if (chunks.some((c) => c.qualityReview?.status === "checking")) return;
 
     // Find first ready chunk that has audio and an outdated review, not currently in flight
     const outdatedChunk = chunks.find(
@@ -593,7 +620,10 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     // Update chunk state to "checking" immediately so the UI reflects "Đang kiểm tra..."
     setChunks((prev) =>
       prev.map((c) =>
-        c.id === outdatedChunk.id && getChunkAudioSignature(c) === audioSig
+        c.id === outdatedChunk.id &&
+        c.status === "ready" &&
+        c.text === outdatedChunk.text &&
+        getChunkAudioSignature(c) === audioSig
           ? {
               ...c,
               qualityReview: {
@@ -607,6 +637,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 validatorVersion: QUALITY_VALIDATOR_VERSION,
                 asrModelId: currentAsrModel,
                 audioSignature: audioSig,
+                retryCount: c.qualityReview?.retryCount,
               },
             }
           : c
@@ -619,10 +650,17 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         const speed = outdatedChunk.effectiveVoiceSnapshot?.speed;
         const review = await validateChunkAudioQuality(outdatedChunk, lang, undefined, speed, currentAsrModel);
 
-        // State update only if the chunk still exists and still has the exact same audio signature
+        inFlightValidationsRef.current.delete(inFlightKey);
+
+        // State update only if the chunk still exists and still has the exact same text, status, and audio signature
         setChunks((prev) =>
           prev.map((c) => {
-            if (c.id === outdatedChunk.id && getChunkAudioSignature(c) === audioSig) {
+            if (
+              c.id === outdatedChunk.id &&
+              c.status === "ready" &&
+              c.text === outdatedChunk.text &&
+              getChunkAudioSignature(c) === audioSig
+            ) {
               return { ...c, qualityReview: review };
             }
             return c;
@@ -630,9 +668,15 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         );
       } catch (err: any) {
         console.warn(`[TtsWorkspace] Auto-validation failed for chunk ${outdatedChunk.id}:`, err);
+        inFlightValidationsRef.current.delete(inFlightKey);
         setChunks((prev) =>
           prev.map((c) => {
-            if (c.id === outdatedChunk.id && getChunkAudioSignature(c) === audioSig) {
+            if (
+              c.id === outdatedChunk.id &&
+              c.status === "ready" &&
+              c.text === outdatedChunk.text &&
+              getChunkAudioSignature(c) === audioSig
+            ) {
               return {
                 ...c,
                 qualityReview: {
@@ -645,6 +689,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                   validatorVersion: QUALITY_VALIDATOR_VERSION,
                   asrModelId: currentAsrModel,
                   audioSignature: audioSig,
+                  retryCount: (c.qualityReview?.retryCount ?? outdatedChunk.qualityReview?.retryCount ?? 0) + 1,
                 },
               };
             }

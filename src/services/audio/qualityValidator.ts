@@ -6,6 +6,7 @@ import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
 import { stripPauseTokens } from "../pause";
 
 export const QUALITY_VALIDATOR_VERSION = "2.8.6";
+export const MAX_AUTO_VALIDATION_RETRIES = 1;
 
 export interface QualityCheckableItem {
   id?: string | number;
@@ -17,6 +18,7 @@ export interface QualityCheckableItem {
   audioBlobUrl?: string;
   fittedAudioUrl?: string;
   audioFilePath?: string;
+  audioRevision?: number;
   durationSec?: number;
   fittedDurationSec?: number;
   errorMessage?: string;
@@ -40,7 +42,8 @@ export function getChunkAudioSignature(chunk: QualityCheckableItem): string {
   const pathOrUrl =
     chunk.fittedAudioUrl || chunk.audioUrl || chunk.audioBlobUrl || chunk.audioFilePath || "";
   if (!pathOrUrl) return "";
-  return `${pathOrUrl}::${getItemDurationSec(chunk) ?? 0}`;
+  const base = `${pathOrUrl}::${getItemDurationSec(chunk) ?? 0}`;
+  return chunk.audioRevision !== undefined ? `${base}::v${chunk.audioRevision}` : base;
 }
 
 /**
@@ -82,13 +85,17 @@ export function isChunkWarning(chunk: QualityCheckableItem): boolean {
 }
 
 /**
- * Checks whether the quality review was computed for the current text of the chunk.
- * If text has changed since the review, the review is considered stale.
+ * Checks whether the quality review was computed for the current text and current audio of the chunk.
+ * If text or audioSignature has changed since the review, the review is considered stale.
  */
 export function isReviewCurrent(chunk: QualityCheckableItem): boolean {
   if (!chunk.qualityReview) return false;
   const currentText = getItemText(chunk);
-  if (chunk.qualityReview.text !== undefined && currentText && chunk.qualityReview.text !== currentText) {
+  if (chunk.qualityReview.text !== undefined && chunk.qualityReview.text !== currentText) {
+    return false;
+  }
+  const currentSig = getChunkAudioSignature(chunk);
+  if (chunk.qualityReview.audioSignature && currentSig && chunk.qualityReview.audioSignature !== currentSig) {
     return false;
   }
   return true;
@@ -98,7 +105,8 @@ export function isReviewCurrent(chunk: QualityCheckableItem): boolean {
  * Returns true if the chunk's quality review is missing, stale (text changed),
  * evaluated with an older version of the validator, evaluated with a different ASR model,
  * or evaluated on different audio (audioSignature changed).
- * When isAsrReady is true, unverified reviews caused by previously missing models are treated as outdated for auto-recovery.
+ * When isAsrReady is true, unverified reviews caused by previously missing models or transient timeouts
+ * are treated as outdated for bounded auto-recovery (up to MAX_AUTO_VALIDATION_RETRIES).
  */
 export function isReviewOutdated(
   chunk: QualityCheckableItem,
@@ -120,15 +128,19 @@ export function isReviewOutdated(
       return true;
     }
   }
-  // Auto-recovery: If review is unverified because model was missing or sidecar was down,
-  // and ASR is now confirmed ready, mark it outdated so background verification re-runs it.
+  // Auto-recovery: If review is unverified because model was missing or sidecar timed out,
+  // and ASR is now confirmed ready, mark it outdated so background verification re-runs it (bounded by retryCount).
   if (isAsrReady && chunk.qualityReview.status === "unverified") {
-    const summary = chunk.qualityReview.summary || "";
+    const retryCount = chunk.qualityReview.retryCount ?? 0;
+    if (retryCount >= MAX_AUTO_VALIDATION_RETRIES) {
+      return false;
+    }
+    const summaryLower = (chunk.qualityReview.summary || "").toLowerCase();
     const isModelMissingIssue =
-      summary.includes("không tìm thấy") ||
-      summary.includes("không thể khởi tạo") ||
-      summary.includes("chưa có trên máy") ||
-      summary.includes("quá thời gian");
+      summaryLower.includes("không tìm thấy") ||
+      summaryLower.includes("không thể khởi tạo") ||
+      summaryLower.includes("chưa có trên máy") ||
+      summaryLower.includes("quá thời gian");
     if (isModelMissingIssue) {
       return true;
     }
@@ -408,6 +420,13 @@ export async function validateChunkAudioQuality(
   const itemText = getItemText(chunk);
   const cleanSpeechText = stripPauseTokens(itemText);
   const durationSec = getItemDurationSec(chunk);
+  const isRetryingUnverified =
+    Boolean(chunk.qualityReview) &&
+    chunk.qualityReview?.status === "unverified" &&
+    (!chunk.qualityReview.audioSignature || chunk.qualityReview.audioSignature === audioSig);
+  const nextUnverifiedRetryCount = isRetryingUnverified
+    ? (chunk.qualityReview?.retryCount ?? 0) + 1
+    : 0;
 
   // Technical check: chunk must have an audio destination
   if (!chunk.audioFilePath && !chunk.audioUrl && !chunk.audioBlobUrl && !chunk.fittedAudioUrl) {
@@ -436,6 +455,11 @@ export async function validateChunkAudioQuality(
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(() => {
+          try {
+            void ai.cancelActive?.();
+          } catch {
+            // ignore cancellation errors on timeout
+          }
           reject(new Error("Quá thời gian chờ ASR (25s)"));
         }, ASR_VALIDATION_TIMEOUT_MS);
       });
@@ -466,6 +490,7 @@ export async function validateChunkAudioQuality(
           validatorVersion: QUALITY_VALIDATOR_VERSION,
           asrModelId: res.asrModelId || effectiveAsrModel,
           audioSignature: audioSig,
+          retryCount: res.status === "unverified" ? nextUnverifiedRetryCount : 0,
         };
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -484,6 +509,7 @@ export async function validateChunkAudioQuality(
       validatorVersion: QUALITY_VALIDATOR_VERSION,
       asrModelId: effectiveAsrModel,
       audioSignature: audioSig,
+      retryCount: nextUnverifiedRetryCount,
     };
   }
 
