@@ -297,6 +297,49 @@ export const SAMPLE_UNIFIED_HISTORY: UnifiedHistoryItem[] = [
 const SAMPLE_IDS = new Set(SAMPLE_UNIFIED_HISTORY.map((item) => item.id));
 
 let inMemoryHistory: UnifiedHistoryItem[] | null = null;
+let historyRevision = 0;
+let committedHistoryRevision = 0;
+let historyClearedRevision = 0;
+const deletedHistoryIds = new Set<string>();
+let historyWriteChain: Promise<void> = Promise.resolve();
+
+function enqueueHistoryDiskWrite(): Promise<void> {
+  const targetRevision = historyRevision;
+  const runWrite = async () => {
+    if (committedHistoryRevision >= targetRevision && targetRevision !== 0) {
+      return;
+    }
+    const snapshotRevision = historyRevision;
+    const snapshotItems = inMemoryHistory ? [...inMemoryHistory] : [];
+    const payload = JSON.stringify(snapshotItems, null, 2);
+    try {
+      await saveAppDataFile(HISTORY_FILE, payload);
+      committedHistoryRevision = Math.max(committedHistoryRevision, snapshotRevision);
+    } catch {
+      // Non-blocking in browser / test environments without Tauri FS
+    }
+  };
+  const next = historyWriteChain.then(runWrite, runWrite);
+  historyWriteChain = next.catch(() => {});
+  return next;
+}
+
+export async function flushPendingHistoryWrites(): Promise<void> {
+  await historyWriteChain;
+}
+
+export function getHistoryRevision(): number {
+  return historyRevision;
+}
+
+export function resetHistoryManagerForTesting(): void {
+  inMemoryHistory = null;
+  historyRevision = 0;
+  committedHistoryRevision = 0;
+  historyClearedRevision = 0;
+  deletedHistoryIds.clear();
+  historyWriteChain = Promise.resolve();
+}
 
 function notifyHistoryUpdated(): void {
   if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
@@ -470,7 +513,11 @@ export function loadHistoryItems(): UnifiedHistoryItem[] {
 }
 
 export function saveHistoryItems(items: UnifiedHistoryItem[]): void {
+  historyRevision += 1;
   inMemoryHistory = [...items];
+  for (const item of items) {
+    deletedHistoryIds.delete(item.id);
+  }
 
   if (typeof window !== "undefined" && window.localStorage) {
     try {
@@ -480,11 +527,110 @@ export function saveHistoryItems(items: UnifiedHistoryItem[]): void {
     }
   }
 
-  // Also persist to durable storage history.json asynchronously via Tauri FS Bridge
-  saveAppDataFile(HISTORY_FILE, JSON.stringify(items, null, 2)).catch(() => {
-    // Non-blocking in browser / test environments
-  });
+  // Persist to durable storage history.json sequentially via serialized write queue
+  void enqueueHistoryDiskWrite();
   notifyHistoryUpdated();
+}
+
+/**
+ * Safely merges asynchronously hydrated disk metadata (file size, WAV duration, cues, existsOnDisk)
+ * into the live `inMemoryHistory` without overwriting newer records, clobbering newly merged artifacts,
+ * or resurrecting deleted records.
+ */
+export function applyHydratedMetadataToMemory(
+  hydratedItems: UnifiedHistoryItem[],
+  baseRevision: number
+): boolean {
+  if (historyClearedRevision > baseRevision) {
+    return false;
+  }
+  const current = loadHistoryItems();
+  if (current.length === 0 || hydratedItems.length === 0) {
+    return false;
+  }
+
+  const hydratedById = new Map<string, UnifiedHistoryItem>();
+  for (const h of hydratedItems) {
+    if (!deletedHistoryIds.has(h.id)) {
+      hydratedById.set(h.id, h);
+    }
+  }
+
+  let changed = false;
+  const merged = current.map((liveJob) => {
+    const hJob = hydratedById.get(liveJob.id);
+    if (!hJob) return liveJob;
+
+    const hArtByPath = new Map<string, HistoryArtifactItem>();
+    const hArtById = new Map<string, HistoryArtifactItem>();
+    for (const ha of hJob.artifacts) {
+      hArtById.set(ha.id, ha);
+      if (ha.filePath) {
+        hArtByPath.set(ha.filePath.toLowerCase(), ha);
+      }
+    }
+
+    let artifactsChanged = false;
+    const nextArtifacts = liveJob.artifacts.map((liveArt) => {
+      const hArt =
+        hArtById.get(liveArt.id) ||
+        (liveArt.filePath ? hArtByPath.get(liveArt.filePath.toLowerCase()) : undefined);
+      if (!hArt) return liveArt;
+
+      const nextExists = hArt.existsOnDisk ?? liveArt.existsOnDisk;
+      const nextFileSize = liveArt.fileSize || hArt.fileSize;
+      const nextAudioDur =
+        liveArt.audioDurationSec && liveArt.audioDurationSec !== 60
+          ? liveArt.audioDurationSec
+          : hArt.audioDurationSec ?? liveArt.audioDurationSec;
+      const nextDur = liveArt.duration || hArt.duration;
+      const nextCues =
+        liveArt.cues && liveArt.cues.length > 0 ? liveArt.cues : hArt.cues;
+
+      if (
+        nextExists !== liveArt.existsOnDisk ||
+        nextFileSize !== liveArt.fileSize ||
+        nextAudioDur !== liveArt.audioDurationSec ||
+        nextDur !== liveArt.duration ||
+        nextCues !== liveArt.cues
+      ) {
+        artifactsChanged = true;
+        return {
+          ...liveArt,
+          existsOnDisk: nextExists,
+          fileSize: nextFileSize,
+          audioDurationSec: nextAudioDur,
+          duration: nextDur,
+          cues: nextCues,
+        };
+      }
+      return liveArt;
+    });
+
+    const nextSourceSize = liveJob.sourceFileSize || hJob.sourceFileSize;
+    const nextDuration = liveJob.duration || hJob.duration;
+
+    if (
+      artifactsChanged ||
+      nextSourceSize !== liveJob.sourceFileSize ||
+      nextDuration !== liveJob.duration
+    ) {
+      changed = true;
+      return {
+        ...liveJob,
+        sourceFileSize: nextSourceSize,
+        duration: nextDuration,
+        artifacts: nextArtifacts,
+      };
+    }
+
+    return liveJob;
+  });
+
+  if (changed) {
+    saveHistoryItems(merged);
+  }
+  return changed;
 }
 
 /**
@@ -614,6 +760,7 @@ export async function hydrateHistoryItemsFromDisk(
  * reconciles with localStorage, and hydrates real disk state in Tauri.
  */
 export async function loadHistoryFromFileAsync(): Promise<UnifiedHistoryItem[]> {
+  const startRevision = historyRevision;
   let rawItems: UnifiedHistoryItem[] = [];
   try {
     const exists = await existsAppDataFile(HISTORY_FILE);
@@ -636,17 +783,64 @@ export async function loadHistoryFromFileAsync(): Promise<UnifiedHistoryItem[]> 
 
   const sorted = rawItems.sort((a, b) => b.timestamp - a.timestamp);
   const hydrated = await hydrateHistoryItemsFromDisk(sorted);
-  inMemoryHistory = [...hydrated];
 
-  if (typeof window !== "undefined" && window.localStorage) {
-    try {
-      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(hydrated));
-    } catch {
-      // ignore
+  // If clearAllHistory() was called while reading/hydrating from disk, keep only items added after clear
+  if (historyClearedRevision > startRevision) {
+    return loadHistoryItems();
+  }
+
+  // Reconcile disk items with any live in-memory mutations (additions, updates, or deletions)
+  // that occurred while disk load/hydration was in flight.
+  const currentLive = inMemoryHistory !== null ? [...inMemoryHistory] : [];
+  const mergedMap = new Map<string, UnifiedHistoryItem>();
+
+  for (const diskItem of hydrated) {
+    if (deletedHistoryIds.has(diskItem.id)) continue;
+    if (isTauriRuntime() && SAMPLE_IDS.has(diskItem.id)) continue;
+    mergedMap.set(diskItem.id, diskItem);
+  }
+
+  for (const liveItem of currentLive) {
+    if (deletedHistoryIds.has(liveItem.id)) continue;
+    if (isTauriRuntime() && SAMPLE_IDS.has(liveItem.id)) continue;
+    const diskVersion = mergedMap.get(liveItem.id);
+    if (!diskVersion) {
+      mergedMap.set(liveItem.id, liveItem);
+    } else if (liveItem.timestamp >= diskVersion.timestamp) {
+      // Live item is newer or equal: keep live item but backfill any hydrated disk metadata
+      const diskArtByPath = new Map(
+        diskVersion.artifacts.map((a) => [a.filePath.toLowerCase(), a])
+      );
+      const mergedArts = liveItem.artifacts.map((la) => {
+        const da = diskArtByPath.get(la.filePath.toLowerCase());
+        if (!da) return la;
+        return {
+          ...la,
+          existsOnDisk: da.existsOnDisk ?? la.existsOnDisk,
+          fileSize: la.fileSize || da.fileSize,
+          audioDurationSec:
+            la.audioDurationSec && la.audioDurationSec !== 60
+              ? la.audioDurationSec
+              : da.audioDurationSec ?? la.audioDurationSec,
+          duration: la.duration || da.duration,
+          cues: la.cues && la.cues.length > 0 ? la.cues : da.cues,
+        };
+      });
+      mergedMap.set(liveItem.id, {
+        ...liveItem,
+        sourceFileSize: liveItem.sourceFileSize || diskVersion.sourceFileSize,
+        duration: liveItem.duration || diskVersion.duration,
+        artifacts: mergedArts,
+      });
     }
   }
 
-  return [...hydrated];
+  const reconciled = Array.from(mergedMap.values()).sort(
+    (a, b) => b.timestamp - a.timestamp
+  );
+  saveHistoryItems(reconciled);
+
+  return [...reconciled];
 }
 
 /**
@@ -842,12 +1036,13 @@ export function recordCompletedJobToHistory(params: RecordCompletedJobParams): U
   const remaining = existing.filter((item) => item.id !== finalItem.id);
   const updated = [finalItem, ...remaining].sort((a, b) => b.timestamp - a.timestamp);
   saveHistoryItems(updated);
+  const savedRevision = historyRevision;
 
-  // Trigger background disk hydration so file sizes & WAV headers are immediately populated
+  // Trigger background disk hydration for ONLY this job and merge metadata non-destructively
   if (isTauriRuntime()) {
-    hydrateHistoryItemsFromDisk(updated)
+    hydrateHistoryItemsFromDisk([finalItem])
       .then((hydrated) => {
-        saveHistoryItems(hydrated);
+        applyHydratedMetadataToMemory(hydrated, savedRevision);
       })
       .catch(() => {});
   }
@@ -856,25 +1051,34 @@ export function recordCompletedJobToHistory(params: RecordCompletedJobParams): U
 }
 
 /**
- * Saves history items directly to durable history.json file
+ * Saves history items directly to durable history.json file via the serialized write queue
  */
 export async function saveHistoryToFileAsync(items: UnifiedHistoryItem[]): Promise<void> {
   saveHistoryItems(items);
-  await saveAppDataFile(HISTORY_FILE, JSON.stringify(items, null, 2));
+  await flushPendingHistoryWrites();
 }
 
-export function deleteHistoryItem(id: string, current: UnifiedHistoryItem[]): UnifiedHistoryItem[] {
-  const updated = current.filter((item) => item.id !== id);
+export function deleteHistoryItem(id: string, current?: UnifiedHistoryItem[]): UnifiedHistoryItem[] {
+  deletedHistoryIds.add(id);
+  const sourceList = inMemoryHistory !== null ? inMemoryHistory : current || loadHistoryItems();
+  const updated = sourceList.filter((item) => item.id !== id);
   saveHistoryItems(updated);
   return updated;
 }
 
 export function clearAllHistory(): void {
+  historyRevision += 1;
+  historyClearedRevision = historyRevision;
+  if (inMemoryHistory) {
+    for (const item of inMemoryHistory) {
+      deletedHistoryIds.add(item.id);
+    }
+  }
   inMemoryHistory = [];
   if (typeof window !== "undefined" && window.localStorage) {
     localStorage.setItem(HISTORY_STORAGE_KEY, "[]");
   }
-  saveAppDataFile(HISTORY_FILE, "[]").catch(() => {});
+  void enqueueHistoryDiskWrite();
   notifyHistoryUpdated();
 }
 
@@ -1066,11 +1270,12 @@ export function syncBatchJobToHistory(job: BatchJobOrHistorical): UnifiedHistory
   );
   const updated = [historyItem, ...filtered].sort((a, b) => b.timestamp - a.timestamp);
   saveHistoryItems(updated);
+  const savedRevision = historyRevision;
 
   if (isTauriRuntime()) {
-    hydrateHistoryItemsFromDisk(updated)
+    hydrateHistoryItemsFromDisk([historyItem])
       .then((hydrated) => {
-        saveHistoryItems(hydrated);
+        applyHydratedMetadataToMemory(hydrated, savedRevision);
       })
       .catch(() => {});
   }

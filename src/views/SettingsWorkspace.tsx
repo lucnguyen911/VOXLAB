@@ -29,7 +29,11 @@ import {
   resolveOpenAiBaseUrl,
   loadGeminiKeyEntriesFromVault,
   saveGeminiKeyEntries,
+  scheduleDebouncedGeminiKeySave,
+  flushPendingGeminiKeyWrites,
   getGeminiKeyEntriesSync,
+  getGeminiVaultStatus,
+  getGeminiVaultError,
   geminiKeyPool,
   MAX_GEMINI_TOTAL_KEYS,
   type GeminiKeyEntry,
@@ -195,13 +199,19 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     Record<string, { status: GeminiKeyHealthStatus; message?: string }>
   >({});
   const [geminiDuplicateSlotIds, setGeminiDuplicateSlotIds] = useState<string[]>([]);
-  const [geminiSaveError, setGeminiSaveError] = useState<string | null>(null);
+  const [geminiSaveError, setGeminiSaveError] = useState<string | null>(() => getGeminiVaultError());
+  const [geminiSaveState, setGeminiSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   useEffect(() => {
     let mounted = true;
     loadGeminiKeyEntriesFromVault()
       .then((entries) => {
         if (!mounted) return;
+        const vaultErr = getGeminiVaultError();
+        if (vaultErr) {
+          setGeminiSaveError(vaultErr);
+          setGeminiSaveState("error");
+        }
         setGeminiKeySlots(entries);
         const primary = entries.find((e) => e.role === "primary")?.apiKey || "";
         setGeminiApiKey(primary);
@@ -219,9 +229,17 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
           },
         }));
       })
-      .catch(() => {});
+      .catch((err: any) => {
+        if (!mounted) return;
+        setGeminiSaveError(err?.message || getGeminiVaultError() || "Không thể đọc kho khóa mã hóa.");
+        setGeminiSaveState("error");
+      });
     return () => {
       mounted = false;
+      // Flush any debounced Gemini key edits when leaving Settings
+      void flushPendingGeminiKeyWrites().then(() => {
+        geminiKeyPool.syncBucketsWithStore();
+      }).catch(() => {});
     };
   }, []);
 
@@ -254,18 +272,21 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     return dupIds;
   };
 
-  const syncAndSaveGeminiSlots = async (nextSlots: GeminiKeyEntry[]) => {
+  const syncAndSaveGeminiSlots = async (
+    nextSlots: GeminiKeyEntry[],
+    options?: { immediate?: boolean }
+  ) => {
     const reindexed: GeminiKeyEntry[] = [];
     const primarySlot = nextSlots.find((s) => s.role === "primary") ||
       nextSlots[0] || {
-        id: "gemini_primary",
+        id: "gemini_key_primary",
         label: "API Key chính",
         apiKey: "",
         role: "primary" as const,
       };
     reindexed.push({
       ...primarySlot,
-      id: "gemini_primary",
+      id: primarySlot.id && primarySlot.role === "primary" ? primarySlot.id : "gemini_key_primary",
       label: "API Key chính",
       role: "primary",
     });
@@ -275,7 +296,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       if (slot === primarySlot || slot.role === "primary") continue;
       reindexed.push({
         ...slot,
-        id: slot.id || `gemini_secondary_${secIdx}`,
+        id: slot.id || `gemini_key_secondary_${secIdx}`,
         label: `API Key phụ ${secIdx}`,
         role: "secondary",
       });
@@ -307,14 +328,30 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       return next;
     });
 
+    if (getGeminiVaultStatus() === "error") {
+      const errMsg = getGeminiVaultError() || "Kho khóa Gemini đang ở trạng thái lỗi đọc. Không tự động ghi đè.";
+      setGeminiSaveError(errMsg);
+      setGeminiSaveState("error");
+      return;
+    }
+
     // Exclude duplicate keys before saving to vault
     const nonDuplicateSlots = reindexed.filter((s) => !dupIds.includes(s.id));
+    setGeminiSaveState("saving");
+    setGeminiSaveError(null);
+
     try {
-      await saveGeminiKeyEntries(nonDuplicateSlots);
+      if (options?.immediate) {
+        await saveGeminiKeyEntries(nonDuplicateSlots);
+      } else {
+        await scheduleDebouncedGeminiKeySave(nonDuplicateSlots, 400);
+      }
       setGeminiSaveError(null);
+      setGeminiSaveState("saved");
       geminiKeyPool.syncBucketsWithStore();
     } catch (err: any) {
-      setGeminiSaveError(err?.message || "Không thể lưu khóa mã hóa.");
+      setGeminiSaveError(err?.message || "Không thể lưu khóa mã hóa. Dữ liệu đã lưu trước đó vẫn được giữ nguyên.");
+      setGeminiSaveState("error");
     }
   };
 
@@ -330,13 +367,24 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     const nextSlots = geminiKeySlots.map((slot) =>
       slot.id === slotId ? { ...slot, apiKey: newValue } : slot
     );
-    void syncAndSaveGeminiSlots(nextSlots);
+    void syncAndSaveGeminiSlots(nextSlots, { immediate: false });
+  };
+
+  const handleBlurGeminiSlot = () => {
+    void flushPendingGeminiKeyWrites()
+      .then(() => {
+        geminiKeyPool.syncBucketsWithStore();
+      })
+      .catch((err: any) => {
+        setGeminiSaveError(err?.message || "Không thể lưu khóa mã hóa.");
+        setGeminiSaveState("error");
+      });
   };
 
   const handleAddGeminiSecondaryKey = () => {
     if (geminiKeySlots.length >= MAX_GEMINI_TOTAL_KEYS) return;
     const secondaryCount = geminiKeySlots.filter((s) => s.role === "secondary").length;
-    const newId = `gemini_secondary_${Date.now()}_${secondaryCount + 1}`;
+    const newId = `gemini_key_secondary_${Date.now()}_${secondaryCount + 1}`;
     const nextSlots: GeminiKeyEntry[] = [
       ...geminiKeySlots,
       {
@@ -350,7 +398,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       ...prev,
       [newId]: { status: "untested" },
     }));
-    void syncAndSaveGeminiSlots(nextSlots);
+    void syncAndSaveGeminiSlots(nextSlots, { immediate: true });
   };
 
   const handleRemoveGeminiSecondaryKey = (slotId: string) => {
@@ -369,7 +417,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       delete copy[slotId];
       return copy;
     });
-    void syncAndSaveGeminiSlots(nextSlots);
+    void syncAndSaveGeminiSlots(nextSlots, { immediate: true });
   };
 
   const toggleGeminiSlotVisibility = (slotId: string) => {
@@ -620,7 +668,8 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     });
 
     if (selectedProviderId === "gemini" && field === "apiKey") {
-      handleChangeGeminiSlotValue("gemini_primary", String(val || ""));
+      const primaryId = geminiKeySlots.find((s) => s.role === "primary")?.id || "gemini_key_primary";
+      handleChangeGeminiSlotValue(primaryId, String(val || ""));
       return;
     }
     if (selectedProviderId === "deepseek" && field === "apiKey") {
@@ -826,6 +875,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
 
     try {
       if (selectedProviderId === "gemini") {
+        await flushPendingGeminiKeyWrites();
         const nonDuplicateSlots = geminiKeySlots.filter(
           (s) => s.apiKey.trim().length > 0 && !geminiDuplicateSlotIds.includes(s.id)
         );
@@ -1233,6 +1283,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                                   type={isVisible ? "text" : "password"}
                                   value={slot.apiKey}
                                   onChange={(e) => handleChangeGeminiSlotValue(slot.id, e.target.value)}
+                                  onBlur={handleBlurGeminiSlot}
                                   placeholder="AIzaSy..."
                                   className={`w-full bg-surface2 border rounded-lg px-3 py-2 pr-9 text-xs font-mono text-textPrimary placeholder:text-textMuted/60 focus:outline-none ${
                                     isDuplicate
@@ -1281,15 +1332,27 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                           <Plus className="w-3.5 h-3.5" />
                           <span>Thêm API Key</span>
                         </button>
-                        <span className="text-[11px] text-textMuted">
-                          Đang hoạt động:{" "}
-                          {
-                            geminiKeySlots.filter(
-                              (s) => s.apiKey.trim().length > 0 && !geminiDuplicateSlotIds.includes(s.id)
-                            ).length
-                          }{" "}
-                          khóa
-                        </span>
+                        <div className="flex items-center gap-3">
+                          {geminiSaveState === "saving" && (
+                            <span className="text-[11px] text-amber-500 font-medium">
+                              Đang lưu...
+                            </span>
+                          )}
+                          {geminiSaveState === "saved" && !geminiSaveError && (
+                            <span className="text-[11px] text-success font-medium">
+                              Đã lưu
+                            </span>
+                          )}
+                          <span className="text-[11px] text-textMuted">
+                            Đang hoạt động:{" "}
+                            {
+                              geminiKeySlots.filter(
+                                (s) => s.apiKey.trim().length > 0 && !geminiDuplicateSlotIds.includes(s.id)
+                              ).length
+                            }{" "}
+                            khóa
+                          </span>
+                        </div>
                       </div>
                     </div>
                   ) : currentProvider.requiresApiKey ? (

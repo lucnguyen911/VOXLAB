@@ -620,9 +620,6 @@ describe("Google Gemini API Key Pool, Secure Storage & Concurrent Translation Su
         const promptText: string = body.contents[0].parts[0].text;
         const idMatches = [...promptText.matchAll(/^\[(\d+)\]\s+/gm)].map((m) => Number(m[1]));
 
-        // Abort right after first batch starts
-        abortController.abort();
-
         const outLines = idMatches.map((id) => `[${id}] Dịch ${id}`).join("\n");
         return new Response(
           JSON.stringify({
@@ -645,6 +642,11 @@ describe("Google Gemini API Key Pool, Secure Storage & Concurrent Translation Su
         targetBatchSize: 2,
         maxConcurrency: 1,
         signal: abortController.signal,
+        onProgressCues: (done) => {
+          if (done >= 2) {
+            abortController.abort();
+          }
+        },
       });
 
       assert.equal(executedBatches, 1, "Remaining batches must not be dispatched after abort");

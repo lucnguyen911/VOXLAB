@@ -8,7 +8,11 @@
  */
 
 import { loadTranslationSettings } from "../translation/settings";
-import { getPrimaryGeminiApiKeySync } from "../translation/geminiKeyStore";
+import {
+  ensureGeminiKeyStoreInitialized,
+  flushPendingGeminiKeyWrites,
+  getPrimaryGeminiApiKeySync,
+} from "../translation/geminiKeyStore";
 
 export interface ProviderCredentials {
   apiKey?: string;
@@ -18,10 +22,54 @@ export interface ProviderCredentials {
 
 export class CredentialResolver {
   /**
+   * Asynchronously ensures encrypted vaults (such as the Gemini key vault) are initialized
+   * before resolving runtime credentials.
+   */
+  static async getProviderCredentialsAsync(providerId: string): Promise<ProviderCredentials> {
+    if (providerId === "gemini") {
+      await flushPendingGeminiKeyWrites();
+      await ensureGeminiKeyStoreInitialized();
+    }
+    return this.getProviderCredentials(providerId);
+  }
+
+  /**
    * Resolves runtime credentials for a translation or AI provider.
-   * Checks provider configuration in localStorage with fallback to translation settings.
+   * Checks encrypted key store (for Gemini) and provider configuration in localStorage
+   * with fallback to translation settings.
    */
   static getProviderCredentials(providerId: string): ProviderCredentials {
+    if (providerId === "gemini") {
+      const vaultKey = getPrimaryGeminiApiKeySync();
+      let model: string | undefined;
+      let endpoint: string | undefined;
+      let fallbackKey: string | undefined;
+
+      if (typeof localStorage !== "undefined") {
+        try {
+          const raw = localStorage.getItem("voxlab_provider_configs_v4");
+          if (raw) {
+            const configs = JSON.parse(raw);
+            if (configs && configs.gemini) {
+              model = configs.gemini.model || undefined;
+              endpoint = configs.gemini.endpoint || undefined;
+              fallbackKey = configs.gemini.apiKey || undefined;
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      const translationSettings = loadTranslationSettings();
+      const resolvedApiKey = vaultKey || fallbackKey || translationSettings.geminiApiKey || undefined;
+      return {
+        apiKey: resolvedApiKey,
+        endpoint,
+        model,
+      };
+    }
+
     if (typeof localStorage === "undefined") {
       return {};
     }
@@ -31,12 +79,8 @@ export class CredentialResolver {
       if (raw) {
         const configs = JSON.parse(raw);
         if (configs && configs[providerId]) {
-          const resolvedApiKey =
-            providerId === "gemini"
-              ? getPrimaryGeminiApiKeySync() || configs[providerId].apiKey || undefined
-              : configs[providerId].apiKey || undefined;
           return {
-            apiKey: resolvedApiKey,
+            apiKey: configs[providerId].apiKey || undefined,
             endpoint: configs[providerId].endpoint || undefined,
             model: configs[providerId].model || undefined,
           };
@@ -48,17 +92,14 @@ export class CredentialResolver {
 
     // Fallback to translation settings
     const translationSettings = loadTranslationSettings();
-    if (providerId === "gemini") {
-      const geminiKey = getPrimaryGeminiApiKeySync() || translationSettings.geminiApiKey;
-      if (geminiKey) {
-        return { apiKey: geminiKey };
-      }
-    }
     if (providerId === "deepseek" && translationSettings.deepseekApiKey) {
       return { apiKey: translationSettings.deepseekApiKey };
     }
     if (providerId === "claude") {
-      const claudeKey = typeof localStorage !== "undefined" ? localStorage.getItem("voxlab_claude_api_key") || "" : "";
+      const claudeKey =
+        typeof localStorage !== "undefined"
+          ? localStorage.getItem("voxlab_claude_api_key") || ""
+          : "";
       if (claudeKey) return { apiKey: claudeKey };
     }
     const customModel = translationSettings.customModels?.find((m) => m.id === providerId);
@@ -78,5 +119,13 @@ export class CredentialResolver {
    */
   static getApiKey(providerId: string): string | undefined {
     return this.getProviderCredentials(providerId).apiKey;
+  }
+
+  /**
+   * Asynchronously retrieves the raw API key after ensuring the encrypted vault is initialized.
+   */
+  static async getApiKeyAsync(providerId: string): Promise<string | undefined> {
+    const creds = await this.getProviderCredentialsAsync(providerId);
+    return creds.apiKey;
   }
 }

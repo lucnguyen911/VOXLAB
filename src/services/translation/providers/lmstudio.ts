@@ -156,14 +156,19 @@ export class LmStudioTranslateProvider implements TranslationProvider {
       });
 
       if (!res.ok) {
-        throw new Error(`${this.displayName} HTTP ${res.status}`);
+        throw new Error(
+          `${this.displayName} trả về lỗi HTTP ${res.status}: ${res.statusText || "Yêu cầu thất bại"}`
+        );
       }
 
       const content = stripThinkingTags(res.data?.choices?.[0]?.message?.content || "");
       return content ? content.trim() : trimmed;
     } catch (err: any) {
-      console.warn(`${this.displayName} translation error:`, err?.message);
-      return trimmed;
+      throw new Error(
+        `Không thể kết nối tới ${this.displayName} tại ${this.endpoint}: ${
+          err?.message || "Máy chủ chưa bật hoặc không phản hồi"
+        }`
+      );
     }
   }
 
@@ -176,7 +181,7 @@ export class LmStudioTranslateProvider implements TranslationProvider {
   ): Promise<Map<number, string>> {
     if (!items || items.length === 0) return new Map();
     if ((this.type === "openai" || this.type === "qwen") && !this.apiKey) {
-      return new Map(items.map((it) => [it.id, it.text]));
+      throw new Error(`Chưa cấu hình ${this.displayName} API Key.`);
     }
 
     try {
@@ -207,14 +212,19 @@ export class LmStudioTranslateProvider implements TranslationProvider {
       });
 
       if (!res.ok) {
-        throw new Error(`${this.displayName} HTTP ${res.status}`);
+        throw new Error(
+          `${this.displayName} trả về lỗi HTTP ${res.status}: ${res.statusText || "Yêu cầu thất bại"}`
+        );
       }
 
       const content = res.data?.choices?.[0]?.message?.content;
       return parseBatchTranslationResponse(content || "", items);
     } catch (err: any) {
-      console.warn(`${this.displayName} batch translation error:`, err?.message);
-      return new Map();
+      throw new Error(
+        `Không thể kết nối tới ${this.displayName} tại ${this.endpoint}: ${
+          err?.message || "Máy chủ chưa bật hoặc không phản hồi"
+        }`
+      );
     }
   }
 }

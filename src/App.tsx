@@ -18,7 +18,11 @@ import { HistoryWorkspace } from "./views/HistoryWorkspace";
 import { SettingsWorkspace } from "./views/SettingsWorkspace";
 import { WorkspaceId, ChunkItem, VoiceProfile, SettingsGroup } from "./types/ui";
 import { DubbingHandoffSnapshot } from "./types/dubbing";
-import { migrateSubtitleAndTranslationSettings } from "./services/translation";
+import {
+  migrateSubtitleAndTranslationSettings,
+  ensureGeminiKeyStoreInitialized,
+  geminiKeyPool,
+} from "./services/translation";
 import { migratePunctuationPauseDefaults } from "./services/pause/punctuationPause";
 import { MOCK_VOICES, MOCK_CHUNKS } from "./mock/data";
 import { I18nProvider, useI18n } from "./i18n/context";
@@ -38,10 +42,17 @@ migratePunctuationPauseDefaults();
 function AppContent() {
   const { t: _t } = useI18n();
 
-  // Run settings schema migration once on startup
+  // Run settings schema migration and initialize Gemini encrypted key vault once on startup
   useEffect(() => {
     migratePunctuationPauseDefaults();
     migrateSubtitleAndTranslationSettings();
+    ensureGeminiKeyStoreInitialized()
+      .then(() => {
+        geminiKeyPool.syncBucketsWithStore();
+      })
+      .catch((err) => {
+        console.warn("[App] Gemini key vault startup initialization warning:", err?.message || err);
+      });
   }, []);
 
   // Initial license check: Tạm thời vô hiệu hóa theo yêu cầu PO (sẽ xử lý sau khi hoàn thành toàn bộ app)

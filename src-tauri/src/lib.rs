@@ -105,51 +105,159 @@ pub struct NativeHttpResponse {
     pub retry_after: Option<String>,
 }
 
+struct HttpCancelState {
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    abort_tx: Option<std::sync::mpsc::Sender<Result<NativeHttpResponse, String>>>,
+}
+
+fn http_cancel_registry() -> &'static std::sync::Mutex<std::collections::HashMap<String, HttpCancelState>> {
+    static REGISTRY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, HttpCancelState>>> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 #[tauri::command]
-fn native_http_request(
+fn cancel_native_http_request(request_id: String) -> Result<bool, String> {
+    let trimmed = request_id.trim().to_string();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+    let mut guard = http_cancel_registry()
+        .lock()
+        .map_err(|_| "HTTP cancel registry poisoned".to_string())?;
+    if let Some(entry) = guard.get_mut(&trimmed) {
+        entry.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(tx) = entry.abort_tx.take() {
+            let _ = tx.send(Err("CANCELLED: Request aborted by user.".to_string()));
+        }
+        return Ok(true);
+    }
+    // Pre-register cancellation if cancel arrived before request started
+    guard.insert(
+        trimmed,
+        HttpCancelState {
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            abort_tx: None,
+        },
+    );
+    Ok(true)
+}
+
+#[tauri::command]
+async fn native_http_request(
     method: String,
     url: String,
     headers: std::collections::HashMap<String, String>,
     body: Option<String>,
     timeout_sec: Option<u64>,
+    request_id: Option<String>,
 ) -> Result<NativeHttpResponse, String> {
-    let timeout = std::time::Duration::from_secs(timeout_sec.unwrap_or(60));
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-    let mut req = agent.request(&method, &url);
-    for (k, v) in headers {
-        req = req.set(&k, &v);
-    }
-    let res = if let Some(b) = body {
-        req.send_string(&b)
-    } else {
-        req.call()
-    };
-    match res {
-        Ok(response) => {
-            let status = response.status();
-            let status_text = response.status_text().to_string();
-            let retry_after = response.header("retry-after").map(|s| s.to_string());
-            let body = response.into_string().unwrap_or_default();
-            Ok(NativeHttpResponse {
-                status,
-                status_text,
-                body,
-                retry_after,
-            })
+    let req_id = request_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<NativeHttpResponse, String>>();
+    let cancelled_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    if let Some(ref id) = req_id {
+        if let Ok(mut guard) = http_cancel_registry().lock() {
+            if let Some(existing) = guard.get(id) {
+                if existing.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                    guard.remove(id);
+                    return Err("CANCELLED: Request aborted by user.".to_string());
+                }
+            }
+            guard.insert(
+                id.clone(),
+                HttpCancelState {
+                    cancelled: cancelled_flag.clone(),
+                    abort_tx: Some(tx.clone()),
+                },
+            );
         }
-        Err(ureq::Error::Status(code, response)) => {
-            let status_text = response.status_text().to_string();
-            let retry_after = response.header("retry-after").map(|s| s.to_string());
-            let body = response.into_string().unwrap_or_default();
-            Ok(NativeHttpResponse {
-                status: code,
-                status_text,
-                body,
-                retry_after,
-            })
-        }
-        Err(e) => Err(e.to_string()),
     }
+
+    let worker_cancelled = cancelled_flag.clone();
+    let worker_req_id = req_id.clone();
+    std::thread::spawn(move || {
+        if worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = tx.send(Err("CANCELLED: Request aborted by user.".to_string()));
+            return;
+        }
+        let timeout = std::time::Duration::from_secs(timeout_sec.unwrap_or(60));
+        let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+        let mut req = agent.request(&method, &url);
+        for (k, v) in headers {
+            req = req.set(&k, &v);
+        }
+        let res = if let Some(b) = body {
+            req.send_string(&b)
+        } else {
+            req.call()
+        };
+
+        if worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = tx.send(Err("CANCELLED: Request aborted by user.".to_string()));
+            return;
+        }
+
+        let outcome = match res {
+            Ok(response) => {
+                let status = response.status();
+                let status_text = response.status_text().to_string();
+                let retry_after = response.header("retry-after").map(|s| s.to_string());
+                let body = response.into_string().unwrap_or_default();
+                if worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                    Err("CANCELLED: Request aborted by user.".to_string())
+                } else {
+                    Ok(NativeHttpResponse {
+                        status,
+                        status_text,
+                        body,
+                        retry_after,
+                    })
+                }
+            }
+            Err(ureq::Error::Status(code, response)) => {
+                let status_text = response.status_text().to_string();
+                let retry_after = response.header("retry-after").map(|s| s.to_string());
+                let body = response.into_string().unwrap_or_default();
+                if worker_cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                    Err("CANCELLED: Request aborted by user.".to_string())
+                } else {
+                    Ok(NativeHttpResponse {
+                        status: code,
+                        status_text,
+                        body,
+                        retry_after,
+                    })
+                }
+            }
+            Err(e) => Err(e.to_string()),
+        };
+
+        let _ = tx.send(outcome);
+        if let Some(id) = worker_req_id {
+            if let Ok(mut guard) = http_cancel_registry().lock() {
+                guard.remove(&id);
+            }
+        }
+    });
+
+    let wait_res = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv()
+            .unwrap_or_else(|_| Err("HTTP worker channel closed unexpectedly".to_string()))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(id) = req_id {
+        if let Ok(mut guard) = http_cancel_registry().lock() {
+            guard.remove(&id);
+        }
+    }
+
+    wait_res
 }
 
 pub mod ai;
@@ -184,6 +292,7 @@ pub fn run() {
             save_gemini_keys_secure,
             load_gemini_keys_secure,
             native_http_request,
+            cancel_native_http_request,
             ai::ai_request,
             ai::ai_cancel,
             ai::ai_shutdown,

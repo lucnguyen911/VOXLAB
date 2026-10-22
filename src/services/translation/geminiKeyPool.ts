@@ -17,8 +17,12 @@ import {
   GeminiKeyHealthStatus,
   GeminiKeyRole,
   GeminiStoredKeyEntry,
+  ensureGeminiKeyStoreInitialized,
+  flushPendingGeminiKeyWrites,
   getActiveGeminiKeyEntriesSync,
   getGeminiKeyEntriesSync,
+  getGeminiVaultStatus,
+  getGeminiVaultError,
   maskGeminiApiKey,
   redactGeminiKeysFromText,
 } from "./geminiKeyStore";
@@ -443,8 +447,27 @@ export class GeminiKeyPool {
   }
 
   /**
+   * Ensures the underlying encrypted Gemini key store has finished initializing
+   * and any pending debounced writes are flushed before using keys.
+   */
+  async ensurePoolReady(fallbackSingleApiKey?: string): Promise<void> {
+    if (this.explicitKeysOverride === null) {
+      await flushPendingGeminiKeyWrites();
+      try {
+        await ensureGeminiKeyStoreInitialized();
+      } catch (err) {
+        if (!fallbackSingleApiKey || !fallbackSingleApiKey.trim()) {
+          throw err;
+        }
+      }
+    }
+    this.syncBucketsWithStore(fallbackSingleApiKey);
+  }
+
+  /**
    * Synchronizes internal runtime buckets with `geminiKeyStore` (or `explicitKeysOverride`),
-   * preserving runtime stats and statuses for keys whose raw `apiKey` value has not changed.
+   * preserving runtime stats, `inFlightCount`, and statuses for keys whose raw `apiKey` value has not changed
+   * even if their label or slot index/ID was updated.
    */
   syncBucketsWithStore(fallbackSingleApiKey?: string): void {
     let sourceEntries =
@@ -470,6 +493,13 @@ export class GeminiKeyPool {
       ];
     }
 
+    // Index existing buckets by raw apiKey as a fallback if slot ID was re-indexed
+    const existingByApiKey = new Map<string, InternalKeyBucket>();
+    for (const b of this.buckets.values()) {
+      const k = (b.entry.apiKey || "").trim();
+      if (k) existingByApiKey.set(k, b);
+    }
+
     const nextBuckets = new Map<string, InternalKeyBucket>();
     const seenApiKeys = new Set<string>();
 
@@ -478,13 +508,19 @@ export class GeminiKeyPool {
       if (!trimmed || seenApiKeys.has(trimmed)) continue;
       seenApiKeys.add(trimmed);
 
-      const existing = this.buckets.get(entry.id);
-      if (existing && existing.entry.apiKey === trimmed) {
-        existing.entry = { ...entry, apiKey: trimmed };
-        existing.state.label = entry.label;
-        existing.state.role = entry.role;
-        existing.state.maskedKey = maskGeminiApiKey(trimmed);
-        nextBuckets.set(entry.id, existing);
+      const byId = this.buckets.get(entry.id);
+      const matched =
+        byId && byId.entry.apiKey === trimmed
+          ? byId
+          : existingByApiKey.get(trimmed);
+
+      if (matched) {
+        matched.entry = { ...entry, apiKey: trimmed };
+        matched.state.id = entry.id;
+        matched.state.label = entry.label;
+        matched.state.role = entry.role;
+        matched.state.maskedKey = maskGeminiApiKey(trimmed);
+        nextBuckets.set(entry.id, matched);
       } else {
         nextBuckets.set(entry.id, {
           entry: { ...entry, apiKey: trimmed },
@@ -551,6 +587,13 @@ export class GeminiKeyPool {
         status: effectiveStatus,
       };
     });
+  }
+
+  /**
+   * Alias for `getPoolStatesSnapshot`.
+   */
+  getPoolSnapshots(fallbackSingleApiKey?: string): GeminiKeyRuntimeState[] {
+    return this.getPoolStatesSnapshot(fallbackSingleApiKey);
   }
 
   /**
@@ -666,6 +709,9 @@ export class GeminiKeyPool {
     const modelName = options?.modelName || "gemini-1.5-flash";
     const startedWaitAt = this.nowFn();
 
+    // Ensure the encrypted key vault has finished loading before attempting to acquire a lease
+    await this.ensurePoolReady(options?.fallbackSingleApiKey);
+
     while (true) {
       if (options?.isCancelled?.() || options?.signal?.aborted) {
         throw new Error("CANCELLED: Tác vụ dịch Gemini đã bị hủy.");
@@ -683,6 +729,11 @@ export class GeminiKeyPool {
       const bucketList = Array.from(this.buckets.values());
 
       if (bucketList.length === 0) {
+        const vaultStatus = getGeminiVaultStatus();
+        const vaultErr = getGeminiVaultError();
+        if (vaultStatus === "error" && vaultErr) {
+          throw new Error(vaultErr);
+        }
         throw new Error(
           "Chưa cấu hình Google Gemini API Key. Vui lòng thêm API Key trong Cài đặt → Nhà cung cấp AI → Google Gemini."
         );
@@ -750,6 +801,10 @@ export class GeminiKeyPool {
 
         if (staggerWaitMs > 0) {
           await this.sleepFn(staggerWaitMs);
+          if (options?.isCancelled?.() || options?.signal?.aborted) {
+            targetBucket.state.inFlightCount = Math.max(0, targetBucket.state.inFlightCount - 1);
+            throw new Error("CANCELLED: Tác vụ dịch Gemini đã bị hủy.");
+          }
         }
 
         let released = false;
@@ -763,12 +818,12 @@ export class GeminiKeyPool {
           releaseSuccess: () => {
             if (released) return;
             released = true;
-            this.handleReleaseSuccess(targetBucket.entry.id);
+            this.handleReleaseSuccess(targetBucket.entry.id, targetBucket);
           },
           releaseFailure: (classified: ClassifiedGeminiError) => {
             if (released) return;
             released = true;
-            this.handleReleaseFailure(targetBucket.entry.id, classified);
+            this.handleReleaseFailure(targetBucket.entry.id, classified, targetBucket);
           },
         };
       }
@@ -784,13 +839,13 @@ export class GeminiKeyPool {
       }
 
       // Sleep in small increments so cancellation is responsive
-      const sleepChunk = Math.min(minWaitMs, 500);
+      const sleepChunk = Math.min(minWaitMs, 250);
       await this.sleepFn(sleepChunk);
     }
   }
 
-  private handleReleaseSuccess(keyId: string): void {
-    const bucket = this.buckets.get(keyId);
+  private handleReleaseSuccess(keyId: string, directBucket?: InternalKeyBucket): void {
+    const bucket = this.buckets.get(keyId) || directBucket;
     if (!bucket) return;
     bucket.state.inFlightCount = Math.max(0, bucket.state.inFlightCount - 1);
     bucket.state.successCount += 1;
@@ -800,8 +855,12 @@ export class GeminiKeyPool {
     bucket.state.lastStatusMessage = "Hợp lệ";
   }
 
-  private handleReleaseFailure(keyId: string, classified: ClassifiedGeminiError): void {
-    const bucket = this.buckets.get(keyId);
+  private handleReleaseFailure(
+    keyId: string,
+    classified: ClassifiedGeminiError,
+    directBucket?: InternalKeyBucket
+  ): void {
+    const bucket = this.buckets.get(keyId) || directBucket;
     if (!bucket) return;
     bucket.state.inFlightCount = Math.max(0, bucket.state.inFlightCount - 1);
 
@@ -998,7 +1057,11 @@ export class GeminiKeyPool {
     modelName?: string;
     timeoutSec?: number;
   }): Promise<GeminiPoolConnectionTestSummary> {
-    this.syncBucketsWithStore();
+    if (!params?.entries) {
+      await this.ensurePoolReady();
+    } else {
+      this.syncBucketsWithStore();
+    }
     const rawEntries =
       params?.entries ??
       getGeminiKeyEntriesSync().map((e) => ({

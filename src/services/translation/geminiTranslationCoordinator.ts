@@ -193,8 +193,33 @@ export class GeminiTranslationCoordinator {
       cueWeightById.set(u.unitId, u.cueWeight ?? 1);
     }
 
+    const maxBatchAttempts = Math.max(1, options.maxBatchAttempts ?? 3);
+    const batchErrors: Error[] = [];
+    let fatalAbortError: Error | null = null;
+    const sessionAbortController = new AbortController();
+    const isSessionCancelled = (): boolean =>
+      Boolean(
+        options.isCancelled?.() ||
+          options.signal?.aborted ||
+          sessionAbortController.signal.aborted
+      );
+    const abortSession = () => {
+      if (!sessionAbortController.signal.aborted) {
+        sessionAbortController.abort();
+      }
+    };
+    const onCallerAbort = () => abortSession();
+    if (options.signal) {
+      if (options.signal.aborted) {
+        abortSession();
+      } else {
+        options.signal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+    }
+
     let completedCueWeight = 0;
     const recordUnitCompleted = (unitId: number, translatedText: string) => {
+      if (isSessionCancelled() || fatalAbortError) return;
       const clean = translatedText.trim();
       if (!clean) return;
       const alreadyHad = rawTranslatedById.has(unitId);
@@ -214,6 +239,7 @@ export class GeminiTranslationCoordinator {
       maskedKey: string;
       status: "success" | "rate_limit_429" | "error";
     }) => {
+      if (isSessionCancelled()) return;
       metrics.totalRequests += 1;
       if (!metrics.perKeyUsage[info.keyId]) {
         metrics.perKeyUsage[info.keyId] = {
@@ -236,10 +262,6 @@ export class GeminiTranslationCoordinator {
         metrics.errorCount += 1;
       }
     };
-
-    const maxBatchAttempts = Math.max(1, options.maxBatchAttempts ?? 3);
-    const batchErrors: Error[] = [];
-    let fatalAbortError: Error | null = null;
 
     // Build indexed batch tasks with read-only surrounding context
     const batchTasks = batches.map((batchUnits, batchIndex) => {
@@ -332,12 +354,17 @@ export class GeminiTranslationCoordinator {
             batchContext,
             {
               attempt,
-              isCancelled: options.isCancelled,
+              isCancelled: isSessionCancelled,
               isPaused: options.isPaused,
-              signal: options.signal,
+              signal: sessionAbortController.signal,
               onKeyAttempt: recordKeyTelemetry,
             }
           );
+
+          if (isSessionCancelled() || fatalAbortError) {
+            abortSession();
+            return;
+          }
 
           for (const u of pendingUnits) {
             const translated = attemptRes.translations.get(u.unitId);
@@ -356,20 +383,22 @@ export class GeminiTranslationCoordinator {
             err.classified.category === "cancelled"
           ) {
             fatalAbortError = err;
+            abortSession();
             return;
           }
           if (
             String(lastTaskError.message).includes("CANCELLED") ||
-            options.isCancelled?.() ||
-            options.signal?.aborted
+            isSessionCancelled()
           ) {
             fatalAbortError = lastTaskError;
+            abortSession();
             return;
           }
           // If no usable keys remain in the entire pool, stop immediately
           if (geminiKeyPool.getUsableKeyCount(provider.apiKey) <= 0) {
             fatalAbortError = lastTaskError;
             batchErrors.push(lastTaskError);
+            abortSession();
             return;
           }
         }
@@ -380,12 +409,11 @@ export class GeminiTranslationCoordinator {
         pendingUnits.length > 0 &&
         pendingUnits.length <= 3 &&
         !fatalAbortError &&
-        !options.isCancelled?.() &&
-        !options.signal?.aborted &&
+        !isSessionCancelled() &&
         geminiKeyPool.getUsableKeyCount(provider.apiKey) > 0
       ) {
         for (const missingUnit of [...pendingUnits]) {
-          if (options.isCancelled?.() || options.signal?.aborted || fatalAbortError) {
+          if (isSessionCancelled() || fatalAbortError) {
             break;
           }
           try {
@@ -401,9 +429,9 @@ export class GeminiTranslationCoordinator {
               {
                 strict: true,
                 maxAttempts: 2,
-                isCancelled: options.isCancelled,
+                isCancelled: isSessionCancelled,
                 isPaused: options.isPaused,
-                signal: options.signal,
+                signal: sessionAbortController.signal,
               }
             );
             if (singleTrans && singleTrans.trim().length > 0) {
@@ -424,7 +452,7 @@ export class GeminiTranslationCoordinator {
 
     const workerLoop = async (): Promise<void> => {
       while (nextTaskIndex < batchTasks.length) {
-        if (options.isCancelled?.() || options.signal?.aborted || fatalAbortError) {
+        if (isSessionCancelled() || fatalAbortError) {
           break;
         }
         const currentIndex = nextTaskIndex++;
@@ -439,7 +467,13 @@ export class GeminiTranslationCoordinator {
     for (let w = 0; w < workerCount; w++) {
       workers.push(workerLoop());
     }
-    await Promise.all(workers);
+    try {
+      await Promise.all(workers);
+    } finally {
+      if (options.signal) {
+        options.signal.removeEventListener("abort", onCallerAbort);
+      }
+    }
 
     metrics.totalDurationMs = Date.now() - startedAt;
 

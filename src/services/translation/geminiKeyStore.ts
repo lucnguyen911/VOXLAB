@@ -4,13 +4,17 @@
  * Principles:
  * 1. Persists Gemini API keys (primary + secondary) exclusively in the OS-backed
  *    encrypted vault (`gemini_keys.enc` encrypted via Windows DPAPI in Tauri).
- * 2. Automatically migrates legacy single Gemini API key from `voxlab_provider_configs_v4`
+ * 2. Centralizes initialization (`ensureGeminiKeyStoreInitialized`) with explicit
+ *    lifecycle states (`"idle" | "loading" | "ready" | "error"`).
+ * 3. Automatically migrates legacy single Gemini API key from `voxlab_provider_configs_v4`
  *    and `voxlab_translation_settings` to the primary slot (`role: "primary"`).
- * 3. Scrubs legacy plaintext keys from `localStorage` ONLY AFTER confirming that
- *    the secure vault write succeeded.
- * 4. Never falls back to saving plaintext keys in `localStorage` if the secure vault fails,
- *    and never corrupts or loses previously saved keys when a write error occurs.
- * 5. Provides deterministic key masking and log/error redaction so raw keys never leak.
+ * 4. Scrubs legacy plaintext keys from `localStorage` ONLY AFTER confirming that
+ *    the secure vault write AND read-back verification succeeded.
+ * 5. Never treats a failed/corrupted vault read as an empty key list and blocks
+ *    automatic overwrites when the vault is in `"error"` state.
+ * 6. Serializes all writes through a monotonic revision queue so out-of-order async
+ *    completions can never overwrite newer key states.
+ * 7. Provides deterministic key masking and log/error redaction so raw keys never leak.
  */
 
 import { TRANSLATION_SETTINGS_KEY } from "./settings";
@@ -28,6 +32,8 @@ export type GeminiKeyHealthStatus =
   | "rate_limited"
   | "quota_exhausted";
 
+export type GeminiVaultInitStatus = "idle" | "loading" | "ready" | "error";
+
 export interface GeminiStoredKeyEntry {
   id: string;
   role: GeminiKeyRole;
@@ -41,6 +47,7 @@ export type GeminiKeyEntry = GeminiStoredKeyEntry;
 
 export interface GeminiSecureVaultPayload {
   schemaVersion: 1;
+  revision?: number;
   savedAt: number;
   keys: GeminiStoredKeyEntry[];
 }
@@ -65,6 +72,8 @@ class IsolatedMemoryVaultBackend implements GeminiSecureVaultBackend {
   private encryptedBlob: string | null = null;
   public simulateWriteError: Error | null = null;
   public simulateReadError: Error | null = null;
+  public writeDelayMs = 0;
+  public writeCallCount = 0;
 
   private obfuscate(plain: string): string {
     const bytes = new TextEncoder().encode(plain);
@@ -91,6 +100,10 @@ class IsolatedMemoryVaultBackend implements GeminiSecureVaultBackend {
   }
 
   async saveEncryptedPayload(payloadJson: string): Promise<void> {
+    this.writeCallCount += 1;
+    if (this.writeDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.writeDelayMs));
+    }
     if (this.simulateWriteError) {
       throw this.simulateWriteError;
     }
@@ -105,10 +118,16 @@ class IsolatedMemoryVaultBackend implements GeminiSecureVaultBackend {
     return this.deobfuscate(this.encryptedBlob);
   }
 
+  setRawCorruptedBlobForTest(rawBlob: string): void {
+    this.encryptedBlob = rawBlob;
+  }
+
   reset(): void {
     this.encryptedBlob = null;
     this.simulateWriteError = null;
     this.simulateReadError = null;
+    this.writeDelayMs = 0;
+    this.writeCallCount = 0;
   }
 }
 
@@ -182,14 +201,15 @@ export function redactGeminiKeysFromText(
 
 /**
  * Normalizes a list of raw key inputs into a valid `GeminiStoredKeyEntry[]`:
- * - Keeps primary slot at index 0 (`id: "gemini_key_primary"`, `role: "primary"`, `label: "API Key chính"`).
- * - Assigns sequential labels `API Key phụ 1`, `API Key phụ 2`, ... to secondary keys.
- * - Deduplicates identical non-empty keys while preserving stable IDs where possible.
+ * - Keeps primary slot at index 0 (`role: "primary"`, `label: "API Key chính"`), preserving its ID if provided.
+ * - Assigns sequential labels `API Key phụ 1`, `API Key phụ 2`, ... to secondary keys while preserving their stable IDs.
+ * - Deduplicates identical non-empty keys.
  */
 export function normalizeGeminiKeyEntries(
   inputs: Array<{
     id?: string;
     role?: GeminiKeyRole;
+    label?: string;
     apiKey: string;
     createdAt?: number;
   }>,
@@ -259,8 +279,64 @@ export function normalizeGeminiKeyEntries(
   return { entries, duplicateIndices };
 }
 
-// In-memory authoritative state of stored Gemini keys
+// ============================================================================
+// AUTHORITATIVE IN-MEMORY STATE, LIFECYCLE & SERIALIZED WRITE QUEUE
+// ============================================================================
+
 let cachedStoredKeys: GeminiStoredKeyEntry[] | null = null;
+let vaultStatus: GeminiVaultInitStatus = "idle";
+let vaultErrorMessage: string | null = null;
+let initInFlightPromise: Promise<GeminiStoredKeyEntry[]> | null = null;
+
+// Monotonic revision counters and serialized write queue
+let latestRequestedRevision = 0;
+let committedRevision = 0;
+let pendingStagedInputs: Array<{
+  id?: string;
+  role?: GeminiKeyRole;
+  apiKey: string;
+  createdAt?: number;
+}> | null = null;
+let pendingStagedRevision = 0;
+let writeQueueChain: Promise<void> = Promise.resolve();
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let debounceResolvers: Array<{
+  resolve: (entries: GeminiStoredKeyEntry[]) => void;
+  reject: (err: unknown) => void;
+}> = [];
+
+/**
+ * Returns the current initialization status (`"idle" | "loading" | "ready" | "error"`) of the Gemini key store.
+ */
+export function getGeminiVaultStatus(): GeminiVaultInitStatus {
+  return vaultStatus;
+}
+
+/**
+ * Returns the last vault read/decrypt error message, if any.
+ */
+export function getGeminiVaultError(): string | null {
+  return vaultErrorMessage;
+}
+
+/**
+ * Returns full diagnostic state including status, error, and monotonic revision counters.
+ */
+export function getGeminiKeyStoreDiagnostics(): {
+  status: GeminiVaultInitStatus;
+  error: string | null;
+  revision: number;
+  committedRevision: number;
+  latestRequestedRevision: number;
+} {
+  return {
+    status: vaultStatus,
+    error: vaultErrorMessage,
+    revision: committedRevision,
+    committedRevision,
+    latestRequestedRevision,
+  };
+}
 
 /**
  * Inspects legacy `localStorage` locations (`voxlab_provider_configs_v4.gemini.apiKey`
@@ -294,7 +370,7 @@ function readUnmigratedLegacyGeminiKeyFromLocalStorage(): string {
 }
 
 /**
- * Scrubs plaintext Gemini API keys from `localStorage` after secure vault persistence succeeds.
+ * Scrubs plaintext Gemini API keys from `localStorage` ONLY after secure vault write + read-back verification succeeds.
  * Leaves non-sensitive Gemini settings (`model`, `timeout`, `maxTokens`) intact.
  */
 function scrubLegacyPlaintextGeminiKeyFromLocalStorage(): void {
@@ -325,6 +401,70 @@ function scrubLegacyPlaintextGeminiKeyFromLocalStorage(): void {
     }
   } catch {
     // ignore
+  }
+}
+
+/**
+ * Parses and validates a decrypted JSON string from the vault.
+ * Throws if the JSON is malformed or schema is invalid.
+ */
+function parseAndValidateVaultJson(rawJson: string): GeminiSecureVaultPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch (err: any) {
+    throw new Error(`Dữ liệu kho khóa Gemini bị hỏng (JSON không hợp lệ): ${err?.message || String(err)}`);
+  }
+
+  if (Array.isArray(parsed)) {
+    return {
+      schemaVersion: 1,
+      revision: 1,
+      savedAt: Date.now(),
+      keys: parsed as GeminiStoredKeyEntry[],
+    };
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    !Array.isArray((parsed as GeminiSecureVaultPayload).keys)
+  ) {
+    throw new Error("Cấu trúc kho khóa Gemini không hợp lệ (thiếu danh sách keys).");
+  }
+
+  return parsed as GeminiSecureVaultPayload;
+}
+
+/**
+ * Writes `entries` to the vault and verifies read-back integrity before committing.
+ */
+async function writeAndVerifyVaultEntries(
+  vault: GeminiSecureVaultBackend,
+  entries: GeminiStoredKeyEntry[],
+  revision: number
+): Promise<void> {
+  const payload: GeminiSecureVaultPayload = {
+    schemaVersion: 1,
+    revision,
+    savedAt: Date.now(),
+    keys: entries,
+  };
+  const serialized = JSON.stringify(payload);
+  await vault.saveEncryptedPayload(serialized);
+
+  // Read-back verification to guarantee the vault can be read & decrypted before scrubbing legacy keys
+  const readBackRaw = await vault.loadEncryptedPayload();
+  if (!readBackRaw) {
+    throw new Error("Xác minh sau khi ghi kho khóa Gemini thất bại: không đọc lại được dữ liệu vừa lưu.");
+  }
+  const verifiedPayload = parseAndValidateVaultJson(readBackRaw);
+  const expectedNonEmpty = entries.filter((e) => e.apiKey.trim().length > 0);
+  for (const exp of expectedNonEmpty) {
+    const found = verifiedPayload.keys.some((k) => (k.apiKey || "").trim() === exp.apiKey.trim());
+    if (!found) {
+      throw new Error("Xác minh dữ liệu kho khóa Gemini thất bại: danh sách khóa đọc lại không khớp.");
+    }
   }
 }
 
@@ -387,123 +527,376 @@ export function getPrimaryGeminiApiKeySync(): string {
 }
 
 /**
- * Loads Gemini key entries from the OS secure vault (`load_gemini_keys_secure`)
- * and performs one-time safe migration from legacy `localStorage` if needed.
+ * Centralized initialization of the Gemini encrypted key vault.
+ * - Safe to call concurrently from App startup, Translation, Dubbing, Batch, or Settings.
+ * - Distinguishes `"loading"`, `"ready"`, and `"error"` states.
+ * - Never overwrites the vault with an empty list if reading/decrypting fails.
+ * - Only scrubs legacy plaintext `localStorage` keys after saving AND verifying read-back in the encrypted vault.
  */
-export async function loadGeminiKeyEntriesFromVault(): Promise<GeminiStoredKeyEntry[]> {
-  const vault = getActiveVaultBackend();
-  const legacyKey = readUnmigratedLegacyGeminiKeyFromLocalStorage();
+export async function ensureGeminiKeyStoreInitialized(options?: {
+  forceReload?: boolean;
+}): Promise<GeminiStoredKeyEntry[]> {
+  if (vaultStatus === "ready" && cachedStoredKeys !== null && !options?.forceReload) {
+    // Check if a new legacy key was injected into localStorage after init (e.g. in tests or legacy code)
+    const lateLegacyKey = readUnmigratedLegacyGeminiKeyFromLocalStorage();
+    if (
+      !lateLegacyKey ||
+      cachedStoredKeys.some((e) => e.apiKey.trim() === lateLegacyKey)
+    ) {
+      return cachedStoredKeys.map((e) => ({ ...e }));
+    }
+  }
 
-  let vaultEntries: GeminiStoredKeyEntry[] | null = null;
-  try {
-    const rawJson = await vault.loadEncryptedPayload();
-    if (rawJson) {
-      const parsed = JSON.parse(rawJson) as GeminiSecureVaultPayload;
-      if (parsed && Array.isArray(parsed.keys) && parsed.keys.length > 0) {
+  if (initInFlightPromise && !options?.forceReload) {
+    return initInFlightPromise;
+  }
+
+  initInFlightPromise = (async () => {
+    vaultStatus = "loading";
+    vaultErrorMessage = null;
+
+    const vault = getActiveVaultBackend();
+    const legacyKey = readUnmigratedLegacyGeminiKeyFromLocalStorage();
+
+    let rawJson: string | null = null;
+    try {
+      rawJson = await vault.loadEncryptedPayload();
+    } catch (err: any) {
+      const safeMsg = redactGeminiKeysFromText(
+        err?.message || String(err),
+        legacyKey ? [legacyKey] : []
+      );
+      vaultStatus = "error";
+      vaultErrorMessage = `Không thể đọc hoặc giải mã kho khóa Gemini bảo mật: ${safeMsg}`;
+      throw new Error(vaultErrorMessage);
+    }
+
+    let vaultEntries: GeminiStoredKeyEntry[] | null = null;
+    let loadedRevision = 0;
+
+    if (rawJson !== null) {
+      try {
+        const parsed = parseAndValidateVaultJson(rawJson);
+        loadedRevision = typeof parsed.revision === "number" ? parsed.revision : 1;
         const { entries } = normalizeGeminiKeyEntries(parsed.keys, {
           keepEmptyForUi: true,
         });
         vaultEntries = entries;
+      } catch (parseErr: any) {
+        const safeMsg = redactGeminiKeysFromText(
+          parseErr?.message || String(parseErr),
+          legacyKey ? [legacyKey] : []
+        );
+        vaultStatus = "error";
+        vaultErrorMessage = `Kho khóa Gemini bị lỗi định dạng hoặc hỏng dữ liệu: ${safeMsg}`;
+        throw new Error(vaultErrorMessage);
       }
     }
-  } catch (err: any) {
-    const safeMsg = redactGeminiKeysFromText(err?.message || String(err), [legacyKey]);
-    console.warn("Could not read Gemini keys from secure vault:", safeMsg);
-  }
 
-  if (vaultEntries && vaultEntries.some((e) => e.apiKey.trim().length > 0)) {
-    // If legacy key exists and isn't in vaultEntries yet, preserve it without losing anything
-    if (
-      legacyKey &&
-      !vaultEntries.some((e) => e.apiKey.trim() === legacyKey)
-    ) {
-      const primary = vaultEntries.find((e) => e.role === "primary");
-      if (primary && !primary.apiKey.trim()) {
-        primary.apiKey = legacyKey;
-      } else {
-        vaultEntries.push({
-          id: `gemini_key_sub_${vaultEntries.length}`,
-          role: "secondary",
-          label: `API Key phụ ${vaultEntries.length}`,
-          apiKey: legacyKey,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        });
+    // Case 1: Vault already has keys
+    if (vaultEntries && vaultEntries.some((e) => e.apiKey.trim().length > 0)) {
+      if (
+        legacyKey &&
+        !vaultEntries.some((e) => e.apiKey.trim() === legacyKey)
+      ) {
+        const merged = vaultEntries.map((e) => ({ ...e }));
+        const primary = merged.find((e) => e.role === "primary");
+        if (primary && !primary.apiKey.trim()) {
+          primary.apiKey = legacyKey;
+        } else {
+          merged.push({
+            id: `gemini_key_sub_${merged.length}`,
+            role: "secondary",
+            label: `API Key phụ ${merged.length}`,
+            apiKey: legacyKey,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }
+        const { entries } = normalizeGeminiKeyEntries(merged);
+        try {
+          const nextRev = Math.max(committedRevision, loadedRevision) + 1;
+          await writeAndVerifyVaultEntries(vault, entries, nextRev);
+          cachedStoredKeys = entries;
+          committedRevision = nextRev;
+          latestRequestedRevision = Math.max(latestRequestedRevision, nextRev);
+          vaultStatus = "ready";
+          vaultErrorMessage = null;
+          scrubLegacyPlaintextGeminiKeyFromLocalStorage();
+          return cachedStoredKeys.map((e) => ({ ...e }));
+        } catch (migErr: any) {
+          // Migration write failed: keep both vault keys and legacy key in memory, do NOT scrub localStorage
+          cachedStoredKeys = entries;
+          vaultStatus = "ready";
+          return cachedStoredKeys.map((e) => ({ ...e }));
+        }
       }
-      const { entries } = normalizeGeminiKeyEntries(vaultEntries);
-      await saveGeminiKeyEntries(entries);
-      return getGeminiKeyEntriesSync();
+
+      cachedStoredKeys = vaultEntries;
+      committedRevision = Math.max(committedRevision, loadedRevision, 1);
+      latestRequestedRevision = Math.max(latestRequestedRevision, committedRevision);
+      vaultStatus = "ready";
+      vaultErrorMessage = null;
+
+      if (legacyKey) {
+        scrubLegacyPlaintextGeminiKeyFromLocalStorage();
+      }
+      return cachedStoredKeys.map((e) => ({ ...e }));
     }
 
-    cachedStoredKeys = vaultEntries;
+    // Case 2: Vault is empty/non-existent, but legacy plaintext key exists in localStorage
     if (legacyKey) {
-      scrubLegacyPlaintextGeminiKeyFromLocalStorage();
+      const { entries } = normalizeGeminiKeyEntries([
+        { id: "gemini_key_primary", role: "primary", apiKey: legacyKey },
+      ]);
+      try {
+        const nextRev = Math.max(committedRevision, loadedRevision) + 1;
+        await writeAndVerifyVaultEntries(vault, entries, nextRev);
+        cachedStoredKeys = entries;
+        committedRevision = nextRev;
+        latestRequestedRevision = Math.max(latestRequestedRevision, nextRev);
+        vaultStatus = "ready";
+        vaultErrorMessage = null;
+        // Scrub legacy key ONLY after write + read-back verification succeeded!
+        scrubLegacyPlaintextGeminiKeyFromLocalStorage();
+        return cachedStoredKeys.map((e) => ({ ...e }));
+      } catch (migErr: any) {
+        const safeMsg = redactGeminiKeysFromText(
+          migErr?.message || String(migErr),
+          [legacyKey]
+        );
+        console.warn("Could not migrate legacy Gemini key to vault (preserving legacy key):", safeMsg);
+        // Preserve legacy key in memory and in localStorage so user does not lose their key
+        cachedStoredKeys = entries;
+        vaultStatus = "ready";
+        return cachedStoredKeys.map((e) => ({ ...e }));
+      }
     }
+
+    // Case 3: Fresh install (no vault file and no legacy key)
+    if (!cachedStoredKeys) {
+      const { entries } = normalizeGeminiKeyEntries(
+        vaultEntries && vaultEntries.length > 0
+          ? vaultEntries
+          : [{ id: "gemini_key_primary", role: "primary", apiKey: "" }],
+        { keepEmptyForUi: true }
+      );
+      cachedStoredKeys = entries;
+    }
+
+    vaultStatus = "ready";
+    vaultErrorMessage = null;
     return cachedStoredKeys.map((e) => ({ ...e }));
-  }
+  })();
 
-  // No keys in vault yet; check if we have a legacy key to migrate
-  if (legacyKey) {
-    const { entries } = normalizeGeminiKeyEntries([
-      { id: "gemini_key_primary", role: "primary", apiKey: legacyKey },
-    ]);
-    await saveGeminiKeyEntries(entries);
-    return getGeminiKeyEntriesSync();
+  try {
+    return await initInFlightPromise;
+  } finally {
+    initInFlightPromise = null;
   }
-
-  if (!cachedStoredKeys) {
-    const { entries } = normalizeGeminiKeyEntries([
-      { id: "gemini_key_primary", role: "primary", apiKey: "" },
-    ]);
-    cachedStoredKeys = entries;
-  }
-
-  return cachedStoredKeys.map((e) => ({ ...e }));
 }
 
 /**
- * Saves Gemini API key entries atomically to the OS secure vault.
+ * Loads Gemini key entries from the OS secure vault (`load_gemini_keys_secure`)
+ * and performs one-time safe migration from legacy `localStorage` if needed.
+ * Calls `ensureGeminiKeyStoreInitialized({ forceReload: true })` so explicit callers
+ * always read the latest state while respecting error protection.
+ */
+export async function loadGeminiKeyEntriesFromVault(): Promise<GeminiStoredKeyEntry[]> {
+  await flushPendingGeminiKeyWrites();
+  return ensureGeminiKeyStoreInitialized({ forceReload: true });
+}
+
+/**
+ * Saves Gemini API key entries atomically via a serialized write queue with monotonic revision tracking.
  * - Rejects duplicate non-empty keys.
+ * - Refuses to overwrite the vault if the initial vault load/decrypt failed (`vaultStatus === "error"`), unless `forceRecover` is true.
+ * - Coalesces / supersedes older pending writes so an earlier slow write can NEVER overwrite a newer revision.
  * - Never falls back to plaintext `localStorage` if the secure vault write fails.
  * - Preserves the previous `cachedStoredKeys` if the vault write fails.
- * - Scrubs any legacy plaintext key from `localStorage` only after vault write succeeds.
+ * - Scrubs any legacy plaintext key from `localStorage` only after vault write + read-back verification succeeds.
  */
 export async function saveGeminiKeyEntries(
   rawInputs: Array<{
     id?: string;
     role?: GeminiKeyRole;
+    label?: string;
     apiKey: string;
     createdAt?: number;
-  }>
+  }>,
+  options?: { forceRecoverFromVaultError?: boolean }
 ): Promise<GeminiStoredKeyEntry[]> {
+  // Cancel any pending debounce timer because an explicit save is being queued now
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+
+  if (vaultStatus === "error" && !options?.forceRecoverFromVaultError) {
+    throw new Error(
+      vaultErrorMessage ||
+        "Không thể ghi đè kho khóa Gemini vì kho khóa hiện tại đang gặp lỗi đọc/giải mã."
+    );
+  }
+
+  if (vaultStatus === "loading" && initInFlightPromise) {
+    try {
+      await initInFlightPromise;
+    } catch {
+      if ((vaultStatus as GeminiVaultInitStatus) === "error" && !options?.forceRecoverFromVaultError) {
+        throw new Error(
+          vaultErrorMessage ||
+            "Không thể ghi đè kho khóa Gemini vì kho khóa hiện tại đang gặp lỗi đọc/giải mã."
+        );
+      }
+    }
+  }
+
   const { entries, duplicateIndices } = normalizeGeminiKeyEntries(rawInputs);
   if (duplicateIndices.length > 0) {
     throw new Error("Không chấp nhận API Key trùng nhau trong danh sách Gemini.");
   }
 
-  const payload: GeminiSecureVaultPayload = {
-    schemaVersion: 1,
-    savedAt: Date.now(),
-    keys: entries,
-  };
+  const myRevision = ++latestRequestedRevision;
+  pendingStagedInputs = entries.map((e) => ({ ...e }));
+  pendingStagedRevision = myRevision;
 
-  const vault = getActiveVaultBackend();
-  // Will throw if secure storage fails; we DO NOT catch and fallback to localStorage
-  await vault.saveEncryptedPayload(JSON.stringify(payload));
+  let writeError: unknown = null;
 
-  // Vault write succeeded: update authoritative in-memory cache and scrub legacy plaintext
-  cachedStoredKeys = entries;
-  scrubLegacyPlaintextGeminiKeyFromLocalStorage();
+  writeQueueChain = writeQueueChain.then(async () => {
+    // If a newer revision was already staged after `myRevision`, we skip redundant intermediate disk I/O
+    // and let the latest revision in the queue write the authoritative state.
+    if (myRevision < pendingStagedRevision) {
+      return;
+    }
 
-  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    const snapshotToWrite = (pendingStagedInputs || entries).map((e) => ({ ...e }));
+    const { entries: normalizedSnapshot } = normalizeGeminiKeyEntries(snapshotToWrite);
+    const vault = getActiveVaultBackend();
+
     try {
-      window.dispatchEvent(new CustomEvent("voxlab_gemini_keys_updated"));
-    } catch {
-      // ignore in headless test environments
+      await writeAndVerifyVaultEntries(vault, normalizedSnapshot, myRevision);
+
+      // Only update authoritative in-memory cache if this revision is >= committedRevision
+      if (myRevision >= committedRevision) {
+        cachedStoredKeys = normalizedSnapshot;
+        committedRevision = myRevision;
+        vaultStatus = "ready";
+        vaultErrorMessage = null;
+      }
+
+      scrubLegacyPlaintextGeminiKeyFromLocalStorage();
+
+      if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+        try {
+          window.dispatchEvent(new CustomEvent("voxlab_gemini_keys_updated"));
+        } catch {
+          // ignore in headless test environments
+        }
+      }
+    } catch (err) {
+      writeError = err;
+    }
+  });
+
+  await writeQueueChain;
+
+  if (writeError) {
+    const known = entries.map((e) => e.apiKey);
+    const msg = redactGeminiKeysFromText(
+      (writeError as any)?.message || String(writeError),
+      known
+    );
+    throw new Error(msg);
+  }
+
+  return (cachedStoredKeys || entries).map((e) => ({ ...e }));
+}
+
+/**
+ * Schedules a debounced save of Gemini key entries (e.g. while the user is typing in Settings).
+ * Returns a promise that resolves when the debounced write actually completes in the vault.
+ */
+export function scheduleDebouncedGeminiKeySave(
+  rawInputs: Array<{
+    id?: string;
+    role?: GeminiKeyRole;
+    label?: string;
+    apiKey: string;
+    createdAt?: number;
+  }>,
+  debounceMs = 350
+): Promise<GeminiStoredKeyEntry[]> {
+  if (vaultStatus === "error") {
+    return Promise.reject(
+      new Error(
+        vaultErrorMessage ||
+          "Không thể ghi đè kho khóa Gemini vì kho khóa hiện tại đang gặp lỗi đọc/giải mã."
+      )
+    );
+  }
+
+  const { entries, duplicateIndices } = normalizeGeminiKeyEntries(rawInputs);
+  if (duplicateIndices.length > 0) {
+    return Promise.reject(
+      new Error("Không chấp nhận API Key trùng nhau trong danh sách Gemini.")
+    );
+  }
+
+  pendingStagedInputs = entries.map((e) => ({ ...e }));
+
+  return new Promise<GeminiStoredKeyEntry[]>((resolve, reject) => {
+    debounceResolvers.push({ resolve, reject });
+
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      const toCommit = pendingStagedInputs;
+      const resolvers = [...debounceResolvers];
+      debounceResolvers = [];
+
+      if (!toCommit) {
+        const current = getGeminiKeyEntriesSync();
+        resolvers.forEach((r) => r.resolve(current));
+        return;
+      }
+
+      saveGeminiKeyEntries(toCommit)
+        .then((saved) => {
+          resolvers.forEach((r) => r.resolve(saved));
+        })
+        .catch((err) => {
+          resolvers.forEach((r) => r.reject(err));
+        });
+    }, debounceMs);
+  });
+}
+
+/**
+ * Immediately flushes any pending debounced key changes and awaits the serialized write queue.
+ */
+export async function flushPendingGeminiKeyWrites(): Promise<GeminiStoredKeyEntry[]> {
+  if (debounceTimer && pendingStagedInputs) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+    const toCommit = pendingStagedInputs;
+    const resolvers = [...debounceResolvers];
+    debounceResolvers = [];
+    try {
+      const saved = await saveGeminiKeyEntries(toCommit);
+      resolvers.forEach((r) => r.resolve(saved));
+      return saved;
+    } catch (err) {
+      resolvers.forEach((r) => r.reject(err));
+      throw err;
     }
   }
 
-  return cachedStoredKeys.map((e) => ({ ...e }));
+  await writeQueueChain;
+  return getGeminiKeyEntriesSync();
 }
 
 /**
@@ -513,11 +906,24 @@ export function configureGeminiKeyStoreForTest(options?: {
   vaultBackend?: GeminiSecureVaultBackend | null;
   resetMemory?: boolean;
 }): IsolatedMemoryVaultBackend {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  debounceResolvers = [];
   if (options?.vaultBackend !== undefined) {
     customVaultOverride = options.vaultBackend;
   }
   if (options?.resetMemory) {
     cachedStoredKeys = null;
+    vaultStatus = "idle";
+    vaultErrorMessage = null;
+    initInFlightPromise = null;
+    latestRequestedRevision = 0;
+    committedRevision = 0;
+    pendingStagedInputs = null;
+    pendingStagedRevision = 0;
+    writeQueueChain = Promise.resolve();
     defaultMemoryVault.reset();
   }
   return defaultMemoryVault;

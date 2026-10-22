@@ -149,7 +149,17 @@ export class GeminiTranslateProvider implements TranslationProvider {
           },
           timeoutSec,
           signal: options?.signal,
+          isCancelled: options?.isCancelled,
         });
+
+        if (options?.isCancelled?.() || options?.signal?.aborted) {
+          const classified = classifyGeminiError({
+            errorMessage: "CANCELLED: Request aborted by user.",
+            knownKeys: [lease.apiKey],
+          });
+          lease.releaseFailure(classified, Date.now() - startedAt);
+          throw new GeminiApiError(classified, lease.keyId, lease.maskedKey);
+        }
 
         if (!res.ok) {
           const classified = classifyGeminiError({
@@ -346,9 +356,19 @@ export class GeminiTranslateProvider implements TranslationProvider {
         },
         timeoutSec,
         signal: options?.signal,
+        isCancelled: options?.isCancelled,
       });
 
       const durationMs = Date.now() - startedAt;
+
+      if (options?.isCancelled?.() || options?.signal?.aborted) {
+        const classified = classifyGeminiError({
+          errorMessage: "CANCELLED: Request aborted by user.",
+          knownKeys: [lease.apiKey],
+        });
+        lease.releaseFailure(classified, durationMs);
+        throw new GeminiApiError(classified, lease.keyId, lease.maskedKey);
+      }
 
       if (!res.ok) {
         const classified = classifyGeminiError({
@@ -415,12 +435,14 @@ export class GeminiTranslateProvider implements TranslationProvider {
         knownKeys: [lease.apiKey, ...geminiKeyPool.getKnownRawKeysForRedaction()],
       });
       lease.releaseFailure(classified, durationMs);
-      options?.onKeyAttempt?.({
-        keyId: lease.keyId,
-        maskedKey: lease.maskedKey,
-        status:
-          classified.category === "rate_limit_429" ? "rate_limit_429" : "error",
-      });
+      if (classified.category !== "cancelled") {
+        options?.onKeyAttempt?.({
+          keyId: lease.keyId,
+          maskedKey: lease.maskedKey,
+          status:
+            classified.category === "rate_limit_429" ? "rate_limit_429" : "error",
+        });
+      }
       throw new GeminiApiError(classified, lease.keyId, lease.maskedKey);
     }
   }

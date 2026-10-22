@@ -17,6 +17,7 @@ import { loadTtsAdvancedSettings } from "../ai/ttsAdvancedSettings";
 import { loadCloneVoiceRegistry } from "../ai/cloneVoiceRegistry";
 import { resolveUnifiedVoiceReference, ensurePresetVoiceSamples } from "../ai/presetVoiceRegistry";
 import { getAppDataDir } from "../storage/tauriFsBridge";
+import { ensureGeminiKeyStoreInitialized, geminiKeyPool } from "../translation";
 
 async function invoke<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
   const core = await import("@tauri-apps/api/core");
@@ -72,6 +73,9 @@ export function getDefaultBatchOutputDir(): string {
 export function initBatchRuntime(): Promise<LocalAiServices | null> {
   if (initialized) return initialized;
   initialized = (async () => {
+    await ensureGeminiKeyStoreInitialized()
+      .then(() => geminiKeyPool.syncBucketsWithStore())
+      .catch(() => {});
     if (!isTauriRuntime()) return null;
     currentSettings = await loadAiRuntimeSettings();
     await loadTtsAdvancedSettings();
