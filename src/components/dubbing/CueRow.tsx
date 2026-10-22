@@ -23,6 +23,7 @@ export interface CueRowProps {
   audioSegment?: DubAudioSegment;
   overflowMeta?: TimingOverflowMetadata;
   dubbingMode?: DubbingMode;
+  narrationSourceCueCount?: number;
   isPlaying?: boolean;
   onUpdateText: (index: number, newText: string) => void;
   onPlayAudio?: (index: number) => void;
@@ -35,6 +36,7 @@ export const CueRow: React.FC<CueRowProps> = ({
   audioSegment,
   overflowMeta,
   dubbingMode = "source_sync",
+  narrationSourceCueCount,
   isPlaying = false,
   onUpdateText,
   onPlayAudio,
@@ -180,15 +182,35 @@ export const CueRow: React.FC<CueRowProps> = ({
       >
         {/* Top Header: Index & Timestamps & Duration */}
         <div className="flex items-center justify-between text-[11px] font-mono text-textMuted select-none flex-shrink-0 h-5">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-accent">#{String(original.index).padStart(2, "0")}</span>
-            <span>
-              {formatSrtTimestamp(original.startSec)} → {formatSrtTimestamp(original.endSec)}
-            </span>
-          </div>
-          <span className="px-1.5 py-0.5 bg-surface2 rounded text-textSecondary text-[10px]">
-            {availableDuration}s
-          </span>
+          {dubbingMode === "free_narration" ? (
+            <>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-accent">
+                  Đoạn #{String(original.index).padStart(2, "0")}
+                </span>
+                <span className="text-[10px] font-sans text-textMuted">
+                  Câu hoàn chỉnh đã khôi phục
+                </span>
+              </div>
+              {narrationSourceCueCount && narrationSourceCueCount > 1 && (
+                <span className="px-1.5 py-0.5 bg-surface2 rounded text-textSecondary text-[10px] font-sans">
+                  Gộp {narrationSourceCueCount} cue gốc
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-accent">#{String(original.index).padStart(2, "0")}</span>
+                <span>
+                  {formatSrtTimestamp(original.startSec)} → {formatSrtTimestamp(original.endSec)}
+                </span>
+              </div>
+              <span className="px-1.5 py-0.5 bg-surface2 rounded text-textSecondary text-[10px]">
+                {availableDuration}s
+              </span>
+            </>
+          )}
         </div>
 
         {/* Middle Body: Text vertically centered */}

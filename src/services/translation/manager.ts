@@ -31,6 +31,7 @@ import {
   normalizeCueTextForSpeech,
   joinCueTextsForSpeech,
 } from "../dubbing/speechPlanner";
+import { distributeNarrationGroupToReferenceCues } from "../dubbing/freeNarrationScript";
 import { projectGroupTranslationToCues } from "./groupProjection";
 import {
   chunkArrayAdaptive,
@@ -293,32 +294,22 @@ export class TranslationManager {
         return normalizeCueTextForSpeech(result);
       }
     } catch (err: any) {
-      let fallbackSucceeded = false;
-      if (provider.id !== "google") {
-        try {
-          const googleFallback =
-            this.builtInProviders.get("google") || new GoogleTranslateProvider();
-          const fallbackResult = await googleFallback.translate(
-            normalizedInput,
-            targetLang,
-            sourceLang,
-            context
-          );
-          if (fallbackResult && fallbackResult.trim()) {
-            fallbackSucceeded = true;
-            return normalizeCueTextForSpeech(fallbackResult);
-          }
-        } catch {
-          // fallback also failed
-        }
-      }
+      // HARD INVARIANT (SPEC.md Section 1.1 Rule 2):
+      // Never automatically switch from a selected AI provider (especially local LM Studio / Ollama)
+      // to Google Translate or any other cloud provider on error.
+      const mustRejectOnFailure =
+        strict === true ||
+        provider.type === "lmstudio" ||
+        provider.type === "ollama" ||
+        provider.id === "lmstudio" ||
+        provider.id === "ollama";
 
-      if (!fallbackSucceeded) {
-        if (strict) {
-          throw new Error(`Dịch ${label} thất bại: ${err?.message || err}`);
-        }
-        console.warn(`Translation failed for ${label}:`, err?.message);
+      if (mustRejectOnFailure) {
+        throw new Error(
+          `Dịch ${label ? `${label} ` : ""}qua ${provider.displayName} thất bại: ${err?.message || err}`
+        );
       }
+      console.warn(`Translation failed for ${label} (${provider.displayName}):`, err?.message);
     }
 
     return normalizedInput;
@@ -360,6 +351,11 @@ export class TranslationManager {
     const activeStyle: TranslationStyle = style || activeSettings.translationStyle || "default";
     const activeSourceLang = options?.sourceLang || activeSettings.sourceLanguage || "auto";
     const provider = this.getProvider(activeId);
+
+    if (provider.id === "gemini" || provider instanceof GeminiTranslateProvider) {
+      await geminiKeyPool.ensurePoolReady((provider as GeminiTranslateProvider).apiKey);
+      this.syncBuiltInProviderConfig(provider);
+    }
 
     const dubbingMode = normalizeDubbingMode(options?.dubbingMode);
     const useGroups =
@@ -612,7 +608,7 @@ export class TranslationManager {
               );
             }
 
-            if (activeStyle === "cinema") {
+            if (activeStyle === "cinema" && dubbingMode !== "free_narration") {
               translatedText = adaptCueToCinemaStyle({
                 cue,
                 prevCues,
@@ -661,7 +657,8 @@ export class TranslationManager {
               },
               prevCues,
               nextCues,
-              durationSec: groupDurationSec,
+              durationSec:
+                dubbingMode === "free_narration" ? undefined : groupDurationSec,
               allCues: cues,
               cueIndex: firstPos,
               groupSourceText: group.sourceText,
@@ -678,6 +675,32 @@ export class TranslationManager {
               options?.strict,
               `nhóm câu #${group.sourceCueIds.join("-")}`
             );
+          }
+
+          if (dubbingMode === "free_narration") {
+            // In free_narration mode, never force 1:1 cue re-translation or split the natural Vietnamese sentence for TTS
+            const cleanSpeech = normalizeCueTextForSpeech(groupTranslated);
+            const refCues = distributeNarrationGroupToReferenceCues(
+              groupCues,
+              groupTranslated,
+              group.groupId,
+              false
+            );
+            for (const rc of refCues) {
+              translatedCues.push(rc);
+              completedCues++;
+              if (onProgress) onProgress(completedCues, total);
+            }
+            currentBatchPairs.push({
+              source: group.sourceText,
+              translated: cleanSpeech,
+            });
+            updatedGroups.push({
+              ...group,
+              translatedText: groupTranslated,
+              speechText: cleanSpeech,
+            });
+            continue;
           }
 
           const projection = projectGroupTranslationToCues(groupCues, groupTranslated);
@@ -937,7 +960,7 @@ export class TranslationManager {
 
         if (groupCues.length === 1) {
           const cue = groupCues[0];
-          if (activeStyle === "cinema") {
+          if (activeStyle === "cinema" && dubbingMode !== "free_narration") {
             groupTranslated = adaptCueToCinemaStyle({
               cue,
               prevCues,
@@ -960,6 +983,27 @@ export class TranslationManager {
             projectionNeedsReview: false,
             isEdited: false,
           });
+          updatedGroups.push({
+            ...group,
+            translatedText: groupTranslated,
+            speechText: cleanSpeech,
+          });
+          continue;
+        }
+
+        if (dubbingMode === "free_narration") {
+          // In free_narration mode, preserve the full natural sentence on the speech group
+          // without forcing 1:1 cue re-translation or length compression
+          const cleanSpeech = normalizeCueTextForSpeech(groupTranslated);
+          const refCues = distributeNarrationGroupToReferenceCues(
+            groupCues,
+            groupTranslated,
+            group.groupId,
+            false
+          );
+          for (const rc of refCues) {
+            translatedCues.push(rc);
+          }
           updatedGroups.push({
             ...group,
             translatedText: groupTranslated,
@@ -1083,6 +1127,11 @@ export class TranslationManager {
     const activeId = providerId || loadTranslationSettings().translationProviderId || "google";
     const provider = this.getProvider(activeId);
 
+    if (provider.id === "gemini" || provider instanceof GeminiTranslateProvider) {
+      await geminiKeyPool.ensurePoolReady((provider as GeminiTranslateProvider).apiKey);
+      this.syncBuiltInProviderConfig(provider);
+    }
+
     if (
       provider instanceof GeminiTranslateProvider &&
       typeof provider.executeBatchAttemptWithPool === "function"
@@ -1155,6 +1204,16 @@ export class TranslationManager {
               translatedText = result.trim();
             }
           } catch (err: any) {
+            if (
+              provider.type === "lmstudio" ||
+              provider.type === "ollama" ||
+              provider.id === "lmstudio" ||
+              provider.id === "ollama"
+            ) {
+              throw new Error(
+                `Dịch câu #${cue.index} qua ${provider.displayName} thất bại: ${err?.message || err}`
+              );
+            }
             console.warn(`Translation failed for cue #${cue.index}:`, err?.message);
             translatedText = normalized || cue.text;
           }

@@ -211,7 +211,7 @@ export function buildBatchTranslationPrompt(
   } else {
     system = isCinema
       ? `You are a professional film/video subtitle translator and adaptation specialist. Translate the numbered speech units into ${targetLang}. Adapt each unit to sound natural, punchy, and cinematic when spoken, while fitting comfortably within spoken timing constraints without dropping any critical meaning, proper nouns, numbers, or key terminology. Strict rule: Keep the exact line number format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`
-      : `You are an expert subtitle and dubbing translator. Translate the numbered speech units into ${targetLang} with concise, natural phrasing that matches spoken timing without dropping critical meaning, proper nouns, numbers, or key terminology. Maintain consistent pronouns and tone across the script. Strict rule: Keep the exact line number format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`;
+      : `You are an expert subtitle translator and dubbing specialist. Translate the numbered speech units into ${targetLang} with concise, natural phrasing that matches spoken timing without dropping critical meaning, proper nouns, numbers, or key terminology. Maintain consistent pronouns and tone across the script. Strict rule: Keep the exact line number format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`;
   }
 
   const contextBlocks: string[] = [];

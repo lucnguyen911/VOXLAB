@@ -31,6 +31,7 @@ import {
   normalizeCueTextForSpeech,
   expandGroupSegmentToCueSegments,
 } from "../../dubbing/speechPlanner";
+import { generateNarrationAlignedSrt } from "../../dubbing/alignedSrtGenerator";
 import {
   resolveJobOutputDirectory,
   resolveArtifactPath,
@@ -210,15 +211,20 @@ export class DubbingExecutor {
             projectId: "dubbing",
           });
 
-          const fit = calculateTimingFit(raw.durationSec, availableSec, speedCeiling);
-          let fittedDurationSec = fit.fittedDurationSec;
-          let speedFactor = fit.speedFactor;
+          let fittedDurationSec = raw.durationSec;
+          let speedFactor = 1.0;
 
-          if (fit.isStretched && fit.speedFactor > 1.001) {
-            const stretched = await applyWsolaTimeStretchToWavFile(raw.outputPath, fit.speedFactor);
-            if (stretched && stretched.isStretched) {
-              fittedDurationSec = stretched.fittedDurationSec;
-              speedFactor = stretched.appliedSpeedFactor;
+          if (dubbingMode !== "free_narration") {
+            const fit = calculateTimingFit(raw.durationSec, availableSec, speedCeiling);
+            fittedDurationSec = fit.fittedDurationSec;
+            speedFactor = fit.speedFactor;
+
+            if (fit.isStretched && fit.speedFactor > 1.001) {
+              const stretched = await applyWsolaTimeStretchToWavFile(raw.outputPath, fit.speedFactor);
+              if (stretched && stretched.isStretched) {
+                fittedDurationSec = stretched.fittedDurationSec;
+                speedFactor = stretched.appliedSpeedFactor;
+              }
             }
           }
 
@@ -287,15 +293,20 @@ export class DubbingExecutor {
             projectId: "dubbing",
           });
 
-          const fit = calculateTimingFit(raw.durationSec, availableSec, speedCeiling);
-          let fittedDurationSec = fit.fittedDurationSec;
-          let speedFactor = fit.speedFactor;
+          let fittedDurationSec = raw.durationSec;
+          let speedFactor = 1.0;
 
-          if (fit.isStretched && fit.speedFactor > 1.001) {
-            const stretched = await applyWsolaTimeStretchToWavFile(raw.outputPath, fit.speedFactor);
-            if (stretched && stretched.isStretched) {
-              fittedDurationSec = stretched.fittedDurationSec;
-              speedFactor = stretched.appliedSpeedFactor;
+          if (dubbingMode !== "free_narration") {
+            const fit = calculateTimingFit(raw.durationSec, availableSec, speedCeiling);
+            fittedDurationSec = fit.fittedDurationSec;
+            speedFactor = fit.speedFactor;
+
+            if (fit.isStretched && fit.speedFactor > 1.001) {
+              const stretched = await applyWsolaTimeStretchToWavFile(raw.outputPath, fit.speedFactor);
+              if (stretched && stretched.isStretched) {
+                fittedDurationSec = stretched.fittedDurationSec;
+                speedFactor = stretched.appliedSpeedFactor;
+              }
             }
           }
 
@@ -460,6 +471,40 @@ export class DubbingExecutor {
         return fail(85, `Lỗi ghép Master audio lồng tiếng: ${err.message}`);
       }
       outputArtifactPaths.push(audioResolution.resolvedPath);
+
+      if (dubbingMode === "free_narration" && options.writeFile) {
+        const groups = planDubbingSpeechGroups(cues);
+        const alignedRes = generateNarrationAlignedSrt({
+          speechGroups: groups,
+          originalCues: cues,
+          translatedCues: cues.map((c) => ({
+            index: c.index,
+            startSec: c.startSec,
+            endSec: c.endSec,
+            originalText: c.text,
+            text: c.text,
+            subtitleText: c.text,
+            speechFragmentText: normalizeCueTextForSpeech(c.text),
+            isEdited: false,
+          })),
+          audioSegments,
+          pauseBetweenGroupsSec: 0.45,
+          mode: "narration",
+        });
+        if (alignedRes.ok && alignedRes.srtContent) {
+          const alignedSrtResolution = resolveArtifactPath({
+            outputDir,
+            baseName: `${getFileStem(job.sourceFileName)}_aligned`,
+            extension: "srt",
+            collisionPolicy,
+            checkPathExists,
+          });
+          if (alignedSrtResolution.action !== "skip") {
+            await options.writeFile(alignedSrtResolution.resolvedPath, alignedRes.srtContent);
+            outputArtifactPaths.push(alignedSrtResolution.resolvedPath);
+          }
+        }
+      }
     }
 
     onProgress?.(100, "Hoàn tất lồng tiếng Master Audio!");

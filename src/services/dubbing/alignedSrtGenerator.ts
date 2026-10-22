@@ -20,12 +20,14 @@ export interface GenerateAlignedSrtOptions {
   audioSegments: Record<number, DubAudioSegment>;
   pauseBetweenGroupsSec?: number;
   /**
-   * "group": Outputs each speech group as a unified subtitle block (1 group = 1 cue).
-   *          This gives the most natural subtitle rhythm for narration.
-   * "cue":   Outputs 1:1 with constituent original cues, timed proportionally
-   *          to phrase lengths within the group's verified audio duration.
+   * "narration": Splits each Vietnamese narration speech group at natural clause/sentence boundaries
+   *              into readable subtitle blocks (independent of original English cue count) and times
+   *              them proportionally across the group's verified audio duration.
+   * "group":     Outputs each speech group as a unified subtitle block (1 group = 1 cue).
+   * "cue":       Outputs 1:1 with constituent original cues, timed proportionally
+   *              to phrase lengths within the group's verified audio duration.
    */
-  mode?: "group" | "cue";
+  mode?: "narration" | "group" | "cue";
 }
 
 export interface GenerateAlignedSrtResult {
@@ -81,6 +83,70 @@ export function calculateNarrationGroupOffsets(
 }
 
 /**
+ * Splits a Vietnamese narration sentence/paragraph into readable subtitle blocks (<= maxCharsPerCue)
+ * at natural punctuation / clause boundaries, completely independent of source SRT cue count.
+ */
+export function splitNarrationGroupIntoSubtitlePhrases(
+  text: string,
+  maxCharsPerCue = 84
+): string[] {
+  const clean = (text || "").replace(/\r\n|\r|\n/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  if (clean.length <= maxCharsPerCue) return [clean];
+
+  // First split by sentence/clause punctuation (. ? ! … ; : , — –)
+  const rawClauses = clean
+    .split(/(?<=[.?!…;:,—–])\s+/)
+    .map((c) => c.trim())
+    .filter(Boolean);
+
+  const phrases: string[] = [];
+  let current = "";
+
+  const pushWrapped = (segment: string) => {
+    const words = segment.split(/\s+/).filter(Boolean);
+    let line = "";
+    for (const w of words) {
+      if (!line) {
+        line = w;
+      } else if (line.length + 1 + w.length <= maxCharsPerCue) {
+        line += " " + w;
+      } else {
+        phrases.push(line);
+        line = w;
+      }
+    }
+    if (line) phrases.push(line);
+  };
+
+  for (const clause of rawClauses) {
+    if (!current) {
+      if (clause.length > maxCharsPerCue) {
+        pushWrapped(clause);
+      } else {
+        current = clause;
+      }
+    } else if (current.length + 1 + clause.length <= maxCharsPerCue) {
+      current += " " + clause;
+    } else {
+      phrases.push(current);
+      if (clause.length > maxCharsPerCue) {
+        pushWrapped(clause);
+        current = "";
+      } else {
+        current = clause;
+      }
+    }
+  }
+
+  if (current) {
+    phrases.push(current);
+  }
+
+  return phrases.length > 0 ? phrases : [clean];
+}
+
+/**
  * Generates a newly synchronized SRT subtitle file for Mode 2 (free_narration)
  * whose timestamps are derived 100% from the newly synthesized narration audio timeline.
  *
@@ -132,7 +198,53 @@ export function generateNarrationAlignedSrt(
   const alignedCues: AlignedSrtCue[] = [];
   let nextCueIndex = 1;
 
-  if (mode === "group") {
+  if (mode === "narration") {
+    // Natural Vietnamese narration subtitle blocks derived from speechGroup text + verified audio duration
+    for (const group of speechGroups) {
+      const offset = offsets.get(group.groupId);
+      if (!offset) continue;
+
+      const groupText =
+        (group.translatedText || "").trim() ||
+        (group.speechText || "").trim() ||
+        group.sourceCueIds
+          .map((id) => transByCueId.get(id)?.text || "")
+          .join(" ")
+          .trim();
+
+      const phrases = splitNarrationGroupIntoSubtitlePhrases(groupText, 84);
+      if (phrases.length <= 1) {
+        alignedCues.push({
+          index: nextCueIndex++,
+          startSec: offset.startSec,
+          endSec: offset.endSec,
+          text: phrases[0] || groupText,
+        });
+      } else {
+        const lengths = phrases.map((p) => Math.max(1, p.trim().length));
+        const totalLen = lengths.reduce((acc, l) => acc + l, 0);
+        let curStart = offset.startSec;
+
+        for (let k = 0; k < phrases.length; k++) {
+          const ratio = lengths[k] / totalLen;
+          const cueDuration =
+            k === phrases.length - 1
+              ? Number((offset.endSec - curStart).toFixed(3))
+              : Number((offset.durationSec * ratio).toFixed(3));
+          const cueEnd = Number((curStart + cueDuration).toFixed(3));
+
+          alignedCues.push({
+            index: nextCueIndex++,
+            startSec: Number(curStart.toFixed(3)),
+            endSec: Math.min(offset.endSec, cueEnd),
+            text: phrases[k],
+          });
+
+          curStart = cueEnd;
+        }
+      }
+    }
+  } else if (mode === "group") {
     // 1 group = 1 subtitle block
     for (const group of speechGroups) {
       const offset = offsets.get(group.groupId);

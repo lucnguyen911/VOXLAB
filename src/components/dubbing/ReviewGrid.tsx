@@ -1,19 +1,25 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   OriginalCue,
   TranslatedCue,
   DubAudioSegment,
   TimingOverflowMetadata,
   DubbingMode,
+  DubbingSpeechGroup,
 } from "../../types/dubbing";
 import { CueRow } from "./CueRow";
-import { Zap, UploadCloud, RefreshCw } from "lucide-react";
+import { Zap, UploadCloud, RefreshCw, FileText, List } from "lucide-react";
 import { useI18n } from "../../i18n/context";
 import { countChunkQualityIssues } from "../../services/audio/qualityValidator";
+import {
+  reconstructFreeNarrationScript,
+  buildTranslatedNarrationScriptText,
+} from "../../services/dubbing/freeNarrationScript";
 
 export interface ReviewGridProps {
   originalCues: OriginalCue[];
   translatedCues: TranslatedCue[];
+  speechGroups?: DubbingSpeechGroup[];
   audioSegments: Record<number, DubAudioSegment>;
   overflowAnalysis: Record<number, TimingOverflowMetadata>;
   dubbingMode?: DubbingMode;
@@ -21,6 +27,8 @@ export interface ReviewGridProps {
   collidingCount?: number;
   isGeneratingAudio?: boolean;
   onUpdateText: (index: number, newText: string) => void;
+  onUpdateGroupText?: (groupId: string, newText: string) => void;
+  onUpdateFullNarrationScript?: (fullScriptText: string) => void;
   onPlayAudio?: (index: number) => void;
   onRegenerateAudio?: (index: number) => void;
   onRegenerateErrors?: () => void;
@@ -34,6 +42,7 @@ export interface ReviewGridProps {
 export const ReviewGrid: React.FC<ReviewGridProps> = ({
   originalCues,
   translatedCues,
+  speechGroups = [],
   audioSegments,
   overflowAnalysis,
   dubbingMode = "source_sync",
@@ -41,6 +50,8 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
   collidingCount = 0,
   isGeneratingAudio = false,
   onUpdateText,
+  onUpdateGroupText,
+  onUpdateFullNarrationScript,
   onPlayAudio,
   onRegenerateAudio,
   onRegenerateErrors,
@@ -51,6 +62,27 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
   bottomPlayer,
 }) => {
   const { lang } = useI18n();
+  const [isFullTxtEditorOpen, setIsFullTxtEditorOpen] = useState(false);
+  const [draftFullScript, setDraftFullScript] = useState("");
+
+  const isFreeNarration = dubbingMode === "free_narration";
+  const activeNarrationGroups: DubbingSpeechGroup[] =
+    isFreeNarration && speechGroups.length > 0
+      ? speechGroups
+      : isFreeNarration
+      ? reconstructFreeNarrationScript(originalCues, translatedCues, audioSegments).groups
+      : [];
+
+  useEffect(() => {
+    if (!isFreeNarration) {
+      setIsFullTxtEditorOpen(false);
+      return;
+    }
+    setDraftFullScript(
+      buildTranslatedNarrationScriptText(activeNarrationGroups, translatedCues)
+    );
+  }, [isFreeNarration, speechGroups, translatedCues]);
+
   const primarySegments = Object.values(audioSegments).filter(
     (s) => s.isGroupPrimary !== false
   );
@@ -94,16 +126,29 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
     );
   }
 
+  const reconstructedSourceTxt = isFreeNarration
+    ? activeNarrationGroups.map((g) => g.sourceText).filter(Boolean).join("\n\n")
+    : "";
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-background">
       {/* Grid Column Headers */}
       <div className="px-4 py-2 bg-surface2/40 border-b border-borderDefault grid grid-cols-1 md:grid-cols-2 gap-3 text-xs select-none flex-shrink-0">
-        <div className="flex items-center px-1">
-          <span className="font-bold text-textPrimary text-xs">Kịch bản gốc</span>
+        <div className="flex items-center justify-between px-1 gap-2">
+          <span className="font-bold text-textPrimary text-xs">
+            {isFreeNarration ? "Kịch bản gốc (Đã khôi phục câu hoàn chỉnh)" : "Kịch bản gốc"}
+          </span>
+          {isFreeNarration && activeNarrationGroups.length > 0 && (
+            <span className="text-[11px] text-textMuted">
+              {activeNarrationGroups.length} câu/đoạn hoàn chỉnh (từ {originalCues.length} cue SRT)
+            </span>
+          )}
         </div>
         <div className="flex items-center justify-between gap-2 flex-wrap px-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-bold text-textPrimary text-xs">Bản Dịch</span>
+            <span className="font-bold text-textPrimary text-xs">
+              {isFreeNarration ? "Kịch bản thuyết minh" : "Bản Dịch"}
+            </span>
             {hasReadyAudio && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 {qualityStats.passCount > 0 && (
@@ -152,6 +197,30 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
+            {isFreeNarration && (
+              <button
+                type="button"
+                onClick={() => setIsFullTxtEditorOpen((prev) => !prev)}
+                className="flex items-center gap-1 px-2 py-0.5 bg-surface2 hover:bg-surface3 text-textPrimary border border-borderDefault rounded text-[11px] font-semibold transition-colors cursor-pointer"
+                title={
+                  isFullTxtEditorOpen
+                    ? "Chuyển về chế độ xem theo từng đoạn câu thuyết minh"
+                    : "Chỉnh sửa toàn bộ kịch bản thuyết minh dạng văn bản TXT liền mạch"
+                }
+              >
+                {isFullTxtEditorOpen ? (
+                  <>
+                    <List className="w-3 h-3 text-accent" />
+                    <span>Theo đoạn câu</span>
+                  </>
+                ) : (
+                  <>
+                    <FileText className="w-3 h-3 text-accent" />
+                    <span>Soạn kịch bản TXT liền mạch</span>
+                  </>
+                )}
+              </button>
+            )}
             {qualityStats.errorCount > 0 && onRegenerateErrors && (
               <button
                 type="button"
@@ -191,33 +260,129 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
         </div>
       </div>
 
-      {/* Cues Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {originalCues.map((orig, i) => {
-          const trans = translatedCues[i] || {
-            index: orig.index,
-            startSec: orig.startSec,
-            endSec: orig.endSec,
-            originalText: orig.text,
-            text: orig.text,
-          };
-
-          return (
-            <CueRow
-              key={orig.index}
-              original={orig}
-              translated={trans}
-              audioSegment={audioSegments[orig.index]}
-              overflowMeta={overflowAnalysis[orig.index]}
-              dubbingMode={dubbingMode}
-              isPlaying={playingCueIndex === orig.index}
-              onUpdateText={onUpdateText}
-              onPlayAudio={onPlayAudio}
-              onRegenerateAudio={onRegenerateAudio}
+      {/* Main Content Area */}
+      {isFreeNarration && isFullTxtEditorOpen ? (
+        <div className="flex-1 overflow-y-auto p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="flex flex-col bg-surface1 border border-borderDefault rounded-xl p-3 gap-2">
+            <span className="text-[11px] font-semibold text-textSecondary">
+              Kịch bản TXT gốc đã khôi phục (Không gồm số thứ tự & mốc thời gian SRT)
+            </span>
+            <textarea
+              readOnly
+              value={reconstructedSourceTxt}
+              className="flex-1 w-full min-h-[260px] bg-surface2/50 border border-borderDefault rounded-lg p-3 text-xs text-textPrimary leading-relaxed resize-none focus:outline-none"
             />
-          );
-        })}
-      </div>
+          </div>
+          <div className="flex flex-col bg-surface1 border border-borderDefault rounded-xl p-3 gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-textSecondary">
+                Kịch bản thuyết minh tiếng Việt (Chỉnh sửa tự do trước khi tạo giọng đọc TTS)
+              </span>
+            </div>
+            <textarea
+              value={draftFullScript}
+              onChange={(e) => {
+                const val = e.target.value;
+                setDraftFullScript(val);
+                onUpdateFullNarrationScript?.(val);
+              }}
+              placeholder="Nhập hoặc chỉnh sửa kịch bản thuyết minh liền mạch..."
+              className="flex-1 w-full min-h-[260px] bg-surface2 border border-borderDefault focus:border-accent rounded-lg p-3 text-xs text-textPrimary leading-relaxed resize-none focus:outline-none"
+            />
+          </div>
+        </div>
+      ) : isFreeNarration && activeNarrationGroups.length > 0 ? (
+        <div className="flex-1 overflow-y-auto p-4 space-y-3" data-testid="free-narration-groups-grid">
+          {activeNarrationGroups.map((group, gIdx) => {
+            const headCueIdx = group.sourceCueIds[0] || gIdx + 1;
+            const groupTranslatedText =
+              group.translatedText ||
+              group.speechText ||
+              group.sourceCueIds
+                .map((id) => translatedCues.find((tc) => tc.index === id)?.text || "")
+                .filter(Boolean)
+                .join(" ");
+
+            const syntheticOriginal: OriginalCue = {
+              index: gIdx + 1,
+              startSec: group.startSec,
+              endSec: group.endSec,
+              text: group.sourceText,
+            };
+            const syntheticTranslated: TranslatedCue = {
+              index: gIdx + 1,
+              startSec: group.startSec,
+              endSec: group.endSec,
+              originalText: group.sourceText,
+              text: groupTranslatedText,
+              subtitleText: groupTranslatedText,
+              speechFragmentText: group.speechText || groupTranslatedText,
+              groupId: group.groupId,
+              isEdited: group.isUserModified,
+            };
+
+            const rawSeg = audioSegments[headCueIdx];
+            const narrationSeg = rawSeg
+              ? {
+                  ...rawSeg,
+                  groupCueIndices: undefined,
+                }
+              : undefined;
+
+            return (
+              <CueRow
+                key={group.groupId}
+                original={syntheticOriginal}
+                translated={syntheticTranslated}
+                audioSegment={narrationSeg}
+                dubbingMode="free_narration"
+                narrationSourceCueCount={group.sourceCueIds.length}
+                isPlaying={
+                  playingCueIndex !== null &&
+                  playingCueIndex !== undefined &&
+                  group.sourceCueIds.includes(playingCueIndex)
+                }
+                onUpdateText={(_idx, newText) => {
+                  if (onUpdateGroupText) {
+                    onUpdateGroupText(group.groupId, newText);
+                  } else {
+                    onUpdateText(headCueIdx, newText);
+                  }
+                }}
+                onPlayAudio={() => onPlayAudio?.(headCueIdx)}
+                onRegenerateAudio={() => onRegenerateAudio?.(headCueIdx)}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {originalCues.map((orig, i) => {
+            const trans = translatedCues[i] || {
+              index: orig.index,
+              startSec: orig.startSec,
+              endSec: orig.endSec,
+              originalText: orig.text,
+              text: orig.text,
+            };
+
+            return (
+              <CueRow
+                key={orig.index}
+                original={orig}
+                translated={trans}
+                audioSegment={audioSegments[orig.index]}
+                overflowMeta={overflowAnalysis[orig.index]}
+                dubbingMode={dubbingMode}
+                isPlaying={playingCueIndex === orig.index}
+                onUpdateText={onUpdateText}
+                onPlayAudio={onPlayAudio}
+                onRegenerateAudio={onRegenerateAudio}
+              />
+            );
+          })}
+        </div>
+      )}
 
       {/* Bottom Audio Player if provided */}
       {bottomPlayer && (

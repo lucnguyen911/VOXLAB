@@ -71,6 +71,11 @@ import {
   expandGroupSegmentToCueSegments,
   normalizeCueTextForSpeech,
 } from "../services/dubbing/speechPlanner";
+import {
+  updateNarrationGroupText,
+  applyFullNarrationScriptEdit,
+  buildTranslatedNarrationScriptText,
+} from "../services/dubbing/freeNarrationScript";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import { useI18n } from "../i18n/context";
 import { createEffectiveVoiceSnapshot } from "../services/providers";
@@ -635,6 +640,43 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setAudioSegments(updatedSegments);
   };
 
+  const handleUpdateGroupText = (groupId: string, newGroupText: string) => {
+    const activeGroups =
+      speechGroups.length > 0
+        ? speechGroups
+        : planDubbingSpeechGroups(originalCues, translatedCues);
+    const { updatedGroups, updatedTranslatedCues, updatedSegments } =
+      updateNarrationGroupText(
+        activeGroups,
+        originalCues,
+        translatedCues,
+        groupId,
+        newGroupText,
+        audioSegments
+      );
+    setSpeechGroups(updatedGroups);
+    setTranslatedCues(updatedTranslatedCues);
+    setAudioSegments(updatedSegments);
+  };
+
+  const handleUpdateFullNarrationScript = (fullScriptText: string) => {
+    const activeGroups =
+      speechGroups.length > 0
+        ? speechGroups
+        : planDubbingSpeechGroups(originalCues, translatedCues);
+    const { updatedGroups, updatedTranslatedCues, updatedSegments } =
+      applyFullNarrationScriptEdit(
+        activeGroups,
+        originalCues,
+        translatedCues,
+        fullScriptText,
+        audioSegments
+      );
+    setSpeechGroups(updatedGroups);
+    setTranslatedCues(updatedTranslatedCues);
+    setAudioSegments(updatedSegments);
+  };
+
   // Automatically trigger background quality validation for any ready primary segment whose review is outdated or missing
   // Deferred when isGeneratingAudio is true so Whisper QC never competes with active TTS synthesis
   useEffect(() => {
@@ -732,16 +774,28 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     // Check if local provider is reachable before translating
     try {
       const activeProvider = translationManager.getProvider(selectedProviderId);
-      if (activeProvider && (activeProvider.type === "lmstudio" || activeProvider.type === "ollama") && typeof activeProvider.testConnection === "function") {
+      if (
+        activeProvider &&
+        (activeProvider.type === "lmstudio" || activeProvider.type === "ollama") &&
+        typeof activeProvider.testConnection === "function"
+      ) {
         const testRes = await activeProvider.testConnection();
         if (!testRes.ok) {
-          setRestoredNotice(
-            `Máy chủ ${activeProvider.displayName} chưa bật (${(activeProvider as any).endpoint || "localhost"}). Hệ thống sẽ tự động dùng Google Translate để bản dịch hoàn tất.`
+          setErrorMessage(
+            testRes.message ||
+              `Máy chủ ${activeProvider.displayName} chưa khả dụng (${
+                (activeProvider as any).endpoint || "localhost"
+              }). Vui lòng kiểm tra máy chủ nội bộ hoặc chủ động chọn nhà cung cấp khác.`
           );
+          return;
         }
       }
-    } catch {
-      // ignore check error
+    } catch (connErr: any) {
+      setErrorMessage(
+        connErr?.message ||
+          "Không thể kết nối tới nhà cung cấp dịch thuật nội bộ. Vui lòng kiểm tra máy chủ."
+      );
+      return;
     }
 
     setIsTranslating(true);
@@ -763,6 +817,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           sourceLang,
           useSpeechGroups: true,
           dubbingMode,
+          strict: true,
           isPaused: () => translationControlRef.current.isPaused,
           isCancelled: () => translationControlRef.current.isCancelled,
         }
@@ -773,7 +828,11 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       }
 
       setTranslatedCues(translated);
-      const nextGroups = planDubbingSpeechGroups(originalCues, translated);
+      const managerGroups = translationManager.getLastSpeechGroups();
+      const nextGroups =
+        managerGroups && managerGroups.length > 0
+          ? managerGroups
+          : planDubbingSpeechGroups(originalCues, translated);
       setSpeechGroups(nextGroups);
 
       // Invalidate existing audio segments: mark all as needs_generation
@@ -834,7 +893,10 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
 
     const srtContent = exportToSrt(srtCues);
     const baseName = sourceMediaName.replace(/\.[^/.]+$/, "") || "phu_de";
-    const filename = `${baseName}_${targetLang}.srt`;
+    const isRefSrt = dubbingMode === "free_narration";
+    const filename = isRefSrt
+      ? `${baseName}_${targetLang}_ref_source_timing.srt`
+      : `${baseName}_${targetLang}.srt`;
 
     const blob = new Blob([srtContent], { type: "text/plain;charset=utf-8" });
     if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
@@ -857,12 +919,14 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
             chunkCount: translatedCues.length,
             artifacts: [
               {
-                label: `Phụ đề đã dịch (.SRT - ${targetLang.toUpperCase()})`,
+                label: isRefSrt
+                  ? `Phụ đề tham khảo theo mốc gốc (.SRT - ${targetLang.toUpperCase()})`
+                  : `Phụ đề đã dịch (.SRT - ${targetLang.toUpperCase()})`,
                 filePath: chosenPath,
                 type: "subtitle",
                 task: "translation",
                 subtitleContent: srtContent,
-                isTimelineSynced: true,
+                isTimelineSynced: !isRefSrt,
               },
             ],
           });
@@ -887,16 +951,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const handleExportTxt = () => {
     if (!translatedCues || translatedCues.length === 0) return;
 
-    let fullText = "";
-    if (speechGroups.length > 0) {
-      fullText = speechGroups
-        .map((g) => g.translatedText || g.speechText || "")
-        .filter(Boolean)
-        .join("\n\n");
-    }
-    if (!fullText) {
-      fullText = translatedCues.map((c) => c.text).join("\n\n");
-    }
+    const fullText = buildTranslatedNarrationScriptText(speechGroups, translatedCues);
 
     const baseName = sourceMediaName.replace(/\.[^/.]+$/, "") || "kich_ban_dich";
     const filename = `${baseName}_${targetLang}.txt`;
@@ -961,7 +1016,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       translatedCues,
       audioSegments,
       pauseBetweenGroupsSec: pauses.period ?? 0.45,
-      mode: "cue",
+      mode: "narration",
     });
 
     if (!res.ok || !res.srtContent) {
@@ -1939,6 +1994,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           <ReviewGrid
             originalCues={originalCues}
             translatedCues={translatedCues}
+            speechGroups={speechGroups}
             audioSegments={audioSegments}
             overflowAnalysis={overflowAnalysis}
             dubbingMode={dubbingMode}
@@ -1947,6 +2003,8 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
             isGeneratingAudio={isGeneratingAudio || isCheckingAsrReadiness}
             onAutoFitAll={handleAutoFitAll}
             onUpdateText={handleUpdateText}
+            onUpdateGroupText={handleUpdateGroupText}
+            onUpdateFullNarrationScript={handleUpdateFullNarrationScript}
             onPlayAudio={(idx) => {
               if (activePreviewCueIndex === idx) {
                 setIsPlayingCueAudio((prev) => !prev);
