@@ -393,6 +393,32 @@ class NumberNormalizerTest(unittest.TestCase):
         )
         self.assertTrue(are_number_expressions_equivalent("fifteen", "15", "vi"))
 
+    def test_unit_abbreviations_and_contextual_roman_numerals_v300(self):
+        src_kg = [s.canonical for s in collapse_number_tokens("forty kilograms".split(), "en")]
+        asr_kg = [s.canonical for s in collapse_number_tokens(["40", "kg"], "en")]
+        asr_kg_attached = [s.canonical for s in collapse_number_tokens(["40kg"], "en")]
+        self.assertEqual(src_kg, ["40", "kg"])
+        self.assertEqual(asr_kg, ["40", "kg"])
+        self.assertEqual(asr_kg_attached, ["40", "kg"])
+
+        src_km = [s.canonical for s in collapse_number_tokens("one hundred kilometers".split(), "en")]
+        asr_km = [s.canonical for s in collapse_number_tokens(["100", "km"], "en")]
+        self.assertEqual(src_km, ["100", "km"])
+        self.assertEqual(asr_km, ["100", "km"])
+
+        src_ww2 = [s.canonical for s in collapse_number_tokens("During World War Two,".split(), "en")]
+        asr_ww2 = [s.canonical for s in collapse_number_tokens(["During", "World", "War", "II,"], "en")]
+        self.assertEqual(src_ww2, ["during", "world", "war", "2"])
+        self.assertEqual(asr_ww2, ["during", "world", "war", "2"])
+
+        src_part3 = [s.canonical for s in collapse_number_tokens("Part Three".split(), "en")]
+        asr_part3 = [s.canonical for s in collapse_number_tokens(["Part", "III"], "en")]
+        self.assertEqual(src_part3, ["part", "3"])
+        self.assertEqual(asr_part3, ["part", "3"])
+
+        pronoun_tokens = [s.canonical for s in collapse_number_tokens("I think I can".split(), "en")]
+        self.assertEqual(pronoun_tokens, ["i", "think", "i", "can"])
+
 
 if __name__ == "__main__":
     unittest.main()

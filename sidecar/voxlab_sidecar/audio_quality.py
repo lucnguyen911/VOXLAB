@@ -142,14 +142,23 @@ COMMON_EQUIVALENTS: dict[str, set[str]] = {
     "plain": {"plain", "plane"},
     "plains": {"plains", "planes"},
     "main": {"main", "mane"},
+    # Physical unit abbreviations
+    "kg": {"kg", "kilogram", "kilograms", "kilo", "kilos"},
+    "km": {"km", "kilometer", "kilometers", "kilometre", "kilometres"},
+    "cm": {"cm", "centimeter", "centimeters", "centimetre", "centimetres"},
+    "mm": {"mm", "millimeter", "millimeters", "millimetre", "millimetres"},
+    "mg": {"mg", "milligram", "milligrams"},
+    "g": {"g", "gram", "grams"},
+    "lb": {"lb", "lbs", "pound", "pounds"},
+    "oz": {"oz", "ounce", "ounces"},
 }
 
 NUMBER_WORDS = {
     "0": {"zero", "o", "khong", "không"},
     "1": {"one", "mot", "một", "mốt"},
-    "2": {"two", "hai"},
-    "3": {"three", "ba"},
-    "4": {"four", "bon", "bốn", "tư"},
+    "2": {"two", "hai", "ii"},
+    "3": {"three", "ba", "iii"},
+    "4": {"four", "bon", "bốn", "tư", "iv"},
     "5": {"five", "nam", "năm", "lăm"},
     "6": {"six", "sau", "sáu"},
     "7": {"seven", "bay", "bảy"},
@@ -673,6 +682,258 @@ def is_protected_entity_pair(
         return True, "number_unit"
 
     return False, ""
+
+
+def compute_acoustic_envelope(
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+) -> dict[str, Any] | None:
+    """Computes a shared frame-level RMS and ZCR envelope (10ms hop, 20ms window) once per audio file."""
+    if audio_data is None or sample_rate <= 0 or audio_data.size == 0:
+        return None
+    mono = np.ascontiguousarray(audio_data, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    hop = max(1, int(round(0.010 * sample_rate)))
+    win = max(hop + 1, int(round(0.020 * sample_rate)))
+    if mono.size < win * 2:
+        return None
+    frames = np.lib.stride_tricks.sliding_window_view(mono, win)[::hop]
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    zcr = np.mean(np.abs(np.diff(np.signbit(frames), axis=1)), axis=1)
+    voiced = rms[rms > 0.005]
+    has_speech = bool(voiced.size >= 5)
+    p10 = float(np.percentile(rms, 10)) if rms.size > 0 else 0.0
+    p75 = float(np.percentile(voiced, 75)) if has_speech else 0.05
+    sil_th = max(0.006, min(0.016, max(p10 * 2.5, p75 * 0.115)))
+    active_th = max(0.018, p75 * 0.24)
+    active_indices = np.where(rms >= active_th)[0]
+    first_speech_sec = float(active_indices[0] * 0.01) if active_indices.size > 0 else 0.0
+    last_speech_sec = float(active_indices[-1] * 0.01) if active_indices.size > 0 else (mono.size / float(sample_rate))
+    return {
+        "mono": mono,
+        "sample_rate": sample_rate,
+        "hop": hop,
+        "win": win,
+        "rms": rms,
+        "zcr": zcr,
+        "p10": p10,
+        "p75": p75,
+        "sil_th": sil_th,
+        "active_th": active_th,
+        "has_speech": has_speech,
+        "first_speech_sec": first_speech_sec,
+        "last_speech_sec": last_speech_sec,
+    }
+
+
+def extract_global_silent_valleys(
+    envelope: dict[str, Any] | None,
+    asr_words: list[dict[str, Any]],
+) -> tuple[dict[int, tuple[float, float, float]], list[tuple[float, float]]]:
+    """Extracts contiguous silent valleys (>= 0.12s) from the shared acoustic envelope and maps each
+    valley to at most one inter-word boundary `i` (between `asr_words[i]` and `asr_words[i+1]`).
+    Returns `(boundary_valleys, all_boundary_intervals)` where:
+      - `boundary_valleys[i] = (gap_dur_sec, gap_start_sec, gap_end_sec)`
+      - `all_boundary_intervals` lists all `(gap_start_sec, gap_end_sec)` attributed to inter-word boundaries
+        so `detect_intra_word_pause` never misclassifies an inter-word pause as an intra-word break.
+    """
+    if envelope is None or not envelope.get("has_speech") or len(asr_words) < 2:
+        return {}, []
+
+    rms = envelope["rms"]
+    zcr = envelope["zcr"]
+    sil_th = float(envelope["sil_th"])
+    active_th = float(envelope["active_th"])
+    first_speech_sec = float(envelope["first_speech_sec"])
+    last_speech_sec = float(envelope["last_speech_sec"])
+
+    is_quiet = (rms < sil_th) & ~((rms >= 0.010) & (zcr >= 0.30))
+    valleys: list[tuple[float, float, float]] = []
+    run_s: int | None = None
+    for idx in range(len(is_quiet) + 1):
+        q = bool(is_quiet[idx]) if idx < len(is_quiet) else False
+        if q and run_s is None:
+            run_s = idx
+        elif not q and run_s is not None:
+            dur = (idx - run_s) * 0.01
+            if dur >= 0.12:
+                valleys.append((round(run_s * 0.01, 3), round(idx * 0.01, 3), round(dur, 3)))
+            run_s = None
+
+    boundary_valleys: dict[int, tuple[float, float, float]] = {}
+    all_boundary_intervals: list[tuple[float, float]] = []
+
+    for v_s, v_e, v_dur in valleys:
+        if v_s <= first_speech_sec + 0.05 or v_e >= last_speech_sec - 0.05:
+            continue
+        v_mid = 0.5 * (v_s + v_e)
+
+        matched_b: int | None = None
+        best_overlap = 0.0
+        for i in range(len(asr_words) - 1):
+            e_i = float(asr_words[i].get("endSec", 0.0))
+            s_next = float(asr_words[i + 1].get("startSec", 0.0))
+            if v_s <= s_next + 0.04 and v_e >= e_i - 0.04:
+                ov = min(v_e, max(e_i, s_next) + 0.06) - max(v_s, min(e_i, s_next) - 0.06)
+                if ov > best_overlap:
+                    best_overlap = ov
+                    matched_b = i
+
+        if matched_b is None:
+            w_m: int | None = None
+            for m, w in enumerate(asr_words):
+                if float(w.get("startSec", 0.0)) <= v_mid <= float(w.get("endSec", 0.0)):
+                    w_m = m
+                    break
+            if w_m is not None:
+                s_m = float(asr_words[w_m].get("startSec", 0.0))
+                e_m = float(asr_words[w_m].get("endSec", 0.0))
+                tok_m = clean_word(str(asr_words[w_m].get("word", "")))
+                t_vow = strip_tones_keep_vowels(tok_m)
+                syl_m = max(1, len(re.findall(r"[aeiouyăâêôơư]+", t_vow))) if t_vow else 1
+                if t_vow.endswith("e") and not t_vow.endswith(("le", "ee", "ie", "oe", "ye")) and syl_m > 1:
+                    syl_m -= 1
+
+                f_sm = max(0, int(round(s_m * 100)))
+                f_vs = max(f_sm, int(round(v_s * 100)))
+                f_ve = min(len(rms), int(round(v_e * 100)))
+                f_em = min(len(rms), int(round(e_m * 100)))
+                left_active = float(np.sum(rms[f_sm:f_vs] >= active_th)) * 0.01
+                right_active = float(np.sum(rms[f_ve:f_em] >= active_th)) * 0.01
+                dist_left = v_s - s_m
+                dist_right = e_m - v_e
+                prev_tok = clean_word(str(asr_words[w_m - 1].get("word", ""))) if w_m > 0 else ""
+                prev_is_num_or_abbr = bool(
+                    re.search(r"\d", prev_tok)
+                    or prev_tok in ("kg", "km", "cm", "mm", "mg", "lb", "lbs", "oz", "ii", "iii", "iv", "vi", "vii", "viii", "ix", "x")
+                )
+
+                if w_m > 0 and (
+                    dist_left <= 0.18
+                    or left_active < 0.12
+                    or (syl_m == 1 and right_active <= 0.24 and dist_left <= dist_right + 0.14)
+                    or (prev_is_num_or_abbr and dist_left <= 0.45)
+                ):
+                    matched_b = w_m - 1
+                elif w_m + 1 < len(asr_words) and (dist_right <= 0.18 or right_active < 0.12):
+                    matched_b = w_m
+
+        if matched_b is not None:
+            all_boundary_intervals.append((v_s, v_e))
+            cur_dur, _, _ = boundary_valleys.get(matched_b, (0.0, 0.0, 0.0))
+            if v_dur > cur_dur:
+                boundary_valleys[matched_b] = (v_dur, v_s, v_e)
+
+    return boundary_valleys, all_boundary_intervals
+
+
+def classify_phrase_cohesion_pair(
+    source_words: list[str],
+    source_words_clean: list[str],
+    delimiters: list[str],
+    src_idx1: int | None,
+    src_idx2: int | None,
+    w1_raw: str,
+    w2_raw: str,
+    eff_speed: float,
+    default_min_pause: float,
+) -> tuple[bool, str, float]:
+    """Classifies whether two adjacent words form a tight syntactic/semantic constituent
+    and returns `(is_tight_cohesion, cohesion_kind, adaptive_min_pause_sec)`."""
+    is_protected, entity_kind = is_protected_entity_pair(
+        source_words, delimiters, src_idx1, src_idx2, w1_raw, w2_raw
+    )
+    if is_protected:
+        if entity_kind == "product_version":
+            return True, "product_version", max(0.18, 0.20 / eff_speed)
+        if entity_kind == "compound_proper_noun":
+            return True, "compound_proper_noun", max(0.22, 0.24 / eff_speed)
+        if entity_kind == "number_unit":
+            return True, "number_unit", max(0.25, 0.28 / eff_speed)
+
+    if src_idx1 is not None and src_idx2 is not None:
+        if src_idx2 <= src_idx1 or (src_idx2 - src_idx1) > 2:
+            return False, "", default_min_pause
+        combined_delim = "".join(delimiters[k] for k in range(src_idx1 + 1, min(len(delimiters), src_idx2 + 1)))
+        if has_punctuation_boundary(combined_delim):
+            return False, "", default_min_pause
+
+    c1 = clean_word(w1_raw)
+    c2 = clean_word(w2_raw)
+    if not c1 or not c2:
+        return False, "", default_min_pause
+
+    prev_c = source_words_clean[src_idx1 - 1] if (src_idx1 is not None and src_idx1 > 0) else ""
+    next_c = source_words_clean[src_idx2 + 1] if (src_idx2 is not None and src_idx2 + 1 < len(source_words_clean)) else ""
+    tok2_raw = source_words[src_idx2] if (src_idx2 is not None and 0 <= src_idx2 < len(source_words)) else w2_raw
+    tok2_strip = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", tok2_raw)
+
+    # 1. Compound Preposition / Particle Lock (e.g. 'down to', 'up to', 'out of', 'into unified')
+    if (
+        c1 in ("down", "up", "out", "off", "prior", "according", "due", "close", "next", "instead", "ahead", "apart", "aside")
+        and c2 in ("to", "of", "from", "with")
+    ) or (
+        c1 in ("into", "onto", "within", "without", "upon", "towards", "toward", "across", "through", "throughout", "against", "among")
+        and c2 in (WEAK_CLITIC_ARTICLES | {"this", "that", "these", "those", "its", "their", "his", "her", "our", "your", "my", "unified", "one", "single"})
+    ):
+        return True, "tight_preposition", max(0.22, 0.24 / eff_speed)
+
+    # 2. Preposition + Number / Quantitative Complement (e.g. 'below 40', 'between 200', 'from 60')
+    if c1 in (
+        "below", "above", "under", "over", "from", "between", "around", "roughly",
+        "nearly", "about", "at", "by", "of", "in", "for", "with", "to", "into", "onto"
+    ) and (is_version_or_number_token(tok2_strip) or is_version_or_number_token(w2_raw)):
+        return True, "tight_preposition_number", max(0.24, 0.26 / eff_speed)
+
+    # 3. Numeric Range Structure (e.g. 'between 200 and 300', 'from 60 to 70')
+    if (
+        is_version_or_number_token(w1_raw)
+        and c2 in ("and", "to", "or")
+        and (is_version_or_number_token(next_c) or prev_c in ("between", "from"))
+    ) or (
+        c1 in ("and", "to")
+        and is_version_or_number_token(prev_c)
+        and (is_version_or_number_token(tok2_strip) or is_version_or_number_token(w2_raw))
+    ):
+        return True, "tight_numeric_range", max(0.22, 0.24 / eff_speed)
+
+    # 4. Determiner / Demonstrative / Possessive + Head/Modifier/Number (e.g. 'this 50,000-ton', 'a single', 'the traditional')
+    if c1 in ("the", "a", "an", "this", "these", "those", "my", "your", "our", "their", "his", "her", "its", "every", "each", "no") and c2 not in (
+        PROSODIC_CONJUNCTIONS
+        | {"is", "are", "was", "were", "will", "can", "could", "would", "should", "has", "have", "had", "does", "do", "did", "jumps", "makes", "means", "takes", "works"}
+    ):
+        return True, "tight_determiner", max(0.22, 0.24 / eff_speed)
+
+    # 5. Tight Comparative Construction (e.g. 'ships faster than')
+    if c2 in (
+        "faster", "slower", "better", "worse", "harder", "easier", "higher", "lower",
+        "larger", "smaller", "bigger", "cheaper", "less", "more", "longer", "shorter",
+        "sooner", "further", "closer", "lighter", "heavier", "stronger", "weaker"
+    ) and next_c == "than":
+        return True, "tight_comparative", max(0.22, 0.23 / eff_speed)
+
+    # 6. Prenominal Modifier / Adjective + Proper Noun or Det-Adj-Noun (e.g. 'single Liberty', 'a traditional body shop')
+    if (
+        c1 not in (ENTITY_NON_PROPER_HEADS | {"named", "called"})
+        and tok2_strip
+        and tok2_strip[0].isupper()
+        and not tok2_strip.isupper()
+        and c2 not in ENTITY_NON_PROPER_HEADS
+    ):
+        return True, "tight_modifier_noun", max(0.22, 0.23 / eff_speed)
+
+    if (
+        prev_c in ("a", "an", "the", "this", "that", "these", "those", "its", "their", "his", "her", "our", "your")
+        and c1 not in ENTITY_NON_PROPER_HEADS
+        and c2 not in (
+            ENTITY_NON_PROPER_HEADS
+            | {"is", "are", "was", "were", "will", "can", "could", "would", "should", "has", "have", "had", "found", "built", "made", "used", "called", "named", "designed"}
+        )
+    ):
+        return True, "tight_modifier_noun", max(0.24, 0.26 / eff_speed)
+
+    return False, "", default_min_pause
 
 
 def measure_boundary_silence_sec(
@@ -1689,6 +1950,9 @@ def _verify_low_confidence_equal_word(
         if sw_prob >= 0.25:
             if are_words_equivalent(sw, sw_clean_cand):
                 return None
+            # Do not override an exact primary ASR match when isolated slice differs only by coarticulated -s/-d/-ed suffix
+            if sw_clean_cand in (sw + "s", sw + "d", sw + "ed") or sw in (sw_clean_cand + "s", sw_clean_cand + "d", sw_clean_cand + "ed"):
+                return None
             if len(sw) >= 3 and (
                 sw_clean_cand == prev_src_clean + sw
                 or sw_clean_cand == sw + next_src_clean
@@ -1848,6 +2112,7 @@ def analyze_word_alignment_issues(
     whisper_model: Any | None = None,
     pronunciation_mapping: list[dict[str, Any]] | None = None,
     pronunciation_rules: list[dict[str, Any]] | None = None,
+    envelope: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
     """Analyzes ASR words with timestamps against source text to identify:
     1. Suspected stutter or syllable repetition (SUSPECTED_STUTTER, PARTIAL_PRONUNCIATION)
@@ -2340,7 +2605,7 @@ def analyze_word_alignment_issues(
                                     os.remove(tmp_om_name)
                                 except OSError:
                                     pass
-                    if has_silence and (gap < 0.25 or (gap < 0.45 and audio_data is None)):
+                    if has_silence and (gap < 0.85 or (gap < 0.45 and audio_data is None)):
                         issues.append({
                             "severity": "warning",
                             "code": "MISSING_WORD",
@@ -2573,9 +2838,16 @@ def analyze_word_alignment_issues(
             asr_joined = clean_word("".join(asr_slice_clean))
             src_canon_joined = clean_word("".join(src_span_canonicals))
             asr_canon_joined = clean_word("".join(asr_span_canonicals))
+            is_compound_proper_split = (
+                len(src_joined) >= 7
+                and abs(len(src_joined) - len(asr_joined)) <= 2
+                and (j2 - j1) >= 2
+                and levenshtein_dist(phonetic_key(src_joined), phonetic_key(asr_joined)) <= 1
+            )
             if (
                 src_joined == asr_joined
                 or are_words_equivalent(src_joined, asr_joined)
+                or is_compound_proper_split
                 or (src_canon_joined and src_canon_joined == asr_canon_joined)
                 or are_number_expressions_equivalent(" ".join(src_slice_clean), " ".join(asr_slice_clean), language)
             ):
@@ -2694,6 +2966,23 @@ def analyze_word_alignment_issues(
                 ):
                     asr_to_source[j1] = i1
                     continue
+
+                # Coarticulatory boundary assimilation:
+                # 1) Sibilant assimilation when next word starts with s/z (e.g. 'arm sideways' -> 'arms sideways')
+                # 2) Stop/dental assimilation on -d/-ed after n/l/r/s when next word starts with stop/dental (e.g. 'straighten bent' -> 'straightened bent')
+                next_src_w = source_words_clean[i2] if i2 < len(source_words_clean) else ""
+                if next_src_w:
+                    if (aw == sw + "s" or sw == aw + "s") and next_src_w.startswith(("s", "z")):
+                        asr_to_source[j1] = i1
+                        continue
+                    if (
+                        len(sw) >= 4
+                        and sw[-1] in "nlrs"
+                        and (aw in (sw + "d", sw + "ed") or sw in (aw + "d", aw + "ed"))
+                        and next_src_w.startswith(("t", "d", "b", "p", "k", "g"))
+                    ):
+                        asr_to_source[j1] = i1
+                        continue
 
                 if (
                     len(sw) >= 4
@@ -2906,11 +3195,14 @@ def analyze_word_alignment_issues(
             if 0 <= cand_s < len(source_words_clean) and are_words_equivalent(w_c, source_words_clean[cand_s]):
                 asr_to_source[idx_a] = cand_s
 
-    # Check for abnormal pauses between consecutive ASR words
-    # Pause threshold scaled inversely with playback speed
-    # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
+    # Check for abnormal pauses between consecutive ASR words using shared acoustic envelope
     effective_min_pause = max(0.35, min_abnormal_pause_sec / eff_speed)
     conjunction_threshold = max(0.70, 0.85 / eff_speed)
+
+    if envelope is None and audio_data is not None and sample_rate > 0:
+        envelope = compute_acoustic_envelope(audio_data, sample_rate)
+    boundary_valleys, _ = extract_global_silent_valleys(envelope, asr_words)
+    has_acoustic_speech = bool(envelope is not None and envelope.get("has_speech"))
 
     boundary_records: list[dict[str, Any]] = []
     pair_pause_issues: dict[int, dict[str, Any]] = {}
@@ -2957,22 +3249,39 @@ def analyze_word_alignment_issues(
             w1.get("word", ""),
             w2.get("word", ""),
         )
-
-        if is_protected and entity_kind == "product_version":
-            pair_min_pause = max(0.18, 0.20 / eff_speed)
-        elif is_protected and entity_kind == "compound_proper_noun":
-            pair_min_pause = max(0.24, 0.26 / eff_speed)
-        elif is_protected and entity_kind == "number_unit":
-            pair_min_pause = max(0.32, 0.36 / eff_speed)
-        else:
-            pair_min_pause = effective_min_pause
+        is_tight_cohesion, cohesion_kind, pair_min_pause = classify_phrase_cohesion_pair(
+            source_words,
+            source_words_clean,
+            delimiters,
+            src_idx1,
+            src_idx2,
+            w1.get("word", ""),
+            w2.get("word", ""),
+            eff_speed,
+            effective_min_pause,
+        )
 
         direct_sil_sec = max(0.0, gap)
         contig_sil_sec = max(0.0, gap)
-        if audio_data is not None and sample_rate > 0 and gap >= 0.06:
-            direct_sil_sec, contig_sil_sec = measure_boundary_silence_sec(
-                audio_data, sample_rate, start1, end1, start2, end2
-            )
+        gap_start_sec = end1
+        gap_end_sec = max(end1, start2)
+
+        if has_acoustic_speech:
+            if i in boundary_valleys:
+                v_dur, v_s, v_e = boundary_valleys[i]
+                direct_sil_sec = v_dur
+                contig_sil_sec = v_dur
+                gap_start_sec = v_s
+                gap_end_sec = v_e
+            elif gap >= 0.06:
+                direct_sil_sec, contig_sil_sec = measure_boundary_silence_sec(
+                    audio_data, sample_rate, start1, end1, start2, end2
+                )
+            else:
+                direct_sil_sec = 0.0
+                contig_sil_sec = 0.0
+
+        eff_pause_sec = contig_sil_sec if has_acoustic_speech else max(0.0, gap)
 
         rec = {
             "index": i,
@@ -2983,12 +3292,17 @@ def analyze_word_alignment_issues(
             "start2": start2,
             "end2": end2,
             "gap": gap,
+            "eff_pause_sec": eff_pause_sec,
+            "gap_start_sec": gap_start_sec,
+            "gap_end_sec": gap_end_sec,
             "direct_sil_sec": direct_sil_sec,
             "contig_sil_sec": contig_sil_sec,
             "has_source_punct": has_source_punct,
             "mapping_uncertain": mapping_uncertain,
             "is_protected": is_protected,
             "entity_kind": entity_kind,
+            "is_tight_cohesion": is_tight_cohesion,
+            "cohesion_kind": cohesion_kind,
             "pair_min_pause": pair_min_pause,
             "min_prob": min(w1_prob, w2_prob),
         }
@@ -3003,9 +3317,10 @@ def analyze_word_alignment_issues(
         # Prosodic conjunction allowance: only BEFORE a clause-introducing conjunction (never after)
         if (
             not is_protected
+            and not is_tight_cohesion
             and w2_text in CLAUSE_BOUNDARY_CONJUNCTIONS
             and i >= 2
-            and gap < conjunction_threshold
+            and eff_pause_sec < conjunction_threshold
         ):
             continue
 
@@ -3014,30 +3329,25 @@ def analyze_word_alignment_issues(
 
         # Evaluate whether the pause exceeds the contextual threshold
         is_abnormal = False
-        reported_pause_sec = gap
+        reported_pause_sec = eff_pause_sec
 
-        if is_protected:
-            if audio_data is not None and sample_rate > 0:
-                if gap >= 0.08 and contig_sil_sec >= pair_min_pause:
-                    is_abnormal = True
-                    reported_pause_sec = max(gap, contig_sil_sec)
-            else:
-                if gap >= pair_min_pause:
-                    is_abnormal = True
-                    reported_pause_sec = gap
+        if has_acoustic_speech:
+            if eff_pause_sec >= pair_min_pause:
+                is_abnormal = True
+                reported_pause_sec = eff_pause_sec
         else:
-            if gap >= effective_min_pause:
-                if audio_data is not None and sample_rate > 0:
-                    if direct_sil_sec >= effective_min_pause or contig_sil_sec >= (effective_min_pause + 0.06):
-                        is_abnormal = True
-                        reported_pause_sec = max(gap, direct_sil_sec)
-                else:
-                    is_abnormal = True
-                    reported_pause_sec = gap
+            if gap >= pair_min_pause:
+                is_abnormal = True
+                reported_pause_sec = gap
 
         if is_abnormal:
-            ts = format_timestamp(end1)
-            pause_ctx = f"protected_{entity_kind}" if is_protected else "unpunctuated_clause"
+            ts = format_timestamp(gap_start_sec)
+            if is_protected:
+                pause_ctx = f"protected_{entity_kind}"
+            elif is_tight_cohesion:
+                pause_ctx = cohesion_kind
+            else:
+                pause_ctx = "unpunctuated_clause"
             pair_pause_issues[i] = {
                 "severity": "warning",
                 "code": "ABNORMAL_PAUSE",
@@ -3046,12 +3356,12 @@ def analyze_word_alignment_issues(
                     f"({reported_pause_sec:.2f}s) — khoảng {ts}. Vui lòng nghe kiểm tra."
                 ),
                 "words": [w1_text, w2_text],
-                "timeRange": [round(end1, 3), round(start2, 3)],
+                "timeRange": [round(gap_start_sec, 3), round(gap_end_sec, 3)],
                 "mappingUncertain": mapping_uncertain,
                 "pauseContext": pause_ctx,
             }
 
-    # Check for sandwiched short tokens / version numbers isolated by pauses on both sides
+    # 1. Check for sandwiched short tokens / version numbers isolated by pauses on both sides
     # (e.g. "Powerwall ... 3 ... are")
     consumed_boundaries: set[int] = set()
     sandwiched_issues: list[dict[str, Any]] = []
@@ -3079,12 +3389,19 @@ def analyze_word_alignment_issues(
         if not is_short_or_num:
             continue
 
-        if audio_data is not None and sample_rate > 0:
-            pause_before = b_prev["contig_sil_sec"] if b_prev["gap"] >= 0.08 else 0.0
-            pause_after = b_next["contig_sil_sec"] if b_next["gap"] >= 0.08 else 0.0
+        if has_acoustic_speech:
+            pause_before = b_prev["eff_pause_sec"]
+            pause_after = b_next["eff_pause_sec"]
         else:
             pause_before = max(0.0, b_prev["gap"])
             pause_after = max(0.0, b_next["gap"])
+
+        # If adjacent boundaries are also part of a longer staccato chain (3+ consecutive pauses),
+        # let the choppy_phrase clusterer below merge the entire phrase rather than just 2 boundaries.
+        if (i + 1) < len(boundary_records) and not boundary_records[i + 1]["has_source_punct"] and boundary_records[i + 1]["eff_pause_sec"] >= 0.22:
+            continue
+        if (i - 2) >= 0 and not boundary_records[i - 2]["has_source_punct"] and boundary_records[i - 2]["eff_pause_sec"] >= 0.22:
+            continue
 
         min_side_small = max(0.16, 0.18 / eff_speed)
         min_side_large = max(0.18, 0.20 / eff_speed)
@@ -3097,7 +3414,7 @@ def analyze_word_alignment_issues(
         ):
             consumed_boundaries.add(i - 1)
             consumed_boundaries.add(i)
-            ts = format_timestamp(b_prev["end1"])
+            ts = format_timestamp(b_prev["gap_start_sec"])
             w_prev_text = b_prev["w1_text"]
             w_next_text = b_next["w2_text"]
             mapping_unc = bool(b_prev["mapping_uncertain"] or b_next["mapping_uncertain"])
@@ -3115,15 +3432,72 @@ def analyze_word_alignment_issues(
                     f"({pause_before:.2f}s + {pause_after:.2f}s) — khoảng {ts}. Vui lòng nghe kiểm tra."
                 ),
                 "words": [w_prev_text, w_curr_text, w_next_text],
-                "timeRange": [round(b_prev["end1"], 3), round(b_next["start2"], 3)],
+                "timeRange": [round(b_prev["gap_start_sec"], 3), round(b_next["gap_end_sec"], 3)],
                 "mappingUncertain": mapping_unc,
                 "pauseContext": pause_ctx,
             })
+
+    # 2. Clustered Staccato / Choppy Phrase Detection & Merging:
+    # Merge multi-pause choppy delivery across a 2-5 word unpunctuated window into a single phrase-level warning.
+    choppy_issues: list[dict[str, Any]] = []
+    n_bounds = len(boundary_records)
+    b_cursor = 0
+    while b_cursor < n_bounds:
+        if b_cursor in consumed_boundaries or boundary_records[b_cursor]["has_source_punct"]:
+            b_cursor += 1
+            continue
+        b_rec = boundary_records[b_cursor]
+        if b_rec["eff_pause_sec"] < 0.22:
+            b_cursor += 1
+            continue
+
+        # Attempt to grow a cluster of nearby pauses (<= 3 words apart without punctuation between them)
+        cluster = [b_cursor]
+        look = b_cursor + 1
+        while look < n_bounds and (look - cluster[-1]) <= 3:
+            # Stop if any intermediate boundary had source punctuation
+            if any(boundary_records[m]["has_source_punct"] for m in range(cluster[-1], look + 1)):
+                break
+            if look not in consumed_boundaries and boundary_records[look]["eff_pause_sec"] >= 0.22:
+                cluster.append(look)
+            look += 1
+
+        has_flagged_member = any(idx_c in pair_pause_issues for idx_c in cluster)
+        total_cluster_pause = sum(boundary_records[idx_c]["eff_pause_sec"] for idx_c in cluster)
+        if len(cluster) >= 2 and (has_flagged_member or len(cluster) >= 3 or total_cluster_pause >= 0.65):
+            for idx_c in cluster:
+                consumed_boundaries.add(idx_c)
+            first_b = boundary_records[cluster[0]]
+            last_b = boundary_records[cluster[-1]]
+            phrase_words = [
+                clean_word(str(asr_words[w_k].get("word", "")))
+                for w_k in range(cluster[0], cluster[-1] + 2)
+                if clean_word(str(asr_words[w_k].get("word", "")))
+            ]
+            phrase_str = " ".join(phrase_words)
+            pauses_str = " + ".join(f"{boundary_records[idx_c]['eff_pause_sec']:.2f}s" for idx_c in cluster)
+            ts = format_timestamp(first_b["gap_start_sec"])
+            choppy_issues.append({
+                "severity": "warning",
+                "code": "ABNORMAL_PAUSE",
+                "message": (
+                    f'Cảnh báo: Đọc ngắt nhịp / giật cục trong cụm "{phrase_str}" '
+                    f"({pauses_str}) — khoảng {ts}. Vui lòng nghe kiểm tra."
+                ),
+                "words": phrase_words,
+                "timeRange": [round(first_b["gap_start_sec"], 3), round(last_b["gap_end_sec"], 3)],
+                "mappingUncertain": any(boundary_records[idx_c]["mapping_uncertain"] for idx_c in cluster),
+                "pauseContext": "choppy_phrase",
+            })
+            b_cursor = cluster[-1] + 1
+        else:
+            b_cursor += 1
 
     for b_idx, p_iss in sorted(pair_pause_issues.items()):
         if b_idx not in consumed_boundaries:
             issues.append(p_iss)
     issues.extend(sandwiched_issues)
+    issues.extend(choppy_issues)
 
     # Enrich all alignment issues with diagnostic metadata for UI and TTS log export
     for iss in issues:
@@ -3471,13 +3845,12 @@ def detect_intra_word_pause(
     source_text: str,
     asr_words: list[dict[str, Any]],
     speed: float = 1.0,
+    envelope: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Flag a *silent break or multi-burst syllable stutter inside a single recognized word*,
+    """Flag a genuine silent break or broken-syllable stretch inside a single recognized word,
     e.g. Te-(gap)-sla or Te-xì-la.
-
-    A word may align perfectly in Whisper even though its acoustics are broken.
-    Use frame-level RMS and zero-crossing rate so unvoiced consonants are not
-    mistaken for silence. Only evaluate recognized words present in the script.
+    Excludes inter-word boundary pauses absorbed into Whisper's word window and normal
+    consonant-cluster energy peaks (e.g. 'platforms', 'cycles', 'spend', 'Xpeng', 'blocks', 'pounds').
     """
     if sample_rate <= 0 or audio_data.size < sample_rate // 2:
         return []
@@ -3485,16 +3858,20 @@ def detect_intra_word_pause(
     if not source_tokens:
         return []
 
-    signal = np.asarray(audio_data, dtype=np.float32)
+    if envelope is None:
+        envelope = compute_acoustic_envelope(audio_data, sample_rate)
+    _, inter_word_intervals = extract_global_silent_valleys(envelope, asr_words)
+
+    signal = envelope["mono"] if envelope is not None else np.asarray(audio_data, dtype=np.float32)
     if signal.ndim > 1:
         signal = signal.mean(axis=1)
     hop = max(1, int(round(0.010 * sample_rate)))
     frame_size = max(hop + 1, int(round(0.020 * sample_rate)))
     eff_speed = max(0.5, float(speed or 1.0))
-    min_gap = max(0.12, 0.15 / eff_speed)
+    min_gap = max(0.14, 0.16 / eff_speed)
     found: list[dict[str, Any]] = []
 
-    for word in asr_words:
+    for w_idx, word in enumerate(asr_words):
         token = clean_word(str(word.get("word", "")))
         if (
             len(token) < 4 or token not in source_tokens
@@ -3512,21 +3889,18 @@ def detect_intra_word_pause(
         if stop - start < frame_size * 4:
             continue
         wave = signal[start:stop]
-        energies = []
-        zcrs = []
-        for p in range(0, wave.size - frame_size + 1, hop):
-            frame = wave[p:p + frame_size]
-            energies.append(float(np.sqrt(np.mean(frame ** 2))))
-            zcrs.append(float(np.mean(np.diff(np.signbit(frame)))))
-        if len(energies) < 6:
+        frames_w = np.lib.stride_tricks.sliding_window_view(wave, frame_size)[::hop]
+        if frames_w.shape[0] < 6:
             continue
-        rms = np.asarray(energies)
+        rms = np.sqrt(np.mean(frames_w ** 2, axis=1))
+        zcrs = np.mean(np.abs(np.diff(np.signbit(frames_w), axis=1)), axis=1)
         baseline = float(np.percentile(rms, 75))
         if baseline < 0.025:
             continue
         silence_ceiling = max(0.003, baseline * 0.09)
-        is_quiet = (rms < silence_ceiling) & (np.asarray(zcrs) < 0.20)
+        is_quiet = (rms < silence_ceiling) & (zcrs < 0.20)
         min_frames = max(1, int(np.ceil(min_gap * sample_rate / hop)))
+        expected_syl = _estimate_expected_syllables(token)
         run_start = None
         flagged_word = False
         for pos in range(len(is_quiet) + 1):
@@ -3536,20 +3910,33 @@ def detect_intra_word_pause(
             if not quiet and run_start is not None:
                 run_end = pos
                 gap_sec = (run_end - run_start) * hop / sample_rate
-                # Demand actual speech on both sides; ASR boundary error cannot
-                # produce a false internal pause alert from leading/trailing silence.
+                gap_start = start_sec + run_start * hop / sample_rate
+                gap_end = start_sec + run_end * hop / sample_rate
+
+                # Skip if this silent run overlaps an inter-word boundary pause
+                is_boundary_pause = any(
+                    min(gap_end, b_e + 0.03) - max(gap_start, b_s - 0.03) >= 0.08
+                    for b_s, b_e in inter_word_intervals
+                )
+                # Also skip if multi-word utterance and gap is within 0.18s of word boundary
+                if len(asr_words) > 1 and (
+                    (w_idx > 0 and (gap_start - start_sec) <= 0.18)
+                    or (w_idx + 1 < len(asr_words) and (end_sec - gap_end) <= 0.18)
+                    or (expected_syl == 1 and (end_sec - gap_end) <= 0.24)
+                ):
+                    is_boundary_pause = True
+
                 before = rms[max(0, run_start - 14):run_start]
                 after = rms[run_end:min(len(rms), run_end + 14)]
                 active_before = int(np.sum(before >= baseline * 0.30))
                 active_after = int(np.sum(after >= baseline * 0.30))
                 if (
-                    run_end - run_start >= min_frames
-                    and run_start * hop / sample_rate >= 0.10
-                    and (len(rms) - run_end) * hop / sample_rate >= 0.10
-                    and active_before >= 5 and active_after >= 5
+                    not is_boundary_pause
+                    and run_end - run_start >= min_frames
+                    and run_start * hop / sample_rate >= 0.14
+                    and (len(rms) - run_end) * hop / sample_rate >= 0.14
+                    and active_before >= 8 and active_after >= 8
                 ):
-                    gap_start = start_sec + run_start * hop / sample_rate
-                    gap_end = start_sec + run_end * hop / sample_rate
                     found.append({
                         "severity": "warning",
                         "code": "SUSPICIOUS_INTRA_PAUSE",
@@ -3565,24 +3952,29 @@ def detect_intra_word_pause(
                     break
                 run_start = None
 
-        # Multi-burst syllable break check (e.g., "Tesla" spoken "Te – xì – la"):
-        # Even if valleys have slight voiced/fricative energy or duration < min_gap,
-        # count distinct voiced syllables separated by deep dips (< 22% baseline for >= 40ms).
+        # Strict broken-syllable stretch check (e.g., "Tesla" spoken "Te – xì – la"):
+        # Require >= 3 sustained low-ZCR vowel nuclei (>= 90ms each) separated by >= 2 deep
+        # near-silent valleys (>= 80ms each with rms < 8% baseline and zcr < 0.08),
+        # so consonant clusters/plosives/fricatives ('platforms', 'cycles', 'spend', 'Xpeng', 'blocks', 'pounds') never false-trigger.
         if not flagged_word:
-            expected_syl = _estimate_expected_syllables(token)
-            min_stretched_dur = max(0.55, (0.30 * expected_syl + 0.08) / eff_speed)
-            if dur_sec >= min_stretched_dur:
-                voiced_mask = rms >= baseline * 0.32
-                dip_mask = rms < baseline * 0.22
+            voiced_frames = np.where(rms >= baseline * 0.30)[0]
+            if voiced_frames.size >= 15:
+                active_dur_sec = float(voiced_frames[-1] - voiced_frames[0] + 1) * hop / sample_rate
+            else:
+                active_dur_sec = 0.0
+            min_stretched_dur = max(0.64, (0.30 * expected_syl + 0.08) / eff_speed)
+            if active_dur_sec >= min_stretched_dur:
+                vowel_mask = (rms >= baseline * 0.35) & (zcrs < 0.18)
+                deep_valley_mask = (rms < baseline * 0.12) & (zcrs < 0.10)
                 bursts: list[tuple[int, int]] = []
                 b_start = None
-                for idx in range(len(voiced_mask) + 1):
-                    v = bool(voiced_mask[idx]) if idx < len(voiced_mask) else False
+                for idx in range(len(vowel_mask) + 1):
+                    v = bool(vowel_mask[idx]) if idx < len(vowel_mask) else False
                     if v and b_start is None:
                         b_start = idx
                     elif not v and b_start is not None:
-                        if idx - b_start >= 4:  # >= 40ms voiced burst
-                            if bursts and (b_start - bursts[-1][1] < 5 or int(np.sum(dip_mask[bursts[-1][1]:b_start])) < 4):
+                        if idx - b_start >= 9:  # >= 90ms sustained vowel nucleus
+                            if bursts and int(np.sum(deep_valley_mask[bursts[-1][1]:b_start])) < 6:
                                 bursts[-1] = (bursts[-1][0], idx)
                             else:
                                 bursts.append((b_start, idx))
@@ -3593,11 +3985,11 @@ def detect_intra_word_pause(
                         "code": "SUSPECTED_STUTTER",
                         "message": (
                             f'Nghi vấn phát âm vấp hoặc tách âm tiết bất thường trong từ "{token}" '
-                            f'({len(bursts)} nhịp âm thanh trong {dur_sec:.2f}s) — khoảng {format_timestamp(start_sec)}.'
+                            f'({len(bursts)} nhịp âm thanh trong {active_dur_sec:.2f}s) — khoảng {format_timestamp(start_sec)}.'
                         ),
                         "words": [token],
                         "timeRange": [round(start_sec, 3), round(end_sec, 3)],
-                        "evidence": f"intra-word bursts={len(bursts)} expected_syl={expected_syl} dur={dur_sec:.2f}s",
+                        "evidence": f"intra-word bursts={len(bursts)} expected_syl={expected_syl} dur={active_dur_sec:.2f}s",
                     })
     return found
 
@@ -3975,6 +4367,8 @@ def validate_audio_quality(
         except Exception as rd_err:
             log(f"[audio_quality] Cannot read audio waveform: {rd_err}")
 
+        shared_envelope = compute_acoustic_envelope(data_wave, sr_wave) if (data_wave is not None and sr_wave > 0) else None
+
         alignment_issues, metrics = analyze_word_alignment_issues(
             text,
             detected_words,
@@ -3988,6 +4382,7 @@ def validate_audio_quality(
             whisper_model=whisper_model,
             pronunciation_mapping=pronunciation_mapping,
             pronunciation_rules=pronunciation_rules,
+            envelope=shared_envelope,
         )
 
         # Step 3: Acoustic Stutter Check (waveform + ASR corroboration)
@@ -4017,7 +4412,7 @@ def validate_audio_quality(
         if data_wave is not None and sr_wave > 0:
             try:
                 intra_pauses = detect_intra_word_pause(
-                    data_wave, sr_wave, text, detected_words, speed=speed,
+                    data_wave, sr_wave, text, detected_words, speed=speed, envelope=shared_envelope,
                 )
                 alignment_issues.extend(intra_pauses)
             except Exception as intra_err:

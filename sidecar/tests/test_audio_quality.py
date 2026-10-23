@@ -2354,6 +2354,149 @@ class AudioQualityTest(unittest.TestCase):
         self.assertLessEqual(call_count, audio_quality.MAX_SECONDARY_SLICE_CHECKS)
         self.assertEqual(call_count, 3)
 
+    def test_v300_acoustic_boundary_valley_attribution_when_asr_gap_zero(self):
+        # Whisper DTW absorbs a 0.45s inter-word silence between 'down' and 'to' into 'while'/'to'
+        # so asr_gap == 0.00s, yet actual waveform has a 0.45s silent valley.
+        sr = 16000
+        wave = np.zeros(sr * 4, dtype=np.float32)
+        t_frame = np.arange(sr * 4) / sr
+        carrier = (0.25 * np.sin(2 * np.pi * 210.0 * t_frame)).astype(np.float32)
+        # Active speech regions:
+        # 'bringing' [0.20, 0.55], 'weight' [0.58, 0.88], 'down' [0.90, 1.25],
+        # [0.45s SILENCE in 1.25..1.70], 'to' [1.70, 1.92], 'below' [1.95, 2.30]
+        for s_sec, e_sec in ((0.20, 0.55), (0.58, 0.88), (0.90, 1.25), (1.70, 1.92), (1.95, 2.30)):
+            wave[int(s_sec * sr):int(e_sec * sr)] = carrier[int(s_sec * sr):int(e_sec * sr)]
+
+        text = "bringing weight down to below"
+        # Whisper sets endSec of 'down' == startSec of 'to' == 1.25 (or stretches 'down' to 1.68)
+        asr_words = [
+            {"word": "bringing", "startSec": 0.20, "endSec": 0.56, "probability": 0.99},
+            {"word": "weight", "startSec": 0.56, "endSec": 0.89, "probability": 0.99},
+            {"word": "down", "startSec": 0.90, "endSec": 1.26, "probability": 0.99},
+            {"word": "to", "startSec": 1.26, "endSec": 1.92, "probability": 0.99},
+            {"word": "below", "startSec": 1.93, "endSec": 2.30, "probability": 0.99},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(
+            text, asr_words, language="en", audio_data=wave, sample_rate=sr, audio_duration_sec=3.0
+        )
+        pause_issues = [i for i in issues if i["code"] == "ABNORMAL_PAUSE"]
+        self.assertEqual(len(pause_issues), 1, f"Expected 1 ABNORMAL_PAUSE for down->to, got {issues}")
+        self.assertEqual(pause_issues[0]["words"], ["down", "to"])
+        self.assertEqual(pause_issues[0]["pauseContext"], "tight_preposition")
+
+        # Must NOT misclassify the inter-word silence as an intra-word break
+        intra = audio_quality.detect_intra_word_pause(wave, sr, text, asr_words)
+        self.assertEqual(len(intra), 0, f"Expected 0 false intra-word pauses, got {intra}")
+
+    def test_v300_choppy_phrase_clustering_and_cohesion_tiers(self):
+        # 1. Multi-pause staccato sequence ("consolidate [0.43s] between [0.31s] 200 and [0.40s] 300")
+        # clusters into a single choppy_phrase ABNORMAL_PAUSE warning.
+        text = "designed to consolidate between 200 and 300 stamped parts."
+        asr_choppy = [
+            {"word": "designed", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "to", "startSec": 0.46, "endSec": 0.60, "probability": 0.99},
+            {"word": "consolidate", "startSec": 0.62, "endSec": 1.15, "probability": 0.99},
+            {"word": "between", "startSec": 1.58, "endSec": 1.95, "probability": 0.99},
+            {"word": "200", "startSec": 2.26, "endSec": 2.65, "probability": 0.99},
+            {"word": "and", "startSec": 3.05, "endSec": 3.25, "probability": 0.99},
+            {"word": "300", "startSec": 3.27, "endSec": 3.65, "probability": 0.99},
+            {"word": "stamped", "startSec": 3.90, "endSec": 4.25, "probability": 0.99},
+            {"word": "parts.", "startSec": 4.27, "endSec": 4.65, "probability": 0.99},
+        ]
+        issues_choppy = audio_quality.analyze_word_alignment_issues(text, asr_choppy, language="en")
+        self.assertEqual(len(issues_choppy), 1, f"Expected 1 clustered choppy_phrase issue, got {issues_choppy}")
+        self.assertEqual(issues_choppy[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_choppy[0]["pauseContext"], "choppy_phrase")
+        self.assertIn("consolidate between 200 and 300 stamped", issues_choppy[0]["message"])
+
+        # 2. Natural subject-predicate pause ("named Henry Kaiser [0.38s] tore up") must pass with 0 warnings
+        text_kaiser = "Then an industrialist named Henry Kaiser tore up the sequential playbook."
+        asr_kaiser = [
+            {"word": "Then", "startSec": 0.10, "endSec": 0.35, "probability": 0.99},
+            {"word": "an", "startSec": 0.36, "endSec": 0.50, "probability": 0.99},
+            {"word": "industrialist", "startSec": 0.52, "endSec": 1.25, "probability": 0.99},
+            {"word": "named", "startSec": 1.27, "endSec": 1.55, "probability": 0.99},
+            {"word": "Henry", "startSec": 1.57, "endSec": 1.92, "probability": 0.99},
+            {"word": "Kaiser", "startSec": 1.94, "endSec": 2.35, "probability": 0.99},
+            # 0.38s natural subject-predicate prosodic boundary
+            {"word": "tore", "startSec": 2.73, "endSec": 3.00, "probability": 0.99},
+            {"word": "up", "startSec": 3.02, "endSec": 3.18, "probability": 0.99},
+            {"word": "the", "startSec": 3.20, "endSec": 3.32, "probability": 0.99},
+            {"word": "sequential", "startSec": 3.34, "endSec": 3.85, "probability": 0.99},
+            {"word": "playbook.", "startSec": 3.87, "endSec": 4.35, "probability": 0.99},
+        ]
+        issues_kaiser = audio_quality.analyze_word_alignment_issues(text_kaiser, asr_kaiser, language="en")
+        self.assertEqual(len(issues_kaiser), 0, f"Expected 0 issues for natural Kaiser->tore pause, got {issues_kaiser}")
+
+    def test_v300_consonant_cluster_words_no_false_stutter(self):
+        # Words with internal stop closures / plural fricatives ('platforms', 'cycles', 'spend', 'Xpeng', 'blocks', 'pounds')
+        # have brief 30-45ms consonant dips or high-ZCR fricative bursts; they must NOT trigger SUSPECTED_STUTTER.
+        sr = 16000
+        wave = np.zeros(sr * 2, dtype=np.float32)
+        t = np.arange(sr * 2) / sr
+        vowel = (0.30 * np.sin(2 * np.pi * 190.0 * t)).astype(np.float32)
+        rng = np.random.default_rng(42)
+        fric = (0.12 * rng.standard_normal(sr * 2)).astype(np.float32)
+
+        # Construct 'platforms' in [0.20, 0.92]:
+        # 'plat' vowel [0.22, 0.36], 35ms /t/ closure [0.36, 0.395], 'form' vowel [0.395, 0.56],
+        # high-ZCR /s/ fricative [0.56, 0.68], plus trailing silence [0.68, 0.92]
+        wave[int(0.22 * sr):int(0.36 * sr)] = vowel[int(0.22 * sr):int(0.36 * sr)]
+        wave[int(0.395 * sr):int(0.56 * sr)] = vowel[int(0.395 * sr):int(0.56 * sr)]
+        wave[int(0.56 * sr):int(0.68 * sr)] = fric[int(0.56 * sr):int(0.68 * sr)]
+
+        for w_token in ("platforms", "cycles", "spend", "Xpeng", "castings", "stamped", "blocks", "pounds", "stations"):
+            intra = audio_quality.detect_intra_word_pause(
+                wave,
+                sr,
+                f"Testing {w_token} in production",
+                [{"word": w_token, "startSec": 0.20, "endSec": 0.92, "probability": 0.95}],
+            )
+            self.assertEqual(len(intra), 0, f"Expected 0 false stutter for '{w_token}', got {intra}")
+
+    def test_v300_compound_proper_splits_and_coarticulatory_assimilation(self):
+        # 1. Compound proper-noun split: 'Gigafactory' <-> ['Geiga', 'Factory']
+        text_giga = "Inside the Shanghai Gigafactory today."
+        asr_giga = [
+            {"word": "Inside", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "the", "startSec": 0.46, "endSec": 0.58, "probability": 0.99},
+            {"word": "Shanghai", "startSec": 0.60, "endSec": 1.10, "probability": 0.99},
+            {"word": "Geiga", "startSec": 1.12, "endSec": 1.45, "probability": 0.90},
+            {"word": "Factory", "startSec": 1.46, "endSec": 1.90, "probability": 0.95},
+            {"word": "today.", "startSec": 1.92, "endSec": 2.30, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_giga, asr_giga, language="en"), [])
+
+        # 2. Coarticulatory sibilant assimilation ('arm sideways' -> 'arms sideways')
+        # and stop assimilation ('straighten bent' -> 'straightened bent')
+        text_assim = "Swing the arm sideways to straighten bent frames."
+        asr_assim = [
+            {"word": "Swing", "startSec": 0.10, "endSec": 0.40, "probability": 0.99},
+            {"word": "the", "startSec": 0.41, "endSec": 0.52, "probability": 0.99},
+            {"word": "arms", "startSec": 0.53, "endSec": 0.82, "probability": 0.92},
+            {"word": "sideways", "startSec": 0.83, "endSec": 1.30, "probability": 0.99},
+            {"word": "to", "startSec": 1.31, "endSec": 1.42, "probability": 0.99},
+            {"word": "straightened", "startSec": 1.43, "endSec": 1.95, "probability": 0.91},
+            {"word": "bent", "startSec": 1.96, "endSec": 2.25, "probability": 0.99},
+            {"word": "frames.", "startSec": 2.26, "endSec": 2.65, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_assim, asr_assim, language="en"), [])
+
+        # 3. Unit abbreviations ('forty kilograms' <-> '40 kg') and Roman numerals ('World War Two' <-> 'World War II')
+        text_units = "During World War Two, the shell weighed forty kilograms."
+        asr_units = [
+            {"word": "During", "startSec": 0.10, "endSec": 0.40, "probability": 0.99},
+            {"word": "World", "startSec": 0.41, "endSec": 0.70, "probability": 0.99},
+            {"word": "War", "startSec": 0.71, "endSec": 0.95, "probability": 0.99},
+            {"word": "II,", "startSec": 0.96, "endSec": 1.30, "probability": 0.99},
+            {"word": "the", "startSec": 1.50, "endSec": 1.62, "probability": 0.99},
+            {"word": "shell", "startSec": 1.63, "endSec": 1.95, "probability": 0.99},
+            {"word": "weighed", "startSec": 1.96, "endSec": 2.30, "probability": 0.99},
+            {"word": "40", "startSec": 2.31, "endSec": 2.65, "probability": 0.99},
+            {"word": "kg.", "startSec": 2.66, "endSec": 3.10, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_units, asr_units, language="en"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

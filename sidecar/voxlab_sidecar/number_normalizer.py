@@ -805,6 +805,49 @@ SINGLE_WORD_UNIT_MAP = {
     "megabytes": "mb",
     "kilobyte": "kb",
     "kilobytes": "kb",
+    "kilogram": "kg",
+    "kilograms": "kg",
+    "kilo": "kg",
+    "kilos": "kg",
+    "gram": "g",
+    "grams": "g",
+    "milligram": "mg",
+    "milligrams": "mg",
+    "kilometer": "km",
+    "kilometers": "km",
+    "kilometre": "km",
+    "kilometres": "km",
+    "centimeter": "cm",
+    "centimeters": "cm",
+    "centimetre": "cm",
+    "centimetres": "cm",
+    "millimeter": "mm",
+    "millimeters": "mm",
+    "millimetre": "mm",
+    "millimetres": "mm",
+}
+
+ROMAN_NUMERALS_MAP = {
+    "i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5",
+    "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10",
+    "xi": "11", "xii": "12", "xiii": "13", "xiv": "14", "xv": "15",
+    "xvi": "16", "xvii": "17", "xviii": "18", "xix": "19", "xx": "20",
+}
+
+ROMAN_CONTEXT_HEADS = {
+    "war", "part", "mark", "mk", "chapter", "phase", "stage", "tier",
+    "type", "act", "volume", "vol", "section", "sec", "book", "level",
+    "episode", "class", "category", "article", "clause", "amendment",
+    "title", "annex", "appendix", "schedule", "step", "round", "game",
+    "generation", "gen", "version", "ver", "apollo", "saturn", "titan",
+    "falcon", "gemini", "mercury", "voyager", "pioneer", "viking",
+    "king", "queen", "pope", "emperor", "tsar", "czar", "henry", "charles",
+    "louis", "george", "edward", "elizabeth", "richard", "james", "john",
+    "paul", "leo", "pius", "benedict", "gregory", "clement", "innocent",
+    "alexander", "philip", "william", "frederick", "peter", "nicholas",
+    "napoleon", "ramses", "ptolemy", "cleopatra", "bowl", "gta",
+    "playstation", "civilization", "diablo", "halo", "quake", "doom",
+    "chương", "phần", "tập", "cấp", "loại", "đời", "thế", "hệ",
 }
 
 
@@ -990,6 +1033,28 @@ def collapse_number_tokens(
             ))
             idx += 1
             continue
+
+        # Contextual Roman numerals (e.g. "World War II" -> ["world", "war", "2"], "Part III" -> ["part", "3"])
+        if cleaned in ROMAN_NUMERALS_MAP:
+            prev_clean = clean_token(words[idx - 1]) if idx > 0 else ""
+            raw_alpha = re.sub(r"[^A-Za-z]", "", raw_w)
+            is_upper_roman = bool(raw_alpha and raw_alpha.isupper())
+            if prev_clean in ROMAN_CONTEXT_HEADS and (
+                cleaned not in ("i", "v", "x", "vi")
+                or is_upper_roman
+                or prev_clean in (
+                    "war", "part", "mark", "mk", "chapter", "phase", "stage", "tier",
+                    "type", "act", "volume", "vol", "section", "apollo", "saturn", "titan"
+                )
+            ):
+                spans.append(NormalizedSpan(
+                    canonical=ROMAN_NUMERALS_MAP[cleaned],
+                    orig_start=idx,
+                    orig_end=idx + 1,
+                    is_number=True,
+                ))
+                idx += 1
+                continue
 
         # Normalize spoken range/code connectors ("dash", "hyphen") immediately following a number span
         if spans and spans[-1].is_number and cleaned in ("dash", "hyphen"):
