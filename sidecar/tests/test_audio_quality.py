@@ -27,6 +27,82 @@ class AudioQualityTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="voxlab-quality-")
 
+    def test_tesla_internal_pause_detected_even_when_asr_word_matches(self):
+        """A clear mid-word silent break (Te ... sla) must not be silently PASS."""
+        sr = 16000
+        left = 0.18 * np.sin(2 * np.pi * 240 * np.arange(int(0.24 * sr)) / sr)
+        right = 0.18 * np.sin(2 * np.pi * 330 * np.arange(int(0.25 * sr)) / sr)
+        wave = np.concatenate([
+            np.zeros(int(0.15 * sr)), left,
+            np.zeros(int(0.20 * sr)), right,
+            np.zeros(int(0.15 * sr)),
+        ]).astype(np.float32)
+        words = [{"word": "Tesla", "startSec": 0.15, "endSec": 0.84, "probability": 0.98}]
+        issues = audio_quality.detect_intra_word_pause(wave, sr, "Tesla", words)
+        self.assertEqual(len(issues), 1, issues)
+        self.assertEqual(issues[0]["code"], "SUSPICIOUS_INTRA_PAUSE")
+        self.assertEqual(issues[0]["words"], ["tesla"])
+
+        # A normal continuous word or a 40ms consonant closure is not a 200ms glitch.
+        smooth = np.concatenate([np.zeros(int(0.15 * sr)), left, right, np.zeros(int(0.15 * sr))]).astype(np.float32)
+        smooth_words = [{"word": "Tesla", "startSec": 0.15, "endSec": 0.64, "probability": 0.98}]
+        self.assertEqual(audio_quality.detect_intra_word_pause(smooth, sr, "Tesla", smooth_words), [])
+        short_pause = np.concatenate([
+            np.zeros(int(0.15 * sr)), left, np.zeros(int(0.04 * sr)),
+            right, np.zeros(int(0.15 * sr)),
+        ]).astype(np.float32)
+        short_words = [{"word": "Tesla", "startSec": 0.15, "endSec": 0.68, "probability": 0.98}]
+        self.assertEqual(audio_quality.detect_intra_word_pause(short_pause, sr, "Tesla", short_words), [])
+
+    def test_numeric_mismatch_secondary_asr_can_clear_or_mark_ambiguous(self):
+        """1.2 != 0.2, but a conflicting Whisper number is not definitive TTS evidence."""
+        from types import SimpleNamespace
+
+        class SliceModel:
+            def __init__(self, recognized):
+                self.recognized = recognized
+
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=w, start=i * 0.2, end=(i + 1) * 0.2, probability=0.95)
+                    for i, w in enumerate(self.recognized.split())
+                ]
+                return [SimpleNamespace(text=self.recognized, words=words)], None
+
+        sr = 16000
+        waveform = np.zeros(sr * 2, dtype=np.float32)
+        primary = [{"word": "0.2", "startSec": 0.4, "endSec": 0.9, "probability": 0.80}]
+        correct = audio_quality._numeric_mismatch_review(
+            "1.2", "0.2", primary, 0, 1, SliceModel("one point two"),
+            waveform, sr, "en", 2.0,
+        )
+        self.assertIsNone(correct, "Second recognition of 1.2 must clear primary false warning")
+        ambiguous = audio_quality._numeric_mismatch_review(
+            "1.2", "0.2", primary, 0, 1, SliceModel("zero point two"),
+            waveform, sr, "en", 2.0,
+        )
+        self.assertEqual(ambiguous["severity"], "unverified")
+        self.assertEqual(ambiguous["code"], "UNVERIFIED_NUMBER")
+        self.assertNotEqual(ambiguous["severity"], "warning")
+
+        real_error = audio_quality._numeric_mismatch_review(
+            "2.8", "2.4", primary, 0, 1, SliceModel("two point four"),
+            waveform, sr, "en", 2.0,
+        )
+        self.assertEqual(real_error["code"], "SUSPECTED_MISPRONUNCIATION")
+        self.assertEqual(real_error["severity"], "warning")
+
+    def test_one_million_asr_dotted_digits_does_not_warn(self):
+        text = "Sales reached one million dollars"
+        words = [
+            {"word": "Sales", "startSec": 0.10, "endSec": 0.35, "probability": 0.99},
+            {"word": "reached", "startSec": 0.36, "endSec": 0.70, "probability": 0.99},
+            {"word": "1.000.000", "startSec": 0.71, "endSec": 1.35, "probability": 0.99},
+            {"word": "dollars", "startSec": 1.36, "endSec": 1.72, "probability": 0.99},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, words, language="en")
+        self.assertEqual(issues, [], issues)
+
     def test_missing_file_returns_error(self):
         fake_path = os.path.join(self.dir, "missing.wav")
         res = audio_quality.validate_audio_quality(fake_path, text="Hello world")
