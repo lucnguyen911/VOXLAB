@@ -1201,6 +1201,19 @@ def collapse_number_tokens(
             idx += 1
             continue
 
+        # Multi-segment alternating alphanumeric code (e.g. "88s6p" -> ["88", "s", "6", "p"], "88s6" -> ["88", "s", "6"])
+        if re.fullmatch(r"(?:\d+[a-z]{1,2})+\d*(?:[a-z]{1,2})?", cleaned) and re.search(r"\d+[a-z]{1,2}\d+", cleaned):
+            for seg_m in re.finditer(r"\d+|[a-z]+", cleaned):
+                seg_tok = seg_m.group(0)
+                spans.append(NormalizedSpan(
+                    canonical=seg_tok,
+                    orig_start=idx,
+                    orig_end=idx + 1,
+                    is_number=seg_tok.isdigit(),
+                ))
+            idx += 1
+            continue
+
         # Check if already a numeric token (e.g. '300', '1,000', '3.14', '127.0.0.1', '23rd')
         norm_digit = normalize_digit_string(raw_w)
         if norm_digit != cleaned or re.search(r"\d", cleaned):

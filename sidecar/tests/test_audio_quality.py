@@ -2498,6 +2498,161 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(audio_quality.analyze_word_alignment_issues(text_units, asr_units, language="en"), [])
 
 
+    def test_v310_sandwiched_token_does_not_flag_constituent_initial_preposition_or_conjunction(self):
+        # 1. 'costs [0.38s] by [0.22s] 50%' (Chunk 38): 'by' introduces PP '[by 50%]' after NP object 'costs' -> PASS
+        text_38 = "slash vehicle manufacturing costs by fifty percent"
+        asr_38 = [
+            {"word": "slash", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "vehicle", "startSec": 0.46, "endSec": 0.90, "probability": 0.99},
+            {"word": "manufacturing", "startSec": 0.91, "endSec": 1.60, "probability": 0.99},
+            {"word": "costs", "startSec": 1.61, "endSec": 2.00, "probability": 0.99},
+            {"word": "by", "startSec": 2.38, "endSec": 2.55, "probability": 0.99},
+            {"word": "50%", "startSec": 2.77, "endSec": 3.30, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_38, asr_38, language="en"), [])
+
+        # 2. 'oven [0.42s] for [0.19s] hours' (Chunk 17): 'for' introduces PP '[for hours]' -> PASS
+        text_17 = "bake it inside a heat treatment oven for hours"
+        asr_17 = [
+            {"word": "bake", "startSec": 0.10, "endSec": 0.35, "probability": 0.99},
+            {"word": "it", "startSec": 0.36, "endSec": 0.48, "probability": 0.99},
+            {"word": "inside", "startSec": 0.49, "endSec": 0.85, "probability": 0.99},
+            {"word": "a", "startSec": 0.86, "endSec": 0.95, "probability": 0.99},
+            {"word": "heat", "startSec": 0.96, "endSec": 1.25, "probability": 0.99},
+            {"word": "treatment", "startSec": 1.26, "endSec": 1.70, "probability": 0.99},
+            {"word": "oven", "startSec": 1.71, "endSec": 2.10, "probability": 0.99},
+            {"word": "for", "startSec": 2.52, "endSec": 2.68, "probability": 0.99},
+            {"word": "hours", "startSec": 2.87, "endSec": 3.35, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_17, asr_17, language="en"), [])
+
+        # 3. Genuine sandwiched number token inside tight NP ('this [0.26s] 50 [0.19s] ,000') -> WARNING
+        text_24 = "this fifty thousand ton system"
+        asr_24 = [
+            {"word": "this", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "50", "startSec": 0.51, "endSec": 0.72, "probability": 0.99},
+            {"word": ",000", "startSec": 0.91, "endSec": 1.15, "probability": 0.99},
+            {"word": "-ton", "startSec": 1.16, "endSec": 1.32, "probability": 0.99},
+            {"word": "system", "startSec": 1.33, "endSec": 1.60, "probability": 0.99},
+        ]
+        issues_24 = audio_quality.analyze_word_alignment_issues(text_24, asr_24, language="en")
+        self.assertEqual(len(issues_24), 1)
+        self.assertEqual(issues_24[0]["pauseContext"], "sandwiched_token")
+
+    def test_v310_choppy_phrase_does_not_chain_across_prosodic_boundaries_or_sum_threshold(self):
+        # 1. 'hailing [0.22s] costs [0.44s] down to' (Chunk 38) -> PASS
+        text_38b = "pushing autonomous ride hailing costs down to twenty cents"
+        asr_38b = [
+            {"word": "pushing", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "autonomous", "startSec": 0.46, "endSec": 1.10, "probability": 0.99},
+            {"word": "ride", "startSec": 1.11, "endSec": 1.40, "probability": 0.99},
+            {"word": "-hailing", "startSec": 1.41, "endSec": 1.80, "probability": 0.99},
+            {"word": "costs", "startSec": 2.02, "endSec": 2.40, "probability": 0.99},
+            {"word": "down", "startSec": 2.84, "endSec": 3.10, "probability": 0.99},
+            {"word": "to", "startSec": 3.12, "endSec": 3.25, "probability": 0.99},
+            {"word": "20", "startSec": 3.26, "endSec": 3.60, "probability": 0.99},
+            {"word": "cents", "startSec": 3.61, "endSec": 4.00, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_38b, asr_38b, language="en"), [])
+
+        # 2. 'crack [0.43s] meant [0.30s] throwing' and 'study [0.48s] testing Tesla's [0.30s] mega-castings [0.29s] against' (Chunk 40) -> PASS
+        text_40 = "a single crack meant throwing away the car in a study testing Tesla's mega castings against frames"
+        asr_40 = [
+            {"word": "a", "startSec": 0.10, "endSec": 0.20, "probability": 0.99},
+            {"word": "single", "startSec": 0.21, "endSec": 0.55, "probability": 0.99},
+            {"word": "crack", "startSec": 0.56, "endSec": 0.95, "probability": 0.99},
+            {"word": "meant", "startSec": 1.38, "endSec": 1.65, "probability": 0.99},
+            {"word": "throwing", "startSec": 1.95, "endSec": 2.35, "probability": 0.99},
+            {"word": "away", "startSec": 2.36, "endSec": 2.65, "probability": 0.99},
+            {"word": "the", "startSec": 2.66, "endSec": 2.78, "probability": 0.99},
+            {"word": "car", "startSec": 2.79, "endSec": 3.10, "probability": 0.99},
+            {"word": "in", "startSec": 3.12, "endSec": 3.25, "probability": 0.99},
+            {"word": "a", "startSec": 3.26, "endSec": 3.35, "probability": 0.99},
+            {"word": "study", "startSec": 3.36, "endSec": 3.75, "probability": 0.99},
+            {"word": "testing", "startSec": 4.23, "endSec": 4.65, "probability": 0.99},
+            {"word": "Tesla's", "startSec": 4.66, "endSec": 5.10, "probability": 0.99},
+            {"word": "mega-castings", "startSec": 5.40, "endSec": 6.15, "probability": 0.99},
+            {"word": "against", "startSec": 6.44, "endSec": 6.85, "probability": 0.99},
+            {"word": "frames", "startSec": 6.86, "endSec": 7.30, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_40, asr_40, language="en"), [])
+
+    def test_v310_bidirectional_acoustic_valley_attribution_and_intra_word_break(self):
+        # Multi-word utterance where 'Tesla' [0.60 - 1.35] has a genuine 0.19s mid-word silent break [0.85 - 1.04]
+        # surrounded by >= 0.20s active speech on both sides: must NOT be stolen as inter-word pause and MUST be
+        # flagged as SUSPICIOUS_INTRA_PAUSE.
+        sr = 16000
+        wave = np.zeros(int(sr * 2.2), dtype=np.float32)
+        t = np.arange(wave.size) / sr
+        carrier = (0.28 * np.sin(2 * np.pi * 185.0 * t)).astype(np.float32)
+        # 'Testing' [0.15 - 0.52]
+        wave[int(0.15 * sr):int(0.52 * sr)] = carrier[int(0.15 * sr):int(0.52 * sr)]
+        # 'Te-' [0.60 - 0.85]
+        wave[int(0.60 * sr):int(0.85 * sr)] = carrier[int(0.60 * sr):int(0.85 * sr)]
+        # mid-word silent break [0.85 - 1.04] (0.19s)
+        # '-sla' [1.04 - 1.32]
+        wave[int(1.04 * sr):int(1.32 * sr)] = carrier[int(1.04 * sr):int(1.32 * sr)]
+        # 'today' [1.40 - 1.85]
+        wave[int(1.40 * sr):int(1.85 * sr)] = carrier[int(1.40 * sr):int(1.85 * sr)]
+
+        text = "Testing Tesla today"
+        asr_words = [
+            {"word": "Testing", "startSec": 0.15, "endSec": 0.52, "probability": 0.99},
+            {"word": "Tesla", "startSec": 0.60, "endSec": 1.32, "probability": 0.95},
+            {"word": "today", "startSec": 1.40, "endSec": 1.85, "probability": 0.99},
+        ]
+        intra_issues = audio_quality.detect_intra_word_pause(wave, sr, text, asr_words)
+        self.assertEqual(len(intra_issues), 1, f"Expected 1 SUSPICIOUS_INTRA_PAUSE for mid-word break in Tesla, got {intra_issues}")
+        self.assertEqual(intra_issues[0]["code"], "SUSPICIOUS_INTRA_PAUSE")
+        self.assertEqual(intra_issues[0]["words"], ["tesla"])
+
+    def test_v310_mapping_uncertain_downgrades_moderate_pause_to_unverified(self):
+        # When an ASR token is unmapped (due to mispronunciation 'shift' -> 'lift') and followed by a 0.56s pause,
+        # the pause is downgraded to UNVERIFIED_PAUSE (severity='unverified') rather than a second WARNING.
+        text = "That single architectural shift rapidly shrinks the floor"
+        asr_words = [
+            {"word": "That", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "single", "startSec": 0.26, "endSec": 0.50, "probability": 0.99},
+            {"word": "architectural", "startSec": 0.51, "endSec": 1.05, "probability": 0.99},
+            {"word": "lift", "startSec": 1.06, "endSec": 1.40, "probability": 0.95},
+            {"word": "rapidly", "startSec": 1.96, "endSec": 2.35, "probability": 0.99},
+            {"word": "shrinks", "startSec": 2.36, "endSec": 2.70, "probability": 0.99},
+            {"word": "the", "startSec": 2.71, "endSec": 2.82, "probability": 0.99},
+            {"word": "floor", "startSec": 2.83, "endSec": 3.15, "probability": 0.99},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, asr_words, language="en")
+        warn_issues = [i for i in issues if i["severity"] == "warning"]
+        unv_issues = [i for i in issues if i["severity"] == "unverified"]
+        self.assertEqual(len(warn_issues), 1)
+        self.assertEqual(warn_issues[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+        self.assertEqual(len(unv_issues), 1)
+        self.assertEqual(unv_issues[0]["code"], "UNVERIFIED_PAUSE")
+
+    def test_v310_coarticulatory_doubled_consonant_ed_before_dental_and_alphanumeric_code(self):
+        # 1. 'flipped the' -> ASR 'flip the' (1-syllable doubled-consonant -ed before dental 'th') -> PASS
+        text_flip = "and the findings flipped the narrative"
+        asr_flip = [
+            {"word": "and", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "the", "startSec": 0.26, "endSec": 0.38, "probability": 0.99},
+            {"word": "findings", "startSec": 0.39, "endSec": 0.85, "probability": 0.99},
+            {"word": "flip", "startSec": 0.86, "endSec": 1.20, "probability": 0.72},
+            {"word": "the", "startSec": 1.21, "endSec": 1.35, "probability": 0.99},
+            {"word": "narrative", "startSec": 1.36, "endSec": 1.90, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_flip, asr_flip, language="en"), [])
+
+        # 2. 'eighty eight S six P layout' -> ASR '88S6P layout' -> PASS
+        text_code = "cells in an eighty eight S six P layout"
+        asr_code = [
+            {"word": "cells", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "in", "startSec": 0.46, "endSec": 0.60, "probability": 0.99},
+            {"word": "an", "startSec": 0.61, "endSec": 0.75, "probability": 0.99},
+            {"word": "88S6P", "startSec": 0.76, "endSec": 1.95, "probability": 0.95},
+            {"word": "layout", "startSec": 1.96, "endSec": 2.40, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_code, asr_code, language="en"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

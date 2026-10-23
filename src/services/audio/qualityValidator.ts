@@ -5,7 +5,7 @@ import { loadSubtitleSettings } from "../subtitle/profiles";
 import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
 import { stripPauseTokens } from "../pause";
 
-export const QUALITY_VALIDATOR_VERSION = "3.0.0";
+export const QUALITY_VALIDATOR_VERSION = "3.1.0";
 export const MAX_AUTO_VALIDATION_RETRIES = 1;
 
 export interface QualityCheckableItem {
@@ -283,6 +283,7 @@ export function getIssueShortLabel(code?: string): string {
     case "UNVERIFIED_NUMBER":
     case "UNVERIFIED_WORD":
     case "UNVERIFIED_SEPARATOR":
+    case "UNVERIFIED_PAUSE":
       return "Chưa kiểm chứng";
     default:
       return "Cần kiểm tra";

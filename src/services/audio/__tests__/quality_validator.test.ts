@@ -807,7 +807,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "3.0.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "3.1.0");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -819,7 +819,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "3.0.0");
+    assert.equal(review.validatorVersion, "3.1.0");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
@@ -1281,6 +1281,38 @@ describe("Audio Quality Validator Tests", () => {
 
     // Changing ASR model still triggers re-validation even after retry exhaustion on old model
     assert.equal(isReviewOutdated(exhaustedChunk, "large-v3-turbo", true), true);
+  });
+
+  it("V29: maps UNVERIFIED_PAUSE to 'Chưa kiểm chứng' and invalidates v3.0.0 reviews under v3.1.0", () => {
+    assert.equal(getIssueShortLabel("UNVERIFIED_PAUSE"), "Chưa kiểm chứng");
+
+    const v300Chunk: ChunkItem = {
+      id: "chunk_v29",
+      index: 1,
+      text: "Testing v3.1.0 upgrade invalidation",
+      originalText: "Testing v3.1.0 upgrade invalidation",
+      status: "ready",
+      durationSec: 3.2,
+      audioFilePath: "C:\\scratch\\tts\\chunk_v29.wav",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "warning",
+        issues: [
+          {
+            severity: "warning",
+            code: "ABNORMAL_PAUSE",
+            message: "Old v3.0.0 false positive",
+          },
+        ],
+        summary: "Nghi vấn ngắt bất thường",
+        checkedAt: Date.now(),
+        text: "Testing v3.1.0 upgrade invalidation",
+        validatorVersion: "3.0.0",
+        asrModelId: "large-v3-turbo",
+        audioSignature: "C:\\scratch\\tts\\chunk_v29.wav::3.2",
+      },
+    };
+    assert.equal(isReviewOutdated(v300Chunk, "large-v3-turbo", true), true);
   });
 });
 

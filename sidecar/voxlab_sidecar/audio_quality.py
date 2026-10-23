@@ -572,6 +572,8 @@ ENTITY_NON_PROPER_HEADS: set[str] = (
         "many", "most", "some", "any", "every", "each", "other", "another", "such", "both",
         "today", "tomorrow", "yesterday", "tonight", "suddenly", "finally", "ultimately",
         "however", "therefore", "meanwhile", "furthermore", "moreover", "instead", "otherwise",
+        "engineering", "president", "director", "executive", "officer", "manager", "founder",
+        "chairman", "secretary", "governor", "senator", "professor", "industrialist", "giant",
     }
 )
 
@@ -748,7 +750,7 @@ def extract_global_silent_valleys(
     first_speech_sec = float(envelope["first_speech_sec"])
     last_speech_sec = float(envelope["last_speech_sec"])
 
-    is_quiet = (rms < sil_th) & ~((rms >= 0.010) & (zcr >= 0.30))
+    is_quiet = (rms < sil_th) & ~((rms >= 0.0085) & (zcr >= 0.25))
     valleys: list[tuple[float, float, float]] = []
     run_s: int | None = None
     for idx in range(len(is_quiet) + 1):
@@ -809,15 +811,27 @@ def extract_global_silent_valleys(
                     or prev_tok in ("kg", "km", "cm", "mm", "mg", "lb", "lbs", "oz", "ii", "iii", "iv", "vi", "vii", "viii", "ix", "x")
                 )
 
-                if w_m > 0 and (
-                    dist_left <= 0.18
-                    or left_active < 0.12
-                    or (syl_m == 1 and right_active <= 0.24 and dist_left <= dist_right + 0.14)
-                    or (prev_is_num_or_abbr and dist_left <= 0.45)
-                ):
-                    matched_b = w_m - 1
-                elif w_m + 1 < len(asr_words) and (dist_right <= 0.18 or right_active < 0.12):
-                    matched_b = w_m
+                # Bidirectional guard: if both left and right sides inside [s_m, e_m] have substantial
+                # active speech (>= 0.12s each) and the valley is well inside the word (> 0.15s from edges),
+                # preserve it as a genuine intra-word break unless preceded by a number/unit abbreviation.
+                is_genuine_midword_break = (
+                    left_active >= 0.12
+                    and right_active >= 0.12
+                    and dist_left > 0.15
+                    and dist_right > 0.15
+                    and not (prev_is_num_or_abbr and dist_left <= 0.38)
+                )
+
+                if not is_genuine_midword_break:
+                    if w_m > 0 and (
+                        dist_left <= 0.18
+                        or left_active < 0.12
+                        or (syl_m == 1 and right_active <= 0.24 and dist_left <= dist_right + 0.14)
+                        or (prev_is_num_or_abbr and dist_left <= 0.45)
+                    ):
+                        matched_b = w_m - 1
+                    elif w_m + 1 < len(asr_words) and (dist_right <= 0.18 or right_active < 0.12):
+                        matched_b = w_m
 
         if matched_b is not None:
             all_boundary_intervals.append((v_s, v_e))
@@ -826,6 +840,87 @@ def extract_global_silent_valleys(
                 boundary_valleys[matched_b] = (v_dur, v_s, v_e)
 
     return boundary_valleys, all_boundary_intervals
+
+
+CONSTITUENT_INITIAL_FUNCTION_WORDS: set[str] = {
+    "by", "for", "from", "with", "into", "onto", "across", "through", "throughout",
+    "against", "between", "among", "under", "over", "below", "above", "without",
+    "within", "inside", "outside", "beyond", "behind", "beneath", "beside", "near",
+    "toward", "towards", "upon", "via", "than", "before", "after", "during", "while",
+    "whereas", "although", "though", "because", "since", "unless", "until", "if",
+    "when", "where", "whether", "that", "which", "who", "whose", "whom", "to", "in",
+    "on", "at", "of", "as", "and", "or", "but", "nor", "so", "yet",
+}
+
+COMMON_FINITE_VERBS_AND_AUX: set[str] = {
+    "is", "are", "was", "were", "be", "been", "being", "will", "would", "can", "could",
+    "should", "shall", "may", "might", "must", "has", "have", "had", "does", "do", "did",
+    "weighs", "separates", "hits", "cuts", "shrinks", "slashes", "eliminates", "reduces",
+    "takes", "burns", "releases", "uses", "achieves", "delivers", "requires", "brings",
+    "sits", "stands", "pops", "slams", "sucks", "sprays", "makes", "means", "works",
+    "jumps", "meant", "forced", "came", "cost", "costs", "grew", "tore", "began", "saw",
+    "poured", "asked", "developed", "confirmed", "revealed", "launched", "equals", "vibrate",
+    "spend", "spends", "spent", "built", "found", "made", "used", "called", "named", "designed",
+}
+
+
+def is_prosodic_phrase_boundary(
+    source_words: list[str],
+    source_words_clean: list[str],
+    src_idx1: int | None,
+    src_idx2: int | None,
+    w1_raw: str,
+    w2_raw: str,
+) -> bool:
+    """Identifies natural syntactic/prosodic phrase boundaries (Tier 3 PPB) where speakers
+    legitimately pause (0.25s–0.58s) between distinct syntactic constituents:
+      - NP_object / VP | Prepositional Phrase or Subordinating Clause (`costs | by`, `oven | for`, `factory | that`)
+      - NP_subject | Finite VP (`crack | meant`, `Cybercab | weighs`, `shakers | vibrate`)
+      - NP | Post-nominal Participial / Reduced Relative Clause (`study | testing`, `factory | stamping`, `rules | allowing`)
+      - Clause / Phrase | Coordinating Conjunction (`smartphones | or`, `doors | and`)
+    """
+    c1 = clean_word(w1_raw)
+    c2 = clean_word(w2_raw)
+    if not c1 or not c2:
+        return False
+
+    # Do not treat locked compound prepositions ('down to', 'up to', 'out of', 'instead of', 'according to') as PPBs
+    if (
+        c1 in ("down", "up", "out", "off", "prior", "according", "due", "close", "next", "instead", "ahead", "apart", "aside")
+        and c2 in ("to", "of", "from")
+    ):
+        return False
+
+    # Do not treat determiner/preposition + immediate complement as PPB
+    if c1 in (
+        WEAK_CLITIC_ARTICLES
+        | {"this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "every", "each", "no"}
+        | CONSTITUENT_INITIAL_FUNCTION_WORDS
+    ):
+        return False
+
+    # 1. Boundary before a preposition, complementizer, subordinating or coordinating conjunction, or resultative particle
+    if c2 in (CONSTITUENT_INITIAL_FUNCTION_WORDS | PROSODIC_CONJUNCTIONS | {"down", "up", "out"}):
+        return True
+
+    # 2. Boundary between Subject NP head and Finite Verb / Modal / Adverb+Verb
+    if c2 in COMMON_FINITE_VERBS_AND_AUX:
+        return True
+
+    # 3. Boundary before a post-nominal -ing participle introducing a participial/reduced-relative clause
+    if (
+        len(c2) >= 6
+        and c2.endswith("ing")
+        and c1 not in (COMMON_FINITE_VERBS_AND_AUX | {"keep", "kept", "start", "started", "begin", "continue", "stop", "stopped", "try", "tried", "already", "actually", "still", "just", "by", "for", "in", "of", "without", "before", "after", "while"})
+    ):
+        return True
+
+    # 4. Boundary before post-nominal reduced relative comparative ('vehicle | smaller than', 'particles | larger than')
+    next_c = source_words_clean[src_idx2 + 1] if (src_idx2 is not None and src_idx2 + 1 < len(source_words_clean)) else ""
+    if c2 in ("smaller", "larger", "bigger", "lighter", "heavier", "cheaper", "higher", "lower", "stronger", "weaker") and next_c == "than":
+        return True
+
+    return False
 
 
 def classify_phrase_cohesion_pair(
@@ -866,18 +961,20 @@ def classify_phrase_cohesion_pair(
 
     prev_c = source_words_clean[src_idx1 - 1] if (src_idx1 is not None and src_idx1 > 0) else ""
     next_c = source_words_clean[src_idx2 + 1] if (src_idx2 is not None and src_idx2 + 1 < len(source_words_clean)) else ""
+    tok1_raw = source_words[src_idx1] if (src_idx1 is not None and 0 <= src_idx1 < len(source_words)) else w1_raw
     tok2_raw = source_words[src_idx2] if (src_idx2 is not None and 0 <= src_idx2 < len(source_words)) else w2_raw
+    tok1_strip = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", tok1_raw)
     tok2_strip = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", tok2_raw)
 
-    # 1. Compound Preposition / Particle Lock (e.g. 'down to', 'up to', 'out of', 'into unified')
+    # 1. Compound Preposition / Particle Lock (e.g. 'down to', 'up to', 'out of', 'into a', 'into unified')
     if (
         c1 in ("down", "up", "out", "off", "prior", "according", "due", "close", "next", "instead", "ahead", "apart", "aside")
-        and c2 in ("to", "of", "from", "with")
+        and c2 in ("to", "of", "from")
     ) or (
         c1 in ("into", "onto", "within", "without", "upon", "towards", "toward", "across", "through", "throughout", "against", "among")
         and c2 in (WEAK_CLITIC_ARTICLES | {"this", "that", "these", "those", "its", "their", "his", "her", "our", "your", "my", "unified", "one", "single"})
     ):
-        return True, "tight_preposition", max(0.22, 0.24 / eff_speed)
+        return True, "tight_preposition", max(0.28, 0.30 / eff_speed)
 
     # 2. Preposition + Number / Quantitative Complement (e.g. 'below 40', 'between 200', 'from 60')
     if c1 in (
@@ -896,26 +993,28 @@ def classify_phrase_cohesion_pair(
         and is_version_or_number_token(prev_c)
         and (is_version_or_number_token(tok2_strip) or is_version_or_number_token(w2_raw))
     ):
-        return True, "tight_numeric_range", max(0.22, 0.24 / eff_speed)
+        return True, "tight_numeric_range", max(0.28, 0.30 / eff_speed)
 
     # 4. Determiner / Demonstrative / Possessive + Head/Modifier/Number (e.g. 'this 50,000-ton', 'a single', 'the traditional')
-    if c1 in ("the", "a", "an", "this", "these", "those", "my", "your", "our", "their", "his", "her", "its", "every", "each", "no") and c2 not in (
-        PROSODIC_CONJUNCTIONS
-        | {"is", "are", "was", "were", "will", "can", "could", "would", "should", "has", "have", "had", "does", "do", "did", "jumps", "makes", "means", "takes", "works"}
+    if c1 in ("the", "a", "an", "this", "these", "those", "my", "your", "our", "their", "his", "her", "its") and c2 not in (
+        PROSODIC_CONJUNCTIONS | COMMON_FINITE_VERBS_AND_AUX
     ):
         return True, "tight_determiner", max(0.22, 0.24 / eff_speed)
+    if c1 in ("every", "each", "no") and c2 not in (PROSODIC_CONJUNCTIONS | COMMON_FINITE_VERBS_AND_AUX):
+        return True, "tight_determiner", max(0.29, 0.31 / eff_speed)
 
-    # 5. Tight Comparative Construction (e.g. 'ships faster than')
+    # 5. Tight Comparative Construction: Verb/Noun + Adverbial Comparative before 'than' (e.g. 'sinking ships faster than')
+    # Exclude post-nominal reduced relative adjectives ('a vehicle smaller than', 'particles larger than')
     if c2 in (
-        "faster", "slower", "better", "worse", "harder", "easier", "higher", "lower",
-        "larger", "smaller", "bigger", "cheaper", "less", "more", "longer", "shorter",
-        "sooner", "further", "closer", "lighter", "heavier", "stronger", "weaker"
+        "faster", "slower", "better", "worse", "harder", "easier",
+        "less", "more", "longer", "shorter", "sooner", "further", "closer"
     ) and next_c == "than":
         return True, "tight_comparative", max(0.22, 0.23 / eff_speed)
 
-    # 6. Prenominal Modifier / Adjective + Proper Noun or Det-Adj-Noun (e.g. 'single Liberty', 'a traditional body shop')
+    # 6. Prenominal Quantifier/Determiner-Adjective + Proper Noun or Det-Adj-CommonNoun (e.g. 'a single Liberty', 'a traditional body shop')
     if (
-        c1 not in (ENTITY_NON_PROPER_HEADS | {"named", "called"})
+        prev_c in ("a", "an", "the", "this", "that", "every", "each")
+        and c1 in ("single", "first", "new", "old", "entire", "whole", "main", "only", "standard", "traditional", "massive", "giant")
         and tok2_strip
         and tok2_strip[0].isupper()
         and not tok2_strip.isupper()
@@ -924,12 +1023,20 @@ def classify_phrase_cohesion_pair(
         return True, "tight_modifier_noun", max(0.22, 0.23 / eff_speed)
 
     if (
-        prev_c in ("a", "an", "the", "this", "that", "these", "those", "its", "their", "his", "her", "our", "your")
-        and c1 not in ENTITY_NON_PROPER_HEADS
+        prev_c in ("a", "an", "the", "this", "these", "those", "its", "their", "his", "her", "our", "your")
+        and c1 not in (ENTITY_NON_PROPER_HEADS | COMMON_FINITE_VERBS_AND_AUX | CONSTITUENT_INITIAL_FUNCTION_WORDS)
+        and not is_version_or_number_token(w1_raw)
+        and not (tok1_strip and tok1_strip[0].isupper())
+        and not (len(c1) >= 5 and c1.endswith("ing"))
         and c2 not in (
             ENTITY_NON_PROPER_HEADS
-            | {"is", "are", "was", "were", "will", "can", "could", "would", "should", "has", "have", "had", "found", "built", "made", "used", "called", "named", "designed"}
+            | CONSTITUENT_INITIAL_FUNCTION_WORDS
+            | COMMON_FINITE_VERBS_AND_AUX
+            | {"down", "up", "out", "off", "away", "back", "together", "apart", "alone"}
         )
+        and not is_version_or_number_token(w2_raw)
+        and not (tok2_strip and tok2_strip[0].isupper())
+        and not (len(c2) >= 5 and c2.endswith(("ing", "ed")))
     ):
         return True, "tight_modifier_noun", max(0.24, 0.26 / eff_speed)
 
@@ -2340,8 +2447,9 @@ def analyze_word_alignment_issues(
                         language=language,
                         total_dur=total_dur,
                     )
-                    for j_map in range(pm_j1, pm_j2):
-                        asr_to_source[j_map] = pm_i1
+                    if verdict == "PASS":
+                        for j_map in range(pm_j1, pm_j2):
+                            asr_to_source[j_map] = pm_i1
                     if pm_iss is not None:
                         issues.append(pm_iss)
 
@@ -2969,25 +3077,46 @@ def analyze_word_alignment_issues(
 
                 # Coarticulatory boundary assimilation:
                 # 1) Sibilant assimilation when next word starts with s/z (e.g. 'arm sideways' -> 'arms sideways')
-                # 2) Stop/dental assimilation on -d/-ed after n/l/r/s when next word starts with stop/dental (e.g. 'straighten bent' -> 'straightened bent')
+                # 2) Stop/dental assimilation on -d/-ed (including doubled final consonant like 'flipped' -> 'flip')
+                #    when next word starts with stop/dental ('t', 'd', 'b', 'p', 'k', 'g', 'th')
+                # 3) Unstressed 'and' <-> 'an' before a vowel-initial word (e.g. 'and expansion' -> 'an expansion')
                 next_src_w = source_words_clean[i2] if i2 < len(source_words_clean) else ""
                 if next_src_w:
                     if (aw == sw + "s" or sw == aw + "s") and next_src_w.startswith(("s", "z")):
                         asr_to_source[j1] = i1
                         continue
                     if (
-                        len(sw) >= 4
-                        and sw[-1] in "nlrs"
-                        and (aw in (sw + "d", sw + "ed") or sw in (aw + "d", aw + "ed"))
-                        and next_src_w.startswith(("t", "d", "b", "p", "k", "g"))
+                        {sw, aw} == {"and", "an"}
+                        and next_src_w[:1] in ("a", "e", "i", "o", "u")
                     ):
                         asr_to_source[j1] = i1
                         continue
+                    is_ed_assimilation = (
+                        (len(sw) >= 4 and sw[-1] in "nlrs" and (aw in (sw + "d", sw + "ed") or sw in (aw + "d", aw + "ed")))
+                        or (
+                            len(aw) >= 3
+                            and aw[-1] not in "td"
+                            and sw in (aw + "d", aw + "ed", aw + aw[-1] + "ed")
+                        )
+                        or (
+                            len(sw) >= 3
+                            and sw[-1] not in "td"
+                            and aw in (sw + "d", sw + "ed", sw + sw[-1] + "ed")
+                        )
+                    )
+                    if is_ed_assimilation and next_src_w.startswith(("t", "d", "b", "p", "k", "g", "th")):
+                        asr_to_source[j1] = i1
+                        continue
 
+                is_same_syllable_inflection = bool(
+                    re.fullmatch(re.escape(aw) + r"(?:[bcdgfklmnprstvz]?ed|d|s)", sw)
+                    and _estimate_expected_syllables(sw) == _estimate_expected_syllables(aw)
+                )
                 if (
                     len(sw) >= 4
                     and len(aw) >= 2
                     and len(sw) >= len(aw) + 2
+                    and not is_same_syllable_inflection
                     and (sw.startswith(aw) or phonetic_key(sw).startswith(phonetic_key(aw)))
                     and w_prob >= 0.50
                 ):
@@ -3236,6 +3365,14 @@ def analyze_word_alignment_issues(
                 next_src_tok = source_words[src_idx2] if 0 <= src_idx2 < len(source_words) else ""
                 if next_src_tok and next_src_tok[0].isupper():
                     has_source_punct = True
+        elif src_idx1 is not None and src_idx2 is None and (src_idx1 + 1) < len(delimiters):
+            combined_delimiter = delimiters[src_idx1 + 1]
+            if any(c in PUNCTUATION_CHARS for c in combined_delimiter):
+                has_source_punct = True
+        elif src_idx1 is None and src_idx2 is not None and 0 < src_idx2 < len(delimiters):
+            combined_delimiter = delimiters[src_idx2]
+            if any(c in PUNCTUATION_CHARS for c in combined_delimiter):
+                has_source_punct = True
 
         # IMPORTANT: Never use Whisper's own generated punctuation (raw_w1 / raw_w2)
         # to exempt a pause. Only verified source text punctuation is trusted.
@@ -3260,6 +3397,26 @@ def analyze_word_alignment_issues(
             eff_speed,
             effective_min_pause,
         )
+        is_prosodic_boundary = (
+            not is_protected
+            and not is_tight_cohesion
+            and is_prosodic_phrase_boundary(
+                source_words,
+                source_words_clean,
+                src_idx1,
+                src_idx2,
+                w1.get("word", ""),
+                w2.get("word", ""),
+            )
+        )
+        is_sentence_initial_conj = (
+            not is_protected
+            and not is_tight_cohesion
+            and (i == 0 or (i > 0 and boundary_records[i - 1]["has_source_punct"]))
+            and w1_text in ("because", "or", "and", "but", "while", "although", "if", "when", "since", "so", "plus", "instead", "normally")
+        )
+        if is_prosodic_boundary or is_sentence_initial_conj:
+            pair_min_pause = max(effective_min_pause, 0.62 / eff_speed)
 
         direct_sil_sec = max(0.0, gap)
         contig_sil_sec = max(0.0, gap)
@@ -3303,6 +3460,7 @@ def analyze_word_alignment_issues(
             "entity_kind": entity_kind,
             "is_tight_cohesion": is_tight_cohesion,
             "cohesion_kind": cohesion_kind,
+            "is_prosodic_boundary": is_prosodic_boundary,
             "pair_min_pause": pair_min_pause,
             "min_prob": min(w1_prob, w2_prob),
         }
@@ -3348,21 +3506,46 @@ def analyze_word_alignment_issues(
                 pause_ctx = cohesion_kind
             else:
                 pause_ctx = "unpunctuated_clause"
-            pair_pause_issues[i] = {
-                "severity": "warning",
-                "code": "ABNORMAL_PAUSE",
-                "message": (
-                    f'Cảnh báo: Khoảng ngắt bất thường giữa "{w1_text}" và "{w2_text}" '
-                    f"({reported_pause_sec:.2f}s) — khoảng {ts}. Vui lòng nghe kiểm tra."
-                ),
-                "words": [w1_text, w2_text],
-                "timeRange": [round(gap_start_sec, 3), round(gap_end_sec, 3)],
-                "mappingUncertain": mapping_uncertain,
-                "pauseContext": pause_ctx,
-            }
+
+            if mapping_uncertain and not is_protected and reported_pause_sec < (0.65 / eff_speed):
+                pair_pause_issues[i] = {
+                    "severity": "unverified",
+                    "code": "UNVERIFIED_PAUSE",
+                    "message": (
+                        f'Chưa thể xác minh khoảng ngắt giữa "{w1_text}" và "{w2_text}" '
+                        f"({reported_pause_sec:.2f}s) do căn chỉnh chưa chắc chắn — khoảng {ts}."
+                    ),
+                    "words": [w1_text, w2_text],
+                    "timeRange": [round(gap_start_sec, 3), round(gap_end_sec, 3)],
+                    "mappingUncertain": True,
+                    "pauseContext": pause_ctx,
+                }
+            else:
+                pair_pause_issues[i] = {
+                    "severity": "warning",
+                    "code": "ABNORMAL_PAUSE",
+                    "message": (
+                        f'Cảnh báo: Khoảng ngắt bất thường giữa "{w1_text}" và "{w2_text}" '
+                        f"({reported_pause_sec:.2f}s) — khoảng {ts}. Vui lòng nghe kiểm tra."
+                    ),
+                    "words": [w1_text, w2_text],
+                    "timeRange": [round(gap_start_sec, 3), round(gap_end_sec, 3)],
+                    "mappingUncertain": mapping_uncertain,
+                    "pauseContext": pause_ctx,
+                }
+
+    def is_clean_prosodic_break(m_idx: int) -> bool:
+        b_m = boundary_records[m_idx]
+        if not b_m["is_prosodic_boundary"] or m_idx in pair_pause_issues:
+            return False
+        if (m_idx + 1) < len(boundary_records) and (m_idx + 1) in pair_pause_issues:
+            return False
+        return True
 
     # 1. Check for sandwiched short tokens / version numbers isolated by pauses on both sides
-    # (e.g. "Powerwall ... 3 ... are")
+    # (e.g. "Powerwall ... 3 ... are", "this ... 50 ... ,000")
+    # Never trigger when the middle token is a constituent-initial preposition/conjunction ('costs | by 50',
+    # 'oven | for hours', 'factory | that forced') or when one side is a natural prosodic boundary ('named Idra | to').
     consumed_boundaries: set[int] = set()
     sandwiched_issues: list[dict[str, Any]] = []
 
@@ -3378,6 +3561,16 @@ def analyze_word_alignment_issues(
             continue
 
         if min(b_prev["min_prob"], b_next["min_prob"]) < 0.40:
+            continue
+
+        # Exclude constituent-initial function words ('by', 'for', 'that', 'to', 'in', 'with', etc.)
+        if w_curr_text in (CONSTITUENT_INITIAL_FUNCTION_WORDS | WEAK_CLITIC_ARTICLES):
+            continue
+
+        # Exclude when either boundary is a clean prosodic phrase boundary (unless the other is a protected entity)
+        if (is_clean_prosodic_break(i - 1) and not b_next["is_protected"]) or (
+            is_clean_prosodic_break(i) and not b_prev["is_protected"]
+        ):
             continue
 
         is_short_or_num = (
@@ -3396,11 +3589,29 @@ def analyze_word_alignment_issues(
             pause_before = max(0.0, b_prev["gap"])
             pause_after = max(0.0, b_next["gap"])
 
-        # If adjacent boundaries are also part of a longer staccato chain (3+ consecutive pauses),
-        # let the choppy_phrase clusterer below merge the entire phrase rather than just 2 boundaries.
-        if (i + 1) < len(boundary_records) and not boundary_records[i + 1]["has_source_punct"] and boundary_records[i + 1]["eff_pause_sec"] >= 0.22:
+        # Require at least one adjacent boundary to be a protected entity or tight-cohesion link that violates its threshold
+        has_tight_violation = (
+            ((b_prev["is_protected"] or b_prev["is_tight_cohesion"]) and pause_before >= b_prev["pair_min_pause"])
+            or ((b_next["is_protected"] or b_next["is_tight_cohesion"]) and pause_after >= b_next["pair_min_pause"])
+        )
+        if not has_tight_violation:
             continue
-        if (i - 2) >= 0 and not boundary_records[i - 2]["has_source_punct"] and boundary_records[i - 2]["eff_pause_sec"] >= 0.22:
+
+        # If adjacent boundaries are also part of a longer staccato chain (3+ pauses in the same phrase),
+        # let the choppy_phrase clusterer below merge the entire phrase rather than just 2 boundaries.
+        if (i + 1) < len(boundary_records) and not boundary_records[i + 1]["has_source_punct"] and not is_clean_prosodic_break(i + 1) and boundary_records[i + 1]["eff_pause_sec"] >= 0.21:
+            continue
+        if (
+            (i + 2) < len(boundary_records)
+            and not boundary_records[i + 1]["has_source_punct"]
+            and not boundary_records[i + 2]["has_source_punct"]
+            and not is_clean_prosodic_break(i + 1)
+            and not is_clean_prosodic_break(i + 2)
+            and boundary_records[i + 2]["eff_pause_sec"] >= 0.21
+            and ((i - 1) in pair_pause_issues and i in pair_pause_issues)
+        ):
+            continue
+        if (i - 2) >= 0 and not boundary_records[i - 2]["has_source_punct"] and not is_clean_prosodic_break(i - 2) and boundary_records[i - 2]["eff_pause_sec"] >= 0.21:
             continue
 
         min_side_small = max(0.16, 0.18 / eff_speed)
@@ -3423,48 +3634,91 @@ def analyze_word_alignment_issues(
                 if (b_prev["is_protected"] or b_next["is_protected"])
                 else "sandwiched_token"
             )
-            sandwiched_issues.append({
-                "severity": "warning",
-                "code": "ABNORMAL_PAUSE",
-                "message": (
-                    f'Cảnh báo: Khoảng ngắt bất thường tách rời "{w_curr_text}" trong cụm '
-                    f'"{w_prev_text} {w_curr_text} {w_next_text}" '
-                    f"({pause_before:.2f}s + {pause_after:.2f}s) — khoảng {ts}. Vui lòng nghe kiểm tra."
-                ),
-                "words": [w_prev_text, w_curr_text, w_next_text],
-                "timeRange": [round(b_prev["gap_start_sec"], 3), round(b_next["gap_end_sec"], 3)],
-                "mappingUncertain": mapping_unc,
-                "pauseContext": pause_ctx,
-            })
+            if mapping_unc and not (b_prev["is_protected"] or b_next["is_protected"]):
+                sandwiched_issues.append({
+                    "severity": "unverified",
+                    "code": "UNVERIFIED_PAUSE",
+                    "message": (
+                        f'Chưa thể xác minh khoảng ngắt quanh "{w_curr_text}" trong cụm '
+                        f'"{w_prev_text} {w_curr_text} {w_next_text}" '
+                        f"({pause_before:.2f}s + {pause_after:.2f}s) — khoảng {ts}."
+                    ),
+                    "words": [w_prev_text, w_curr_text, w_next_text],
+                    "timeRange": [round(b_prev["gap_start_sec"], 3), round(b_next["gap_end_sec"], 3)],
+                    "mappingUncertain": True,
+                    "pauseContext": pause_ctx,
+                })
+            else:
+                sandwiched_issues.append({
+                    "severity": "warning",
+                    "code": "ABNORMAL_PAUSE",
+                    "message": (
+                        f'Cảnh báo: Khoảng ngắt bất thường tách rời "{w_curr_text}" trong cụm '
+                        f'"{w_prev_text} {w_curr_text} {w_next_text}" '
+                        f"({pause_before:.2f}s + {pause_after:.2f}s) — khoảng {ts}. Vui lòng nghe kiểm tra."
+                    ),
+                    "words": [w_prev_text, w_curr_text, w_next_text],
+                    "timeRange": [round(b_prev["gap_start_sec"], 3), round(b_next["gap_end_sec"], 3)],
+                    "mappingUncertain": mapping_unc,
+                    "pauseContext": pause_ctx,
+                })
 
     # 2. Clustered Staccato / Choppy Phrase Detection & Merging:
-    # Merge multi-pause choppy delivery across a 2-5 word unpunctuated window into a single phrase-level warning.
+    # Only merge pauses within the SAME syntactic constituent (never chain across Prosodic Phrase Boundaries
+    # or punctuation), and never trigger solely on total pause sum without cohesion/density violations.
     choppy_issues: list[dict[str, Any]] = []
     n_bounds = len(boundary_records)
     b_cursor = 0
     while b_cursor < n_bounds:
-        if b_cursor in consumed_boundaries or boundary_records[b_cursor]["has_source_punct"]:
-            b_cursor += 1
-            continue
         b_rec = boundary_records[b_cursor]
-        if b_rec["eff_pause_sec"] < 0.22:
+        if (
+            b_cursor in consumed_boundaries
+            or b_rec["has_source_punct"]
+            or is_clean_prosodic_break(b_cursor)
+            or b_rec["eff_pause_sec"] < 0.21
+        ):
             b_cursor += 1
             continue
 
-        # Attempt to grow a cluster of nearby pauses (<= 3 words apart without punctuation between them)
+        # Grow a cluster within the same syntactic constituent (<= 2 words apart, stopping at punctuation or clean PPBs)
         cluster = [b_cursor]
         look = b_cursor + 1
-        while look < n_bounds and (look - cluster[-1]) <= 3:
-            # Stop if any intermediate boundary had source punctuation
-            if any(boundary_records[m]["has_source_punct"] for m in range(cluster[-1], look + 1)):
+        while look < n_bounds and (look - cluster[-1]) <= 2:
+            if any(
+                boundary_records[m]["has_source_punct"]
+                or is_clean_prosodic_break(m)
+                for m in range(cluster[-1] + 1, look + 1)
+            ):
                 break
-            if look not in consumed_boundaries and boundary_records[look]["eff_pause_sec"] >= 0.22:
+            if look not in consumed_boundaries and boundary_records[look]["eff_pause_sec"] >= 0.21:
                 cluster.append(look)
             look += 1
 
-        has_flagged_member = any(idx_c in pair_pause_issues for idx_c in cluster)
-        total_cluster_pause = sum(boundary_records[idx_c]["eff_pause_sec"] for idx_c in cluster)
-        if len(cluster) >= 2 and (has_flagged_member or len(cluster) >= 3 or total_cluster_pause >= 0.65):
+        flagged_members = [
+            idx_c for idx_c in cluster
+            if idx_c in pair_pause_issues and pair_pause_issues[idx_c]["severity"] == "warning"
+        ]
+        tight_members = [
+            idx_c for idx_c in cluster
+            if boundary_records[idx_c]["is_protected"] or boundary_records[idx_c]["is_tight_cohesion"]
+        ]
+        consecutive_links = sum(1 for k in range(len(cluster) - 1) if cluster[k + 1] - cluster[k] == 1)
+
+        is_choppy_constituent = (
+            len(cluster) >= 2
+            and (
+                len(flagged_members) >= 2
+                or (len(flagged_members) >= 1 and len(tight_members) >= 2)
+                or (
+                    len(tight_members) >= 2
+                    and consecutive_links >= 1
+                    and all(boundary_records[idx_c]["eff_pause_sec"] >= (0.23 / eff_speed) for idx_c in cluster)
+                )
+                or (len(cluster) >= 3 and consecutive_links >= 2 and len(tight_members) >= 1)
+            )
+        )
+
+        if is_choppy_constituent:
             for idx_c in cluster:
                 consumed_boundaries.add(idx_c)
             first_b = boundary_records[cluster[0]]
@@ -3477,16 +3731,17 @@ def analyze_word_alignment_issues(
             phrase_str = " ".join(phrase_words)
             pauses_str = " + ".join(f"{boundary_records[idx_c]['eff_pause_sec']:.2f}s" for idx_c in cluster)
             ts = format_timestamp(first_b["gap_start_sec"])
+            mapping_unc = any(boundary_records[idx_c]["mapping_uncertain"] for idx_c in cluster)
             choppy_issues.append({
-                "severity": "warning",
-                "code": "ABNORMAL_PAUSE",
+                "severity": "unverified" if (mapping_unc and not flagged_members) else "warning",
+                "code": "UNVERIFIED_PAUSE" if (mapping_unc and not flagged_members) else "ABNORMAL_PAUSE",
                 "message": (
                     f'Cảnh báo: Đọc ngắt nhịp / giật cục trong cụm "{phrase_str}" '
                     f"({pauses_str}) — khoảng {ts}. Vui lòng nghe kiểm tra."
                 ),
                 "words": phrase_words,
                 "timeRange": [round(first_b["gap_start_sec"], 3), round(last_b["gap_end_sec"], 3)],
-                "mappingUncertain": any(boundary_records[idx_c]["mapping_uncertain"] for idx_c in cluster),
+                "mappingUncertain": mapping_unc,
                 "pauseContext": "choppy_phrase",
             })
             b_cursor = cluster[-1] + 1
@@ -3913,23 +4168,23 @@ def detect_intra_word_pause(
                 gap_start = start_sec + run_start * hop / sample_rate
                 gap_end = start_sec + run_end * hop / sample_rate
 
+                before = rms[max(0, run_start - 14):run_start]
+                after = rms[run_end:min(len(rms), run_end + 14)]
+                active_before = int(np.sum(before >= baseline * 0.30))
+                active_after = int(np.sum(after >= baseline * 0.30))
+
                 # Skip if this silent run overlaps an inter-word boundary pause
                 is_boundary_pause = any(
                     min(gap_end, b_e + 0.03) - max(gap_start, b_s - 0.03) >= 0.08
                     for b_s, b_e in inter_word_intervals
                 )
-                # Also skip if multi-word utterance and gap is within 0.18s of word boundary
+                # Also skip if multi-word utterance and gap is near word edge without sustained syllables on both sides
                 if len(asr_words) > 1 and (
-                    (w_idx > 0 and (gap_start - start_sec) <= 0.18)
-                    or (w_idx + 1 < len(asr_words) and (end_sec - gap_end) <= 0.18)
+                    (w_idx > 0 and (gap_start - start_sec) <= 0.18 and active_before < 12)
+                    or (w_idx + 1 < len(asr_words) and (end_sec - gap_end) <= 0.18 and active_after < 12)
                     or (expected_syl == 1 and (end_sec - gap_end) <= 0.24)
                 ):
                     is_boundary_pause = True
-
-                before = rms[max(0, run_start - 14):run_start]
-                after = rms[run_end:min(len(rms), run_end + 14)]
-                active_before = int(np.sum(before >= baseline * 0.30))
-                active_after = int(np.sum(after >= baseline * 0.30))
                 if (
                     not is_boundary_pause
                     and run_end - run_start >= min_frames
