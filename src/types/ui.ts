@@ -42,6 +42,9 @@ export interface AudioQualityIssue {
   asrModelId?: string;
   tokenSource?: "primary_asr" | "secondary_slice";
   evidence?: string;
+  pauseContext?: string;
+  boundaryClassification?: string;
+  boundaryRelation?: string;
 }
 
 export interface AudioQualityMetrics {
@@ -50,6 +53,10 @@ export interface AudioQualityMetrics {
   paceVariance?: number;
   detectedWordsCount?: number;
   sourceWordsCount?: number;
+  secondaryWhisperCalls?: number;
+  secondaryWhisperReasons?: string[];
+  unverifiedReasons?: string[];
+  timingMs?: Record<string, number>;
 }
 
 export interface AudioQualityReview {

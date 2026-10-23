@@ -2944,6 +2944,197 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(intra_car[0]["code"], "SUSPICIOUS_INTRA_PAUSE")
         self.assertEqual(intra_car[0]["words"], ["car"])
 
+    def test_v330_missing_article_continuous_speech_no_false_pass(self):
+        # Section 1.1: 'building a vast network' spoken as 'building vast network' with continuous energy (gap=0.02s)
+        # MUST NOT be exempted merely because gap < 0.05s or boundary RMS >= 0.022!
+        from types import SimpleNamespace
+
+        sr = 16000
+        wave = np.zeros(int(sr * 2.2), dtype=np.float32)
+        t = np.arange(wave.size) / sr
+        carrier = (0.24 * np.sin(2 * np.pi * 195.0 * t)).astype(np.float32)
+        # Construct 3 vowel nuclei across 'building' (2 syllables: [0.46..0.63], [0.66..0.84]) and 'vast' (1 syllable: [0.86..1.25])
+        # with continuous energy across the 0.02s boundary [0.84..0.86], so liaison_rms > 0.05 but NO 4th vowel nucleus for 'a'
+        for s_sec, e_sec in ((0.10, 0.44), (0.46, 0.63), (0.66, 0.84), (0.86, 1.25), (1.27, 1.75)):
+            wave[int(s_sec * sr):int(e_sec * sr)] = carrier[int(s_sec * sr):int(e_sec * sr)]
+        wave[int(0.83 * sr):int(0.87 * sr)] = carrier[int(0.83 * sr):int(0.87 * sr)] * 0.65
+
+        text = "without building a vast network"
+        asr_words = [
+            {"word": "without", "startSec": 0.10, "endSec": 0.44, "probability": 0.99},
+            {"word": "building", "startSec": 0.46, "endSec": 0.84, "probability": 0.99},
+            {"word": "vast", "startSec": 0.86, "endSec": 1.25, "probability": 0.99},
+            {"word": "network", "startSec": 1.27, "endSec": 1.75, "probability": 0.99},
+        ]
+        issues_no_a = audio_quality.analyze_word_alignment_issues(
+            text, asr_words, language="en", audio_data=wave, sample_rate=sr, audio_duration_sec=2.2
+        )
+        self.assertEqual(len(issues_no_a), 1, f"Expected MISSING_WORD for omitted 'a' in continuous speech, got {issues_no_a}")
+        self.assertEqual(issues_no_a[0]["code"], "MISSING_WORD")
+        self.assertEqual(issues_no_a[0]["severity"], "warning")
+        self.assertEqual(issues_no_a[0]["words"], ["a"])
+
+        # Now add a 4th distinct vowel nucleus at [0.84..0.93] ('a') separated by dips so observed_nuclei == 4:
+        # Without a secondary Whisper model, it must emit UNVERIFIED_WORD (never silent PASS).
+        wave_4nuc = np.zeros(int(sr * 2.2), dtype=np.float32)
+        for s_sec, e_sec in ((0.10, 0.44), (0.46, 0.60), (0.64, 0.78), (0.82, 0.93), (0.97, 1.25), (1.27, 1.75)):
+            wave_4nuc[int(s_sec * sr):int(e_sec * sr)] = carrier[int(s_sec * sr):int(e_sec * sr)]
+        issues_unv = audio_quality.analyze_word_alignment_issues(
+            text, asr_words, language="en", audio_data=wave_4nuc, sample_rate=sr, audio_duration_sec=2.2
+        )
+        self.assertEqual(len(issues_unv), 1)
+        self.assertEqual(issues_unv[0]["code"], "UNVERIFIED_WORD")
+        self.assertEqual(issues_unv[0]["severity"], "unverified")
+
+        # When secondary Whisper slice confirms 'building a vast', it passes with 0 issues:
+        class MockConfirmWhisper:
+            def transcribe(self, *args, **kwargs):
+                seg = SimpleNamespace(
+                    text="building a vast",
+                    words=[
+                        SimpleNamespace(word="building", probability=0.95, start=0.1, end=0.4),
+                        SimpleNamespace(word="a", probability=0.92, start=0.41, end=0.50),
+                        SimpleNamespace(word="vast", probability=0.96, start=0.51, end=0.85),
+                    ],
+                )
+                return [seg], None
+
+        issues_confirmed = audio_quality.analyze_word_alignment_issues(
+            text,
+            asr_words,
+            language="en",
+            audio_data=wave_4nuc,
+            sample_rate=sr,
+            whisper_model=MockConfirmWhisper(),
+            audio_duration_sec=2.2,
+        )
+        self.assertEqual(issues_confirmed, [])
+
+    def test_v330_clause_subject_structure_and_verb_boundaries(self):
+        # Section 2.1:
+        # 1) Short 1-3 word Subject NP + Aux/Modal/Copula -> TIGHT_COHESION (threshold <= 0.28s)
+        short_subj_aux_cases = [
+            ("The motor is running smoothly.", 1, 2, "motor", "is", 0.34),
+            ("The system can handle peak loads.", 1, 2, "system", "can", 0.34),
+            ("The electric motor is ready.", 2, 3, "motor", "is", 0.34),
+        ]
+        for sent, idx1, idx2, w1, w2, gap_sec in short_subj_aux_cases:
+            src_w, delims, _ = audio_quality.tokenize_text_with_spans(sent)
+            src_clean = [audio_quality.clean_word(w) for w in src_w]
+            syn = audio_quality.evaluate_syntactic_boundary(src_w, src_clean, delims, idx1, idx2, w1, w2)
+            self.assertEqual(syn["classification"], "TIGHT_COHESION", f"Expected TIGHT_COHESION for '{w1} | {w2}' in '{sent}', got {syn}")
+            self.assertLessEqual(syn["threshold_sec"], 0.28 if idx1 <= 1 else 0.32)
+
+            asr_words = []
+            t_cur = 0.10
+            for k, tok in enumerate(src_w):
+                asr_words.append({"word": tok, "startSec": round(t_cur, 3), "endSec": round(t_cur + 0.25, 3), "probability": 0.99})
+                t_cur += 0.26 + (gap_sec if k == idx1 else 0.0)
+            issues = audio_quality.analyze_word_alignment_issues(sent, asr_words, language="en")
+            self.assertEqual(len(issues), 1, f"Expected ABNORMAL_PAUSE for '{w1} [{gap_sec}s] {w2}' in '{sent}', got {issues}")
+            self.assertEqual(issues[0]["code"], "ABNORMAL_PAUSE")
+
+        # 2) Short 1-2 word Subject NP + Lexical Finite Verb -> TIGHT_COHESION (threshold <= 0.30s)
+        short_subj_verb_cases = [
+            ("The machine produces clean energy.", 1, 2, "machine", "produces", 0.35),
+            ("This motor generates high torque.", 1, 2, "motor", "generates", 0.35),
+            ("Tesla builds electric vehicles.", 0, 1, "Tesla", "builds", 0.35),
+        ]
+        for sent, idx1, idx2, w1, w2, gap_sec in short_subj_verb_cases:
+            src_w, delims, _ = audio_quality.tokenize_text_with_spans(sent)
+            src_clean = [audio_quality.clean_word(w) for w in src_w]
+            syn = audio_quality.evaluate_syntactic_boundary(src_w, src_clean, delims, idx1, idx2, w1, w2)
+            self.assertEqual(syn["classification"], "TIGHT_COHESION", f"Expected TIGHT_COHESION for '{w1} | {w2}' in '{sent}', got {syn}")
+            self.assertLessEqual(syn["threshold_sec"], 0.30)
+
+        # 3) 3-word unmodified Subject NP + Lexical Verb -> UNCERTAIN_BOUNDARY (threshold <= 0.50s, NOT 0.62s)
+        src_3w, delims_3w, _ = audio_quality.tokenize_text_with_spans("The electric motor produces high torque.")
+        clean_3w = [audio_quality.clean_word(w) for w in src_3w]
+        syn_3w = audio_quality.evaluate_syntactic_boundary(src_3w, clean_3w, delims_3w, 2, 3, "motor", "produces")
+        self.assertEqual(syn_3w["classification"], "UNCERTAIN_BOUNDARY")
+        self.assertLessEqual(syn_3w["threshold_sec"], 0.50)
+
+        # 4) Heavy branching Subject NP with post-nominal modifier -> NATURAL_BOUNDARY (0.62s)
+        src_heavy, delims_heavy, _ = audio_quality.tokenize_text_with_spans(
+            "The massive casting machine in Shanghai produces single-piece rear frames."
+        )
+        clean_heavy = [audio_quality.clean_word(w) for w in src_heavy]
+        syn_heavy = audio_quality.evaluate_syntactic_boundary(src_heavy, clean_heavy, delims_heavy, 5, 6, "Shanghai", "produces")
+        self.assertEqual(syn_heavy["classification"], "NATURAL_BOUNDARY")
+
+    def test_v330_choppy_phrase_requires_whole_phrase_discontinuity(self):
+        # Section 2.3: Two ~0.23s pauses inside a phrase where active words are long/fluent
+        # (low discontinuity_ratio and pause_to_speech_ratio < 0.28) must NOT trigger a choppy_phrase WARNING.
+        text_fluent = "engineers carefully calibrated specialized manufacturing equipment today"
+        asr_fluent = [
+            {"word": "engineers", "startSec": 0.10, "endSec": 0.85, "probability": 0.99},
+            {"word": "carefully", "startSec": 0.86, "endSec": 1.65, "probability": 0.99},
+            # 0.23s pause
+            {"word": "calibrated", "startSec": 1.88, "endSec": 2.75, "probability": 0.99},
+            # 0.23s pause
+            {"word": "specialized", "startSec": 2.98, "endSec": 3.85, "probability": 0.99},
+            {"word": "manufacturing", "startSec": 3.86, "endSec": 4.75, "probability": 0.99},
+            {"word": "equipment", "startSec": 4.76, "endSec": 5.45, "probability": 0.99},
+            {"word": "today", "startSec": 5.46, "endSec": 5.95, "probability": 0.99},
+        ]
+        issues_fluent = audio_quality.analyze_word_alignment_issues(text_fluent, asr_fluent, language="en")
+        warn_fluent = [i for i in issues_fluent if i["severity"] == "warning"]
+        self.assertEqual(warn_fluent, [], f"Expected 0 warnings for low-discontinuity 2x0.23s pauses, got {warn_fluent}")
+
+    def test_v330_coarticulatory_assimilation_strictness_and_deduplication(self):
+        # Section 1.2:
+        # 1) High-confidence missing -d ('flipped the' -> 'flip the' with prob=0.96 and no audio evidence) -> WARNING
+        text_flip = "and the findings flipped the narrative"
+        asr_flip_high = [
+            {"word": "and", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "the", "startSec": 0.26, "endSec": 0.38, "probability": 0.99},
+            {"word": "findings", "startSec": 0.39, "endSec": 0.85, "probability": 0.99},
+            {"word": "flip", "startSec": 0.86, "endSec": 1.20, "probability": 0.96},
+            {"word": "the", "startSec": 1.21, "endSec": 1.35, "probability": 0.99},
+            {"word": "narrative", "startSec": 1.36, "endSec": 1.90, "probability": 0.99},
+        ]
+        issues_flip_high = audio_quality.analyze_word_alignment_issues(text_flip, asr_flip_high, language="en")
+        self.assertEqual(len(issues_flip_high), 1)
+        self.assertEqual(issues_flip_high[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+
+        # 2) Non-homorganic missing -ed ('walked back' -> 'walk back' before labial 'b') -> WARNING even at low prob
+        text_walk = "They walked back to the station."
+        asr_walk = [
+            {"word": "They", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "walk", "startSec": 0.26, "endSec": 0.58, "probability": 0.72},
+            {"word": "back", "startSec": 0.59, "endSec": 0.88, "probability": 0.99},
+            {"word": "to", "startSec": 0.89, "endSec": 1.02, "probability": 0.99},
+            {"word": "the", "startSec": 1.03, "endSec": 1.15, "probability": 0.99},
+            {"word": "station.", "startSec": 1.16, "endSec": 1.65, "probability": 0.99},
+        ]
+        issues_walk = audio_quality.analyze_word_alignment_issues(text_walk, asr_walk, language="en")
+        self.assertEqual(len(issues_walk), 1)
+        self.assertEqual(issues_walk[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+
+        # 3) Stage 3 Decision Deduplicator collapses overlapping issues on the same span
+        raw_issues = [
+            {
+                "code": "UNVERIFIED_PAUSE",
+                "severity": "unverified",
+                "message": "Unverified pause",
+                "startSec": 1.10,
+                "endSec": 1.45,
+                "words": ["motor", "produces"],
+            },
+            {
+                "code": "ABNORMAL_PAUSE",
+                "severity": "warning",
+                "message": "Abnormal pause",
+                "startSec": 1.12,
+                "endSec": 1.44,
+                "words": ["motor", "produces"],
+            },
+        ]
+        deduped = audio_quality._deduplicate_quality_issues(raw_issues)
+        self.assertEqual(len(deduped), 1)
+        self.assertEqual(deduped[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(deduped[0]["severity"], "warning")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -50,12 +50,20 @@ test("DSP: Quality Check detects too short audio (<3s) as poor/error", () => {
   assert.equal(durationMetric.status, "error");
 });
 
-test("DSP: Quality Check detects ideal 18s audio without clipping as good", () => {
-  const idealBuffer = createMockAudioBuffer(18.5, 44100, 1, (i, _total) => {
-    // Clean audio with moderate speech bursts
+test("DSP: Quality Check detects ideal reference audio without clipping as good across engines", () => {
+  const idealOmniBuffer = createMockAudioBuffer(8.5, 44100, 1, (i, _total) => {
+    // Clean audio with moderate speech bursts in OmniVoice/Qwen 6-10s sweet spot
     return Math.sin(i * 0.05) * 0.6;
   });
-  const report = analyzeAudioQuality(idealBuffer);
+  const omniReport = analyzeAudioQuality(idealOmniBuffer);
+  assert.equal(omniReport.status, "good");
+  assert.equal(omniReport.clippingCount, 0);
+
+  const ideal18sBuffer = createMockAudioBuffer(18.5, 44100, 1, (i, _total) => {
+    // Clean 18.5s audio: within Chatterbox Turbo's <=20s allowance, over OmniVoice's 15s maxRecommendedSec
+    return Math.sin(i * 0.05) * 0.6;
+  });
+  const report = analyzeAudioQuality(ideal18sBuffer, "chatterbox_turbo");
 
   assert.equal(report.status, "good");
   assert.equal(report.clippingCount, 0);
@@ -65,6 +73,9 @@ test("DSP: Quality Check detects ideal 18s audio without clipping as good", () =
   const clippingMetric = report.details.find((d) => d.id === "clipping");
   assert.ok(clippingMetric);
   assert.equal(clippingMetric.status, "pass");
+
+  const longOmniReport = analyzeAudioQuality(ideal18sBuffer, "omnivoice");
+  assert.equal(longOmniReport.status, "warning");
 });
 
 test("DSP: Quality Check detects severe clipping and marks warning/poor", () => {

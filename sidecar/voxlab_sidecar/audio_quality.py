@@ -486,6 +486,7 @@ def validate_audio_file(audio_path: str, expected_text: str | None = None) -> tu
         rms = float(np.sqrt(np.mean(mono ** 2))) if mono.size > 0 else 0.0
         info["peak"] = round(peak, 4)
         info["rms"] = round(rms, 6)
+        info["_mono"] = np.ascontiguousarray(mono, dtype=np.float32)
 
         # Silent audio check (RMS < 1e-4 is approx -80 dBFS)
         if peak < 1e-4 or rms < 1e-4:
@@ -850,11 +851,15 @@ def extract_global_silent_valleys(
                 # Bidirectional guard: if both left and right sides inside [s_m, e_m] have substantial
                 # active speech (>= 0.12s each) and the valley is well inside the word (> 0.15s from edges),
                 # preserve it as a genuine intra-word break unless preceded by a number/unit abbreviation.
+                right_speech_sec = float(np.sum(~is_quiet[f_ve:f_em])) * 0.01 if f_em > f_ve else 0.0
+                right_peak = float(np.max(rms[f_ve:f_em])) if f_em > f_ve else 0.0
                 is_genuine_midword_break = (
                     left_active >= 0.12
-                    and right_active >= 0.12
                     and dist_left > 0.15
-                    and dist_right > 0.15
+                    and (
+                        (right_active >= 0.12 and dist_right > 0.15)
+                        or (syl_m >= 2 and dist_right >= 0.11 and right_speech_sec >= 0.10 and right_peak >= active_th * 1.5)
+                    )
                     and not (prev_is_num_or_abbr and dist_left <= 0.38)
                 )
 
@@ -944,17 +949,163 @@ PARTITIVE_AND_GENITIVE_OF_HEADS: set[str] = {
     "price", "rate", "speed", "size", "weight", "length", "width", "height", "depth", "mass", "volume",
 }
 
-COMMON_FINITE_VERBS_AND_AUX: set[str] = (
-    MODAL_AND_AUX_VERBS
-    | {
-        "weighs", "separates", "hits", "cuts", "shrinks", "slashes", "eliminates", "reduces",
-        "takes", "burns", "releases", "uses", "achieves", "delivers", "requires", "brings",
-        "sits", "stands", "pops", "slams", "sucks", "sprays", "makes", "means", "works",
-        "jumps", "meant", "forced", "came", "cost", "costs", "grew", "tore", "began", "saw",
-        "poured", "asked", "developed", "confirmed", "revealed", "launched", "equals", "vibrate",
-        "spend", "spends", "spent", "built", "found", "made", "used", "called", "named", "designed",
-    }
+DET_AND_POSSESSIVE_SET: set[str] = (
+    WEAK_CLITIC_ARTICLES
+    | {"this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "every", "each", "no"}
 )
+
+LEXICAL_FINITE_VERBS: set[str] = {
+    "weighs", "separates", "hits", "cuts", "shrinks", "slashes", "eliminates", "reduces",
+    "takes", "burns", "releases", "uses", "achieves", "delivers", "requires", "brings",
+    "sits", "stands", "pops", "slams", "sucks", "sprays", "makes", "means", "works",
+    "jumps", "meant", "forced", "came", "cost", "costs", "grew", "tore", "began", "saw",
+    "poured", "asked", "developed", "confirmed", "revealed", "launched", "equals", "vibrate",
+    "spend", "spends", "spent", "builds", "build", "built", "found", "made", "used", "called", "named", "designed",
+    "produces", "produce", "produced", "generates", "generate", "generated", "runs", "ran",
+    "holds", "held", "creates", "create", "created", "provides", "provide", "provided",
+    "allows", "allow", "allowed", "enables", "enable", "enabled", "prevents", "prevent",
+    "keeps", "kept", "turns", "turned", "moves", "moved", "drives", "drove", "powers", "powered",
+    "charges", "charged", "replaces", "replaced", "combines", "combined", "connects", "connected",
+    "controls", "controlled", "supports", "supported", "includes", "included", "contains", "contained",
+    "operates", "operated", "reaches", "reached", "drops", "dropped", "rises", "rose", "falls", "fell",
+    "increases", "increased", "decreases", "decreased", "improves", "improved", "protects", "protected",
+    "handles", "handled", "processes", "processed", "stores", "stored", "transfers", "transferred",
+    "converts", "converted", "measures", "measured", "monitors", "monitored", "detects", "detected",
+}
+
+COMMON_FINITE_VERBS_AND_AUX: set[str] = MODAL_AND_AUX_VERBS | LEXICAL_FINITE_VERBS
+
+
+def _analyze_clause_subject_structure(
+    source_words: list[str],
+    source_words_clean: list[str],
+    delimiters: list[str] | None,
+    src_idx1: int | None,
+) -> dict[str, Any]:
+    """Analyzes the syntactic structure of the clause constituent ending at `src_idx1`.
+    Determines the start of the active clause (after punctuation or a clause-introducing conjunction),
+    the length of the constituent in words, whether it is an unmodified subject NP vs a heavy branching
+    subject NP (with post-nominal PP/modifier), and whether a main verb has already appeared earlier
+    in the clause (making `src_idx1` part of the predicate/object rather than the subject).
+    """
+    if src_idx1 is None or src_idx1 < 0 or src_idx1 >= len(source_words_clean):
+        return {
+            "clause_start": 0,
+            "constituent_len": 1,
+            "is_subject_np": False,
+            "has_post_modifier": False,
+            "has_earlier_verb": False,
+        }
+
+    subordinating_clause_conj = (
+        (CLAUSE_BOUNDARY_CONJUNCTIONS - {"and", "or", "và", "hoặc", "hay"})
+        | {"that", "which", "who", "whose", "whom", "where", "when", "while", "if", "because", "although", "though", "since", "unless", "until", "whether", "once", "but", "yet", "so", "nor"}
+    )
+    clause_start = 0
+    for k in range(src_idx1, 0, -1):
+        if delimiters and k < len(delimiters):
+            next_tok = source_words[k] if k < len(source_words) else ""
+            if has_punctuation_boundary(delimiters[k], next_tok):
+                # Do not stop at serial list commas inside a coordinated NP ('the seats, center console, carpeting, and wiring harnesses')
+                if "," in delimiters[k] and any(w in ("and", "or") for w in source_words_clean[k : src_idx1 + 1]):
+                    pass
+                else:
+                    clause_start = k
+                    break
+        prev_tok_c = source_words_clean[k - 1]
+        if prev_tok_c in subordinating_clause_conj:
+            clause_start = k
+            break
+        if prev_tok_c in ("and", "or"):
+            # 'and'/'or' only starts a new clause if a finite verb already appeared before 'and'/'or' in the current sentence
+            # Otherwise ('Fresh aluminum ingots and recycled factory scrap', 'every casting and every sub assembly'),
+            # 'and'/'or' coordinates NPs inside a compound Subject NP!
+            sentence_floor = max(0, k - 12)
+            for m in range(k - 1, sentence_floor, -1):
+                if delimiters and m < len(delimiters) and has_punctuation_boundary(delimiters[m], source_words[m] if m < len(source_words) else ""):
+                    if "," not in delimiters[m]:
+                        sentence_floor = m
+                        break
+                if source_words_clean[m - 1] in subordinating_clause_conj:
+                    sentence_floor = m
+                    break
+            verb_before_and = False
+            for m in range(sentence_floor, k - 1):
+                tok_m = source_words_clean[m]
+                prev_m = source_words_clean[m - 1] if m > sentence_floor else ""
+                if tok_m in MODAL_AND_AUX_VERBS or (tok_m in LEXICAL_FINITE_VERBS and prev_m not in DET_AND_POSSESSIVE_SET):
+                    verb_before_and = True
+                    break
+            if verb_before_and:
+                clause_start = k
+                break
+
+    span_clean = [w for w in source_words_clean[clause_start : src_idx1 + 1] if w]
+    constituent_len = len(span_clean)
+    earlier_tokens = span_clean[:-1]
+
+    # Check if an unambiguous finite verb / auxiliary already appeared earlier in the clause
+    # (exclude words immediately preceded by a determiner or adjective/noun stack, e.g. 'the cost', 'tolerance stack up')
+    has_earlier_verb = False
+    for offset, tok_c in enumerate(earlier_tokens):
+        abs_idx = clause_start + offset
+        prev_before_tok = source_words_clean[abs_idx - 1] if abs_idx > clause_start else ""
+        if tok_c in MODAL_AND_AUX_VERBS:
+            has_earlier_verb = True
+            break
+        if tok_c in LEXICAL_FINITE_VERBS and prev_before_tok not in DET_AND_POSSESSIVE_SET:
+            # Exclude 'think'/'believe'/'know' complement clause introductions ('if you think tolerance stack up and casting defects will')
+            if tok_c in ("think", "believe", "know", "hope", "say", "said", "confirm", "confirmed", "reveal", "revealed", "mean", "means", "meant"):
+                continue
+            has_earlier_verb = True
+            break
+
+    is_subject_np = not has_earlier_verb
+    prep_modifiers = {
+        "in", "of", "on", "at", "for", "with", "from", "by", "to", "into",
+        "between", "under", "over", "across", "through", "without", "within", "near", "around",
+        "and", "or",
+    }
+    has_post_modifier = any(t in prep_modifiers for t in earlier_tokens[1:]) if len(earlier_tokens) >= 2 else False
+
+    return {
+        "clause_start": clause_start,
+        "constituent_len": constituent_len,
+        "is_subject_np": is_subject_np,
+        "has_post_modifier": has_post_modifier,
+        "has_earlier_verb": has_earlier_verb,
+    }
+
+
+def _is_contextual_3sg_finite_verb(
+    c1: str,
+    c2: str,
+    prev_c: str,
+    is_subject_np: bool,
+    constituent_len: int,
+) -> bool:
+    """Detects regular 3rd-person singular finite verbs ('produces', 'operates', 'generates')
+    following a singular Determiner + Noun subject ('The machine produces', 'This motor operates')
+    even if the verb is not hardcoded in LEXICAL_FINITE_VERBS.
+    """
+    if c2 in LEXICAL_FINITE_VERBS:
+        return True
+    if not is_subject_np or constituent_len > 3:
+        return False
+    if constituent_len > 1 and prev_c not in ("the", "a", "an", "this", "that", "its", "his", "her", "our", "your", "my", "each", "every"):
+        return False
+    if not c1 or c1.endswith("ly"):
+        return False
+    if len(c2) < 4 or not c2.endswith("s") or c2.endswith(("ss", "us", "is", "os", "ics", "ous")):
+        return False
+    if c2 in (
+        CONSTITUENT_INITIAL_FUNCTION_WORDS
+        | MODAL_AND_AUX_VERBS
+        | DET_AND_POSSESSIVE_SET
+        | {"as", "thus", "plus", "always", "sometimes", "perhaps", "towards", "besides", "across", "whereas"}
+    ):
+        return False
+    return True
 
 
 def is_prosodic_phrase_boundary(
@@ -964,10 +1115,12 @@ def is_prosodic_phrase_boundary(
     src_idx2: int | None,
     w1_raw: str,
     w2_raw: str,
+    delimiters: list[str] | None = None,
 ) -> bool:
     """Identifies high-confidence natural syntactic/prosodic phrase boundaries (Tier 3 PPB)
     where speakers legitimately pause (0.25s–0.58s) between distinct heavy syntactic constituents.
     Strictly excludes tight grammatical pairs such as:
+      - Short/unmodified Subject NP + Verb or Auxiliary (`The motor is`, `The system can`, `The machine produces`, `Tesla builds`)
       - Verb/Adj + infinitive 'to' (`want to`, `need to`, `able to`)
       - Subject pronoun + verb/modal (`you can`, `it is`, `they will`)
       - Modal/Auxiliary + verb (`can generate`, `will reduce`, `to build`)
@@ -1000,11 +1153,7 @@ def is_prosodic_phrase_boundary(
         return False
 
     # Do not treat determiner/preposition + immediate complement as PPB
-    if c1 in (
-        WEAK_CLITIC_ARTICLES
-        | {"this", "that", "these", "those", "my", "your", "our", "their", "his", "her", "its", "every", "each", "no"}
-        | CONSTITUENT_INITIAL_FUNCTION_WORDS
-    ):
+    if c1 in (DET_AND_POSSESSIVE_SET | CONSTITUENT_INITIAL_FUNCTION_WORDS):
         return False
 
     prev_c = source_words_clean[src_idx1 - 1] if (src_idx1 is not None and src_idx1 > 0) else ""
@@ -1016,17 +1165,24 @@ def is_prosodic_phrase_boundary(
     ):
         return False
 
+    clause_info = _analyze_clause_subject_structure(
+        source_words, source_words_clean, delimiters, src_idx1
+    )
+    constituent_len = int(clause_info["constituent_len"])
+    is_subject_np = bool(clause_info["is_subject_np"])
+    has_post_modifier = bool(clause_info["has_post_modifier"])
+    has_earlier_verb = bool(clause_info["has_earlier_verb"])
+
     prev2_c = source_words_clean[src_idx1 - 2] if (src_idx1 is not None and src_idx1 >= 2) else ""
     # For 'to', only allow PPB when 'to' follows a clear Noun/NP object or Proper Noun (e.g. 'named Idra | to build', 'the brake pads | to retract'),
     # never after an unverified bare verb or short function word.
     if c2 == "to":
         tok1_raw = source_words[src_idx1] if (src_idx1 is not None and 0 <= src_idx1 < len(source_words)) else w1_raw
         tok1_strip = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", tok1_raw)
-        det_set = WEAK_CLITIC_ARTICLES | {"this", "that", "these", "those", "its", "their", "his", "her", "our", "your", "my", "every", "each"}
         is_np_object_before_to = (
             (tok1_strip and tok1_strip[0].isupper() and c1 not in ENTITY_NON_PROPER_HEADS)
-            or prev_c in det_set
-            or prev2_c in det_set
+            or prev_c in DET_AND_POSSESSIVE_SET
+            or prev2_c in DET_AND_POSSESSIVE_SET
             or c1.endswith(("tion", "sion", "ment", "ness", "ity", "ship", "ance", "ence"))
             or is_version_or_number_token(w1_raw)
         )
@@ -1038,23 +1194,36 @@ def is_prosodic_phrase_boundary(
             return True
         return False
 
-    # 1. Boundary before a major preposition, complementizer, subordinating or coordinating conjunction, or resultative particle
-    # Require that the preceding constituent is a substantive head (not a single clause-initial word at index 0)
+    # 1. Boundary before a major preposition, complementizer, subordinating or coordinating conjunction, or resultative particle:
+    # Require that the preceding constituent has at least 2 words (not a single word at clause start)
+    # and that `c1` is not a bare main verb followed directly by a particle or subcategorized preposition.
     if c2 in ((CONSTITUENT_INITIAL_FUNCTION_WORDS - {"to", "of"}) | PROSODIC_CONJUNCTIONS | {"down", "up", "out"}):
-        if src_idx1 is not None and src_idx1 == 0 and len(c1) <= 4:
+        if src_idx1 is not None and constituent_len <= 1 and len(c1) <= 5:
+            return False
+        # Do not treat Verb + Particle ('breaks | down', 'heating | up', 'wiping | out', 'poured | into') as PPB
+        # unless `c1` is actually a noun object (preceded by a determiner/modifier or after an earlier verb in the clause).
+        c1_is_noun_object = (
+            prev_c in DET_AND_POSSESSIVE_SET
+            or prev2_c in DET_AND_POSSESSIVE_SET
+            or prev_c.endswith(("ing", "ed", "al", "ive", "ic", "ous", "ful", "less", "ment", "tion", "sion"))
+            or c1 in ("costs", "cost", "parts", "part", "cuts", "hits", "runs", "drops", "works", "stands", "jumps", "means", "uses", "loads", "charges", "stores", "forces")
+            or is_version_or_number_token(w1_raw)
+        )
+        if c1 in LEXICAL_FINITE_VERBS and not c1_is_noun_object and c2 in ("down", "up", "out", "off", "into", "onto", "from", "with", "at", "on", "in"):
             return False
         return True
 
-    # 2. Boundary between heavy Subject NP head (at least 2 words into the clause or after a multi-word/proper subject) and Finite Verb
-    if c2 in COMMON_FINITE_VERBS_AND_AUX:
-        tok1_raw = source_words[src_idx1] if (src_idx1 is not None and 0 <= src_idx1 < len(source_words)) else w1_raw
-        tok1_strip = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", tok1_raw)
-        is_heavy_or_proper_subject = (
-            (src_idx1 is not None and src_idx1 >= 1)
-            or (tok1_strip and tok1_strip[0].isupper() and c1 not in ENTITY_NON_PROPER_HEADS)
-            or len(c1) >= 6
-        )
-        return bool(is_heavy_or_proper_subject)
+    # 2. Boundary between a genuinely HEAVY branching Subject NP and a Finite Verb:
+    # Short subjects ('The motor | is', 'The system | can', 'The machine | produces', 'Tesla | builds')
+    # are NEVER prosodic phrase boundaries.
+    if c2 in COMMON_FINITE_VERBS_AND_AUX or _is_contextual_3sg_finite_verb(c1, c2, prev_c, is_subject_np, constituent_len):
+        if src_idx1 is None or not is_subject_np:
+            return False
+        if c2 in MODAL_AND_AUX_VERBS:
+            # Copulas and modals ('is', 'can', 'will') only allow a preceding break after a very heavy post-modified NP (>= 5 words)
+            return bool(constituent_len >= 5 and has_post_modifier)
+        # Lexical finite verbs require a heavy multi-word subject NP (>= 4 words, or >= 3 words with post-nominal modifier)
+        return bool(constituent_len >= 4 or (constituent_len >= 3 and has_post_modifier))
 
     # 3. Boundary before a post-nominal -ing participle introducing a participial/reduced-relative clause
     if (
@@ -1146,6 +1315,43 @@ def classify_phrase_cohesion_pair(
         c2 in (MODAL_AND_AUX_VERBS | COMMON_FINITE_VERBS_AND_AUX | INFINITIVE_TAKING_HEADS)
     ):
         return True, "tight_pronoun_verb", max(0.24, 0.26 / eff_speed)
+
+    # 1c-ii. Short Nominal Subject NP + Auxiliary/Copula ('The motor is', 'The system can', 'Motors are')
+    # or Short 1-2 word Subject NP + Lexical Finite Verb ('The machine produces', 'This motor generates', 'Tesla builds')
+    clause_info = _analyze_clause_subject_structure(
+        source_words, source_words_clean, delimiters, src_idx1
+    )
+    subj_len = int(clause_info["constituent_len"])
+    is_subj_np = bool(clause_info["is_subject_np"])
+    has_post_mod = bool(clause_info["has_post_modifier"])
+    has_earlier_v = bool(clause_info["has_earlier_verb"])
+
+    if c2 in MODAL_AND_AUX_VERBS and c1 not in (PROSODIC_CONJUNCTIONS | CLAUSE_BOUNDARY_CONJUNCTIONS | CONSTITUENT_INITIAL_FUNCTION_WORDS):
+        if (src_idx1 is not None and is_subj_np and subj_len <= 2 and not has_post_mod) or (
+            src_idx1 is None and prev_c in DET_AND_POSSESSIVE_SET
+        ):
+            return True, "tight_subject_aux", max(0.26, 0.28 / eff_speed)
+        if src_idx1 is not None and is_subj_np and subj_len == 3 and not has_post_mod:
+            return True, "tight_subject_aux", max(0.31, 0.32 / eff_speed)
+
+    if (
+        c2 in LEXICAL_FINITE_VERBS
+        or _is_contextual_3sg_finite_verb(c1, c2, prev_c, is_subj_np, subj_len)
+    ) and c1 not in (PROSODIC_CONJUNCTIONS | CLAUSE_BOUNDARY_CONJUNCTIONS | CONSTITUENT_INITIAL_FUNCTION_WORDS):
+        if (src_idx1 is not None and is_subj_np and subj_len <= 2 and not has_post_mod) or (
+            src_idx1 is None and prev_c in DET_AND_POSSESSIVE_SET
+        ):
+            return True, "tight_subject_verb", max(0.28, 0.30 / eff_speed)
+
+    # 1c-iii. Lexical Verb + Phrasal Particle ('breaks down', 'shuts down', 'heating up', 'wiping out')
+    c1_is_noun_obj = (
+        prev_c in DET_AND_POSSESSIVE_SET
+        or prev_c.endswith(("ing", "ed", "al", "ive", "ic", "ous", "ful", "less", "ment", "tion", "sion"))
+        or c1 in ("costs", "cost", "parts", "part", "cuts", "hits", "runs", "drops", "works", "stands", "jumps", "means", "uses", "loads", "charges", "stores", "forces")
+        or is_version_or_number_token(w1_raw)
+    )
+    if c1 in LEXICAL_FINITE_VERBS and not c1_is_noun_obj and c2 in ("down", "up", "out", "off", "away", "back"):
+        return True, "tight_verb_particle", max(0.26, 0.28 / eff_speed)
 
     # 1d. Modal / Auxiliary + Verb / Participle ('can generate', 'will reduce', 'has built', 'do not')
     if c1 in (
@@ -1312,7 +1518,7 @@ def evaluate_syntactic_boundary(
         and c1 in ("because", "or", "and", "but", "while", "although", "if", "when", "since", "so", "plus", "instead", "normally")
     )
     is_ppb = is_prosodic_phrase_boundary(
-        source_words, source_words_clean, src_idx1, src_idx2, w1_raw, w2_raw
+        source_words, source_words_clean, src_idx1, src_idx2, w1_raw, w2_raw, delimiters=delimiters
     )
 
     if is_ppb or is_sentence_initial_conj:
@@ -2615,6 +2821,345 @@ def _has_sustained_speech_in_span(
     return (span_rms >= min_rms and voiced_sec >= min_voiced_sec), span_rms, voiced_sec
 
 
+def _count_vowel_nuclei_in_span(
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    t0: float,
+    t1: float,
+) -> int:
+    """Counts distinct voiced vowel energy peaks (syllable nuclei >= 40ms) inside [t0, t1].
+    Used to distinguish continuous two-word speech ('building vast' = 3 nuclei) from speech
+    containing an unaligned vowel/function word ('building a vast' = 4 nuclei).
+    """
+    if audio_data is None or sample_rate <= 0 or t1 <= t0:
+        return 0
+    s0 = max(0, int(round(t0 * sample_rate)))
+    s1 = min(len(audio_data), int(round(t1 * sample_rate)))
+    frame_sz = max(1, int(round(0.020 * sample_rate)))
+    hop_sz = max(1, int(round(0.010 * sample_rate)))
+    if s1 - s0 < frame_sz * 2:
+        return 0
+    seg = audio_data[s0:s1]
+    frames = np.lib.stride_tricks.sliding_window_view(seg, frame_sz)[::hop_sz]
+    if frames.shape[0] < 3:
+        return 0
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    zcr = np.mean(np.abs(np.diff(np.signbit(frames), axis=1)), axis=1)
+    p75 = float(np.percentile(rms, 75))
+    if p75 < 0.018:
+        return 0
+    vowel_mask = (rms >= max(0.015, p75 * 0.34)) & (zcr < 0.24)
+    valley_mask = (rms < p75 * 0.22) | (zcr >= 0.28)
+    peaks: list[tuple[int, int]] = []
+    run_s: int | None = None
+    for idx in range(len(vowel_mask) + 1):
+        v = bool(vowel_mask[idx]) if idx < len(vowel_mask) else False
+        if v and run_s is None:
+            run_s = idx
+        elif not v and run_s is not None:
+            if idx - run_s >= 4:  # >= 40ms vowel nucleus
+                if peaks and int(np.sum(valley_mask[peaks[-1][1] : run_s])) < 2:
+                    peaks[-1] = (peaks[-1][0], idx)
+                else:
+                    peaks.append((run_s, idx))
+            run_s = None
+    return len(peaks)
+
+
+def _verify_omitted_word_evidence(
+    src_clean: str,
+    w_prev: dict[str, Any],
+    w_next: dict[str, Any],
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    whisper_model: Any | None,
+    language: str | None,
+    total_dur: float,
+    eff_speed: float,
+    slice_budget: list[int] | None,
+    secondary_reasons: list[str] | None = None,
+) -> tuple[str, str]:
+    """Stage 2 Evidence Evaluator for a single omitted word (`tag == 'delete'`) between `w_prev` and `w_next`.
+    Strictly separates:
+      - Mere boundary RMS continuity between adjacent words ('building vast') -> NOT proof that 'a' was spoken!
+      - Genuine inter-word gap speech energy (`gap >= 0.06s`) or extra vowel syllable nucleus inside `[w_prev, w_next]`.
+      - Targeted secondary Whisper slice verification when `whisper_model` and `slice_budget` allow.
+    Returns `(decision, reason)` where `decision` is in `('pass', 'missing', 'unverified')`.
+    """
+    t_start_prev = float(w_prev.get("startSec", 0.0))
+    t_end_prev = float(w_prev.get("endSec", 0.0))
+    t_start_next = float(w_next.get("startSec", 0.0))
+    t_end_next = float(w_next.get("endSec", t_start_next))
+    gap = max(0.0, t_start_next - t_end_prev)
+    p_prev = float(w_prev.get("probability", 1.0))
+    p_next = float(w_next.get("probability", 1.0))
+
+    if min(p_prev, p_next) < 0.50:
+        return "unverified", "low_neighbor_asr_confidence"
+
+    is_weak_fn_word = src_clean in (WEAK_CLITIC_ARTICLES | {"to", "of", "and", "can", "in", "on", "at", "for", "đã", "sẽ"})
+    has_gap_energy = False
+    has_extra_syllable_nucleus = False
+
+    if audio_data is not None and sample_rate > 0:
+        if gap >= 0.06:
+            s1 = max(0, int(round(t_end_prev * sample_rate)))
+            s2 = min(len(audio_data), int(round(t_start_next * sample_rate)))
+            if s2 > s1:
+                slice_gap = audio_data[s1:s2]
+                gap_rms = float(np.sqrt(np.mean(slice_gap ** 2))) if slice_gap.size > 0 else 0.0
+                if gap_rms >= (0.018 if is_weak_fn_word else 0.025):
+                    has_gap_energy = True
+        elif is_weak_fn_word:
+            # Never assume 'a/an/the/to/of/and/can' was spoken merely because w_prev and w_next touch (gap < 0.06s)!
+            # Require either secondary Whisper slice verification OR an extra voiced syllable nucleus + duration excess.
+            w_prev_clean = clean_word(str(w_prev.get("word", "")))
+            w_next_clean = clean_word(str(w_next.get("word", "")))
+            exp_syl_pair = _estimate_expected_syllables(w_prev_clean) + _estimate_expected_syllables(w_next_clean)
+            exp_syl_omitted = _estimate_expected_syllables(src_clean)
+            span_dur = max(0.0, t_end_next - t_start_prev)
+            min_req_dur = (0.145 * (exp_syl_pair + exp_syl_omitted)) / max(0.5, eff_speed)
+            observed_nuclei = _count_vowel_nuclei_in_span(audio_data, sample_rate, t_start_prev, t_end_next)
+            if span_dur >= min_req_dur and observed_nuclei >= (exp_syl_pair + exp_syl_omitted):
+                has_extra_syllable_nucleus = True
+
+    # Run targeted secondary Whisper slice verification whenever:
+    # (a) there is gap energy or extra syllable nucleus, OR
+    # (b) a weak function word / article was omitted in real audio and whisper_model is available to verify directly.
+    can_slice = (
+        whisper_model is not None
+        and audio_data is not None
+        and sample_rate > 0
+        and (slice_budget is None or slice_budget[0] > 0)
+        and (has_gap_energy or has_extra_syllable_nucleus or is_weak_fn_word)
+    )
+    if can_slice:
+        import tempfile
+        import soundfile as sf
+        if slice_budget is not None:
+            slice_budget[0] -= 1
+        if secondary_reasons is not None:
+            secondary_reasons.append(f"omitted_word:{src_clean}")
+        t_s0 = max(0.0, t_start_prev - 0.05)
+        t_s1 = min(total_dur or (len(audio_data) / sample_rate), t_end_next + 0.05)
+        seg_audio = audio_data[max(0, int(t_s0 * sample_rate)) : min(len(audio_data), int(t_s1 * sample_rate))]
+        if seg_audio.size >= int(0.15 * sample_rate):
+            tmp_om = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp_om_name = tmp_om.name
+            tmp_om.close()
+            try:
+                sf.write(tmp_om_name, seg_audio, sample_rate, subtype="PCM_16")
+                lang_c = None if not language or language == "auto" else language
+                segs_om, _ = whisper_model.transcribe(
+                    tmp_om_name, language=lang_c, beam_size=5, word_timestamps=True, vad_filter=False
+                )
+                om_words = [clean_word(w.word) for seg in segs_om for w in (seg.words or []) if w.word]
+                if any(are_words_equivalent(src_clean, ow) for ow in om_words):
+                    return "pass", "verified_by_secondary_slice"
+                return "missing", "confirmed_absent_by_secondary_slice"
+            except Exception:
+                pass
+            finally:
+                try:
+                    os.remove(tmp_om_name)
+                except OSError:
+                    pass
+
+    if has_gap_energy or has_extra_syllable_nucleus:
+        # Never auto-pass an omitted word without secondary ASR confirmation!
+        return "unverified", "unverified_acoustic_energy_without_secondary_asr"
+
+    return "missing", "confirmed_omission"
+
+
+def _evaluate_coarticulatory_assimilation(
+    sw: str,
+    aw: str,
+    next_src_w: str,
+    t_start: float,
+    t_end: float,
+    w_prob: float,
+    gap_to_next_asr: float,
+    gap_from_prev_asr: float,
+    asr_words: list[dict[str, Any]],
+    j1: int,
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    whisper_model: Any | None,
+    language: str | None,
+    total_dur: float,
+    eff_speed: float,
+    slice_budget: list[int] | None,
+    secondary_reasons: list[str] | None = None,
+) -> tuple[str, str]:
+    """Evaluates whether a 1-to-1 difference (`sw` vs `aw`) before `next_src_w` is genuine
+    phonetic coarticulatory assimilation ('pass'), an unverified boundary ambiguity ('unverified'),
+    or a pronunciation / suffix omission defect ('mismatch').
+    Never assumes two words are equivalent merely because they are adjacent or have equal syllable counts.
+    """
+    if not next_src_w or not (-0.05 <= gap_to_next_asr <= 0.05):
+        return "mismatch", "not_adjacent"
+
+    next_start = float(asr_words[j1 + 1].get("startSec", t_end)) if (j1 + 1) < len(asr_words) else t_end
+    next_end = float(asr_words[j1 + 1].get("endSec", next_start)) if (j1 + 1) < len(asr_words) else next_start
+
+    # 1. Sibilant assimilation (-s before s/z, e.g. 'arm sideways' <-> 'arms sideways')
+    if (aw == sw + "s" or sw == aw + "s") and next_src_w.startswith(("s", "z")):
+        if audio_data is not None and sample_rate > 0:
+            b0 = max(0, int(round((t_end - 0.05) * sample_rate)))
+            b1 = min(len(audio_data), int(round((next_start + 0.06) * sample_rate)))
+            frame_sz = max(1, int(round(0.015 * sample_rate)))
+            if b1 - b0 >= frame_sz:
+                b_slice = audio_data[b0:b1]
+                zcr_b = float(np.mean(np.abs(np.diff(np.signbit(b_slice))))) if b_slice.size > 1 else 0.0
+                rms_b = float(np.sqrt(np.mean(b_slice ** 2)))
+                if zcr_b >= 0.22 and rms_b >= 0.006:
+                    return "pass", "verified_sibilant_liaison"
+                if sw.endswith("s") and not aw.endswith("s"):
+                    return "mismatch", "missing_sibilant_energy"
+            return "unverified", "borderline_sibilant_liaison"
+        # Without waveform: if script required '-s' and ASR omitted it with high confidence, do not blindly pass
+        if sw.endswith("s") and not aw.endswith("s"):
+            return ("mismatch", "missing_final_s") if w_prob >= 0.85 else ("unverified", "unverified_sibilant_without_audio")
+        return "pass", "sibilant_overflow_from_next_word"
+
+    # 2. Unstressed 'and' <-> 'an' before vowel-initial word
+    if (
+        {sw, aw} == {"and", "an"}
+        and next_src_w[:1] in ("a", "e", "i", "o", "u")
+        and (t_end - t_start) <= 0.24
+        and gap_from_prev_asr < 0.18
+    ):
+        if audio_data is not None and sample_rate > 0:
+            b0 = max(0, int(round((t_end - 0.03) * sample_rate)))
+            b1 = min(len(audio_data), int(round((next_start + 0.03) * sample_rate)))
+            if b1 > b0:
+                rms_b = float(np.sqrt(np.mean(audio_data[b0:b1] ** 2)))
+                if rms_b >= 0.015 and w_prob < 0.85:
+                    return "pass", "verified_nasal_vowel_liaison"
+            return "unverified", "unverified_and_an_liaison"
+        return "unverified", "unverified_and_an_without_audio"
+
+    # 3. Stop/dental assimilation on -d/-ed (equal syllable count only, never 'wanted' -> 'want'):
+    #    - Case 3a (ASR added -d/-ed from following stop closure, e.g. 'straighten bent' -> 'straightened bent'):
+    #      Allowed before any stop/dental ('t', 'd', 'b', 'p', 'k', 'g', 'th').
+    #    - Case 3b (Script has -d/-ed and ASR heard uninflected stem, e.g. 'flipped the' -> 'flip the'):
+    #      Allowed ONLY before homorganic alveolar/dental ('t', 'd', 'th') when confirmed by secondary slice,
+    #      acoustic closure, or low/moderate ASR stem confidence (< 0.82). High-confidence stem without -ed is flagged!
+    asr_added_ed = (
+        _estimate_expected_syllables(sw) == _estimate_expected_syllables(aw)
+        and len(sw) >= 3
+        and sw[-1] not in "td"
+        and aw in (sw + "d", sw + "ed", sw + sw[-1] + "ed")
+    )
+    if asr_added_ed and next_src_w.startswith(("t", "d", "b", "p", "k", "g", "th")):
+        return "pass", "stop_closure_overflow_from_next_word"
+
+    asr_dropped_ed = (
+        _estimate_expected_syllables(sw) == _estimate_expected_syllables(aw)
+        and len(aw) >= 3
+        and aw[-1] not in "td"
+        and sw in (aw + "d", aw + "ed", aw + aw[-1] + "ed")
+    )
+    if asr_dropped_ed and next_src_w.startswith(("t", "d", "th")):
+        if (
+            whisper_model is not None
+            and audio_data is not None
+            and sample_rate > 0
+            and (slice_budget is None or slice_budget[0] > 0)
+        ):
+            import tempfile
+            import soundfile as sf
+            if slice_budget is not None:
+                slice_budget[0] -= 1
+            if secondary_reasons is not None:
+                secondary_reasons.append(f"assimilation_ed:{sw}")
+            s0 = max(0.0, t_start - 0.05)
+            s1 = min(total_dur or (len(audio_data) / sample_rate), next_end + 0.05)
+            seg_a = audio_data[max(0, int(s0 * sample_rate)) : min(len(audio_data), int(s1 * sample_rate))]
+            if seg_a.size >= int(0.15 * sample_rate):
+                tmp_ed = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                tmp_ed_name = tmp_ed.name
+                tmp_ed.close()
+                try:
+                    sf.write(tmp_ed_name, seg_a, sample_rate, subtype="PCM_16")
+                    lang_c = None if not language or language == "auto" else language
+                    segs_ed, _ = whisper_model.transcribe(
+                        tmp_ed_name, language=lang_c, beam_size=5, word_timestamps=True, vad_filter=False
+                    )
+                    ed_words = [clean_word(w.word) for seg in segs_ed for w in (seg.words or []) if w.word]
+                    if any(are_words_equivalent(sw, ew) for ew in ed_words):
+                        return "pass", "verified_ed_by_secondary_slice"
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        os.remove(tmp_ed_name)
+                    except OSError:
+                        pass
+        if (t_end - t_start) >= (0.16 / max(0.5, eff_speed)) and w_prob < 0.82:
+            return "pass", "homorganic_dental_masking_low_prob"
+        if w_prob >= 0.88:
+            return "mismatch", "high_confidence_missing_ed"
+        return "unverified", "ambiguous_homorganic_ed"
+
+    return "mismatch", "not_assimilated"
+
+
+def _deduplicate_quality_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Stage 3 Decision Deduplicator: ensures a single acoustic or alignment defect
+    never generates multiple overlapping warnings or redundant unverified notices.
+    Priority: error > warning > unverified.
+    """
+    if len(issues) <= 1:
+        return issues
+
+    sev_rank = {"error": 3, "warning": 2, "unverified": 1}
+    deduped: list[dict[str, Any]] = []
+
+    for iss in issues:
+        tr = iss.get("timeRange") or [0.0, 0.0]
+        t0 = float(tr[0]) if len(tr) > 0 else 0.0
+        t1 = float(tr[1]) if len(tr) > 1 else t0
+        code = str(iss.get("code", ""))
+        sev = str(iss.get("severity", "warning"))
+        words_set = {clean_word(w) for w in (iss.get("words") or []) if clean_word(w)}
+
+        merged_existing = False
+        for idx_ex, ex in enumerate(deduped):
+            ex_tr = ex.get("timeRange") or [0.0, 0.0]
+            ex_t0 = float(ex_tr[0]) if len(ex_tr) > 0 else 0.0
+            ex_t1 = float(ex_tr[1]) if len(ex_tr) > 1 else ex_t0
+            ex_code = str(ex.get("code", ""))
+            ex_sev = str(ex.get("severity", "warning"))
+            ex_words = {clean_word(w) for w in (ex.get("words") or []) if clean_word(w)}
+
+            overlap = min(t1, ex_t1) - max(t0, ex_t0)
+            near_time = overlap >= -0.05 or abs(t0 - ex_t0) <= 0.12
+            same_family = (
+                code == ex_code
+                or ({code, ex_code} <= {"ABNORMAL_PAUSE", "SUSPICIOUS_INTRA_PAUSE", "UNVERIFIED_PAUSE"})
+                or ({code, ex_code} <= {"MISSING_WORD", "SUSPECTED_SWALLOWED", "UNVERIFIED_WORD"})
+                or ({code, ex_code} <= {"SUSPECTED_MISPRONUNCIATION", "PARTIAL_PRONUNCIATION", "UNVERIFIED_WORD", "UNVERIFIED_NUMBER"})
+                or ({code, ex_code} <= {"SUSPECTED_STUTTER", "REPEATED_WORD", "REPEATED_WORDS"})
+            )
+            shared_words = bool(words_set and ex_words and (words_set & ex_words))
+
+            if near_time and same_family and (shared_words or overlap > 0.02 or abs(t0 - ex_t0) <= 0.08):
+                # Keep the higher-severity or wider-context issue
+                if sev_rank.get(sev, 0) > sev_rank.get(ex_sev, 0) or (
+                    sev_rank.get(sev, 0) == sev_rank.get(ex_sev, 0) and (t1 - t0) > (ex_t1 - ex_t0) + 0.05
+                ):
+                    deduped[idx_ex] = iss
+                merged_existing = True
+                break
+
+        if not merged_existing:
+            deduped.append(iss)
+
+    return deduped
+
+
 def analyze_word_alignment_issues(
     text: str,
     asr_words: list[dict[str, Any]],
@@ -2631,6 +3176,7 @@ def analyze_word_alignment_issues(
     pronunciation_rules: list[dict[str, Any]] | None = None,
     envelope: dict[str, Any] | None = None,
     slice_budget: list[int] | None = None,
+    secondary_reasons: list[str] | None = None,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
     """Analyzes ASR words with timestamps against source text to identify:
     1. Suspected stutter or syllable repetition (SUSPECTED_STUTTER, PARTIAL_PRONUNCIATION)
@@ -2661,6 +3207,8 @@ def analyze_word_alignment_issues(
 
     if slice_budget is None:
         slice_budget = [MAX_SECONDARY_SLICE_CHECKS]
+    if secondary_reasons is None:
+        secondary_reasons = []
     initial_slice_budget = int(slice_budget[0])
 
     metrics: dict[str, Any] = {
@@ -2670,6 +3218,8 @@ def analyze_word_alignment_issues(
         "detectedWordsCount": len(asr_words),
         "sourceWordsCount": n_src,
         "secondaryWhisperCalls": 0,
+        "secondaryWhisperReasons": secondary_reasons,
+        "unverifiedReasons": [],
     }
 
     if not text.strip() or not asr_words:
@@ -3097,80 +3647,35 @@ def analyze_word_alignment_issues(
                 p_next = float(w_next.get("probability", 1.0))
                 ts = format_timestamp(t_end_prev)
 
-                # Single missing word bounded by spoken words
+                # Single missing word bounded by spoken words: Stage 2 Evidence Evaluation
                 if len(unmerged_indices) == 1 and p_prev >= 0.50 and p_next >= 0.50:
                     src_clean = source_words_clean[unmerged_indices[0]]
-                    is_article = src_clean in WEAK_CLITIC_ARTICLES
-                    has_silence = True
-                    gap_rms = 0.0
-                    if audio_data is not None and sample_rate > 0 and gap >= 0.06:
-                        s1 = max(0, int(round(t_end_prev * sample_rate)))
-                        s2 = min(len(audio_data), int(round(t_start_next * sample_rate)))
-                        if s2 > s1:
-                            slice_gap = audio_data[s1:s2]
-                            gap_rms = float(np.sqrt(np.mean(slice_gap ** 2))) if slice_gap.size > 0 else 0.0
-                            if gap_rms >= (0.018 if is_article else 0.025):
-                                has_silence = False
-                    elif is_article and audio_data is not None and sample_rate > 0 and gap < 0.06:
-                        # Check for coarticulatory vowel liaison across the tight boundary [t_end_prev - 0.04, t_start_next + 0.04]
-                        s1 = max(0, int(round((t_end_prev - 0.04) * sample_rate)))
-                        s2 = min(len(audio_data), int(round((t_start_next + 0.04) * sample_rate)))
-                        if s2 > s1:
-                            liaison_rms = float(np.sqrt(np.mean(audio_data[s1:s2] ** 2)))
-                            if liaison_rms >= 0.022:
-                                has_silence = False
-
-                    # Secondary slice check if acoustic energy is present in the gap and whisper_model is available
-                    verified_present = False
-                    slice_attempted = False
-                    if not has_silence and whisper_model is not None and audio_data is not None and sample_rate > 0 and slice_budget[0] > 0:
-                        import tempfile
-                        import soundfile as sf
-                        slice_budget[0] -= 1
-                        slice_attempted = True
-                        t_s0 = max(0.0, float(w_prev.get("startSec", t_end_prev)) - 0.05)
-                        t_s1 = min(total_dur or len(audio_data) / sample_rate, float(w_next.get("endSec", t_start_next)) + 0.05)
-                        seg_audio = audio_data[max(0, int(t_s0 * sample_rate)):min(len(audio_data), int(t_s1 * sample_rate))]
-                        if seg_audio.size >= int(0.15 * sample_rate):
-                            tmp_om = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                            tmp_om_name = tmp_om.name
-                            tmp_om.close()
-                            try:
-                                sf.write(tmp_om_name, seg_audio, sample_rate, subtype="PCM_16")
-                                lang_c = None if not language or language == "auto" else language
-                                segs_om, _ = whisper_model.transcribe(
-                                    tmp_om_name, language=lang_c, beam_size=5, word_timestamps=True, vad_filter=False
-                                )
-                                om_words = [clean_word(w.word) for seg in segs_om for w in (seg.words or []) if w.word]
-                                if any(are_words_equivalent(src_clean, ow) for ow in om_words):
-                                    verified_present = True
-                                else:
-                                    has_silence = True
-                            except Exception:
-                                pass
-                            finally:
-                                try:
-                                    os.remove(tmp_om_name)
-                                except OSError:
-                                    pass
-                    if verified_present:
+                    om_decision, om_reason = _verify_omitted_word_evidence(
+                        src_clean=src_clean,
+                        w_prev=w_prev,
+                        w_next=w_next,
+                        audio_data=audio_data,
+                        sample_rate=sample_rate,
+                        whisper_model=whisper_model,
+                        language=language,
+                        total_dur=total_dur,
+                        eff_speed=eff_speed,
+                        slice_budget=slice_budget,
+                        secondary_reasons=secondary_reasons,
+                    )
+                    if om_decision == "pass":
                         continue
-
-                    if not has_silence and not slice_attempted:
-                        # Acoustic energy exists in the gap (or tight article liaison) without secondary Whisper confirmation:
-                        # For a tight article liaison (<0.05s) with continuous speech energy, treat as coarticulated pass;
-                        # otherwise mark UNVERIFIED_WORD rather than silently dropping a missing word.
-                        if is_article and gap < 0.05:
-                            continue
+                    elif om_decision == "unverified":
                         issues.append({
                             "severity": "unverified",
                             "code": "UNVERIFIED_WORD",
                             "message": (
-                                f'Chưa thể xác minh từ "{src_clean}" (có năng lượng âm thanh trong khoảng {gap:.2f}s '
-                                f"nhưng ASR chính chưa ghi nhận) — khoảng {ts}."
+                                f'Chưa thể xác minh từ "{src_clean}" (có tín hiệu âm học trong khoảng {gap:.2f}s '
+                                f"nhưng chưa có xác nhận nhận dạng độc lập) — khoảng {ts}."
                             ),
                             "words": [src_clean],
                             "timeRange": [round(t_end_prev, 3), round(t_start_next, 3)],
+                            "unverifiedReason": om_reason,
                         })
                     else:
                         issues.append({
@@ -3587,43 +4092,44 @@ def analyze_word_alignment_issues(
                     if (j1 + 1) < len(asr_words)
                     else 99.0
                 )
-                is_physically_adjacent = (-0.05 <= gap_to_next_asr <= 0.05)
-                if next_src_w and is_physically_adjacent:
-                    if (aw == sw + "s" or sw == aw + "s") and next_src_w.startswith(("s", "z")):
-                        asr_to_source[j1] = i1
-                        continue
-                    gap_from_prev_asr = (
-                        t_start - float(asr_words[j1 - 1].get("endSec", t_start))
-                        if j1 > 0
-                        else 0.0
-                    )
-                    if (
-                        {sw, aw} == {"and", "an"}
-                        and next_src_w[:1] in ("a", "e", "i", "o", "u")
-                        and (t_end - t_start) <= 0.24
-                        and gap_from_prev_asr < 0.18
-                    ):
-                        asr_to_source[j1] = i1
-                        continue
-                    is_ed_assimilation = (
-                        _estimate_expected_syllables(sw) == _estimate_expected_syllables(aw)
-                        and (
-                            (len(sw) >= 4 and sw[-1] in "nlrs" and (aw in (sw + "d", sw + "ed") or sw in (aw + "d", aw + "ed")))
-                            or (
-                                len(aw) >= 3
-                                and aw[-1] not in "td"
-                                and sw in (aw + "d", aw + "ed", aw + aw[-1] + "ed")
-                            )
-                            or (
-                                len(sw) >= 3
-                                and sw[-1] not in "td"
-                                and aw in (sw + "d", sw + "ed", sw + sw[-1] + "ed")
-                            )
-                        )
-                    )
-                    if is_ed_assimilation and next_src_w.startswith(("t", "d", "b", "p", "k", "g", "th")):
-                        asr_to_source[j1] = i1
-                        continue
+                gap_from_prev_asr = (
+                    t_start - float(asr_words[j1 - 1].get("endSec", t_start))
+                    if j1 > 0
+                    else 0.0
+                )
+                assim_decision, assim_reason = _evaluate_coarticulatory_assimilation(
+                    sw=sw,
+                    aw=aw,
+                    next_src_w=next_src_w,
+                    t_start=t_start,
+                    t_end=t_end,
+                    w_prob=w_prob,
+                    gap_to_next_asr=gap_to_next_asr,
+                    gap_from_prev_asr=gap_from_prev_asr,
+                    asr_words=asr_words,
+                    j1=j1,
+                    audio_data=audio_data,
+                    sample_rate=sample_rate,
+                    whisper_model=whisper_model,
+                    language=language,
+                    total_dur=total_dur,
+                    eff_speed=eff_speed,
+                    slice_budget=slice_budget,
+                    secondary_reasons=secondary_reasons,
+                )
+                if assim_decision == "pass":
+                    asr_to_source[j1] = i1
+                    continue
+                elif assim_decision == "unverified":
+                    issues.append({
+                        "severity": "unverified",
+                        "code": "UNVERIFIED_WORD",
+                        "message": f"Chưa thể xác minh nối âm cuối tại từ '{raw_sw_tok}' (ASR ghi nhận '{aw}' trước '{next_src_w}') — khoảng {ts}.",
+                        "words": [sw, aw],
+                        "timeRange": [round(t_start, 3), round(t_end, 3)],
+                        "unverifiedReason": assim_reason,
+                    })
+                    continue
 
                 is_same_syllable_inflection = bool(
                     re.fullmatch(re.escape(aw) + r"(?:[bcdgfklmnprstvz]?ed|d|s)", sw)
@@ -3726,18 +4232,28 @@ def analyze_word_alignment_issues(
                         })
                 continue
 
-            # Case 3: Multiple unrepresented content words in multi-word replacement
-            if len(unrepresented_content_indices) >= 2:
+            # Case 3: Any unrepresented source words in multi-token replacement (including single omitted/replaced words in 1-to-2 or 2-to-3 spans)
+            if len(unrepresented_content_indices) >= 1:
                 max_prob = max((float(asr_words[k].get("probability", 0.0)) for k in range(j1, min(j2, len(asr_words)))), default=1.0)
-                if max_prob >= 0.70:
-                    ctx_span = extract_context_span(source_words, i1, i2)
-                    asr_slice_str = " ".join(asr_slice_clean)
+                ctx_span = extract_context_span(source_words, i1, i2)
+                asr_slice_str = " ".join(asr_slice_clean)
+                unrep_words = [source_words_clean[idx] for idx in unrepresented_content_indices]
+                if max_prob >= 0.50:
                     issues.append({
                         "severity": "warning",
-                        "code": "SUSPECTED_SWALLOWED",
-                        "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm thiếu hoặc không rõ (ASR ghi nhận '{asr_slice_str}') — khoảng {ts}. Vui lòng nghe lại.",
-                        "words": [source_words_clean[idx] for idx in unrepresented_content_indices],
+                        "code": "SUSPECTED_SWALLOWED" if len(unrep_words) >= 2 else "SUSPECTED_MISPRONUNCIATION",
+                        "message": f"Vùng '{ctx_span}' có dấu hiệu phát âm sai hoặc thiếu từ (ASR ghi nhận '{asr_slice_str}') — khoảng {ts}. Vui lòng nghe lại.",
+                        "words": unrep_words,
                         "timeRange": [round(t_start, 3), round(t_end, 3)],
+                    })
+                else:
+                    issues.append({
+                        "severity": "unverified",
+                        "code": "UNVERIFIED_WORD",
+                        "message": f"Chưa thể xác minh vùng '{ctx_span}' (ASR ghi nhận '{asr_slice_str}' với độ tin cậy thấp {max_prob:.2f}) — khoảng {ts}.",
+                        "words": unrep_words,
+                        "timeRange": [round(t_start, 3), round(t_end, 3)],
+                        "unverifiedReason": "low_asr_confidence_in_replace",
                     })
 
             # Case 4: More words in ASR than in source (e.g. repetition or extra words inside replacement span)
@@ -4055,7 +4571,14 @@ def analyze_word_alignment_issues(
         b_m = boundary_records[m_idx]
         if not b_m["is_prosodic_boundary"] or m_idx in pair_pause_issues:
             return False
-        if (m_idx + 1) < len(boundary_records) and (m_idx + 1) in pair_pause_issues:
+        # If the word immediately after m_idx is the head of a tight constituent (e.g. 'between | 200')
+        # and that tight link is broken (in pair_pause_issues), then m_idx is stranded inside a staccato
+        # breakdown rather than starting a fluent phrase.
+        if (
+            (m_idx + 1) < len(boundary_records)
+            and (m_idx + 1) in pair_pause_issues
+            and (boundary_records[m_idx + 1]["is_tight_cohesion"] or boundary_records[m_idx + 1]["is_protected"])
+        ):
             return False
         return True
 
@@ -4252,39 +4775,61 @@ def analyze_word_alignment_issues(
         span_end_sec = float(last_b["end2"])
         span_total_dur = max(0.10, span_end_sec - span_start_sec)
         total_pause_in_cluster = sum(float(boundary_records[idx_c]["eff_pause_sec"]) for idx_c in cluster)
+        active_speech_sec = max(0.05, span_total_dur - total_pause_in_cluster)
+        pause_to_speech_ratio = total_pause_in_cluster / active_speech_sec
         mean_cluster_pause = total_pause_in_cluster / len(cluster)
         discontinuity_ratio = total_pause_in_cluster / span_total_dur
         rhythm_jump = mean_cluster_pause - baseline_clause_pause
 
-        # Strong acoustic & syntactic evidence of choppy / fragmented synthesis
+        # Strong acoustic & syntactic evidence of choppy / fragmented synthesis:
+        # Every branch requires BOTH syntactic constituent disruption AND independent whole-phrase
+        # acoustic discontinuity (discontinuity_ratio & pause_to_speech_ratio).
+        # Two ~0.23s pauses without individual threshold violations never trigger WARNING on count alone.
         is_verified_choppy = (
-            len(flagged_members) >= 2
-            or (len(flagged_members) >= 1 and len(tight_members) >= 2)
+            (
+                len(flagged_members) >= 2
+                and discontinuity_ratio >= 0.20
+                and pause_to_speech_ratio >= 0.25
+            )
+            or (
+                len(flagged_members) >= 1
+                and len(tight_members) >= 2
+                and discontinuity_ratio >= 0.22
+                and pause_to_speech_ratio >= 0.28
+            )
             or (
                 len(tight_members) >= 2
                 and consecutive_links >= 1
-                and all(boundary_records[idx_c]["eff_pause_sec"] >= (0.23 / eff_speed) for idx_c in cluster)
-                and (discontinuity_ratio >= 0.22 or rhythm_jump >= 0.16)
+                and all(boundary_records[idx_c]["eff_pause_sec"] >= (0.25 / eff_speed) for idx_c in cluster)
+                and discontinuity_ratio >= 0.25
+                and pause_to_speech_ratio >= 0.33
+                and rhythm_jump >= 0.18
             )
             or (
                 len(cluster) >= 3
                 and consecutive_links >= 2
                 and len(tight_members) >= 1
-                and discontinuity_ratio >= 0.22
+                and all(boundary_records[idx_c]["eff_pause_sec"] >= (0.22 / eff_speed) for idx_c in cluster)
+                and discontinuity_ratio >= 0.24
+                and pause_to_speech_ratio >= 0.31
             )
         )
 
-        # Ambiguous / borderline staccato in an uncertain constituent without individual threshold violations
+        # Ambiguous / borderline staccato in a phrase without sufficient evidence for WARNING
         is_borderline_unverified_choppy = (
             not is_verified_choppy
             and len(flagged_members) == 0
             and consecutive_links >= 1
             and len(tight_members) >= 1
             and all(boundary_records[idx_c]["eff_pause_sec"] >= (0.22 / eff_speed) for idx_c in cluster)
-            and any(
-                boundary_records[idx_c]["mapping_uncertain"]
-                or boundary_records[idx_c]["boundary_class"] == "UNCERTAIN_BOUNDARY"
-                for idx_c in cluster
+            and discontinuity_ratio >= 0.21
+            and (
+                len(tight_members) >= 2
+                or any(
+                    boundary_records[idx_c]["mapping_uncertain"]
+                    or boundary_records[idx_c]["boundary_class"] == "UNCERTAIN_BOUNDARY"
+                    for idx_c in cluster
+                )
             )
         )
 
@@ -4338,6 +4883,9 @@ def analyze_word_alignment_issues(
     issues.extend(sandwiched_issues)
     issues.extend(choppy_issues)
 
+    # Stage 3 Decision Deduplication
+    issues = _deduplicate_quality_issues(issues)
+
     # Enrich all alignment issues with diagnostic metadata for UI and TTS log export
     for iss in issues:
         tr = iss.get("timeRange", [0.0, 0.0])
@@ -4372,6 +4920,11 @@ def analyze_word_alignment_issues(
         iss.setdefault("evidence", ev_str)
 
     metrics["secondaryWhisperCalls"] = max(0, initial_slice_budget - int(slice_budget[0]))
+    metrics["unverifiedReasons"] = [
+        str(iss.get("unverifiedReason") or iss.get("code"))
+        for iss in issues
+        if iss.get("severity") == "unverified"
+    ]
     return (issues, metrics) if return_metrics else issues
 
 
@@ -4676,7 +5229,8 @@ def _estimate_expected_syllables(token: str) -> int:
         return 1
     groups = re.findall(r"[aeiouyăâêôơư]+", t)
     count = len(groups)
-    if t.endswith("e") and not t.endswith(("le", "ee", "ie", "oe", "ye")) and count > 1:
+    is_consonant_le = bool(t.endswith("le") and len(t) >= 3 and t[-3] not in "aeiouyăâêôơư")
+    if t.endswith("e") and not is_consonant_le and not t.endswith(("ee", "ie", "oe", "ye")) and count > 1:
         count -= 1
     elif t.endswith("ed") and len(t) > 3 and not t.endswith(("ted", "ded", "ied", "eed")) and count > 1:
         count -= 1
@@ -4790,20 +5344,31 @@ def detect_intra_word_pause(
                     min(gap_end, b_e + 0.03) - max(gap_start, b_s - 0.03) >= 0.08
                     for b_s, b_e in inter_word_intervals
                 )
+                has_strong_both_syllables = (
+                    expected_syl >= 2
+                    and active_before >= 8
+                    and active_after >= 7
+                    and before.size > 0
+                    and after.size > 0
+                    and float(np.max(before)) >= baseline * 0.55
+                    and float(np.max(after)) >= baseline * 0.55
+                )
                 # Also skip if multi-word utterance and gap is near word edge without sustained syllables on both sides
-                if len(asr_words) > 1 and (
+                if len(asr_words) > 1 and not has_strong_both_syllables and (
                     (w_idx > 0 and (gap_start - start_sec) <= 0.18 and active_before < 12)
                     or (w_idx + 1 < len(asr_words) and (end_sec - gap_end) <= 0.18 and active_after < 12)
                     or (expected_syl == 1 and (end_sec - gap_end) <= 0.24 and active_after < 11)
                 ):
                     is_boundary_pause = True
+                min_edge_sec = 0.10 if has_strong_both_syllables else 0.14
+                req_after_frames = 7 if has_strong_both_syllables else req_active_frames
                 if (
                     not is_boundary_pause
                     and run_end - run_start >= min_frames
-                    and run_start * hop / sample_rate >= 0.14
-                    and (len(rms) - run_end) * hop / sample_rate >= 0.14
+                    and run_start * hop / sample_rate >= min_edge_sec
+                    and (len(rms) - run_end) * hop / sample_rate >= min_edge_sec
                     and active_before >= req_active_frames
-                    and active_after >= req_active_frames
+                    and active_after >= req_after_frames
                 ):
                     found.append({
                         "severity": "warning",
@@ -4830,7 +5395,7 @@ def detect_intra_word_pause(
                 active_dur_sec = float(voiced_frames[-1] - voiced_frames[0] + 1) * hop / sample_rate
             else:
                 active_dur_sec = 0.0
-            min_stretched_dur = max(0.64, (0.30 * expected_syl + 0.08) / eff_speed)
+            min_stretched_dur = max(0.58, (0.28 * expected_syl + 0.04) / eff_speed)
             if active_dur_sec >= min_stretched_dur:
                 vowel_mask = (rms >= baseline * 0.35) & (zcrs < 0.18)
                 deep_valley_mask = (rms < baseline * 0.12) & (zcrs < 0.10)
@@ -4841,8 +5406,8 @@ def detect_intra_word_pause(
                     if v and b_start is None:
                         b_start = idx
                     elif not v and b_start is not None:
-                        if idx - b_start >= 9:  # >= 90ms sustained vowel nucleus
-                            if bursts and int(np.sum(deep_valley_mask[bursts[-1][1]:b_start])) < 6:
+                        if idx - b_start >= 8:  # >= 80ms sustained vowel nucleus
+                            if bursts and int(np.sum(deep_valley_mask[bursts[-1][1]:b_start])) < 5:
                                 bursts[-1] = (bursts[-1][0], idx)
                             else:
                                 bursts.append((b_start, idx))
@@ -4869,6 +5434,9 @@ def recover_unaligned_words(
     whisper_model: Any,
     language: str | None = None,
     slice_budget: list[int] | None = None,
+    audio_data: np.ndarray | None = None,
+    sample_rate: int = 0,
+    secondary_reasons: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Detects acoustic speech energy in gaps before first word or after last word
     (and very large middle pauses >= 1.2s) and runs targeted second-pass transcribe
@@ -4883,11 +5451,15 @@ def recover_unaligned_words(
         return detected_words
 
     import soundfile as sf
-    try:
-        data, sr = sf.read(audio_path, dtype="float32", always_2d=True)
-        mono = data.mean(axis=1)
-    except Exception:
-        return detected_words
+    if audio_data is not None and sample_rate > 0:
+        mono = audio_data
+        sr = sample_rate
+    else:
+        try:
+            data, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+            mono = data.mean(axis=1)
+        except Exception:
+            return detected_words
 
     candidate_gaps: list[tuple[float, float, bool]] = []
 
@@ -4961,6 +5533,8 @@ def recover_unaligned_words(
                 break
             if slice_budget is not None:
                 slice_budget[0] -= 1
+            if secondary_reasons is not None:
+                secondary_reasons.append("trailing_gap_recovery" if is_trailing else "boundary_gap_recovery")
             tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             tmp_wav_name = tmp_wav.name
             tmp_wav.close()
@@ -5068,8 +5642,11 @@ def validate_audio_quality(
     n_src = len(source_words)
     eff_speed = float(speed) if (speed and float(speed) > 0) else 1.0
 
-    # Step 1: Technical Audio Validation
+    # Step 1: Technical Audio Validation (loads waveform once into memory)
+    t_stage0 = time.perf_counter()
     valid, tech_issues, info = validate_audio_file(audio_path, text)
+    cached_mono = info.pop("_mono", None)
+    t_tech_ms = round((time.perf_counter() - t_stage0) * 1000.0, 2)
     dur = float(info.get("durationSec", 0.0))
     raw_wpm = (n_src / dur * 60.0) if dur > 0 and n_src > 0 else 0.0
 
@@ -5222,8 +5799,20 @@ def validate_audio_quality(
             }
 
         shared_slice_budget = [MAX_SECONDARY_SLICE_CHECKS]
+        shared_secondary_reasons: list[str] = []
 
-        # Recover unaligned words in acoustic speech energy gaps (sharing the secondary slice budget)
+        # Reuse waveform loaded during validate_audio_file (zero redundant disk reads)
+        data_wave = cached_mono
+        sr_wave = int(info.get("sampleRate", 16000) or 16000)
+        if data_wave is None:
+            try:
+                import soundfile as sf
+                data_raw, sr_wave = sf.read(audio_path, dtype="float32", always_2d=True)
+                data_wave = data_raw.mean(axis=1)
+            except Exception as rd_err:
+                log(f"[audio_quality] Cannot read audio waveform: {rd_err}")
+
+        # Recover unaligned words in acoustic speech energy gaps (sharing the secondary slice budget and waveform)
         detected_words = recover_unaligned_words(
             audio_path,
             detected_words,
@@ -5231,20 +5820,17 @@ def validate_audio_quality(
             whisper_model,
             language=eff_language,
             slice_budget=shared_slice_budget,
+            audio_data=data_wave,
+            sample_rate=sr_wave,
+            secondary_reasons=shared_secondary_reasons,
         )
+        t_primary_asr_ms = round((time.perf_counter() - t_stage0) * 1000.0 - t_tech_ms, 2)
 
-        # Read audio waveform once for both alignment waveform checks and acoustic stutter check
-        data_wave = None
-        sr_wave = 16000
-        try:
-            import soundfile as sf
-            data_raw, sr_wave = sf.read(audio_path, dtype="float32", always_2d=True)
-            data_wave = data_raw.mean(axis=1)
-        except Exception as rd_err:
-            log(f"[audio_quality] Cannot read audio waveform: {rd_err}")
-
+        t_env0 = time.perf_counter()
         shared_envelope = compute_acoustic_envelope(data_wave, sr_wave) if (data_wave is not None and sr_wave > 0) else None
+        t_env_ms = round((time.perf_counter() - t_env0) * 1000.0, 2)
 
+        t_align0 = time.perf_counter()
         alignment_issues, metrics = analyze_word_alignment_issues(
             text,
             detected_words,
@@ -5260,10 +5846,14 @@ def validate_audio_quality(
             pronunciation_rules=pronunciation_rules,
             envelope=shared_envelope,
             slice_budget=shared_slice_budget,
+            secondary_reasons=shared_secondary_reasons,
         )
+        t_align_ms = round((time.perf_counter() - t_align0) * 1000.0, 2)
         metrics["secondaryWhisperCalls"] = max(0, MAX_SECONDARY_SLICE_CHECKS - int(shared_slice_budget[0]))
+        metrics["secondaryWhisperReasons"] = list(shared_secondary_reasons)
 
         # Step 3: Acoustic Stutter Check (waveform + ASR corroboration)
+        t_stut0 = time.perf_counter()
         if data_wave is not None and sr_wave > 0:
             try:
                 acoustic_stutters = detect_acoustic_stutter(
@@ -5284,9 +5874,11 @@ def validate_audio_quality(
                         alignment_issues.append(ast)
             except Exception as st_err:
                 log(f"[audio_quality] Acoustic stutter check error: {st_err}")
+        t_stut_ms = round((time.perf_counter() - t_stut0) * 1000.0, 2)
 
         # Whisper can still transcribe the correct word when audio contains
         # a real internal break (e.g. "Te ... sla"). Check its waveform too.
+        t_intra0 = time.perf_counter()
         if data_wave is not None and sr_wave > 0:
             try:
                 intra_pauses = detect_intra_word_pause(
@@ -5302,11 +5894,22 @@ def validate_audio_quality(
                         alignment_issues.append(ip)
             except Exception as intra_err:
                 log(f"[audio_quality] Intra-word pause check failed: {intra_err}")
+        t_intra_ms = round((time.perf_counter() - t_intra0) * 1000.0, 2)
 
+        alignment_issues = _deduplicate_quality_issues(alignment_issues)
         for iss in alignment_issues:
             iss["asrModelId"] = active_model_id
 
         alignment_issues.sort(key=lambda x: float(x.get("timeRange", [0.0])[0]))
+        metrics["timingMs"] = {
+            "technicalMs": t_tech_ms,
+            "primaryAsrMs": t_primary_asr_ms,
+            "envelopeMs": t_env_ms,
+            "alignmentMs": t_align_ms,
+            "stutterMs": t_stut_ms,
+            "intraPauseMs": t_intra_ms,
+            "totalMs": round((time.perf_counter() - t_stage0) * 1000.0, 2),
+        }
 
         error_issues = [i for i in alignment_issues if i.get("severity") == "error"]
         warning_issues = [i for i in alignment_issues if i.get("severity") == "warning"]

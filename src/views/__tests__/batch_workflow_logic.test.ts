@@ -442,16 +442,19 @@ describe("Gate D: Batch Workflow Logic — Final Logic Change Request Suite", ()
     ];
 
     const speechUnits = buildSpeechUnitsFromChunks(chunks);
-    assert.equal(speechUnits.length, 2);
+    // chunk-1 (7 words, 35 chars) stays 1 unit; chunk-2 (10 words, 46 chars > 36) decomposes into 2 clause sub-units
+    assert.equal(speechUnits.length, 3);
     assert.equal(speechUnits[0].startSec, 0);
     assert.equal(speechUnits[0].endSec, 2.8);
-    // Unit 2 starts after 400ms pause = 3.2s
+    // Chunk 2 sub-units start after 400ms pause = 3.2s and end at 3.2 + 3.5 = 6.7s
     assert.equal(Math.round(speechUnits[1].startSec * 10) / 10, 3.2);
-    assert.equal(Math.round(speechUnits[1].endSec * 10) / 10, 6.7);
+    assert.equal(Math.round(speechUnits[speechUnits.length - 1].endSec * 10) / 10, 6.7);
 
     const cues = generateSubtitlesFromChunks(chunks, { aspectRatio: "16:9", maxLines: 2 });
-    assert.ok(cues.length >= 1, "Must generate valid cues from synthesized chunks");
+    assert.equal(cues.length, 3, "Must generate synchronized 16:9 cues from the 3 speech units");
     assert.equal(cues[0].startSec, 0);
-    assert.ok(cues[cues.length - 1].endSec > 0);
+    assert.equal(cues[0].endSec, 2.8);
+    assert.equal(Math.round(cues[1].startSec * 10) / 10, 3.2);
+    assert.equal(Math.round(cues[cues.length - 1].endSec * 10) / 10, 6.7);
   });
 });
