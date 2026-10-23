@@ -18,6 +18,7 @@ EN_SCALES = {
     "hundred": 100,
     "thousand": 1_000,
     "million": 1_000_000,
+    "milion": 1_000_000,  # common transcription/script spelling of million
     "billion": 1_000_000_000,
 }
 
@@ -308,7 +309,7 @@ def parse_english_number_phrase(
             if dw not in en_single_digits:
                 break
             if d_idx + 1 < n and not is_word_boundary(d_idx) and clean_token(words[d_idx + 1]) in (
-                "hundred", "thousand", "million", "billion", "point", "oclock", "o'clock"
+                "hundred", "thousand", "million", "milion", "billion", "point", "oclock", "o'clock"
             ):
                 break
             digit_run.append(en_single_digits[dw])
@@ -336,7 +337,7 @@ def parse_english_number_phrase(
             and idx == start_idx + offset
             and not hit_boundary
             and idx + 1 < n
-            and clean_token(words[idx + 1]) in ("hundred", "thousand", "million", "billion")
+            and clean_token(words[idx + 1]) in ("hundred", "thousand", "million", "milion", "billion")
         ):
             current += 1
             words_consumed += 1
@@ -415,7 +416,7 @@ def parse_english_number_phrase(
             idx += 1
             if hit_boundary:
                 break
-        elif w in ("thousand", "million", "billion"):
+        elif w in ("thousand", "million", "milion", "billion"):
             scale = EN_SCALES[w]
             if min_scale_applied is not None and scale >= min_scale_applied:
                 break
@@ -453,7 +454,7 @@ def parse_english_number_phrase(
                 after_scale_w = clean_token(words[after_next_idx])
                 if after_scale_w == "hundred":
                     break
-                if after_scale_w in ("thousand", "million", "billion"):
+                if after_scale_w in ("thousand", "million", "milion", "billion"):
                     next_scale = EN_SCALES[after_scale_w]
                     if (
                         current < 100
@@ -911,6 +912,27 @@ def collapse_number_tokens(
                 break
 
     while idx < n:
+        # Whisper may split a locale-formatted integer into BPE words such as
+        # ["1.", "000.", "000"] or ["1", ".000", ".000"].
+        # Recombine ONLY if the joined spelling contains explicit 3-digit
+        # grouping dots; never equate numerically different decimals.
+        dotted_group_end = None
+        for candidate_end in range(idx + 2, min(n, idx + 7) + 1):
+            joined = "".join(words[idx:candidate_end]).strip()
+            if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", joined) and not is_ip_address(joined):
+                dotted_group_end = candidate_end
+        if dotted_group_end is not None:
+            joined = "".join(words[idx:dotted_group_end]).strip()
+            spans.append(NormalizedSpan(
+                canonical=normalize_digit_string(joined),
+                orig_start=idx,
+                orig_end=dotted_group_end,
+                is_number=True,
+            ))
+            idx = dotted_group_end
+            consume_trailing_modifiers()
+            continue
+
         raw_w = words[idx]
         cleaned = clean_token(raw_w)
 
