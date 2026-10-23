@@ -178,14 +178,28 @@ body {
   background-color: var(--theme-background);
   color: var(--theme-textPrimary);
   user-select: none;
+  -webkit-user-select: none;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-/* Smooth cursor, caret, and selection across all text inputs & textareas */
-textarea,
-input[type="text"],
-input[type="search"],
-input:not([type]),
+/* Prevent accidental text selection on all non-editable UI elements */
+*,
+*::before,
+*::after {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Smooth cursor, caret, and selection strictly on editable text inputs & textareas */
+textarea:not(:disabled):not([readonly]),
+input[type="text"]:not(:disabled):not([readonly]),
+input[type="search"]:not(:disabled):not([readonly]),
+input[type="number"]:not(:disabled):not([readonly]),
+input[type="url"]:not(:disabled):not([readonly]),
+input[type="email"]:not(:disabled):not([readonly]),
+input[type="password"]:not(:disabled):not([readonly]),
+input[type="tel"]:not(:disabled):not([readonly]),
+input:not([type]):not(:disabled):not([readonly]),
 [contenteditable="true"] {
   user-select: text;
   -webkit-user-select: text;

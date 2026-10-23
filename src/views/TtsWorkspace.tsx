@@ -1909,7 +1909,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                   <div
                     key={chunk.id}
                     onClick={() => onSelectChunk(chunk)}
-                    className={`p-3 rounded-xl border transition-[border-color,background-color,box-shadow] duration-150 cursor-pointer select-text space-y-2 min-h-[96px] ${
+                    className={`p-3 rounded-xl border transition-[border-color,background-color,box-shadow] duration-150 cursor-pointer select-none space-y-2 min-h-[96px] ${
                       isSelected
                         ? "bg-accent/[0.04] border-accent/45 shadow-2xs"
                         : "bg-surface1 hover:bg-surface2/30 border-borderDefault hover:border-textMuted/40 shadow-2xs"

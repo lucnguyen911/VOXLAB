@@ -172,7 +172,7 @@ const CueCardItem = React.memo<CueCardItemProps>(({
     <div
       onClick={() => onSeek(cue)}
       data-cue-index={cue.index}
-      className={`py-2 px-3 rounded-lg border transition-all cursor-pointer select-text group flex flex-col gap-1 ${
+      className={`py-2 px-3 rounded-lg border transition-all cursor-pointer select-none group flex flex-col gap-1 ${
         isActive
           ? "border-l-[3.5px] border-l-accent border-t-borderDefault border-r-borderDefault border-b-borderDefault bg-accent/[0.06] dark:bg-accent/[0.08] shadow-2xs"
           : "border-l-[3.5px] border-l-transparent border-t-borderDefault border-r-borderDefault border-b-borderDefault bg-surface1 hover:bg-surface2/40"
@@ -1468,7 +1468,7 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
 
                 <div className="flex flex-col justify-center min-w-0 flex-1">
                   <span
-                    className="font-bold text-textPrimary text-xs tracking-tight truncate block select-text"
+                    className="font-bold text-textPrimary text-xs tracking-tight truncate block select-none"
                     title={fileInfo.name}
                   >
                     {fileInfo.name}

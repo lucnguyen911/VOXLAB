@@ -328,7 +328,7 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
               <div
                 key={seg.id}
                 onClick={() => onSelectSegment(seg)}
-                className={`p-3 rounded-xl border transition-[border-color,background-color,box-shadow] duration-150 cursor-pointer select-text space-y-2 min-h-[96px] ${
+                className={`p-3 rounded-xl border transition-[border-color,background-color,box-shadow] duration-150 cursor-pointer select-none space-y-2 min-h-[96px] ${
                   isPlaying
                     ? "bg-accent/[0.06] border-accent/60 shadow-xs ring-1 ring-accent/30"
                     : isSelected

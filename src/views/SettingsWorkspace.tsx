@@ -1660,7 +1660,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                       disabled
                       value={licenseInfo ? licenseInfo.masked_key : "VOX-DEV-UNRESTRICTED"}
                       placeholder="xxx-xxx-xxx-xxx"
-                      className="flex-1 bg-surface2/60 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textMuted cursor-not-allowed select-all"
+                      className="flex-1 bg-surface2/60 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textMuted cursor-not-allowed select-none"
                     />
                     <button
                       type="button"

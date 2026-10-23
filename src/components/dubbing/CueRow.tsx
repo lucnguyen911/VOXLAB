@@ -182,7 +182,7 @@ export const CueRow: React.FC<CueRowProps> = ({
     >
       {/* CỘT 1: KỊCH BẢN GỐC (Read-only, Immutable Timestamps) */}
       <div
-        className={`p-3 bg-surface1 rounded-xl border transition-all flex flex-col justify-between gap-2 shadow-2xs select-text ${
+        className={`p-3 bg-surface1 rounded-xl border transition-all flex flex-col justify-between gap-2 shadow-2xs select-none ${
           isPlaying ? "border-accent shadow-sm" : "border-borderDefault hover:border-accent/40"
         }`}
       >
@@ -208,7 +208,7 @@ export const CueRow: React.FC<CueRowProps> = ({
 
         {/* Middle Body: Text vertically centered */}
         <div className="flex-1 flex items-center py-0.5">
-          <div className="w-full bg-surface2/50 border border-borderDefault/60 rounded-lg px-2.5 py-1.5 text-xs text-textPrimary leading-relaxed font-sans select-text whitespace-pre-wrap">
+          <div className="w-full bg-surface2/50 border border-borderDefault/60 rounded-lg px-2.5 py-1.5 text-xs text-textPrimary leading-relaxed font-sans select-none whitespace-pre-wrap">
             {original.text}
           </div>
         </div>
@@ -217,7 +217,7 @@ export const CueRow: React.FC<CueRowProps> = ({
       {/* CỘT 2: BẢN DỊCH (Chỉ hiển thị khi câu đã được dịch hoặc chỉnh sửa) */}
       {hasTranslatedContent ? (
         <div
-          className={`p-3 bg-surface1 rounded-xl border transition-all flex flex-col justify-between gap-2 shadow-2xs ${
+          className={`p-3 bg-surface1 rounded-xl border transition-all flex flex-col justify-between gap-2 shadow-2xs select-none ${
             isPlaying ? "border-accent shadow-sm" : "border-borderDefault hover:border-accent/40"
           }`}
         >
