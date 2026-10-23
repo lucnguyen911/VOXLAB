@@ -1603,6 +1603,97 @@ def _verify_low_confidence_equal_word(
     }
 
 
+
+def _numeric_mismatch_review(
+    expected: str,
+    observed: str,
+    asr_words: list[dict[str, Any]],
+    j1: int,
+    j2: int,
+    whisper_model: Any | None,
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    language: str | None,
+    total_dur: float,
+) -> dict[str, Any] | None:
+    """Re-check disagreeing number VALUES on a short audio slice.
+
+    Matching spellings (one million vs 1.000.000) are handled by the
+    normalizer before this point. Never declare 1.2 and 0.2 equivalent.
+    A second ASR pass can clear a false positive; unresolved 1/0 decimal
+    ambiguity is UNVERIFIED rather than a fabricated TTS pronunciation error.
+    """
+    t0 = float(asr_words[j1].get("startSec", 0.0)) if j1 < len(asr_words) else 0.0
+    t1 = float(asr_words[min(j2 - 1, len(asr_words) - 1)].get("endSec", t0)) if asr_words else t0
+    verdict = "mismatch"
+    if whisper_model is not None and audio_data is not None and sample_rate > 0 and t1 > t0:
+        import tempfile
+        import soundfile as sf
+
+        start = max(0.0, t0 - 0.14)
+        end = min(total_dur or len(audio_data) / sample_rate, t1 + 0.14)
+        segment = audio_data[max(0, int(start * sample_rate)):min(len(audio_data), int(end * sample_rate))]
+        if segment.size >= int(0.12 * sample_rate):
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp_name = tmp.name
+            tmp.close()
+            try:
+                sf.write(tmp_name, segment, sample_rate, subtype="PCM_16")
+                lang = None if not language or language == "auto" else language
+                segments, _ = whisper_model.transcribe(
+                    tmp_name, language=lang, beam_size=5, word_timestamps=True, vad_filter=False
+                )
+                transcript = []
+                for seg in segments:
+                    seg_words = [w.word for w in (seg.words or []) if w.word]
+                    transcript.extend(seg_words or (seg.text or "").split())
+                numeric_values = [
+                    span.canonical
+                    for span in collapse_number_tokens(transcript, language)
+                    if span.is_number
+                ]
+                if len(numeric_values) == 1:
+                    found = numeric_values[0]
+                    if are_number_expressions_equivalent(expected, found, language):
+                        return None  # Secondary recognition confirms spoken number.
+                    if not are_number_expressions_equivalent(observed, found, language):
+                        verdict = "unverified"  # Two ASR passes disagree.
+                else:
+                    verdict = "unverified"
+            except Exception as exc:
+                log(f"[audio_quality] Numeric slice verification failed: {exc}")
+                verdict = "unverified"
+            finally:
+                try:
+                    os.remove(tmp_name)
+                except OSError:
+                    pass
+
+        # Whisper commonly confuses 'one point X' and 'zero point X' even
+        # after a second pass. Neither PASS nor WARNING is justified by ASR alone.
+        e_parts = split_decimal_parts(expected)
+        o_parts = split_decimal_parts(observed)
+        if e_parts and o_parts and e_parts[1] == o_parts[1] and {e_parts[0], o_parts[0]} == {"0", "1"}:
+            verdict = "unverified"
+
+    t_text = format_timestamp(t0)
+    if verdict == "unverified":
+        return {
+            "severity": "unverified",
+            "code": "UNVERIFIED_NUMBER",
+            "message": f"Chưa xác minh được số '{expected}' (ASR ghi '{observed}') — khoảng {t_text}. Cần nghe lại.",
+            "words": [expected, observed],
+            "timeRange": [round(t0, 3), round(t1, 3)],
+        }
+    return {
+        "severity": "warning",
+        "code": "SUSPECTED_MISPRONUNCIATION",
+        "message": f"Nghi vấn đọc sai số '{expected}' (ASR ghi '{observed}') — khoảng {t_text}. Vui lòng nghe lại.",
+        "words": [expected, observed],
+        "timeRange": [round(t0, 3), round(t1, 3)],
+    }
+
+
 def analyze_word_alignment_issues(
     text: str,
     asr_words: list[dict[str, Any]],
@@ -2171,13 +2262,12 @@ def analyze_word_alignment_issues(
                         else:
                             asr_num_str = " ".join(asr_canonicals)
                             ts = format_timestamp(t_start_whole)
-                            issues.append({
-                                "severity": "warning",
-                                "code": "SUSPECTED_MISPRONUNCIATION",
-                                "message": f"Nghi vấn đọc sai số '{s_span.canonical}' (ASR ghi nhận '{asr_num_str}') — khoảng {ts}. Vui lòng nghe lại.",
-                                "words": [s_span.canonical, asr_num_str],
-                                "timeRange": [round(t_start_whole, 3), round(t_end_frac, 3)],
-                            })
+                            number_issue = _numeric_mismatch_review(
+                                s_span.canonical, asr_num_str, asr_words, j1, j2,
+                                whisper_model, audio_data, sample_rate, language, total_dur,
+                            )
+                            if number_issue is not None:
+                                issues.append(number_issue)
                             continue
 
                     # Single ASR decimal token that does not match (e.g. '2.8' vs '2.4')
@@ -2186,13 +2276,12 @@ def analyze_word_alignment_issues(
                             t_start_w = float(asr_words[j1].get("startSec", 0.0)) if j1 < len(asr_words) else 0.0
                             t_end_w = float(asr_words[j1].get("endSec", 0.0)) if j1 < len(asr_words) else 0.0
                             ts = format_timestamp(t_start_w)
-                            issues.append({
-                                "severity": "warning",
-                                "code": "SUSPECTED_MISPRONUNCIATION",
-                                "message": f"Nghi vấn đọc sai số '{s_span.canonical}' (ASR ghi nhận '{asr_canonicals[0]}') — khoảng {ts}. Vui lòng nghe lại.",
-                                "words": [s_span.canonical, asr_canonicals[0]],
-                                "timeRange": [round(t_start_w, 3), round(t_end_w, 3)],
-                            })
+                            number_issue = _numeric_mismatch_review(
+                                s_span.canonical, asr_canonicals[0], asr_words, j1, j2,
+                                whisper_model, audio_data, sample_rate, language, total_dur,
+                            )
+                            if number_issue is not None:
+                                issues.append(number_issue)
                             continue
 
                 # Wrong integer / cardinal number detection (e.g. '8,200' vs '8,300', '300' vs '50')
@@ -2213,13 +2302,12 @@ def analyze_word_alignment_issues(
                             t_start_w = float(asr_words[j1].get("startSec", 0.0)) if j1 < len(asr_words) else 0.0
                             t_end_w = float(asr_words[min(len(asr_words) - 1, j2 - 1)].get("endSec", 0.0)) if asr_words else 0.0
                             ts = format_timestamp(t_start_w)
-                            issues.append({
-                                "severity": "warning",
-                                "code": "SUSPECTED_MISPRONUNCIATION",
-                                "message": f"Nghi vấn đọc sai số '{s_span.canonical}' (ASR ghi nhận '{a_span_num.canonical}') — khoảng {ts}. Vui lòng nghe lại.",
-                                "words": [s_span.canonical, a_span_num.canonical],
-                                "timeRange": [round(t_start_w, 3), round(t_end_w, 3)],
-                            })
+                            number_issue = _numeric_mismatch_review(
+                                s_span.canonical, a_span_num.canonical, asr_words, j1, j2,
+                                whisper_model, audio_data, sample_rate, language, total_dur,
+                            )
+                            if number_issue is not None:
+                                issues.append(number_issue)
                             continue
 
             src_slice_clean = [source_words_clean[k] for k in range(i1, i2)]
@@ -3068,6 +3156,104 @@ def detect_acoustic_stutter(
     return issues
 
 
+
+def detect_intra_word_pause(
+    audio_data: np.ndarray,
+    sample_rate: int,
+    source_text: str,
+    asr_words: list[dict[str, Any]],
+    speed: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Flag a *silent break inside a single recognized word*, e.g. Te-(gap)-sla.
+
+    A word may align perfectly in Whisper even though its acoustics are broken.
+    Use frame-level RMS and zero-crossing rate so unvoiced consonants are not
+    mistaken for silence. Only evaluate recognized words present in the script.
+    """
+    if sample_rate <= 0 or audio_data.size < sample_rate // 2:
+        return []
+    source_tokens = {clean_word(w) for w in tokenize_text_with_delimiters(source_text)[0]}
+    if not source_tokens:
+        return []
+
+    signal = np.asarray(audio_data, dtype=np.float32)
+    if signal.ndim > 1:
+        signal = signal.mean(axis=1)
+    hop = max(1, int(round(0.010 * sample_rate)))
+    frame_size = max(hop + 1, int(round(0.020 * sample_rate)))
+    min_gap = max(0.14, 0.16 / max(0.5, float(speed or 1.0)))
+    found: list[dict[str, Any]] = []
+
+    for word in asr_words:
+        token = clean_word(str(word.get("word", "")))
+        if (
+            len(token) < 4 or token not in source_tokens
+            or re.search(r"\d", token)
+            or float(word.get("probability", 1.0)) < 0.65
+        ):
+            continue
+        start_sec = float(word.get("startSec", 0.0))
+        end_sec = float(word.get("endSec", 0.0))
+        if not (0.42 <= end_sec - start_sec <= 2.0):
+            continue
+        start = max(0, int(start_sec * sample_rate))
+        stop = min(len(signal), int(end_sec * sample_rate))
+        if stop - start < frame_size * 4:
+            continue
+        wave = signal[start:stop]
+        energies = []
+        zcrs = []
+        for p in range(0, wave.size - frame_size + 1, hop):
+            frame = wave[p:p + frame_size]
+            energies.append(float(np.sqrt(np.mean(frame ** 2))))
+            zcrs.append(float(np.mean(np.diff(np.signbit(frame)))))
+        if len(energies) < 6:
+            continue
+        rms = np.asarray(energies)
+        baseline = float(np.percentile(rms, 75))
+        if baseline < 0.025:
+            continue
+        silence_ceiling = max(0.003, baseline * 0.09)
+        is_quiet = (rms < silence_ceiling) & (np.asarray(zcrs) < 0.20)
+        min_frames = max(1, int(np.ceil(min_gap * sample_rate / hop)))
+        run_start = None
+        for pos in range(len(is_quiet) + 1):
+            quiet = bool(is_quiet[pos]) if pos < len(is_quiet) else False
+            if quiet and run_start is None:
+                run_start = pos
+            if not quiet and run_start is not None:
+                run_end = pos
+                gap_sec = (run_end - run_start) * hop / sample_rate
+                # Demand actual speech on both sides; ASR boundary error cannot
+                # produce a false internal pause alert from leading/trailing silence.
+                before = rms[max(0, run_start - 14):run_start]
+                after = rms[run_end:min(len(rms), run_end + 14)]
+                active_before = int(np.sum(before >= baseline * 0.30))
+                active_after = int(np.sum(after >= baseline * 0.30))
+                if (
+                    run_end - run_start >= min_frames
+                    and run_start * hop / sample_rate >= 0.12
+                    and (len(rms) - run_end) * hop / sample_rate >= 0.12
+                    and active_before >= 6 and active_after >= 6
+                ):
+                    gap_start = start_sec + run_start * hop / sample_rate
+                    gap_end = start_sec + run_end * hop / sample_rate
+                    found.append({
+                        "severity": "warning",
+                        "code": "SUSPICIOUS_INTRA_PAUSE",
+                        "message": (
+                            f'Nghi vấn âm thanh bị ngắt ngay trong từ "{token}" '
+                            f'({gap_sec:.2f}s) — khoảng {format_timestamp(gap_start)}. Vui lòng nghe lại.'
+                        ),
+                        "words": [token],
+                        "timeRange": [round(gap_start, 3), round(gap_end, 3)],
+                        "evidence": f"intra-word silence={gap_sec:.3f}s baseline_rms={baseline:.4f}",
+                    })
+                    break
+                run_start = None
+    return found
+
+
 def recover_unaligned_words(
     audio_path: str,
     detected_words: list[dict[str, Any]],
@@ -3477,6 +3663,17 @@ def validate_audio_quality(
                         alignment_issues.append(ast)
             except Exception as st_err:
                 log(f"[audio_quality] Acoustic stutter check error: {st_err}")
+
+        # Whisper can still transcribe the correct word when audio contains
+        # a real internal break (e.g. "Te ... sla"). Check its waveform too.
+        if data_wave is not None and sr_wave > 0:
+            try:
+                intra_pauses = detect_intra_word_pause(
+                    data_wave, sr_wave, text, detected_words, speed=speed,
+                )
+                alignment_issues.extend(intra_pauses)
+            except Exception as intra_err:
+                log(f"[audio_quality] Intra-word pause check failed: {intra_err}")
 
         for iss in alignment_issues:
             iss["asrModelId"] = active_model_id
