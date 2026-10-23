@@ -383,6 +383,30 @@ def parse_english_number_phrase(
                     is_ordinal = True
                     break
             current += t_val
+        elif "-" in w and len(w.split("-")) == 2 and w.split("-")[0] in EN_TENS and (
+            (w.split("-")[1] in EN_ONES and 1 <= EN_ONES[w.split("-")[1]] <= 9)
+            or (w.split("-")[1] in EN_ORDINALS and 1 <= EN_ORDINALS[w.split("-")[1]] <= 9)
+        ):
+            if current % 100 != 0:
+                break
+            p_tens, p_ones = w.split("-")
+            t_val = EN_TENS[p_tens]
+            if p_ones in EN_ONES:
+                t_val += EN_ONES[p_ones]
+                current += t_val
+                words_consumed += 1
+                valid_number_found = True
+                idx += 1
+                if hit_boundary:
+                    break
+            else:
+                t_val += EN_ORDINALS[p_ones]
+                current += t_val
+                words_consumed += 1
+                valid_number_found = True
+                is_ordinal = True
+                idx += 1
+                break
         elif w in EN_ORDINALS:
             if current % 100 != 0:
                 break
@@ -1057,6 +1081,43 @@ def collapse_number_tokens(
             idx += 1
             continue
 
+        # Single-token hyphenated number + word/unit compound (e.g. "15-liter" -> ["15", "liter"], "75-kilowatt-hour" -> ["75", "kwh"], "18-wheelers" -> ["18", "wheelers"])
+        m_num_hyphen_word = re.fullmatch(r"(\d+(?:,\d{3})*(?:\.\d+)?)-([a-z]+(?:-[a-z]+)*)", cleaned)
+        if m_num_hyphen_word:
+            num_part = normalize_digit_string(m_num_hyphen_word.group(1))
+            word_part = m_num_hyphen_word.group(2)
+            spans.append(NormalizedSpan(
+                canonical=num_part,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            if word_part in HYPHENATED_UNIT_MAP:
+                spans.append(NormalizedSpan(
+                    canonical=HYPHENATED_UNIT_MAP[word_part],
+                    orig_start=idx,
+                    orig_end=idx + 1,
+                    is_number=False,
+                ))
+            elif word_part in SINGLE_WORD_UNIT_MAP:
+                spans.append(NormalizedSpan(
+                    canonical=SINGLE_WORD_UNIT_MAP[word_part],
+                    orig_start=idx,
+                    orig_end=idx + 1,
+                    is_number=False,
+                ))
+            else:
+                for sub_w in word_part.split("-"):
+                    if sub_w:
+                        spans.append(NormalizedSpan(
+                            canonical=SINGLE_WORD_UNIT_MAP.get(sub_w, sub_w),
+                            orig_start=idx,
+                            orig_end=idx + 1,
+                            is_number=False,
+                        ))
+            idx += 1
+            continue
+
         # Single-token letter + number code (e.g. "a1" / "-A1" -> ["a", "1"], "v3" -> ["v", "3"], "q4" -> ["q", "4"])
         m_alpha_num = re.fullmatch(r"([a-z]{1,2})(\d+)", cleaned)
         if m_alpha_num:
@@ -1155,15 +1216,18 @@ def collapse_number_tokens(
             consume_trailing_modifiers()
             continue
 
-        # Check hyphenated compound numbers (e.g. 'twenty-third', 'sixty-nine', 'fifty-five')
+        # Check hyphenated compound numbers (e.g. 'twenty-third', 'sixty-nine', 'thirty-five-year', 'eighteen-wheelers')
         if "-" in cleaned and not is_ip_address(cleaned):
             sub_parts = [p for p in cleaned.split("-") if p]
             if len(sub_parts) > 1:
-                val_hyphen, consumed_hyphen = (
-                    parse_vietnamese_number_phrase(sub_parts, 0)
-                    if is_vi
-                    else parse_english_number_phrase(sub_parts, 0)
-                )
+                if is_vi:
+                    val_hyphen, consumed_hyphen = parse_vietnamese_number_phrase(sub_parts, 0)
+                    if val_hyphen is None:
+                        val_hyphen, consumed_hyphen = parse_english_number_phrase(sub_parts, 0)
+                else:
+                    val_hyphen, consumed_hyphen = parse_english_number_phrase(sub_parts, 0)
+                    if val_hyphen is None:
+                        val_hyphen, consumed_hyphen = parse_vietnamese_number_phrase(sub_parts, 0)
                 if val_hyphen is not None and consumed_hyphen == len(sub_parts):
                     spans.append(NormalizedSpan(
                         canonical=val_hyphen,
@@ -1174,12 +1238,39 @@ def collapse_number_tokens(
                     idx += 1
                     consume_trailing_modifiers()
                     continue
+                elif val_hyphen is not None and 0 < consumed_hyphen < len(sub_parts):
+                    spans.append(NormalizedSpan(
+                        canonical=val_hyphen,
+                        orig_start=idx,
+                        orig_end=idx + 1,
+                        is_number=True,
+                    ))
+                    rem_hyphen = "-".join(sub_parts[consumed_hyphen:])
+                    if rem_hyphen in HYPHENATED_UNIT_MAP:
+                        spans.append(NormalizedSpan(
+                            canonical=HYPHENATED_UNIT_MAP[rem_hyphen],
+                            orig_start=idx,
+                            orig_end=idx + 1,
+                            is_number=False,
+                        ))
+                    else:
+                        for rem_w in sub_parts[consumed_hyphen:]:
+                            spans.append(NormalizedSpan(
+                                canonical=SINGLE_WORD_UNIT_MAP.get(rem_w, rem_w),
+                                orig_start=idx,
+                                orig_end=idx + 1,
+                                is_number=False,
+                            ))
+                    idx += 1
+                    continue
 
         # Try parsing multi-word number phrase
         val = None
         consumed = 0
         if is_vi:
             val, consumed = parse_vietnamese_number_phrase(words, idx, delimiters)
+            if val is None:
+                val, consumed = parse_english_number_phrase(words, idx, delimiters)
         else:
             val, consumed = parse_english_number_phrase(words, idx, delimiters)
             # If English failed but text might be VN, try VN as fallback
@@ -1205,7 +1296,9 @@ def collapse_number_tokens(
             ))
             idx += 1
 
-    # Shared-scale range normalization: e.g. "seven to eight thousand" -> ["7000", "to", "8000"]
+    # Shared-scale range normalization: e.g. "seven to eight thousand" -> ["7000", "to", "8000"],
+    # "one hundred to two hundred billion" -> ["100000000000", "to", "200000000000"],
+    # "15 to 20,000" -> ["15000", "to", "20000"]
     for k in range(len(spans) - 2):
         s1, s_mid, s2 = spans[k], spans[k + 1], spans[k + 2]
         if (
@@ -1221,8 +1314,17 @@ def collapse_number_tokens(
             s2_words_clean = [clean_token(w) for w in words[s2.orig_start : s2.orig_end]]
             s1_words_clean = [clean_token(w) for w in words[s1.orig_start : s1.orig_end]]
             s2_scale = next((ALL_SCALES[w] for w in reversed(s2_words_clean) if w in ALL_SCALES), None)
-            s1_has_scale = any(w in ALL_SCALES for w in s1_words_clean)
-            if s2_scale and not s1_has_scale and v2 >= s2_scale and v2 % s2_scale == 0:
+            s1_max_scale = max((ALL_SCALES[w] for w in s1_words_clean if w in ALL_SCALES), default=1)
+            if s2_scale is None and v2 >= 1000:
+                s2_raw_joined = " ".join(words[s2.orig_start : s2.orig_end])
+                if re.search(r"\d[,.\s]\d{3}\b", s2_raw_joined):
+                    for cand_scale in (1_000_000_000, 1_000_000, 1_000):
+                        if v2 >= cand_scale and v2 % cand_scale == 0:
+                            unscaled_cand = v2 // cand_scale
+                            if 1 <= unscaled_cand < 1000 and v1 >= max(2, unscaled_cand // 4) and v1 < unscaled_cand:
+                                s2_scale = cand_scale
+                                break
+            if s2_scale and s1_max_scale < s2_scale and v1 < s2_scale and v2 >= s2_scale and v2 % s2_scale == 0:
                 v2_unscaled = v2 // s2_scale
                 if 1 <= v1 < v2_unscaled:
                     spans[k] = NormalizedSpan(

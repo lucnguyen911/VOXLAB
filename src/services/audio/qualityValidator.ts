@@ -5,7 +5,7 @@ import { loadSubtitleSettings } from "../subtitle/profiles";
 import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
 import { stripPauseTokens } from "../pause";
 
-export const QUALITY_VALIDATOR_VERSION = "2.8.7";
+export const QUALITY_VALIDATOR_VERSION = "2.9.0";
 export const MAX_AUTO_VALIDATION_RETRIES = 1;
 
 export interface QualityCheckableItem {
@@ -280,6 +280,9 @@ export function getIssueShortLabel(code?: string): string {
     case "FILE_CORRUPTED":
       return "File audio lỗi";
     case "UNVERIFIED_ACRONYM":
+    case "UNVERIFIED_NUMBER":
+    case "UNVERIFIED_WORD":
+    case "UNVERIFIED_SEPARATOR":
       return "Chưa kiểm chứng";
     default:
       return "Cần kiểm tra";

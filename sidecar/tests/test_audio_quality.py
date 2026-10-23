@@ -2151,6 +2151,209 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.analyze_word_alignment_issues(text, asr_words, language="en")
         self.assertEqual(len(issues), 0, f"Expected 0 issues for 'zero point eight one second', got: {issues}")
 
+    def test_group_a_stutter_and_intraword_breaks_v290(self):
+        # 1. Suffix stutter ("generates" -> "generates rates")
+        text = "The turbine generates clean power."
+        asr_words = [
+            {"word": "The", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "turbine", "startSec": 0.26, "endSec": 0.65, "probability": 0.99},
+            {"word": "generates", "startSec": 0.66, "endSec": 1.15, "probability": 0.95},
+            {"word": "rates", "startSec": 1.18, "endSec": 1.48, "probability": 0.88},
+            {"word": "clean", "startSec": 1.50, "endSec": 1.80, "probability": 0.99},
+            {"word": "power.", "startSec": 1.82, "endSec": 2.20, "probability": 0.99},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, asr_words, language="en")
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "SUSPECTED_STUTTER")
+
+        # 2. Intra-word multi-burst stutter ("Tesla" spoken "Te - xì - la" with 3 voiced bursts in 0.82s)
+        sr = 16000
+        wave = np.zeros(sr * 2, dtype=np.float32)
+        t_burst = np.arange(int(0.16 * sr)) / sr
+        burst_sig = (0.35 * np.sin(2 * np.pi * 220.0 * t_burst)).astype(np.float32)
+        # 3 distinct bursts inside [0.20s, 1.02s] separated by 80ms low-energy valleys
+        for offset_sec in (0.22, 0.48, 0.76):
+            s = int(offset_sec * sr)
+            wave[s:s + len(burst_sig)] = burst_sig
+        # Add slight noise in valleys so it's not pure zero silence, testing multi-burst detector
+        wave[int(0.38 * sr):int(0.48 * sr)] = 0.015
+        wave[int(0.64 * sr):int(0.76 * sr)] = 0.015
+
+        intra_issues = audio_quality.detect_intra_word_pause(
+            wave,
+            sr,
+            "Tesla builds electric cars",
+            [{"word": "Tesla", "startSec": 0.20, "endSec": 1.02, "probability": 0.55}],
+        )
+        self.assertEqual(len(intra_issues), 1, f"Expected 1 intra-word issue for Te-xi-la, got {intra_issues}")
+        self.assertIn(intra_issues[0]["code"], ("SUSPECTED_STUTTER", "SUSPICIOUS_INTRA_PAUSE"))
+
+    def test_group_b_swallowed_short_and_function_words_v290(self):
+        # Short/function words ("can", "and", "đã", "sẽ") must NOT be blindly ignored when swallowed
+        text_en = "Drivers can charge quickly and safely."
+        asr_en = [
+            {"word": "Drivers", "startSec": 0.10, "endSec": 0.55, "probability": 0.99},
+            # "can" swallowed with 0.18s gap
+            {"word": "charge", "startSec": 0.73, "endSec": 1.10, "probability": 0.99},
+            {"word": "quickly", "startSec": 1.12, "endSec": 1.50, "probability": 0.99},
+            # "and" swallowed with 0.20s gap
+            {"word": "safely.", "startSec": 1.70, "endSec": 2.15, "probability": 0.99},
+        ]
+        issues_en = audio_quality.analyze_word_alignment_issues(text_en, asr_en, language="en")
+        missing_words_en = [w for iss in issues_en if iss["code"] == "MISSING_WORD" for w in iss["words"]]
+        self.assertIn("can", missing_words_en)
+        self.assertIn("and", missing_words_en)
+
+        text_vi = "Hệ thống đã hoạt động và sẽ ổn định."
+        asr_vi = [
+            {"word": "Hệ", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "thống", "startSec": 0.26, "endSec": 0.50, "probability": 0.99},
+            # "đã" swallowed
+            {"word": "hoạt", "startSec": 0.68, "endSec": 0.90, "probability": 0.99},
+            {"word": "động", "startSec": 0.91, "endSec": 1.15, "probability": 0.99},
+            {"word": "và", "startSec": 1.16, "endSec": 1.30, "probability": 0.99},
+            # "sẽ" swallowed
+            {"word": "ổn", "startSec": 1.48, "endSec": 1.70, "probability": 0.99},
+            {"word": "định.", "startSec": 1.71, "endSec": 2.00, "probability": 0.99},
+        ]
+        issues_vi = audio_quality.analyze_word_alignment_issues(text_vi, asr_vi, language="vi")
+        missing_words_vi = [w for iss in issues_vi if iss["code"] == "MISSING_WORD" for w in iss["words"]]
+        self.assertIn("đã", missing_words_vi)
+        self.assertIn("sẽ", missing_words_vi)
+
+    def test_group_c_extra_words_vs_hallucination_v290(self):
+        # Common standalone words ("like", "share", "video", "kênh") must NOT be treated as hallucinations
+        for word in ("like", "share", "video", "kênh"):
+            self.assertFalse(
+                audio_quality.is_whisper_hallucination(word),
+                f"Standalone common word '{word}' must not be classified as Whisper hallucination",
+            )
+        # Multi-word boilerplate hallucinations ARE still classified as hallucinations
+        self.assertTrue(audio_quality.is_whisper_hallucination("thank you for watching"))
+        self.assertTrue(audio_quality.is_whisper_hallucination("hãy đăng ký kênh"))
+
+        # Extra spoken "video" in middle of sentence is flagged as EXTRA_WORD
+        text = "This system records high resolution clips."
+        asr_words = [
+            {"word": "This", "startSec": 0.10, "endSec": 0.30, "probability": 0.99},
+            {"word": "system", "startSec": 0.31, "endSec": 0.65, "probability": 0.99},
+            {"word": "records", "startSec": 0.66, "endSec": 1.05, "probability": 0.99},
+            {"word": "video", "startSec": 1.06, "endSec": 1.40, "probability": 0.92},
+            {"word": "high", "startSec": 1.41, "endSec": 1.65, "probability": 0.99},
+            {"word": "resolution", "startSec": 1.66, "endSec": 2.15, "probability": 0.99},
+            {"word": "clips.", "startSec": 2.16, "endSec": 2.55, "probability": 0.99},
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, asr_words, language="en")
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "EXTRA_WORD")
+        self.assertIn("video", issues[0]["words"])
+
+    def test_group_d_mispronunciation_and_tone_strictness_v290(self):
+        # Distinct words with edit distance 1 must NOT be equivalent
+        self.assertFalse(audio_quality.are_words_equivalent("ship", "shop"))
+        self.assertFalse(audio_quality.are_words_equivalent("could", "cold"))
+        self.assertFalse(audio_quality.are_words_equivalent("bàn", "bán"))
+        self.assertFalse(audio_quality.are_words_equivalent("mẹ", "mẻ"))
+
+        # Legitimate spelling variants and i/y homophones remain equivalent
+        self.assertTrue(audio_quality.are_words_equivalent("color", "colour"))
+        self.assertTrue(audio_quality.are_words_equivalent("center", "centre"))
+        self.assertTrue(audio_quality.are_words_equivalent("kĩ", "kỹ"))
+
+        # High-confidence replacement ("ship" -> "shop") emits SUSPECTED_MISPRONUNCIATION
+        text = "They will ship the battery tomorrow."
+        asr_high = [
+            {"word": "They", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "will", "startSec": 0.26, "endSec": 0.45, "probability": 0.99},
+            {"word": "shop", "startSec": 0.46, "endSec": 0.80, "probability": 0.91},
+            {"word": "the", "startSec": 0.81, "endSec": 0.95, "probability": 0.99},
+            {"word": "battery", "startSec": 0.96, "endSec": 1.40, "probability": 0.99},
+            {"word": "tomorrow.", "startSec": 1.41, "endSec": 1.90, "probability": 0.99},
+        ]
+        issues_high = audio_quality.analyze_word_alignment_issues(text, asr_high, language="en")
+        self.assertEqual(len(issues_high), 1)
+        self.assertEqual(issues_high[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+
+        # Low-confidence replacement ("ship" -> "shop", prob=0.30) emits UNVERIFIED_WORD
+        asr_low = [dict(w) for w in asr_high]
+        asr_low[2]["probability"] = 0.30
+        issues_low = audio_quality.analyze_word_alignment_issues(text, asr_low, language="en")
+        self.assertEqual(len(issues_low), 1)
+        self.assertEqual(issues_low[0]["code"], "UNVERIFIED_WORD")
+        self.assertEqual(issues_low[0]["severity"], "unverified")
+
+    def test_group_e_abnormal_pause_conjunctions_and_soft_newlines_v290(self):
+        # 1. Pause AFTER a conjunction ("and [0.55s] the") is unnatural and must be flagged
+        text = "We tested the motor and the inverter today."
+        asr_after_conj = [
+            {"word": "We", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "tested", "startSec": 0.26, "endSec": 0.60, "probability": 0.99},
+            {"word": "the", "startSec": 0.61, "endSec": 0.75, "probability": 0.99},
+            {"word": "motor", "startSec": 0.76, "endSec": 1.15, "probability": 0.99},
+            {"word": "and", "startSec": 1.16, "endSec": 1.35, "probability": 0.99},
+            # 0.55s unnatural pause AFTER 'and'
+            {"word": "the", "startSec": 1.90, "endSec": 2.05, "probability": 0.99},
+            {"word": "inverter", "startSec": 2.06, "endSec": 2.50, "probability": 0.99},
+            {"word": "today.", "startSec": 2.51, "endSec": 2.90, "probability": 0.99},
+        ]
+        issues_after = audio_quality.analyze_word_alignment_issues(text, asr_after_conj, language="en")
+        self.assertEqual(len(issues_after), 1)
+        self.assertEqual(issues_after[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_after[0]["words"], ["and", "the"])
+
+        # 2. Soft single newline mid-phrase ("diesel\nfuel") with 0.58s pause is still flagged
+        text_nl = "Moving freight on diesel\nfuel across the country."
+        asr_nl = [
+            {"word": "Moving", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "freight", "startSec": 0.46, "endSec": 0.80, "probability": 0.99},
+            {"word": "on", "startSec": 0.81, "endSec": 0.95, "probability": 0.99},
+            {"word": "diesel", "startSec": 0.96, "endSec": 1.35, "probability": 0.99},
+            {"word": "fuel", "startSec": 1.93, "endSec": 2.30, "probability": 0.99},
+            {"word": "across", "startSec": 2.31, "endSec": 2.65, "probability": 0.99},
+            {"word": "the", "startSec": 2.66, "endSec": 2.80, "probability": 0.99},
+            {"word": "country.", "startSec": 2.81, "endSec": 3.25, "probability": 0.99},
+        ]
+        issues_nl = audio_quality.analyze_word_alignment_issues(text_nl, asr_nl, language="en")
+        self.assertEqual(len(issues_nl), 1)
+        self.assertEqual(issues_nl[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_nl[0]["words"], ["diesel", "fuel"])
+
+    def test_section_3_bounded_slice_budget_v290(self):
+        from types import SimpleNamespace
+
+        call_count = 0
+
+        class CountingWhisper:
+            def transcribe(self, *args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                seg = SimpleNamespace(
+                    text="word",
+                    words=[SimpleNamespace(word="word", probability=0.90, start=0.1, end=0.3)],
+                )
+                return [seg], None
+
+        sr = 16000
+        dummy_audio = (0.2 * np.sin(2 * np.pi * 440.0 * (np.arange(sr * 10) / sr))).astype(np.float32)
+        text = "Alpha Beta Gamma Delta Epsilon Zeta Eta."
+        # 6 low-confidence equal words -> slice re-transcription must be capped at MAX_SECONDARY_SLICE_CHECKS (3)
+        words = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta."]
+        asr_words = [
+            {"word": w, "startSec": i * 0.6 + 0.1, "endSec": (i + 1) * 0.6, "probability": 0.40}
+            for i, w in enumerate(words)
+        ]
+        audio_quality.analyze_word_alignment_issues(
+            text,
+            asr_words,
+            language="en",
+            audio_data=dummy_audio,
+            sample_rate=sr,
+            whisper_model=CountingWhisper(),
+            audio_duration_sec=10.0,
+        )
+        self.assertLessEqual(call_count, audio_quality.MAX_SECONDARY_SLICE_CHECKS)
+        self.assertEqual(call_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

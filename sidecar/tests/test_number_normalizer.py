@@ -340,6 +340,59 @@ class NumberNormalizerTest(unittest.TestCase):
         self.assertEqual(asr_patent_dashed, ["2026", "0310299", "a", "1"])
         self.assertEqual(asr_patent_spaced, ["2026", "0310299", "a", "1"])
 
+    def test_hyphenated_number_unit_and_shared_scale_ranges_v290(self):
+        # 1. "fifteen liter" vs "15-liter"
+        src_15l = [s.canonical for s in collapse_number_tokens("fifteen liter".split(), "en")]
+        asr_15l = [s.canonical for s in collapse_number_tokens(["15-liter"], "en")]
+        self.assertEqual(src_15l, ["15", "liter"])
+        self.assertEqual(asr_15l, ["15", "liter"])
+
+        # 2. "seventy-five-kilowatt-hour" vs "75-kilowatt-hour" vs "75 kWh"
+        src_75kwh = [s.canonical for s in collapse_number_tokens(["seventy-five-kilowatt-hour"], "en")]
+        asr_75kwh = [s.canonical for s in collapse_number_tokens(["75-kilowatt-hour"], "en")]
+        self.assertEqual(src_75kwh, ["75", "kwh"])
+        self.assertEqual(asr_75kwh, ["75", "kwh"])
+
+        # 3. "eighteen wheelers" vs "18-wheelers" and "thirty-five-year" vs "35-year"
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("eighteen wheelers".split(), "en")],
+            [s.canonical for s in collapse_number_tokens(["18-wheelers"], "en")],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens(["thirty-five-year"], "en")],
+            [s.canonical for s in collapse_number_tokens(["35-year"], "en")],
+        )
+
+        # 4. Shared scale ranges with hundred/billion and comma-thousands
+        src_bil = [
+            s.canonical
+            for s in collapse_number_tokens("one hundred to two hundred billion".split(), "en")
+        ]
+        asr_bil = [
+            s.canonical
+            for s in collapse_number_tokens(["100", "to", "200", "billion"], "en")
+        ]
+        self.assertEqual(src_bil, ["100000000000", "to", "200000000000"])
+        self.assertEqual(asr_bil, ["100000000000", "to", "200000000000"])
+
+        src_15_20k = [
+            s.canonical
+            for s in collapse_number_tokens("fifteen thousand to twenty thousand".split(), "en")
+        ]
+        asr_15_20k = [
+            s.canonical
+            for s in collapse_number_tokens(["15", "to", "20,000"], "en")
+        ]
+        self.assertEqual(src_15_20k, ["15000", "to", "20000"])
+        self.assertEqual(asr_15_20k, ["15000", "to", "20000"])
+
+        # 5. English number words when language="vi" (bilingual script fallback)
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens(["fifteen"], "vi")],
+            ["15"],
+        )
+        self.assertTrue(are_number_expressions_equivalent("fifteen", "15", "vi"))
+
 
 if __name__ == "__main__":
     unittest.main()
