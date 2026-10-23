@@ -5,7 +5,7 @@ import { loadSubtitleSettings } from "../subtitle/profiles";
 import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
 import { stripPauseTokens } from "../pause";
 
-export const QUALITY_VALIDATOR_VERSION = "2.8.6";
+export const QUALITY_VALIDATOR_VERSION = "2.8.7";
 export const MAX_AUTO_VALIDATION_RETRIES = 1;
 
 export interface QualityCheckableItem {
