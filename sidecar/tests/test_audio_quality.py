@@ -103,6 +103,17 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.analyze_word_alignment_issues(text, words, language="en")
         self.assertEqual(issues, [], issues)
 
+        # Whisper sometimes yields one dotted integer across multiple BPE words.
+        fragments = [
+            {"word": "Sales", "startSec": 0.10, "endSec": 0.35, "probability": 0.99},
+            {"word": "reached", "startSec": 0.36, "endSec": 0.70, "probability": 0.99},
+            {"word": "1.", "startSec": 0.71, "endSec": 0.85, "probability": 0.99},
+            {"word": "000.", "startSec": 0.86, "endSec": 1.05, "probability": 0.99},
+            {"word": "000", "startSec": 1.06, "endSec": 1.35, "probability": 0.99},
+            {"word": "dollars", "startSec": 1.36, "endSec": 1.72, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text, fragments, language="en"), [])
+
     def test_missing_file_returns_error(self):
         fake_path = os.path.join(self.dir, "missing.wav")
         res = audio_quality.validate_audio_quality(fake_path, text="Hello world")
