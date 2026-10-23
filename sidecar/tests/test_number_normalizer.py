@@ -217,6 +217,24 @@ class NumberNormalizerTest(unittest.TestCase):
         self.assertEqual(src_unit, ["1.55", "kwh"])
         self.assertEqual(asr_unit, ["1.55", "kwh"])
 
+    def test_dotted_millions_and_bpe_split_grouping(self):
+        # Spoken English and local thousand separators are the same VALUE.
+        self.assertTrue(are_number_expressions_equivalent("one million", "1.000.000", "en"))
+        self.assertTrue(are_number_expressions_equivalent("1 million", "1.000.000", "en"))
+        self.assertTrue(are_number_expressions_equivalent("1 milion", "1.000.000", "en"))
+        expected = ["1000000"]
+        for tokens in (
+            ["1.000.000"],
+            ["1.", "000.", "000"],
+            ["1", ".000", ".000"],
+            ["1.000", ".000"],
+        ):
+            self.assertEqual([s.canonical for s in collapse_number_tokens(tokens, "en")], expected)
+
+        # Different decimal VALUES must never be silently normalized together.
+        self.assertFalse(are_number_expressions_equivalent("one point two", "0.2", "en"))
+        self.assertTrue(are_number_expressions_equivalent("one point two", "1.2", "en"))
+
     def test_currency_dollars_and_cents_and_bpe_decimals(self):
         self.assertEqual(normalize_digit_string("$5,922.50"), "5922.50")
         self.assertEqual(normalize_digit_string("$862.50."), "862.50")
