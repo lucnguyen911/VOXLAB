@@ -3135,6 +3135,325 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(deduped[0]["code"], "ABNORMAL_PAUSE")
         self.assertEqual(deduped[0]["severity"], "warning")
 
+    def test_v340_omitted_word_whisper_non_independence_and_clitic_recovery(self):
+        # Sections 1.1 & 1.2:
+        # Two runs of Whisper on the same audio are NOT two independent sources.
+        # If secondary Whisper repeats the omission on a slice where the waveform has
+        # verified reduced-clitic vowel acoustics ('building a vast network' spoken with 'a'),
+        # it must recover PASS rather than falsely flagging MISSING_WORD.
+        from types import SimpleNamespace
+
+        sr = 16000
+        wave_with_a = np.zeros(int(sr * 2.2), dtype=np.float32)
+        t = np.arange(wave_with_a.size) / sr
+        carrier = (0.24 * np.sin(2 * np.pi * 195.0 * t)).astype(np.float32)
+        # 4 distinct vowel nuclei across 'building' [0.46..0.76], 'a' [0.80..0.90], 'vast' [0.94..1.25]
+        # with sustained voiced vocalic bridge at the boundary [0.77..0.90]
+        for s_sec, e_sec in ((0.10, 0.44), (0.46, 0.60), (0.63, 0.76), (0.79, 0.90), (0.94, 1.25), (1.27, 1.75)):
+            wave_with_a[int(s_sec * sr):int(e_sec * sr)] = carrier[int(s_sec * sr):int(e_sec * sr)]
+
+        text = "without building a vast network"
+        asr_words = [
+            {"word": "without", "startSec": 0.10, "endSec": 0.44, "probability": 0.99},
+            {"word": "building", "startSec": 0.46, "endSec": 0.84, "probability": 0.99},
+            {"word": "vast", "startSec": 0.86, "endSec": 1.25, "probability": 0.99},
+            {"word": "network", "startSec": 1.27, "endSec": 1.75, "probability": 0.99},
+        ]
+
+        class MockRepeatingOmissionWhisper:
+            def transcribe(self, *args, **kwargs):
+                seg = SimpleNamespace(
+                    text="building vast",
+                    words=[
+                        SimpleNamespace(word="building", probability=0.95, start=0.1, end=0.45),
+                        SimpleNamespace(word="vast", probability=0.95, start=0.46, end=0.85),
+                    ],
+                )
+                return [seg], None
+
+        # 1) Reduced clitic 'a' with verified 4-nucleus + vocalic bridge waveform recovers PASS even when secondary Whisper repeats omission
+        issues_clitic_recovered = audio_quality.analyze_word_alignment_issues(
+            text,
+            asr_words,
+            language="en",
+            audio_data=wave_with_a,
+            sample_rate=sr,
+            whisper_model=MockRepeatingOmissionWhisper(),
+            audio_duration_sec=2.2,
+        )
+        self.assertEqual(issues_clitic_recovered, [])
+
+        # 2) Non-clitic function word ('can') where waveform has unattributed speech energy in the gap
+        #    but secondary Whisper repeats the omission -> must return UNVERIFIED_WORD (not MISSING_WORD or silent PASS)
+        text_can = "they can generate power"
+        asr_can = [
+            {"word": "they", "startSec": 0.10, "endSec": 0.40, "probability": 0.99},
+            # 0.18s gap [0.40..0.58] filled with speech energy
+            {"word": "generate", "startSec": 0.58, "endSec": 1.15, "probability": 0.99},
+            {"word": "power", "startSec": 1.16, "endSec": 1.60, "probability": 0.99},
+        ]
+        wave_can_energy = carrier[:int(sr * 1.8)].copy()
+        issues_can_conflict = audio_quality.analyze_word_alignment_issues(
+            text_can,
+            asr_can,
+            language="en",
+            audio_data=wave_can_energy,
+            sample_rate=sr,
+            whisper_model=MockRepeatingOmissionWhisper(),
+            audio_duration_sec=1.8,
+        )
+        self.assertEqual(len(issues_can_conflict), 1)
+        self.assertEqual(issues_can_conflict[0]["code"], "UNVERIFIED_WORD")
+        self.assertEqual(issues_can_conflict[0]["severity"], "unverified")
+
+        # 3) Genuine omission of 'can' and 'has' when gap has no extra speech/syllable energy -> MISSING_WORD (WARNING)
+        wave_can_silent_gap = wave_can_energy.copy()
+        wave_can_silent_gap[int(0.40 * sr):int(0.58 * sr)] = 0.0
+        issues_can_missing = audio_quality.analyze_word_alignment_issues(
+            text_can,
+            asr_can,
+            language="en",
+            audio_data=wave_can_silent_gap,
+            sample_rate=sr,
+            whisper_model=MockRepeatingOmissionWhisper(),
+            audio_duration_sec=1.8,
+        )
+        self.assertEqual(len(issues_can_missing), 1)
+        self.assertEqual(issues_can_missing[0]["code"], "MISSING_WORD")
+        self.assertEqual(issues_can_missing[0]["severity"], "warning")
+        self.assertEqual(issues_can_missing[0]["words"], ["can"])
+
+        text_has = "the system has improved"
+        asr_has = [
+            {"word": "the", "startSec": 0.10, "endSec": 0.22, "probability": 0.99},
+            {"word": "system", "startSec": 0.23, "endSec": 0.65, "probability": 0.99},
+            {"word": "improved", "startSec": 0.67, "endSec": 1.20, "probability": 0.99},
+        ]
+        issues_has_missing = audio_quality.analyze_word_alignment_issues(text_has, asr_has, language="en")
+        self.assertEqual(len(issues_has_missing), 1)
+        self.assertEqual(issues_has_missing[0]["code"], "MISSING_WORD")
+        self.assertEqual(issues_has_missing[0]["words"], ["has"])
+
+    def test_v340_coarticulatory_assimilation_requires_acoustic_phoneme_evidence(self):
+        # Section 1.3:
+        # 1) Single-consonant -ed omission before dental/alveolar ('walked to' -> 'walk to' with prob=0.72)
+        #    must NOT be auto-passed by a generic w_prob < 0.82 rule!
+        text_walk_to = "They walked to the station."
+        asr_walk_to = [
+            {"word": "They", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "walk", "startSec": 0.26, "endSec": 0.58, "probability": 0.72},
+            {"word": "to", "startSec": 0.59, "endSec": 0.72, "probability": 0.99},
+            {"word": "the", "startSec": 0.73, "endSec": 0.85, "probability": 0.99},
+            {"word": "station.", "startSec": 0.86, "endSec": 1.35, "probability": 0.99},
+        ]
+        issues_walk_to = audio_quality.analyze_word_alignment_issues(text_walk_to, asr_walk_to, language="en")
+        self.assertEqual(len(issues_walk_to), 1)
+        self.assertEqual(issues_walk_to[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+        self.assertEqual(issues_walk_to[0]["words"], ["walked", "walk"])
+
+        # 2) Doubled-stop stem ('flipped the' -> 'flip the') WITH real waveform:
+        #    - When continuous vowel energy fills the boundary without any stop-closure hold, it MUST flag SUSPECTED_MISPRONUNCIATION.
+        #    - When a genuine >= 20ms low-energy stop-closure hold exists at [t_end - 0.04, next_start], it passes.
+        sr = 16000
+        t = np.arange(int(sr * 2.0)) / sr
+        continuous_vowel = (0.25 * np.sin(2 * np.pi * 190.0 * t)).astype(np.float32)
+        text_flip = "and the findings flipped the narrative"
+        asr_flip = [
+            {"word": "and", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "the", "startSec": 0.26, "endSec": 0.38, "probability": 0.99},
+            {"word": "findings", "startSec": 0.39, "endSec": 0.85, "probability": 0.99},
+            {"word": "flip", "startSec": 0.86, "endSec": 1.20, "probability": 0.72},
+            {"word": "the", "startSec": 1.21, "endSec": 1.35, "probability": 0.99},
+            {"word": "narrative", "startSec": 1.36, "endSec": 1.90, "probability": 0.99},
+        ]
+        issues_no_closure = audio_quality.analyze_word_alignment_issues(
+            text_flip, asr_flip, language="en", audio_data=continuous_vowel, sample_rate=sr
+        )
+        self.assertEqual(len(issues_no_closure), 1)
+        self.assertEqual(issues_no_closure[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+
+        wave_with_closure = continuous_vowel.copy()
+        # Insert a 35ms stop closure hold at the end of 'flipped' [1.165..1.200]
+        wave_with_closure[int(1.165 * sr):int(1.205 * sr)] = 0.002
+        issues_with_closure = audio_quality.analyze_word_alignment_issues(
+            text_flip, asr_flip, language="en", audio_data=wave_with_closure, sample_rate=sr
+        )
+        self.assertEqual(issues_with_closure, [])
+
+    def test_v340_transcript_independent_acoustic_stutter_and_onset_restart(self):
+        # Section 2.2:
+        # 1) Intra-word syllable repetition ('mo-mo-mobile' / 'mo-mobile') where Whisper normalizes
+        #    the word text to 'mobile' (no hyphen in ASR text!) MUST still be detected as SUSPECTED_STUTTER.
+        sr = 16000
+        wave_stut = np.zeros(int(sr * 2.0), dtype=np.float32)
+        t = np.arange(wave_stut.size) / sr
+        syl_mo = (0.28 * np.sin(2 * np.pi * 185.0 * t)).astype(np.float32)
+        syl_bile = (0.26 * np.sin(2 * np.pi * 240.0 * t)).astype(np.float32)
+        # 'mo-' [0.40..0.52], valley [0.52..0.58], 'mo-' [0.58..0.70], valley [0.70..0.75], '-bile' [0.75..0.95]
+        # Total 3 voiced bursts inside 'mobile' (expected_syl == 2)
+        wave_stut[int(0.40 * sr):int(0.52 * sr)] = syl_mo[int(0.40 * sr):int(0.52 * sr)]
+        wave_stut[int(0.58 * sr):int(0.70 * sr)] = syl_mo[int(0.58 * sr):int(0.70 * sr)]
+        wave_stut[int(0.75 * sr):int(0.95 * sr)] = syl_bile[int(0.75 * sr):int(0.95 * sr)]
+
+        asr_normalized = [
+            {"word": "mobile", "startSec": 0.38, "endSec": 0.98, "probability": 0.92},
+        ]
+        stutters_intra = audio_quality.detect_acoustic_stutter(
+            wave_stut, sr, text="mobile", asr_words=asr_normalized, language="en"
+        )
+        self.assertEqual(len(stutters_intra), 1, f"Expected SUSPECTED_STUTTER on normalized 'mobile', got {stutters_intra}")
+        self.assertEqual(stutters_intra[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(stutters_intra[0]["words"], ["mobile"])
+
+        # 2) Cut-and-restart onset stutter where Whisper aligns 'mobile' starting at the 2nd burst [0.58..0.98],
+        #    leaving the 1st burst 'mo-' [0.40..0.52] unaligned in the gap before 'mobile':
+        asr_onset_shifted = [
+            {"word": "mobile", "startSec": 0.58, "endSec": 0.98, "probability": 0.92},
+        ]
+        stutters_onset = audio_quality.detect_acoustic_stutter(
+            wave_stut, sr, text="mobile", asr_words=asr_onset_shifted, language="en"
+        )
+        self.assertEqual(len(stutters_onset), 1, f"Expected SUSPECTED_STUTTER on onset-shifted 'mobile', got {stutters_onset}")
+        self.assertEqual(stutters_onset[0]["code"], "SUSPECTED_STUTTER")
+
+        # 3) Normal 2-syllable 'mobile' (only 2 voiced bursts: 'mo' + 'bile') must NOT trigger false stutter
+        wave_clean = np.zeros(int(sr * 2.0), dtype=np.float32)
+        wave_clean[int(0.58 * sr):int(0.70 * sr)] = syl_mo[int(0.58 * sr):int(0.70 * sr)]
+        wave_clean[int(0.75 * sr):int(0.95 * sr)] = syl_bile[int(0.75 * sr):int(0.95 * sr)]
+        stutters_clean = audio_quality.detect_acoustic_stutter(
+            wave_clean, sr, text="mobile", asr_words=asr_onset_shifted, language="en"
+        )
+        self.assertEqual(stutters_clean, [])
+
+    def test_v340_introductory_pp_and_preposition_boundary_refinements(self):
+        # Section 2.3:
+        # 1) Introductory PP before a short subject ('In the factory the motor is running')
+        #    must recognize 'the motor' (len=2) as a short tight subject before 'is', NOT a 5-word heavy NP!
+        sent_intro = "In the factory the motor is running smoothly."
+        src_w, delims, _ = audio_quality.tokenize_text_with_spans(sent_intro)
+        src_clean = [audio_quality.clean_word(w) for w in src_w]
+        syn_intro = audio_quality.evaluate_syntactic_boundary(src_w, src_clean, delims, 4, 5, "motor", "is")
+        self.assertEqual(syn_intro["classification"], "TIGHT_COHESION")
+        self.assertLessEqual(syn_intro["threshold_sec"], 0.28)
+        self.assertIn("rule_score", syn_intro)
+        self.assertNotIn("confidence", syn_intro)
+
+        # 2) Short clause-initial NP before an attributive preposition ('The motor | in the car is broken')
+        #    must be UNCERTAIN_BOUNDARY (0.50s), NOT NATURAL_BOUNDARY (0.62s)
+        sent_short_pp = "The motor in the car is broken."
+        sw2, del2, _ = audio_quality.tokenize_text_with_spans(sent_short_pp)
+        sc2 = [audio_quality.clean_word(w) for w in sw2]
+        syn_short_pp = audio_quality.evaluate_syntactic_boundary(sw2, sc2, del2, 1, 2, "motor", "in")
+        self.assertEqual(syn_short_pp["classification"], "UNCERTAIN_BOUNDARY")
+        self.assertLessEqual(syn_short_pp["threshold_sec"], 0.50)
+
+    def test_v340_deduplication_preserves_multi_error_chunks_and_combines_evidence(self):
+        # Section 3.1 & 3.2:
+        # 1) Three distinct errors in the same phrase (mispronunciation + abnormal pause + repeated word,
+        #    or two adjacent mispronunciations, or an inter-word pause + non-overlapping intra-word break)
+        #    must ALL be preserved without dropping any error.
+        multi_issues = [
+            {
+                "code": "SUSPECTED_MISPRONUNCIATION",
+                "severity": "warning",
+                "message": "Mispronounced 'Tesla'",
+                "timeRange": [0.50, 0.85],
+                "words": ["tesla", "tessa"],
+                "evidence": "align_replace:tesla->tessa",
+            },
+            {
+                "code": "ABNORMAL_PAUSE",
+                "severity": "warning",
+                "message": "Pause between 'Tesla' and 'builds'",
+                "timeRange": [0.85, 1.25],
+                "words": ["tesla", "builds"],
+                "evidence": "pause=0.40s",
+            },
+            {
+                "code": "SUSPICIOUS_INTRA_PAUSE",
+                "severity": "warning",
+                "message": "Intra-word break inside 'builds'",
+                "timeRange": [1.35, 1.55],
+                "words": ["builds"],
+                "evidence": "intra_silence=0.20s",
+            },
+            {
+                "code": "REPEATED_WORD",
+                "severity": "warning",
+                "message": "Repeated 'builds'",
+                "timeRange": [1.26, 1.85],
+                "words": ["builds"],
+                "evidence": "asr_repeat:builds",
+            },
+        ]
+        deduped_multi = audio_quality._deduplicate_quality_issues(multi_issues)
+        self.assertEqual(len(deduped_multi), 4, f"Expected all 4 distinct defects preserved, got {deduped_multi}")
+
+        # 2) Two adjacent boundary pauses ('a | b' and 'b | c') that share pivot word 'b' must NOT be merged into one
+        adj_pauses = [
+            {
+                "code": "ABNORMAL_PAUSE",
+                "severity": "warning",
+                "message": "Pause 1",
+                "timeRange": [0.40, 0.75],
+                "words": ["alpha", "beta"],
+                "evidence": "p1=0.35s",
+            },
+            {
+                "code": "ABNORMAL_PAUSE",
+                "severity": "warning",
+                "message": "Pause 2",
+                "timeRange": [0.95, 1.35],
+                "words": ["beta", "gamma"],
+                "evidence": "p2=0.40s",
+            },
+        ]
+        self.assertEqual(len(audio_quality._deduplicate_quality_issues(adj_pauses)), 2)
+
+        # 3) Same physical stutter detected by both ASR alignment (REPEATED_WORD) and waveform burst (SUSPECTED_STUTTER)
+        #    merges into 1 issue AND combines their evidence strings.
+        same_stutter = [
+            {
+                "code": "REPEATED_WORD",
+                "severity": "warning",
+                "message": "Repeated mobile",
+                "timeRange": [0.40, 0.95],
+                "words": ["mobile"],
+                "evidence": "asr_insert_repeat:mobile",
+            },
+            {
+                "code": "SUSPECTED_STUTTER",
+                "severity": "warning",
+                "message": "Acoustic stutter mobile",
+                "timeRange": [0.42, 0.72],
+                "words": ["mobile"],
+                "evidence": "burst_cos_sim=0.95",
+            },
+        ]
+        merged_stut = audio_quality._deduplicate_quality_issues(same_stutter)
+        self.assertEqual(len(merged_stut), 1)
+        self.assertIn("asr_insert_repeat:mobile", merged_stut[0]["evidence"])
+        self.assertIn("burst_cos_sim=0.95", merged_stut[0]["evidence"])
+
+        # 4) Exhausted slice_budget ([0]) in _verify_low_confidence_equal_word returns UNVERIFIED_WORD, never None (PASS)
+        exhausted_res = audio_quality._verify_low_confidence_equal_word(
+            source_words=["Testing", "manufacturing", "today"],
+            source_words_clean=["testing", "manufacturing", "today"],
+            src_idx=1,
+            w_obj={"word": "manufacturing", "startSec": 0.50, "endSec": 1.20, "probability": 0.42},
+            audio_data=np.zeros(16000 * 2, dtype=np.float32),
+            sample_rate=16000,
+            audio_path=None,
+            whisper_model=object(),
+            language="en",
+            total_dur=2.0,
+            slice_budget=[0],
+        )
+        self.assertIsNotNone(exhausted_res)
+        self.assertEqual(exhausted_res["code"], "UNVERIFIED_WORD")
+        self.assertEqual(exhausted_res["severity"], "unverified")
+        self.assertEqual(exhausted_res["unverifiedReason"], "slice_budget_exhausted")
+
 
 if __name__ == "__main__":
     unittest.main()

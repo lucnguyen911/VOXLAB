@@ -807,7 +807,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "3.3.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "3.4.0");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -819,7 +819,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "3.3.0");
+    assert.equal(review.validatorVersion, "3.4.0");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
@@ -1315,8 +1315,8 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(isReviewOutdated(v300Chunk, "large-v3-turbo", true), true);
   });
 
-  it("V30: v3.3.0 invalidates v3.1.0 and v3.2.0 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "3.3.0");
+  it("V30: v3.4.0 invalidates v3.1.0, v3.2.0, and v3.3.0 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
+    assert.equal(QUALITY_VALIDATOR_VERSION, "3.4.0");
 
     const v310Chunk: ChunkItem = {
       id: "chunk_v30_old",
@@ -1414,6 +1414,16 @@ describe("Audio Quality Validator Tests", () => {
       },
     };
     assert.equal(isReviewOutdated(v320Chunk, "large-v3-turbo", true), true);
+
+    const v330Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v330_old",
+      qualityReview: {
+        ...v310Chunk.qualityReview!,
+        validatorVersion: "3.3.0",
+      },
+    };
+    assert.equal(isReviewOutdated(v330Chunk, "large-v3-turbo", true), true);
   });
 });
 
