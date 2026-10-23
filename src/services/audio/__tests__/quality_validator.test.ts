@@ -807,7 +807,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "2.8.6");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "2.8.7");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -819,7 +819,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "2.8.6");
+    assert.equal(review.validatorVersion, "2.8.7");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
