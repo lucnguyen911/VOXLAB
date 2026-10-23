@@ -2652,6 +2652,298 @@ class AudioQualityTest(unittest.TestCase):
         ]
         self.assertEqual(audio_quality.analyze_word_alignment_issues(text_code, asr_code, language="en"), [])
 
+    def test_v320_syntactic_boundary_classification_and_tight_cohesion(self):
+        # Section 1.1 & 1.2: Tight grammatical pairs ('want to', 'you can', 'need to', 'can generate', 'from 60', 'between 200')
+        # must NEVER be classified as Prosodic Phrase Boundaries (NATURAL_BOUNDARY 0.62s); they must be TIGHT_COHESION.
+        tight_cases = [
+            ("We want to build faster.", 1, 2, "want", "to", 0.33),
+            ("So you can see the difference.", 1, 2, "you", "can", 0.33),
+            ("Engineers need to test the die.", 1, 2, "need", "to", 0.33),
+            ("This press can generate massive force.", 2, 3, "can", "generate", 0.33),
+            ("Dropping weight from 60 kilograms.", 2, 3, "from", "60", 0.33),
+            ("Consolidate between 200 and 300 parts.", 1, 2, "between", "200", 0.33),
+        ]
+        for sent, idx1, idx2, w1, w2, gap_sec in tight_cases:
+            src_w, delims, _ = audio_quality.tokenize_text_with_spans(sent)
+            src_clean = [audio_quality.clean_word(w) for w in src_w]
+            self.assertFalse(
+                audio_quality.is_prosodic_phrase_boundary(src_w, src_clean, idx1, idx2, w1, w2),
+                f"Expected is_prosodic_phrase_boundary=False for '{w1} ... {w2}' in '{sent}'",
+            )
+            syn = audio_quality.evaluate_syntactic_boundary(
+                src_w, src_clean, delims, idx1, idx2, w1, w2, eff_speed=1.0, default_min_pause=0.50
+            )
+            self.assertEqual(syn["classification"], "TIGHT_COHESION", f"Expected TIGHT_COHESION for '{w1} {w2}', got {syn}")
+            self.assertLessEqual(syn["threshold_sec"], 0.28)
+
+            # Verify that a 0.33s pause between w1 and w2 triggers ABNORMAL_PAUSE
+            asr_words = []
+            t_cur = 0.10
+            for k, tok in enumerate(src_w):
+                asr_words.append({"word": tok, "startSec": round(t_cur, 3), "endSec": round(t_cur + 0.25, 3), "probability": 0.99})
+                t_cur += 0.26 + (gap_sec if k == idx1 else 0.0)
+            issues = audio_quality.analyze_word_alignment_issues(sent, asr_words, language="en")
+            self.assertEqual(len(issues), 1, f"Expected 1 ABNORMAL_PAUSE for '{w1} [{gap_sec}s] {w2}', got {issues}")
+            self.assertEqual(issues[0]["code"], "ABNORMAL_PAUSE")
+
+        # Verify UNCERTAIN_BOUNDARY when source mapping is None (never gets 0.62s NATURAL_BOUNDARY exemption)
+        src_w, delims, _ = audio_quality.tokenize_text_with_spans("A press named Idra to build castings.")
+        src_clean = [audio_quality.clean_word(w) for w in src_w]
+        syn_mapped = audio_quality.evaluate_syntactic_boundary(src_w, src_clean, delims, 3, 4, "Idra", "to")
+        self.assertEqual(syn_mapped["classification"], "NATURAL_BOUNDARY")
+        syn_unmapped = audio_quality.evaluate_syntactic_boundary(src_w, src_clean, delims, None, None, "Idra", "to")
+        self.assertEqual(syn_unmapped["classification"], "UNCERTAIN_BOUNDARY")
+        self.assertLessEqual(syn_unmapped["threshold_sec"], 0.50)
+
+    def test_v320_sandwiched_token_3word_structure_and_choppy_phrase_continuity(self):
+        # Section 2.1 & 2.2:
+        # 1) 'down [0.23s] to [0.22s] 20' (function word 'to' inside tight constituent on both sides) -> WARNING
+        text_down = "bringing costs down to twenty dollars"
+        asr_down = [
+            {"word": "bringing", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "costs", "startSec": 0.46, "endSec": 0.80, "probability": 0.99},
+            {"word": "down", "startSec": 0.81, "endSec": 1.10, "probability": 0.99},
+            {"word": "to", "startSec": 1.33, "endSec": 1.48, "probability": 0.99},
+            {"word": "20", "startSec": 1.70, "endSec": 2.00, "probability": 0.99},
+            {"word": "dollars", "startSec": 2.01, "endSec": 2.45, "probability": 0.99},
+        ]
+        issues_down = audio_quality.analyze_word_alignment_issues(text_down, asr_down, language="en")
+        self.assertEqual(len(issues_down), 1)
+        self.assertEqual(issues_down[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_down[0]["pauseContext"], "sandwiched_token")
+        self.assertEqual(issues_down[0]["words"], ["down", "to", "20"])
+
+        # 2) 'in [0.22s] the [0.22s] car' (article 'the' inside tight PP on both sides) -> WARNING
+        text_car = "sitting in the car today"
+        asr_car = [
+            {"word": "sitting", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "in", "startSec": 0.46, "endSec": 0.62, "probability": 0.99},
+            {"word": "the", "startSec": 0.84, "endSec": 0.98, "probability": 0.99},
+            {"word": "car", "startSec": 1.20, "endSec": 1.55, "probability": 0.99},
+            {"word": "today", "startSec": 1.56, "endSec": 1.95, "probability": 0.99},
+        ]
+        issues_car = audio_quality.analyze_word_alignment_issues(text_car, asr_car, language="en")
+        self.assertEqual(len(issues_car), 1)
+        self.assertEqual(issues_car[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_car[0]["pauseContext"], "sandwiched_token")
+        self.assertEqual(issues_car[0]["words"], ["in", "the", "car"])
+
+        # 3) Choppy phrase inside tight numeric range ('between [0.25s] 200 [0.25s] and [0.25s] 300') -> WARNING (choppy_phrase)
+        text_choppy = "designed to consolidate between two hundred and three hundred stamped parts"
+        asr_choppy = [
+            {"word": "designed", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "to", "startSec": 0.46, "endSec": 0.58, "probability": 0.99},
+            {"word": "consolidate", "startSec": 0.59, "endSec": 1.15, "probability": 0.99},
+            {"word": "between", "startSec": 1.16, "endSec": 1.50, "probability": 0.99},
+            {"word": "200", "startSec": 1.75, "endSec": 2.10, "probability": 0.99},
+            {"word": "and", "startSec": 2.35, "endSec": 2.50, "probability": 0.99},
+            {"word": "300", "startSec": 2.75, "endSec": 3.15, "probability": 0.99},
+            {"word": "stamped", "startSec": 3.16, "endSec": 3.55, "probability": 0.99},
+            {"word": "parts", "startSec": 3.56, "endSec": 3.95, "probability": 0.99},
+        ]
+        issues_choppy = audio_quality.analyze_word_alignment_issues(text_choppy, asr_choppy, language="en")
+        self.assertEqual(len(issues_choppy), 1)
+        self.assertEqual(issues_choppy[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_choppy[0]["pauseContext"], "choppy_phrase")
+
+    def test_v320_content_omission_articles_large_gaps_and_hallucinations(self):
+        # Section 3.1: Swallowed article 'a' ('building a vast network' -> 'building vast network') must be flagged as MISSING_WORD
+        text_art = "without building a vast network"
+        asr_art = [
+            {"word": "without", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "building", "startSec": 0.46, "endSec": 0.85, "probability": 0.99},
+            {"word": "vast", "startSec": 1.05, "endSec": 1.40, "probability": 0.99},
+            {"word": "network", "startSec": 1.41, "endSec": 1.85, "probability": 0.99},
+        ]
+        issues_art = audio_quality.analyze_word_alignment_issues(text_art, asr_art, language="en")
+        self.assertEqual(len(issues_art), 1)
+        self.assertEqual(issues_art[0]["code"], "MISSING_WORD")
+        self.assertEqual(issues_art[0]["words"], ["a"])
+
+        # Merged token ('a part' -> 'apart') is NOT a missing word
+        text_merged = "keep the panels a part during curing"
+        asr_merged = [
+            {"word": "keep", "startSec": 0.10, "endSec": 0.35, "probability": 0.99},
+            {"word": "the", "startSec": 0.36, "endSec": 0.48, "probability": 0.99},
+            {"word": "panels", "startSec": 0.49, "endSec": 0.85, "probability": 0.99},
+            {"word": "apart", "startSec": 0.86, "endSec": 1.25, "probability": 0.99},
+            {"word": "during", "startSec": 1.26, "endSec": 1.55, "probability": 0.99},
+            {"word": "curing", "startSec": 1.56, "endSec": 1.95, "probability": 0.99},
+        ]
+        self.assertEqual(audio_quality.analyze_word_alignment_issues(text_merged, asr_merged, language="en"), [])
+
+        # Section 3.2: Missing word with a LARGE gap (>= 0.85s, e.g. 1.20s) must still be flagged as MISSING_WORD
+        text_gap = "The liquid metal flows rapidly through heated pipes."
+        asr_gap = [
+            {"word": "The", "startSec": 0.10, "endSec": 0.22, "probability": 0.99},
+            {"word": "liquid", "startSec": 0.23, "endSec": 0.55, "probability": 0.99},
+            {"word": "metal", "startSec": 0.56, "endSec": 0.90, "probability": 0.99},
+            # 'flows' omitted with a 1.20s gap [0.90 - 2.10]
+            {"word": "rapidly", "startSec": 2.10, "endSec": 2.55, "probability": 0.99},
+            {"word": "through", "startSec": 2.56, "endSec": 2.85, "probability": 0.99},
+            {"word": "heated", "startSec": 2.86, "endSec": 3.20, "probability": 0.99},
+            {"word": "pipes.", "startSec": 3.21, "endSec": 3.65, "probability": 0.99},
+        ]
+        issues_gap = audio_quality.analyze_word_alignment_issues(text_gap, asr_gap, language="en")
+        missing_codes = [i for i in issues_gap if i["code"] == "MISSING_WORD" and i["words"] == ["flows"]]
+        self.assertEqual(len(missing_codes), 1)
+
+        # Section 3.3: Extra phrase matching hallucination boilerplate ('thank you') WITH real sustained speech energy -> EXTRA_WORD
+        sr = 16000
+        t = np.arange(int(sr * 2.5)) / sr
+        speech_wave = (0.18 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+        text_hall = "The test is complete."
+        asr_hall = [
+            {"word": "The", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "test", "startSec": 0.26, "endSec": 0.55, "probability": 0.99},
+            {"word": "is", "startSec": 0.56, "endSec": 0.70, "probability": 0.99},
+            {"word": "complete.", "startSec": 0.71, "endSec": 1.15, "probability": 0.99},
+            {"word": "Thank", "startSec": 1.25, "endSec": 1.55, "probability": 0.92},
+            {"word": "you.", "startSec": 1.56, "endSec": 1.90, "probability": 0.92},
+        ]
+        issues_hall_voiced = audio_quality.analyze_word_alignment_issues(
+            text_hall, asr_hall, language="en", audio_data=speech_wave, sample_rate=sr
+        )
+        extra_voiced = [i for i in issues_hall_voiced if i["code"] == "EXTRA_WORD"]
+        self.assertTrue(len(extra_voiced) >= 1, f"Expected EXTRA_WORD when 'Thank you' has real speech energy, got {issues_hall_voiced}")
+
+        # When trailing region [1.25 - 1.90s] is silent on the waveform, 'Thank you' is filtered as Whisper hallucination
+        silent_tail_wave = speech_wave.copy()
+        silent_tail_wave[int(1.20 * sr):] = 0.0
+        issues_hall_silent = audio_quality.analyze_word_alignment_issues(
+            text_hall, asr_hall, language="en", audio_data=silent_tail_wave, sample_rate=sr
+        )
+        self.assertEqual([i for i in issues_hall_silent if i["code"] == "EXTRA_WORD"], [])
+
+    def test_v320_proper_noun_skeleton_assimilation_and_decimal_slice_budget(self):
+        # Section 3.4: Proper noun consonant skeleton preservation
+        # 'Nevada' -> 'Navada' (skeleton 'nvd' == 'nvd', 3 syl) -> PASS
+        self.assertTrue(audio_quality._is_valid_proper_noun_transliteration("nevada", "navada"))
+        # 'Cerabeads' -> 'Cerabeds' (skeleton 'srbds' == 'srbds', 3 syl) -> PASS
+        self.assertTrue(audio_quality._is_valid_proper_noun_transliteration("cerabeads", "cerabeds"))
+        # 'Tesla' -> 'Tessa' (skeleton 'tsl' != 'ts') -> FALSE (must be flagged as SUSPECTED_MISPRONUNCIATION!)
+        self.assertFalse(audio_quality._is_valid_proper_noun_transliteration("tesla", "tessa"))
+
+        text_tesla = "Inside the Tesla factory today."
+        asr_tessa = [
+            {"word": "Inside", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": "the", "startSec": 0.46, "endSec": 0.58, "probability": 0.99},
+            {"word": "Tessa", "startSec": 0.59, "endSec": 1.00, "probability": 0.90},
+            {"word": "factory", "startSec": 1.01, "endSec": 1.45, "probability": 0.99},
+            {"word": "today.", "startSec": 1.46, "endSec": 1.85, "probability": 0.99},
+        ]
+        issues_tessa = audio_quality.analyze_word_alignment_issues(text_tesla, asr_tessa, language="en")
+        self.assertEqual(len(issues_tessa), 1)
+        self.assertEqual(issues_tessa[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+        self.assertEqual(issues_tessa[0]["words"], ["tesla", "tessa"])
+
+        # Section 3.5: 'wanted the' -> 'want the' (2 syllables vs 1 syllable) must NOT be exempted as assimilation
+        text_wanted = "They wanted the new battery."
+        asr_want = [
+            {"word": "They", "startSec": 0.10, "endSec": 0.30, "probability": 0.99},
+            {"word": "want", "startSec": 0.31, "endSec": 0.65, "probability": 0.85},
+            {"word": "the", "startSec": 0.66, "endSec": 0.80, "probability": 0.99},
+            {"word": "new", "startSec": 0.81, "endSec": 1.05, "probability": 0.99},
+            {"word": "battery.", "startSec": 1.06, "endSec": 1.55, "probability": 0.99},
+        ]
+        issues_want = audio_quality.analyze_word_alignment_issues(text_wanted, asr_want, language="en")
+        self.assertEqual(len(issues_want), 1)
+
+        # 'and expansion' -> 'an expansion' after a 0.34s comma pause -> SUSPECTED_MISPRONUNCIATION
+        text_and = "in a month, and expansion into Dallas"
+        asr_an = [
+            {"word": "in", "startSec": 0.10, "endSec": 0.25, "probability": 0.99},
+            {"word": "a", "startSec": 0.26, "endSec": 0.36, "probability": 0.99},
+            {"word": "month,", "startSec": 0.37, "endSec": 0.70, "probability": 0.99},
+            {"word": "an", "startSec": 1.04, "endSec": 1.34, "probability": 0.83},
+            {"word": "expansion", "startSec": 1.35, "endSec": 1.90, "probability": 0.99},
+            {"word": "into", "startSec": 1.91, "endSec": 2.20, "probability": 0.99},
+            {"word": "Dallas", "startSec": 2.21, "endSec": 2.65, "probability": 0.99},
+        ]
+        issues_an = audio_quality.analyze_word_alignment_issues(text_and, asr_an, language="en")
+        self.assertEqual(len(issues_an), 1)
+        self.assertEqual(issues_an[0]["code"], "SUSPECTED_MISPRONUNCIATION")
+        self.assertEqual(issues_an[0]["words"], ["and", "an"])
+
+        # Section 3.6: _numeric_mismatch_review returns UNVERIFIED_NUMBER when slice_budget is exhausted ([0])
+        # or when '1.2' vs '0.2' is compared without a second pass
+        sr = 16000
+        dummy_wave = np.ones(sr * 2, dtype=np.float32) * 0.05
+        asr_num = [{"word": "2.4", "startSec": 0.20, "endSec": 0.70, "probability": 0.85}]
+        exhausted_budget = [0]
+        res_exhausted = audio_quality._numeric_mismatch_review(
+            expected="2.8",
+            observed="2.4",
+            asr_words=asr_num,
+            j1=0,
+            j2=1,
+            whisper_model=object(),
+            audio_data=dummy_wave,
+            sample_rate=sr,
+            language="en",
+            total_dur=2.0,
+            slice_budget=exhausted_budget,
+        )
+        self.assertIsNotNone(res_exhausted)
+        self.assertEqual(res_exhausted["code"], "UNVERIFIED_NUMBER")
+        self.assertEqual(res_exhausted["severity"], "unverified")
+
+        res_1_0 = audio_quality._numeric_mismatch_review(
+            expected="1.2",
+            observed="0.2",
+            asr_words=[{"word": "0.2", "startSec": 0.20, "endSec": 0.70, "probability": 0.90}],
+            j1=0,
+            j2=1,
+            whisper_model=None,
+            audio_data=None,
+            sample_rate=sr,
+            language="en",
+            total_dur=2.0,
+        )
+        self.assertIsNotNone(res_1_0)
+        self.assertEqual(res_1_0["code"], "UNVERIFIED_NUMBER")
+
+    def test_v320_unvoiced_fricative_onset_and_short_word_intra_pause(self):
+        # Section 4.1: Unvoiced labiodental fricative '/f/' onset (rms ~ 0.0012, zcr >= 0.45) before voiced vowel
+        # must be masked as speech onset so 'at 400' does not trigger a false ABNORMAL_PAUSE
+        sr = 16000
+        wave = np.zeros(int(sr * 2.0), dtype=np.float32)
+        t = np.arange(wave.size) / sr
+        voiced = (0.18 * np.sin(2 * np.pi * 190.0 * t)).astype(np.float32)
+        # 'at' [0.20 - 0.45]
+        wave[int(0.20 * sr):int(0.45 * sr)] = voiced[int(0.20 * sr):int(0.45 * sr)]
+        # 0.06s true silence [0.45 - 0.51]
+        # '/f/' unvoiced fricative onset [0.51 - 0.78] with rms ~ 0.0012 and high ZCR (~0.60)
+        alt = np.where((np.arange(int(0.27 * sr)) % 2) == 0, 0.0012, -0.0012).astype(np.float32)
+        wave[int(0.51 * sr):int(0.78 * sr)] = alt
+        # '400' voiced nucleus [0.78 - 1.35]
+        wave[int(0.78 * sr):int(1.35 * sr)] = voiced[int(0.78 * sr):int(1.35 * sr)]
+
+        env = audio_quality.compute_acoustic_envelope(wave, sr)
+        asr_f = [
+            {"word": "at", "startSec": 0.20, "endSec": 0.45, "probability": 0.99},
+            {"word": "400", "startSec": 0.78, "endSec": 1.35, "probability": 0.99},
+        ]
+        issues_f = audio_quality.analyze_word_alignment_issues(
+            "at four hundred", asr_f, language="en", audio_data=wave, sample_rate=sr, envelope=env
+        )
+        self.assertEqual(issues_f, [], f"Expected 0 false pause for '/f/' onset before 400, got {issues_f}")
+
+        # Section 4.2: Short 3-letter word ('car') with genuine mid-word silent break (0.20s inside 0.62s word) -> SUSPICIOUS_INTRA_PAUSE
+        wave_car = np.zeros(int(sr * 1.5), dtype=np.float32)
+        t_car = np.arange(wave_car.size) / sr
+        carrier_car = (0.22 * np.sin(2 * np.pi * 180.0 * t_car)).astype(np.float32)
+        # 'ca-' [0.20 - 0.41] (210ms active)
+        wave_car[int(0.20 * sr):int(0.41 * sr)] = carrier_car[int(0.20 * sr):int(0.41 * sr)]
+        # silent break [0.41 - 0.61] (200ms silence)
+        # '-r' [0.61 - 0.82] (210ms active)
+        wave_car[int(0.61 * sr):int(0.82 * sr)] = carrier_car[int(0.61 * sr):int(0.82 * sr)]
+        asr_car_intra = [{"word": "car", "startSec": 0.20, "endSec": 0.82, "probability": 0.95}]
+        intra_car = audio_quality.detect_intra_word_pause(wave_car, sr, "car", asr_car_intra)
+        self.assertEqual(len(intra_car), 1)
+        self.assertEqual(intra_car[0]["code"], "SUSPICIOUS_INTRA_PAUSE")
+        self.assertEqual(intra_car[0]["words"], ["car"])
+
 
 if __name__ == "__main__":
     unittest.main()

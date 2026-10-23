@@ -807,7 +807,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "3.1.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "3.2.0");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -819,7 +819,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "3.1.0");
+    assert.equal(review.validatorVersion, "3.2.0");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
@@ -1313,6 +1313,91 @@ describe("Audio Quality Validator Tests", () => {
       },
     };
     assert.equal(isReviewOutdated(v300Chunk, "large-v3-turbo", true), true);
+  });
+
+  it("V30: v3.2.0 invalidates v3.1.0 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
+    assert.equal(QUALITY_VALIDATOR_VERSION, "3.2.0");
+
+    const v310Chunk: ChunkItem = {
+      id: "chunk_v30_old",
+      index: 1,
+      text: "Testing v3.2.0 upgrade invalidation",
+      originalText: "Testing v3.2.0 upgrade invalidation",
+      status: "ready",
+      durationSec: 3.5,
+      audioFilePath: "C:\\scratch\\tts\\chunk_v30.wav",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "pass",
+        issues: [],
+        summary: "Đạt",
+        checkedAt: Date.now(),
+        text: "Testing v3.2.0 upgrade invalidation",
+        validatorVersion: "3.1.0",
+        asrModelId: "large-v3-turbo",
+        audioSignature: "C:\\scratch\\tts\\chunk_v30.wav::3.5",
+      },
+    };
+    assert.equal(isReviewOutdated(v310Chunk, "large-v3-turbo", true), true);
+
+    const mixedWarningChunk: ChunkItem = {
+      id: "chunk_v30_mixed",
+      index: 2,
+      text: "Mixed unverified and warning issues",
+      originalText: "Mixed unverified and warning issues",
+      status: "ready",
+      durationSec: 4.0,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "warning",
+        issues: [
+          {
+            severity: "unverified",
+            code: "UNVERIFIED_PAUSE",
+            message: "Chưa thể xác minh khoảng ngắt",
+          },
+          {
+            severity: "warning",
+            code: "SUSPECTED_MISPRONUNCIATION",
+            message: "Nghi vấn phát âm sai từ 'Tesla'",
+          },
+        ],
+        summary: "Nghi vấn phát âm sai từ 'Tesla'",
+        checkedAt: Date.now(),
+      },
+    };
+    const mixedBadge = getChunkBadgeInfo(mixedWarningChunk);
+    assert.ok(mixedBadge);
+    assert.equal(mixedBadge.status, "warning");
+    assert.equal(mixedBadge.primaryLabel, "Phát âm sai");
+    assert.equal(mixedBadge.issuesCount, 1);
+
+    const unverifiedChunk: ChunkItem = {
+      id: "chunk_v30_unv",
+      index: 3,
+      text: "Unverified pause chunk",
+      originalText: "Unverified pause chunk",
+      status: "ready",
+      durationSec: 3.8,
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "unverified",
+        issues: [
+          {
+            severity: "unverified",
+            code: "UNVERIFIED_PAUSE",
+            message: "Chưa thể xác minh khoảng ngắt",
+          },
+        ],
+        summary: "Chưa thể xác minh khoảng ngắt",
+        checkedAt: Date.now(),
+      },
+    };
+    const unvBadge = getChunkBadgeInfo(unverifiedChunk);
+    assert.ok(unvBadge);
+    assert.equal(unvBadge.status, "unverified");
+    assert.equal(unvBadge.primaryLabel, "Chưa kiểm chứng");
+    assert.equal(unvBadge.issuesCount, 1);
   });
 });
 

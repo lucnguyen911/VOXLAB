@@ -5,7 +5,7 @@ import { loadSubtitleSettings } from "../subtitle/profiles";
 import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
 import { stripPauseTokens } from "../pause";
 
-export const QUALITY_VALIDATOR_VERSION = "3.1.0";
+export const QUALITY_VALIDATOR_VERSION = "3.2.0";
 export const MAX_AUTO_VALIDATION_RETRIES = 1;
 
 export interface QualityCheckableItem {
@@ -350,8 +350,10 @@ export function getChunkBadgeInfo(chunk: QualityCheckableItem): ChunkBadgeInfo |
 
   if (isChunkWarning(chunk)) {
     const issues = chunk.qualityReview?.issues || [];
+    const warningIssues = issues.filter((iss) => iss.severity === "warning");
+    const orderedIssues = warningIssues.length > 0 ? warningIssues : issues;
     const uniqueLabels: string[] = [];
-    for (const iss of issues) {
+    for (const iss of orderedIssues) {
       const label = getIssueShortLabel(iss.code);
       if (!uniqueLabels.includes(label)) {
         uniqueLabels.push(label);
@@ -373,7 +375,7 @@ export function getChunkBadgeInfo(chunk: QualityCheckableItem): ChunkBadgeInfo |
       fullBadgeText,
       compactBadgeText,
       uniqueLabels,
-      issuesCount: issues.length,
+      issuesCount: orderedIssues.length || issues.length,
     };
   }
 
@@ -389,13 +391,14 @@ export function getChunkBadgeInfo(chunk: QualityCheckableItem): ChunkBadgeInfo |
   }
 
   if (isChunkUnverified(chunk)) {
+    const issues = chunk.qualityReview?.issues || [];
     return {
       status: "unverified",
       primaryLabel: "Chưa kiểm chứng",
       fullBadgeText: "Chưa kiểm chứng",
       compactBadgeText: "Chưa kiểm chứng",
       uniqueLabels: ["Chưa kiểm chứng"],
-      issuesCount: 0,
+      issuesCount: issues.length,
     };
   }
 
