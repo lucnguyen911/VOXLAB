@@ -3484,6 +3484,84 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(rep_issues[0]["words"], ["throttle"])
 
 
+    def test_v350_core_scope_minor_variants_and_abbreviations(self):
+        # Formatting / inflection noise is never a defect under the v3.5.0 core scope
+        for src, asr in (("dollar", "dollars"), ("musks", "musk"), ("faced", "face"),
+                         ("enemies", "enemys"), ("eighty", "80"), ("milliampere", "mAh")[:2]):
+            if src == "milliampere":
+                continue
+            self.assertTrue(audio_quality._is_minor_word_variant(src, asr), f"{src}/{asr}")
+        self.assertTrue(audio_quality._is_minor_word_variant("and", "an"))
+        self.assertTrue(audio_quality._is_minor_word_variant("kg", "kilometers"))
+        self.assertTrue(audio_quality._is_minor_word_variant("deionized", "dionized"))
+        self.assertFalse(audio_quality._is_minor_word_variant("shift", "lift"))
+        self.assertFalse(audio_quality._is_minor_word_variant("eighty", "dalfs"))
+
+        self.assertTrue(audio_quality._renders_as_abbreviation(["a", "t", "and", "t"], "AT&T"))
+        self.assertTrue(audio_quality._renders_as_abbreviation(["milliampere", "hour"], "mAh"))
+        self.assertTrue(audio_quality._renders_as_abbreviation(["f", "t", "c"], "FTC"))
+        # Two-letter tokens are too ambiguous to be treated as abbreviations ("AT" must not absorb "at the")
+        self.assertFalse(audio_quality._looks_like_abbreviation("AT"))
+        self.assertFalse(audio_quality._explains_by_abbreviation(["at", "the"], [" AT"], "en"))
+        self.assertTrue(audio_quality._explains_by_abbreviation(["a", "t", "and", "t"], [" AT", " &T,"], "en"))
+
+        # Script 'A T and T' read correctly but written 'AT&T' by Whisper must not raise a missing-word warning
+        text = "Three carriers, Verizon, A T and T, and T Mobile, control the towers."
+        asr_tokens = ["Three", "carriers,", "Verizon,", "AT", "&T,", "and", "T", "Mobile,", "control", "the", "towers."]
+        asr_words = [
+            {"word": " " + w, "startSec": round(0.3 * k, 2), "endSec": round(0.3 * k + 0.28, 2), "probability": 0.99}
+            for k, w in enumerate(asr_tokens)
+        ]
+        issues = audio_quality.analyze_word_alignment_issues(text, asr_words, core_scope=True)
+        core = audio_quality._reduce_to_core_defects(issues, asr_words)
+        self.assertEqual(core, [], f"Unexpected core defects for AT&T rendering: {core}")
+
+    def test_v350_reduce_to_core_defects_mapping(self):
+        asr_words = [
+            {"word": " your", "startSec": 24.80, "endSec": 25.02, "probability": 1.0},
+            {"word": " DALF's", "startSec": 25.02, "endSec": 25.98, "probability": 0.76},
+            {"word": " $80s", "startSec": 25.98, "endSec": 26.84, "probability": 0.70},
+            {"word": " store", "startSec": 30.00, "endSec": 30.30, "probability": 1.0},
+            {"word": " an", "startSec": 30.40, "endSec": 30.50, "probability": 1.0},
+            {"word": " iPhone", "startSec": 30.50, "endSec": 30.90, "probability": 1.0},
+            {"word": " 18", "startSec": 30.90, "endSec": 31.20, "probability": 1.0},
+            {"word": " Pro,", "startSec": 31.20, "endSec": 31.50, "probability": 1.0},
+            {"word": " an", "startSec": 31.88, "endSec": 32.16, "probability": 1.0},
+            {"word": " iPhone", "startSec": 32.16, "endSec": 32.54, "probability": 1.0},
+            {"word": " 18,", "startSec": 32.54, "endSec": 33.12, "probability": 1.0},
+            {"word": " really", "startSec": 34.00, "endSec": 34.30, "probability": 0.99},
+            {"word": " lift", "startSec": 36.00, "endSec": 36.30, "probability": 0.97},
+        ]
+        issues = [
+            {"severity": "warning", "code": "ABNORMAL_PAUSE", "message": "pause", "words": ["a", "b"], "timeRange": [1.0, 1.6]},
+            {"severity": "unverified", "code": "UNVERIFIED_WORD", "message": "unv", "words": ["x"], "timeRange": [2.0, 2.0]},
+            {"severity": "warning", "code": "SUSPECTED_MISPRONUNCIATION", "message": "m1", "words": ["eighty", "dalfs"], "timeRange": [25.02, 25.98]},
+            {"severity": "warning", "code": "SUSPECTED_MISPRONUNCIATION", "message": "m2", "words": ["dollar", "80s"], "timeRange": [25.98, 26.84]},
+            {"severity": "warning", "code": "SUSPECTED_SWALLOWED", "message": "sw", "words": ["and", "finance", "a", "flagship", "device"], "timeRange": [30.30, 30.30]},
+            {"severity": "warning", "code": "EXTRA_WORD", "message": "e1", "words": ["an"], "timeRange": [31.88, 32.16]},
+            {"severity": "warning", "code": "EXTRA_WORD", "message": "e2", "words": ["iphone"], "timeRange": [32.16, 32.54]},
+            {"severity": "warning", "code": "EXTRA_WORD", "message": "e3", "words": ["18"], "timeRange": [32.54, 33.12]},
+            {"severity": "warning", "code": "EXTRA_WORD", "message": "e4", "words": ["really"], "timeRange": [34.00, 34.30]},
+            {"severity": "warning", "code": "SUSPECTED_MISPRONUNCIATION", "message": "m3", "words": ["shift", "lift"], "timeRange": [36.00, 36.30]},
+            {"severity": "error", "code": "AUDIO_SILENT", "message": "silent", "words": [], "timeRange": [0.0, 0.0]},
+        ]
+        core = audio_quality._reduce_to_core_defects(issues, asr_words)
+        codes = [(i["code"], tuple(i.get("words", []))) for i in core]
+        self.assertIn(("AUDIO_SILENT", ()), codes)
+        # 'eighty dollar' garbled with low ASR confidence -> one merged stutter; 'dollar/80s' alone is number noise
+        stutters = [i for i in core if i["code"] == "SUSPECTED_STUTTER"]
+        self.assertEqual(len(stutters), 1)
+        self.assertEqual(stutters[0]["words"], ["eighty"])
+        # Multi-word swallow -> MISSING_WORD
+        self.assertIn(("MISSING_WORD", ("and", "finance", "a", "flagship", "device")), codes)
+        # Inserted 'an iPhone 18' duplicates the adjacent phrase -> REPEATED_WORD; isolated 'really' is dropped
+        self.assertIn(("REPEATED_WORD", ("an", "iphone", "18")), codes)
+        self.assertFalse(any("really" in w for _, w in codes))
+        # High-confidence substitution 'shift' -> 'lift' (0.97) is not reported as a stumble
+        self.assertFalse(any("shift" in w for _, w in codes))
+        self.assertFalse(any(c in ("ABNORMAL_PAUSE", "UNVERIFIED_WORD") for c, _ in codes))
+
+
 if __name__ == "__main__":
     unittest.main()
 

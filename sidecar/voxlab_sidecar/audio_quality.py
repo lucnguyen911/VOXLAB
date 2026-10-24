@@ -2578,6 +2578,8 @@ def _evaluate_pronunciation_entry(
 
 
 MAX_SECONDARY_SLICE_CHECKS = 3
+# Production pipeline budget: at most one targeted re-transcription per chunk (speed over marginal recall).
+CORE_SECONDARY_SLICE_CHECKS = 1
 
 
 def _verify_low_confidence_equal_word(
@@ -3495,6 +3497,320 @@ def _deduplicate_quality_issues(issues: list[dict[str, Any]]) -> list[dict[str, 
     return deduped
 
 
+# ---------------------------------------------------------------------------
+# Core-defect scope (v3.5.0)
+# ---------------------------------------------------------------------------
+# Production QC reports only the three defect categories operators act on:
+#   - SUSPECTED_STUTTER: a word is stumbled or garbled (syllable repetition, or a word so distorted that
+#     Whisper hears a clearly different word with low confidence).
+#   - REPEATED_WORD: a word or phrase is read twice.
+#   - MISSING_WORD: a script word or phrase is not read.
+# Pause/prosody, number/unit formatting, acronym spelling and minor inflection differences
+# (dollar/dollars, Musk/Musk's, face/faced) are intentionally out of scope: they produced most
+# false alarms and Whisper cannot judge them reliably.
+CORE_DEFECT_CODES = frozenset({"SUSPECTED_STUTTER", "REPEATED_WORD", "MISSING_WORD"})
+# A substituted word is only reported as garbled when Whisper itself is unsure about what it heard.
+CORE_GARBLE_MAX_ASR_PROB = 0.80
+
+
+def _inflection_stems(word: str) -> set[str]:
+    """Candidate stems after removing one regular English inflection (-s/-es/-ies/-ed/-d/-ing, possessive 's),
+    e.g. 'faced' -> {'faced', 'face', 'fac'}, 'enemies' -> {'enemies', 'enemy', 'enemie', 'enemi'}.
+    """
+    w = clean_word(word)
+    stems = {w}
+    if len(w) > 4 and w.endswith("ies"):
+        stems.add(w[:-3] + "y")
+    for suffix in ("ing", "ed", "es", "s", "d"):
+        if len(w) - len(suffix) >= 3 and w.endswith(suffix):
+            stems.add(w[: -len(suffix)])
+    return stems
+
+
+def _is_minor_word_variant(src_word: str, asr_word: str) -> bool:
+    """True when a script/ASR word difference is formatting or inflection noise rather than a misread:
+    equivalent spellings, any number formatting (80 vs eighty), or the same stem (dollar/dollars, faced/face).
+    """
+    s = clean_word(src_word)
+    a = clean_word(asr_word)
+    if not s or not a:
+        return False
+    if are_words_equivalent(s, a):
+        return True
+    if re.search(r"\d", s) or re.search(r"\d", a):
+        return True
+    # Vowel-less script tokens are unit/abbreviation spellings (kg, km, kW, mph): unit wording is out of scope
+    if s.isascii() and not re.search(r"[aeiouy]", s):
+        return True
+    # Reduced function words ('and' heard as 'an', 'to' as 'ta') are normal connected speech, not stumbles
+    if len(s) <= 3 and levenshtein_dist(s, a) <= 1:
+        return True
+    # One-letter spelling variance on long words ('deionized' vs 'dionized') is Whisper orthography noise
+    if min(len(s), len(a)) >= 6 and levenshtein_dist(s, a) <= 1:
+        return True
+    s_stems = _inflection_stems(s)
+    a_stems = _inflection_stems(a)
+    return bool(s_stems & a_stems) or any(are_words_equivalent(x, y) for x in s_stems for y in a_stems)
+
+
+def _looks_like_abbreviation(raw_token: str) -> bool:
+    """True for ASR tokens written as abbreviations, e.g. 'AT&T', 'mAh', 'FTC', 'kWh'."""
+    tok = raw_token.strip(" .,!?;:\"'()")
+    if not re.fullmatch(r"[A-Za-z]+(?:&[A-Za-z]+)*", tok):
+        return False
+    letters = tok.replace("&", "")
+    if not (3 <= len(letters) <= 8):
+        return False
+    return "&" in tok or any(c.isupper() for c in tok[1:])
+
+
+def _renders_as_abbreviation(src_words: list[str], abbreviation: str) -> bool:
+    """True if `abbreviation` spells `src_words` in order, each word contributing its first letter plus
+    optionally further letters of itself ('and' may be written '&').
+    Examples: ['a', 't', 'and', 't'] -> 'AT&T', ['milliampere', 'hour'] -> 'mAh'.
+    """
+    letters = abbreviation.strip(" .,!?;:\"'()").lower()
+    words = ["&" if w == "and" else w for w in (clean_word(x) for x in src_words) if w]
+    if not letters or not words or len(words) > 8:
+        return False
+
+    def match(li: int, wi: int) -> bool:
+        if wi == len(words):
+            return li == len(letters)
+        if li >= len(letters) or letters[li] != words[wi][0]:
+            return False
+        word = words[wi]
+        pos, k = 1, li + 1
+        if match(k, wi + 1):
+            return True
+        while k < len(letters):
+            p = word.find(letters[k], pos)
+            if p < 0:
+                return False
+            pos, k = p + 1, k + 1
+            if match(k, wi + 1):
+                return True
+        return False
+
+    return match(0, 0)
+
+
+def _explains_by_abbreviation(src_slice_clean: list[str], asr_raw_tokens: list[str], language: str | None) -> bool:
+    """True when a replace span differs only because Whisper wrote some script words as an abbreviation
+    (e.g. script 'A T and T' vs ASR 'AT&T', script 'five thousand milliampere hour' vs ASR '5,000 mAh').
+    """
+    merged: list[str] = []
+    for tok in asr_raw_tokens:
+        t = tok.strip()
+        if merged and t.startswith("&"):
+            merged[-1] += t
+        elif t:
+            merged.append(t)
+    asr_clean = [clean_word(t) for t in merged]
+    for ai, raw in enumerate(merged):
+        if not _looks_like_abbreviation(raw):
+            continue
+        for a in range(len(src_slice_clean)):
+            for b in range(a + 1, min(len(src_slice_clean), a + 8) + 1):
+                if not _renders_as_abbreviation(src_slice_clean[a:b], raw):
+                    continue
+                rest_src = [w for w in src_slice_clean[:a] + src_slice_clean[b:] if w]
+                rest_asr_raw = merged[:ai] + merged[ai + 1:]
+                rest_asr = [w for w in asr_clean[:ai] + asr_clean[ai + 1:] if w]
+                if not rest_src and not rest_asr:
+                    return True
+                if len(rest_src) == len(rest_asr) and all(
+                    are_words_equivalent(s, w) for s, w in zip(rest_src, rest_asr)
+                ):
+                    return True
+                if rest_src and rest_asr_raw and are_number_expressions_equivalent(
+                    " ".join(rest_src), "".join(rest_asr_raw).strip(" .,!?;:"), language
+                ):
+                    return True
+    return False
+
+
+def _asr_probability_for_issue(asr_words: list[dict[str, Any]], issue: dict[str, Any], asr_word: str) -> float | None:
+    """Whisper confidence of the ASR word an issue refers to (lowest overlapping word if no exact match)."""
+    tr = issue.get("timeRange") or [0.0, 0.0]
+    t0 = float(tr[0]) if tr else 0.0
+    t1 = float(tr[1]) if len(tr) > 1 else t0
+    overlapping = [
+        w for w in asr_words
+        if float(w.get("endSec", 0.0)) >= t0 - 0.05 and float(w.get("startSec", 0.0)) <= t1 + 0.05
+    ]
+    if not overlapping:
+        return None
+    target = clean_word(asr_word)
+    exact = [w for w in overlapping if clean_word(str(w.get("word", ""))) == target]
+    pool = exact or overlapping
+    return min(float(w.get("probability", 1.0)) for w in pool)
+
+
+def _is_adjacent_duplicate_in_asr(asr_words: list[dict[str, Any]], issue: dict[str, Any], word: str) -> bool:
+    """True if Whisper transcribed `word` twice in a row inside the issue's time range."""
+    target = clean_word(word)
+    if not target:
+        return False
+    tr = issue.get("timeRange") or [0.0, 0.0]
+    t0 = float(tr[0]) if tr else 0.0
+    t1 = float(tr[1]) if len(tr) > 1 else t0
+    for k in range(len(asr_words) - 1):
+        w1, w2 = asr_words[k], asr_words[k + 1]
+        if float(w2.get("endSec", 0.0)) < t0 - 0.05 or float(w1.get("startSec", 0.0)) > t1 + 0.05:
+            continue
+        if clean_word(str(w1.get("word", ""))) == target == clean_word(str(w2.get("word", ""))):
+            return True
+    return False
+
+
+def _extra_words_to_repeats(extra_issues: list[dict[str, Any]], asr_words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keeps only inserted words that duplicate an adjacent spoken phrase (e.g. 'an iPhone 18 Pro, an iPhone 18')
+    and reports them as REPEATED_WORD. Other inserted words are out of scope.
+    """
+    asr_clean = [clean_word(str(w.get("word", ""))) for w in asr_words]
+    indices: list[int] = []
+    for iss in extra_issues:
+        words = iss.get("words") or []
+        tr = iss.get("timeRange") or [0.0, 0.0]
+        t0 = float(tr[0]) if tr else 0.0
+        target = clean_word(words[0]) if words else ""
+        for k, w in enumerate(asr_words):
+            if asr_clean[k] == target and abs(float(w.get("startSec", 0.0)) - t0) <= 0.10:
+                indices.append(k)
+                break
+    indices = sorted(set(indices))
+
+    runs: list[list[int]] = []
+    for k in indices:
+        if runs and k == runs[-1][-1] + 1:
+            runs[-1].append(k)
+        else:
+            runs.append([k])
+
+    def _repeats_neighbour(sub: list[int]) -> bool:
+        n = len(sub)
+        tokens = [asr_clean[k] for k in sub]
+        start, end = sub[0], sub[-1] + 1
+        reach = 1 if n == 1 else n + 2
+        before = asr_clean[max(0, start - reach) : start]
+        after = asr_clean[end : end + reach]
+        return any(
+            window[p : p + n] == tokens
+            for window in (before, after)
+            for p in range(0, len(window) - n + 1)
+        )
+
+    # Split each run of inserted words into the longest sub-runs that duplicate a neighbouring phrase
+    repeat_runs: list[list[int]] = []
+    for run in runs:
+        i = 0
+        while i < len(run):
+            for length in range(len(run) - i, 0, -1):
+                sub = run[i : i + length]
+                if _repeats_neighbour(sub):
+                    repeat_runs.append(sub)
+                    i += length
+                    break
+            else:
+                i += 1
+
+    repeats: list[dict[str, Any]] = []
+    for run in repeat_runs:
+        tokens = [asr_clean[k] for k in run]
+        t_start = float(asr_words[run[0]].get("startSec", 0.0))
+        t_end = float(asr_words[run[-1]].get("endSec", t_start))
+        phrase = " ".join(str(asr_words[k].get("word", "")).strip(" ,.;:!?") for k in run)
+        repeats.append({
+            "severity": "warning",
+            "code": "REPEATED_WORD",
+            "message": f'Nghi vấn đọc lặp "{phrase}" — khoảng {format_timestamp(t_start)}. Vui lòng nghe lại.',
+            "words": tokens,
+            "timeRange": [round(t_start, 3), round(t_end, 3)],
+        })
+    return repeats
+
+
+def _reduce_to_core_defects(issues: list[dict[str, Any]], asr_words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Maps detector output onto the three core defect categories (stutter / repeat / missing word)
+    and drops everything else. Technical errors (corrupt/silent audio) are always kept.
+    """
+    kept: list[dict[str, Any]] = []
+    extra_issues: list[dict[str, Any]] = []
+    for iss in issues:
+        severity = iss.get("severity")
+        code = str(iss.get("code", ""))
+        if severity == "error":
+            kept.append(iss)
+            continue
+        if severity != "warning":
+            # Possible omissions Whisper could not confirm stay visible as 'unverified' (gray), never as warnings
+            if severity == "unverified" and iss.get("omissionCandidate"):
+                kept.append(iss)
+            continue
+        words = list(iss.get("words") or [])
+        tr = iss.get("timeRange") or [0.0, 0.0]
+        ts = format_timestamp(float(tr[0]) if tr else 0.0)
+        if code == "SUSPECTED_STUTTER" and words and _is_adjacent_duplicate_in_asr(asr_words, iss, words[0]):
+            # The same whole word spoken twice ('pump pump') is a repetition, not a stumble
+            kept.append({
+                **iss,
+                "code": "REPEATED_WORD",
+                "words": [words[0]],
+                "message": f'Nghi vấn đọc lặp từ "{words[0]}" — khoảng {ts}. Vui lòng nghe lại.',
+            })
+        elif code in CORE_DEFECT_CODES:
+            kept.append(iss)
+        elif code == "SUSPECTED_SWALLOWED":
+            phrase = " ".join(words)
+            kept.append({
+                **iss,
+                "code": "MISSING_WORD",
+                "message": f'Nghi vấn đọc thiếu "{phrase}" — khoảng {ts}. Vui lòng nghe lại.',
+            })
+        elif code in ("SUSPECTED_MISPRONUNCIATION", "PARTIAL_PRONUNCIATION"):
+            if len(words) < 2 or _is_minor_word_variant(words[0], words[1]):
+                continue
+            prob = _asr_probability_for_issue(asr_words, iss, words[1])
+            if prob is None or prob >= CORE_GARBLE_MAX_ASR_PROB:
+                continue
+            kept.append({
+                **iss,
+                "code": "SUSPECTED_STUTTER",
+                "words": [words[0]],
+                "message": (
+                    f'Nghi vấn vấp / đọc không rõ từ "{words[0]}" (ASR nghe thành "{words[1]}", '
+                    f"độ tin cậy {prob:.2f}) — khoảng {ts}. Vui lòng nghe lại."
+                ),
+                "evidence": f"asr_substitution prob={prob:.2f}",
+            })
+        elif code == "EXTRA_WORD":
+            extra_issues.append(iss)
+
+    kept.extend(_extra_words_to_repeats(extra_issues, asr_words))
+    kept.sort(key=lambda x: float((x.get("timeRange") or [0.0])[0]))
+
+    # Adjacent garbled words are one stumble (e.g. 'eighty dollar' heard as "DALF's $80s").
+    merged: list[dict[str, Any]] = []
+    for iss in kept:
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and prev.get("code") == iss.get("code") == "SUSPECTED_STUTTER"
+            and float(iss["timeRange"][0]) - float(prev["timeRange"][1]) <= 0.15
+        ):
+            prev_words = list(prev.get("words") or [])
+            prev["words"] = prev_words + [w for w in (iss.get("words") or []) if w not in prev_words]
+            prev["timeRange"] = [prev["timeRange"][0], max(float(prev["timeRange"][1]), float(iss["timeRange"][1]))]
+            prev["message"] = (
+                f'Nghi vấn vấp / đọc không rõ cụm "{" ".join(prev["words"])}" — khoảng '
+                f"{format_timestamp(float(prev['timeRange'][0]))}. Vui lòng nghe lại."
+            )
+            continue
+        merged.append(dict(iss))
+    return _deduplicate_quality_issues(merged)
+
+
 def analyze_word_alignment_issues(
     text: str,
     asr_words: list[dict[str, Any]],
@@ -3512,6 +3828,7 @@ def analyze_word_alignment_issues(
     envelope: dict[str, Any] | None = None,
     slice_budget: list[int] | None = None,
     secondary_reasons: list[str] | None = None,
+    core_scope: bool = False,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
     """Analyzes ASR words with timestamps against source text to identify:
     1. Suspected stutter or syllable repetition (SUSPECTED_STUTTER, PARTIAL_PRONUNCIATION)
@@ -3520,6 +3837,9 @@ def analyze_word_alignment_issues(
     4. Extra words or letter spelling not in script (EXTRA_WORD, UNEXPECTED_LETTER_SPELLING)
     5. Abnormal pauses between unpunctuated words (ABNORMAL_PAUSE)
     Note: Rapid pace and crowded words are recorded in metrics only, without generating standalone warnings.
+    When `core_scope` is True (production pipeline), secondary Whisper slices are reserved for missing-word
+    and decimal-separator verification; acronym/number/inflection/low-confidence re-checks run without
+    slices because their findings are outside the core defect scope (see `_reduce_to_core_defects`).
     """
     issues: list[dict[str, Any]] = []
 
@@ -3542,6 +3862,7 @@ def analyze_word_alignment_issues(
 
     if slice_budget is None:
         slice_budget = [MAX_SECONDARY_SLICE_CHECKS]
+    noncore_budget = [0] if core_scope else slice_budget
     if secondary_reasons is None:
         secondary_reasons = []
     initial_slice_budget = int(slice_budget[0])
@@ -3631,7 +3952,7 @@ def analyze_word_alignment_issues(
                         whisper_model=whisper_model,
                         language=language,
                         total_dur=total_dur,
-                        slice_budget=slice_budget,
+                        slice_budget=noncore_budget,
                     )
                     if pm_iss is not None:
                         issues.append(pm_iss)
@@ -3653,7 +3974,7 @@ def analyze_word_alignment_issues(
                         whisper_model=whisper_model,
                         language=language,
                         total_dur=total_dur,
-                        slice_budget=slice_budget,
+                        slice_budget=noncore_budget,
                     )
                     if low_conf_iss is not None:
                         issues.append(low_conf_iss)
@@ -3747,7 +4068,7 @@ def analyze_word_alignment_issues(
                         whisper_model=whisper_model,
                         language=language,
                         total_dur=total_dur,
-                        slice_budget=slice_budget,
+                        slice_budget=noncore_budget,
                     )
                     if verdict == "PASS":
                         for j_map in range(pm_j1, pm_j2):
@@ -4009,6 +4330,7 @@ def analyze_word_alignment_issues(
                         issues.append({
                             "severity": "unverified",
                             "code": "UNVERIFIED_WORD",
+                            "omissionCandidate": True,
                             "message": (
                                 f'Chưa thể xác minh từ "{src_clean}" (có tín hiệu âm học trong khoảng {gap:.2f}s '
                                 f"nhưng chưa có xác nhận nhận dạng độc lập) — khoảng {ts}."
@@ -4030,6 +4352,7 @@ def analyze_word_alignment_issues(
                     issues.append({
                         "severity": "unverified",
                         "code": "UNVERIFIED_WORD",
+                        "omissionCandidate": True,
                         "message": (
                             f'Chưa thể xác minh từ "{src_clean}" do độ tin cậy căn chỉnh vùng lân cận thấp '
                             f"({min(p_prev, p_next):.2f}) — khoảng {ts}."
@@ -4073,6 +4396,7 @@ def analyze_word_alignment_issues(
                     issues.append({
                         "severity": "unverified",
                         "code": "UNVERIFIED_WORD",
+                        "omissionCandidate": True,
                         "message": f'Chưa thể xác minh từ đầu câu "{src_clean}" — khoảng {ts}.',
                         "words": [source_words_clean[idx] for idx in unmerged_indices],
                         "timeRange": [0.0, round(t_first, 3)],
@@ -4107,6 +4431,7 @@ def analyze_word_alignment_issues(
                     issues.append({
                         "severity": "unverified",
                         "code": "UNVERIFIED_WORD",
+                        "omissionCandidate": True,
                         "message": f'Chưa thể xác minh từ cuối câu "{src_clean}" — khoảng {ts}.',
                         "words": [source_words_clean[idx] for idx in unmerged_indices],
                         "timeRange": [round(t_last, 3), t_end_bound],
@@ -4211,7 +4536,7 @@ def analyze_word_alignment_issues(
                             number_issue = _numeric_mismatch_review(
                                 s_span.canonical, asr_num_str, asr_words, j1, j2,
                                 whisper_model, audio_data, sample_rate, language, total_dur,
-                                slice_budget=slice_budget,
+                                slice_budget=noncore_budget,
                             )
                             if number_issue is not None:
                                 issues.append(number_issue)
@@ -4226,7 +4551,7 @@ def analyze_word_alignment_issues(
                             number_issue = _numeric_mismatch_review(
                                 s_span.canonical, asr_canonicals[0], asr_words, j1, j2,
                                 whisper_model, audio_data, sample_rate, language, total_dur,
-                                slice_budget=slice_budget,
+                                slice_budget=noncore_budget,
                             )
                             if number_issue is not None:
                                 issues.append(number_issue)
@@ -4253,7 +4578,7 @@ def analyze_word_alignment_issues(
                             number_issue = _numeric_mismatch_review(
                                 s_span.canonical, a_span_num.canonical, asr_words, j1, j2,
                                 whisper_model, audio_data, sample_rate, language, total_dur,
-                                slice_budget=slice_budget,
+                                slice_budget=noncore_budget,
                             )
                             if number_issue is not None:
                                 issues.append(number_issue)
@@ -4293,6 +4618,16 @@ def analyze_word_alignment_issues(
                 or is_compound_proper_split
                 or (src_canon_joined and src_canon_joined == asr_canon_joined)
                 or are_number_expressions_equivalent(" ".join(src_slice_clean), " ".join(asr_slice_clean), language)
+            ):
+                for j_map in range(j1, j2):
+                    asr_to_source[j_map] = min(i1 + (j_map - j1), i2 - 1)
+                continue
+
+            # Whisper wrote script words as an abbreviation (e.g. 'A T and T' -> 'AT&T', 'milliampere hour' -> 'mAh')
+            if _explains_by_abbreviation(
+                src_slice_clean,
+                [str(asr_words[k].get("word", "")) for k in range(j1, min(j2, len(asr_words)))],
+                language,
             ):
                 for j_map in range(j1, j2):
                     asr_to_source[j_map] = min(i1 + (j_map - j1), i2 - 1)
@@ -4454,7 +4789,7 @@ def analyze_word_alignment_issues(
                     language=language,
                     total_dur=total_dur,
                     eff_speed=eff_speed,
-                    slice_budget=slice_budget,
+                    slice_budget=noncore_budget,
                     secondary_reasons=secondary_reasons,
                 )
                 if assim_decision == "pass":
@@ -5359,12 +5694,9 @@ def detect_acoustic_stutter(
         return []
 
     num_frames = 1 + (mono.size - frame_len) // hop_len
-    # Compute RMS per frame
-    rms_frames = np.zeros(num_frames, dtype=np.float32)
-    for i in range(num_frames):
-        start = i * hop_len
-        f = mono[start : start + frame_len]
-        rms_frames[i] = np.sqrt(np.mean(f ** 2)) if f.size > 0 else 0.0
+    # Compute RMS per frame (vectorized over strided frames)
+    frame_view = np.lib.stride_tricks.sliding_window_view(mono, frame_len)[::hop_len][:num_frames]
+    rms_frames = np.sqrt(np.mean(np.square(frame_view, dtype=np.float32), axis=1)).astype(np.float32)
 
     peak_rms = float(np.max(rms_frames)) if rms_frames.size > 0 else 0.0
     if peak_rms < 0.02:
@@ -5602,8 +5934,12 @@ def detect_acoustic_stutter(
                             and cos_sim >= 0.91
                             and formant_sim >= 0.92
                             and min_gap_rms <= 0.20 * min_burst_peak
-                            and 0.015 <= valley_sec <= 0.095
-                            and (has_excess_syllables or has_clone_prefix_stutter)
+                            and (
+                                (has_excess_syllables and 0.015 <= valley_sec <= 0.095)
+                                # Clone-prefix restarts ('ba- ba- battery') carry a longer hesitation gap but
+                                # already require near-identical bursts and low ASR confidence
+                                or (has_clone_prefix_stutter and 0.015 <= valley_sec <= 0.20)
+                            )
                             and w_dur >= (0.18 * expected_syl + 0.12)
                         ):
                             is_verified_stutter = True
@@ -6493,7 +6829,7 @@ def validate_audio_quality(
                 "asrModelId": active_model_id,
             }
 
-        shared_slice_budget = [MAX_SECONDARY_SLICE_CHECKS]
+        shared_slice_budget = [CORE_SECONDARY_SLICE_CHECKS]
         shared_secondary_reasons: list[str] = []
 
         # Reuse waveform loaded during validate_audio_file (zero redundant disk reads)
@@ -6542,9 +6878,10 @@ def validate_audio_quality(
             envelope=shared_envelope,
             slice_budget=shared_slice_budget,
             secondary_reasons=shared_secondary_reasons,
+            core_scope=True,
         )
         t_align_ms = round((time.perf_counter() - t_align0) * 1000.0, 2)
-        metrics["secondaryWhisperCalls"] = max(0, MAX_SECONDARY_SLICE_CHECKS - int(shared_slice_budget[0]))
+        metrics["secondaryWhisperCalls"] = max(0, CORE_SECONDARY_SLICE_CHECKS - int(shared_slice_budget[0]))
         metrics["secondaryWhisperReasons"] = list(shared_secondary_reasons)
 
         # Step 3: Acoustic Stutter Check (waveform + ASR corroboration)
@@ -6565,20 +6902,9 @@ def validate_audio_quality(
                 log(f"[audio_quality] Acoustic stutter check error: {st_err}")
         t_stut_ms = round((time.perf_counter() - t_stut0) * 1000.0, 2)
 
-        # Whisper can still transcribe the correct word when audio contains
-        # a real internal break (e.g. "Te ... sla"). Check its waveform too.
-        t_intra0 = time.perf_counter()
-        if data_wave is not None and sr_wave > 0:
-            try:
-                intra_pauses = detect_intra_word_pause(
-                    data_wave, sr_wave, text, detected_words, speed=speed, envelope=shared_envelope,
-                )
-                alignment_issues.extend(intra_pauses)
-            except Exception as intra_err:
-                log(f"[audio_quality] Intra-word pause check failed: {intra_err}")
-        t_intra_ms = round((time.perf_counter() - t_intra0) * 1000.0, 2)
-
+        # Intra-word pause / broken-syllable detection is outside the core defect scope (v3.5.0) and is skipped.
         alignment_issues = _deduplicate_quality_issues(alignment_issues)
+        alignment_issues = _reduce_to_core_defects(alignment_issues, detected_words)
         for iss in alignment_issues:
             iss["asrModelId"] = active_model_id
 
@@ -6589,7 +6915,6 @@ def validate_audio_quality(
             "envelopeMs": t_env_ms,
             "alignmentMs": t_align_ms,
             "stutterMs": t_stut_ms,
-            "intraPauseMs": t_intra_ms,
             "totalMs": round((time.perf_counter() - t_stage0) * 1000.0, 2),
         }
 
