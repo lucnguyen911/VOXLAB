@@ -20,6 +20,7 @@ import {
   hasChunkQualityWarningReview,
 } from "../qualityValidator";
 import { validateMasterBoundaries, validateChunksForExport } from "../masterExport";
+import { replacePauseTokensWithBoundary, stripPauseTokens } from "../../pause";
 
 describe("Audio Quality Validator Tests", () => {
   it("V1: countChunkQualityIssues returns 0 for clean ready chunks", () => {
@@ -807,7 +808,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "3.5.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "3.6.0");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -819,7 +820,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "3.5.0");
+    assert.equal(review.validatorVersion, "3.6.0");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
@@ -1315,8 +1316,8 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(isReviewOutdated(v300Chunk, "large-v3-turbo", true), true);
   });
 
-  it("V30: v3.5.0 invalidates v3.1.0 - v3.4.0 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "3.5.0");
+  it("V30: v3.6.0 invalidates v3.1.0 - v3.5.0 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
+    assert.equal(QUALITY_VALIDATOR_VERSION, "3.6.0");
 
     const v310Chunk: ChunkItem = {
       id: "chunk_v30_old",
@@ -1435,6 +1436,22 @@ describe("Audio Quality Validator Tests", () => {
       },
     };
     assert.equal(isReviewOutdated(v340Chunk, "large-v3-turbo", true), true);
+
+    // v3.6.0 drops number checks and adds phrase-internal pause checks: v3.5.0 reviews must be re-checked
+    const v350Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v350_old",
+      qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "3.5.0" },
+    };
+    assert.equal(isReviewOutdated(v350Chunk, "large-v3-turbo", true), true);
+  });
+
+  it("V31: manual pause tokens become a phrase boundary for QC so intentional pauses are not abnormal", () => {
+    const text = "Hôm nay tôi đi [PAUSE 600ms] chợ với mẹ [nghỉ 0.5s] rồi về.";
+    assert.equal(replacePauseTokensWithBoundary(text), "Hôm nay tôi đi, chợ với mẹ, rồi về.");
+    // Plain stripping (used for display/export) is unchanged
+    assert.equal(stripPauseTokens(text), "Hôm nay tôi đi chợ với mẹ rồi về.");
+    assert.equal(replacePauseTokensWithBoundary(""), "");
   });
 });
 

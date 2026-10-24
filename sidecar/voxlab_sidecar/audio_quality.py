@@ -3509,6 +3509,7 @@ def _deduplicate_quality_issues(issues: list[dict[str, Any]]) -> list[dict[str, 
 # (dollar/dollars, Musk/Musk's, face/faced) are intentionally out of scope: they produced most
 # false alarms and Whisper cannot judge them reliably.
 CORE_DEFECT_CODES = frozenset({"SUSPECTED_STUTTER", "REPEATED_WORD", "MISSING_WORD"})
+# ABNORMAL_PAUSE is also reported, but only from `detect_phrase_internal_pauses` (pauseContext 'phrase_internal').
 # A substituted word is only reported as garbled when Whisper itself is unsure about what it heard.
 CORE_GARBLE_MAX_ASR_PROB = 0.80
 
@@ -3751,6 +3752,19 @@ def _reduce_to_core_defects(issues: list[dict[str, Any]], asr_words: list[dict[s
         words = list(iss.get("words") or [])
         tr = iss.get("timeRange") or [0.0, 0.0]
         ts = format_timestamp(float(tr[0]) if tr else 0.0)
+        if code == "ABNORMAL_PAUSE":
+            if iss.get("pauseContext") == "phrase_internal":
+                kept.append(iss)
+            continue
+        # Number reading (digits, number words, currency) is outside the QC scope
+        # (stutters and repetitions on a number are still reported: they are reading defects, not number checks)
+        scoped_words = (
+            words[:1] if code in ("SUSPECTED_MISPRONUNCIATION", "PARTIAL_PRONUNCIATION")
+            else words if code in ("MISSING_WORD", "SUSPECTED_SWALLOWED")
+            else []
+        )
+        if scoped_words and all(_is_numeric_scope_word(w) for w in scoped_words):
+            continue
         if code == "SUSPECTED_STUTTER" and words and _is_adjacent_duplicate_in_asr(asr_words, iss, words[0]):
             # The same whole word spoken twice ('pump pump') is a repetition, not a stumble
             kept.append({
@@ -3809,6 +3823,176 @@ def _reduce_to_core_defects(issues: list[dict[str, Any]], asr_words: list[dict[s
             continue
         merged.append(dict(iss))
     return _deduplicate_quality_issues(merged)
+
+
+# ---------------------------------------------------------------------------
+# Phrase-internal abnormal pause (v3.6.0)
+# ---------------------------------------------------------------------------
+# A pause is only abnormal when it splits a word group that must be read in one breath: a head word that
+# cannot stand alone is cut off from its complement ("hôm nay tôi đi | chợ", "the | earth", "will | launch").
+# Pauses between major constituents ("hôm nay | tôi đi chợ", "the motor | is", "...satellites | orbit") are
+# natural phrasing and are never flagged.
+EN_PHRASE_HEAD_WORDS = frozenset({
+    # determiners / possessives
+    "the", "a", "an", "my", "your", "our", "their", "its", "his", "every", "each", "another",
+    # prepositions
+    "of", "to", "for", "with", "from", "by", "into", "onto", "at", "in", "on", "about", "between", "among",
+    "through", "across", "toward", "towards", "without", "within", "during", "against", "per", "via", "than",
+    "below", "above", "under", "beneath", "beyond", "inside", "outside", "behind", "near",
+    # auxiliaries / modals / copulas
+    "will", "would", "can", "could", "should", "shall", "may", "might", "must",
+    "is", "are", "was", "were", "be", "been", "being", "am", "has", "have", "had", "does", "did",
+    # negation and coordinators (a pause belongs before 'and', never right after it)
+    "not", "and", "or",
+})
+VI_PHRASE_HEAD_WORDS = frozenset({
+    # prepositions / relational words
+    "của", "cho", "với", "ở", "tại", "từ", "đến", "tới", "về", "trong", "ngoài", "trên", "dưới", "bằng",
+    "theo", "vào", "sau", "trước", "giữa", "qua",
+    # plural markers / quantifiers / classifiers / nominalizers
+    "những", "các", "mọi", "mỗi", "từng", "cái", "con", "chiếc", "cuộc", "sự", "việc",
+    # tense, aspect, modality, negation, degree
+    "đã", "đang", "sẽ", "vừa", "mới", "sắp", "không", "chưa", "chẳng", "đừng", "hãy", "rất",
+    "được", "bị", "phải", "cần", "muốn", "định", "có",
+    # copula / coordinator
+    "là", "và", "hoặc",
+    # motion / light verbs that take an immediate complement ("đi chợ", "ra ngoài", "làm việc")
+    "đi", "ra", "lên", "xuống", "sang", "làm",
+})
+PHRASE_HEAD_WORDS = EN_PHRASE_HEAD_WORDS | VI_PHRASE_HEAD_WORDS
+# Right-hand words that open a new clause or phrase: a pause before them is natural phrasing.
+# A preposition on the right starts a new prepositional phrase ('from above | with total freedom').
+_PREPOSITION_OPENERS = frozenset({
+    "of", "to", "for", "with", "from", "by", "into", "onto", "at", "in", "on", "about", "between",
+    "among", "through", "across", "toward", "towards", "without", "within", "during", "against",
+    "per", "via", "below", "above", "under", "beneath", "beyond", "inside", "outside", "behind", "near",
+    "của", "cho", "với", "ở", "tại", "từ", "đến", "tới", "về", "trong", "ngoài", "trên", "dưới",
+    "bằng", "theo", "vào", "sau", "trước", "giữa", "qua",
+})
+PHRASE_OPENER_WORDS = frozenset(PROSODIC_CONJUNCTIONS | CLAUSE_BOUNDARY_CONJUNCTIONS | _PREPOSITION_OPENERS | {
+    "who", "whom", "whose", "what", "how", "why", "then", "also", "however",
+})
+NUMERIC_SCOPE_WORDS = frozenset(ALL_NUMBER_WORDS_SET | {
+    "hundred", "thousand", "million", "billion", "trillion", "percent", "dollar", "dollars", "cent", "cents",
+    "trăm", "nghìn", "ngàn", "triệu", "tỷ", "tỉ", "phần", "trăm", "đồng",
+})
+# Minimum contiguous silence (at speed 1.0) that counts as a break inside a word group.
+PHRASE_PAUSE_MIN_SEC = 0.30
+
+
+def _boundary_silence_run_sec(
+    audio_data: np.ndarray,
+    sample_rate: int,
+    start1: float,
+    end1: float,
+    start2: float,
+    end2: float,
+) -> float:
+    """Length of the longest contiguous silent run touching the boundary between two ASR words.
+
+    Whisper often stretches a neighbouring word over a pause (e.g. 'landing' starting right where 'the' ends
+    although 0.4s of silence follows) or even places the next word inside the pause, so the run is measured on
+    the waveform from the first word's onset up to 0.6s past the second word. The run must start after audible
+    speech of the first word and touch the word boundary. Unvoiced fricatives (high zero-crossing rate) count
+    as speech, not silence.
+    """
+    win_start = start1
+    win_end = end2 + 0.6
+    if end2 <= start1:
+        return 0.0
+    frame = max(1, int(round(0.020 * sample_rate)))
+    hop = max(1, int(round(0.010 * sample_rate)))
+    s0 = max(0, int(round(win_start * sample_rate)))
+    s1 = min(audio_data.size, int(round(win_end * sample_rate)))
+    if s1 - s0 < frame:
+        return 0.0
+    frames = np.lib.stride_tricks.sliding_window_view(audio_data[s0:s1], frame)[::hop]
+    rms = np.sqrt(np.mean(np.square(frames, dtype=np.float32), axis=1))
+    zcr = np.mean(np.abs(np.diff(np.signbit(frames), axis=1)), axis=1)
+    fricative = ((rms >= 0.0085) & (zcr >= 0.25)) | ((rms >= 0.0006) & (zcr >= 0.42))
+    silent = (rms < 0.012) & ~fricative
+    frame_sec = hop / sample_rate
+    touch_lo = (end1 - 0.06 - win_start) / frame_sec
+    touch_hi = (start2 + 0.06 - win_start) / frame_sec
+    voiced_before = np.cumsum(~silent)
+    best = 0
+    k = 0
+    n = len(silent)
+    while k < n:
+        if not silent[k]:
+            k += 1
+            continue
+        run_start = k
+        while k < n and silent[k]:
+            k += 1
+        spoke_first_word = run_start > 0 and voiced_before[run_start - 1] >= 4
+        if spoke_first_word and run_start <= touch_hi and k - 1 >= touch_lo:
+            best = max(best, k - run_start)
+    return round((best - 1) * hop / sample_rate + frame / sample_rate, 3) if best else 0.0
+
+
+def _is_numeric_scope_word(word: str) -> bool:
+    """Numbers, number words and currency/scale words: number reading is outside the QC scope."""
+    w = clean_word(word)
+    return bool(w) and (bool(re.search(r"\d", w)) or w in NUMERIC_SCOPE_WORDS)
+
+
+def detect_phrase_internal_pauses(
+    text: str,
+    asr_words: list[dict[str, Any]],
+    audio_data: np.ndarray,
+    sample_rate: int,
+    speed: float = 1.0,
+    min_pause_sec: float = PHRASE_PAUSE_MIN_SEC,
+) -> list[dict[str, Any]]:
+    """Flags silences that split a word group which must be read together (head word + its complement).
+
+    Only word pairs that Whisper recognized exactly as in the script are evaluated, so alignment noise around
+    numbers, abbreviations or misread words never produces a pause warning. Silence is measured on the waveform.
+    """
+    if audio_data is None or sample_rate <= 0 or not text or not asr_words:
+        return []
+    source_words, delimiters = tokenize_text_with_delimiters(text)
+    src_clean = [clean_word(w) for w in source_words]
+    asr_clean = [clean_word(str(w.get("word", ""))) for w in asr_words]
+    eff_speed = max(0.5, float(speed or 1.0))
+    threshold = max(0.22, min_pause_sec / eff_speed)
+
+    issues: list[dict[str, Any]] = []
+    matcher = difflib.SequenceMatcher(None, src_clean, asr_clean, autojunk=False)
+    for block in matcher.get_matching_blocks():
+        for off in range(block.size - 1):
+            i, j = block.a + off, block.b + off
+            left, right = src_clean[i], src_clean[i + 1]
+            if not left or not right or left not in PHRASE_HEAD_WORDS or right in PHRASE_OPENER_WORDS:
+                continue
+            if has_punctuation_boundary(delimiters[i + 1], source_words[i + 1]):
+                continue
+            if _is_numeric_scope_word(left) or _is_numeric_scope_word(right):
+                continue
+            w1, w2 = asr_words[j], asr_words[j + 1]
+            if min(float(w1.get("probability", 1.0)), float(w2.get("probability", 1.0))) < 0.50:
+                continue
+            s1, e1 = float(w1.get("startSec", 0.0)), float(w1.get("endSec", 0.0))
+            s2, e2 = float(w2.get("startSec", 0.0)), float(w2.get("endSec", 0.0))
+            silence = _boundary_silence_run_sec(audio_data, sample_rate, s1, e1, s2, e2)
+            if silence < threshold:
+                continue
+            raw_left = source_words[i].strip(" ,.;:!?\"'()")
+            raw_right = source_words[i + 1].strip(" ,.;:!?\"'()")
+            issues.append({
+                "severity": "warning",
+                "code": "ABNORMAL_PAUSE",
+                "message": (
+                    f'Ngắt nghỉ bất thường giữa "{raw_left} {raw_right}" ({silence:.2f}s) — cụm này cần đọc liền '
+                    f"— khoảng {format_timestamp(e1)}. Vui lòng nghe lại."
+                ),
+                "words": [left, right],
+                "timeRange": [round(e1, 3), round(max(e1, s2), 3)],
+                "pauseContext": "phrase_internal",
+                "evidence": f"silence={silence:.3f}s threshold={threshold:.2f}s head={left}",
+            })
+    return issues
 
 
 def analyze_word_alignment_issues(
@@ -4491,7 +4675,7 @@ def analyze_word_alignment_issues(
                                 language=language,
                                 eff_speed=eff_speed,
                                 total_audio_duration=total_dur,
-                                slice_budget=slice_budget,
+                                slice_budget=noncore_budget,
                             )
 
                             if verdict == "pass":
@@ -6903,8 +7087,20 @@ def validate_audio_quality(
         t_stut_ms = round((time.perf_counter() - t_stut0) * 1000.0, 2)
 
         # Intra-word pause / broken-syllable detection is outside the core defect scope (v3.5.0) and is skipped.
+        # The legacy prosody analyzer's pause findings are discarded here by the core-scope reduction.
         alignment_issues = _deduplicate_quality_issues(alignment_issues)
         alignment_issues = _reduce_to_core_defects(alignment_issues, detected_words)
+
+        # Step 4: Breaks inside word groups that must be read together (phrase-internal abnormal pauses)
+        t_pause0 = time.perf_counter()
+        if data_wave is not None and sr_wave > 0:
+            try:
+                alignment_issues.extend(
+                    detect_phrase_internal_pauses(text, detected_words, data_wave, sr_wave, speed=speed)
+                )
+            except Exception as pause_err:
+                log(f"[audio_quality] Phrase pause check failed: {pause_err}")
+        t_pause_ms = round((time.perf_counter() - t_pause0) * 1000.0, 2)
         for iss in alignment_issues:
             iss["asrModelId"] = active_model_id
 
@@ -6915,6 +7111,7 @@ def validate_audio_quality(
             "envelopeMs": t_env_ms,
             "alignmentMs": t_align_ms,
             "stutterMs": t_stut_ms,
+            "phrasePauseMs": t_pause_ms,
             "totalMs": round((time.perf_counter() - t_stage0) * 1000.0, 2),
         }
 

@@ -3548,10 +3548,9 @@ class AudioQualityTest(unittest.TestCase):
         core = audio_quality._reduce_to_core_defects(issues, asr_words)
         codes = [(i["code"], tuple(i.get("words", []))) for i in core]
         self.assertIn(("AUDIO_SILENT", ()), codes)
-        # 'eighty dollar' garbled with low ASR confidence -> one merged stutter; 'dollar/80s' alone is number noise
+        # v3.6.0: number reading ('eighty dollar' heard as "DALF's $80s") is outside the QC scope
         stutters = [i for i in core if i["code"] == "SUSPECTED_STUTTER"]
-        self.assertEqual(len(stutters), 1)
-        self.assertEqual(stutters[0]["words"], ["eighty"])
+        self.assertEqual(stutters, [])
         # Multi-word swallow -> MISSING_WORD
         self.assertIn(("MISSING_WORD", ("and", "finance", "a", "flagship", "device")), codes)
         # Inserted 'an iPhone 18' duplicates the adjacent phrase -> REPEATED_WORD; isolated 'really' is dropped
@@ -3560,6 +3559,87 @@ class AudioQualityTest(unittest.TestCase):
         # High-confidence substitution 'shift' -> 'lift' (0.97) is not reported as a stumble
         self.assertFalse(any("shift" in w for _, w in codes))
         self.assertFalse(any(c in ("ABNORMAL_PAUSE", "UNVERIFIED_WORD") for c, _ in codes))
+
+
+    def _phrase_audio(self, words_with_gaps, sr=16000):
+        """Builds a tone-per-word waveform; each entry is (word, duration, gap_after)."""
+        t = 0.10
+        chunks = [np.zeros(int(0.10 * sr), dtype=np.float32)]
+        asr_words = []
+        for k, (word, dur, gap) in enumerate(words_with_gaps):
+            tt = np.arange(int(dur * sr)) / sr
+            chunks.append((0.25 * np.sin(2 * np.pi * (180.0 + 15 * k) * tt)).astype(np.float32))
+            asr_words.append({"word": " " + word, "startSec": round(t, 3), "endSec": round(t + dur, 3), "probability": 0.98})
+            t += dur
+            if gap > 0:
+                chunks.append(np.zeros(int(gap * sr), dtype=np.float32))
+                t += gap
+        chunks.append(np.zeros(int(0.2 * sr), dtype=np.float32))
+        return np.concatenate(chunks), sr, asr_words
+
+    def test_v360_phrase_internal_pause_vietnamese_example(self):
+        # 'hôm nay / tôi đi chợ' is natural phrasing; 'hôm nay tôi đi / chợ' splits a verb from its complement.
+        text = "Hôm nay tôi đi chợ."
+        ok_audio, sr, ok_words = self._phrase_audio(
+            [("Hôm", 0.2, 0.0), ("nay", 0.2, 0.40), ("tôi", 0.2, 0.0), ("đi", 0.2, 0.0), ("chợ", 0.25, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text, ok_words, ok_audio, sr), [])
+
+        bad_audio, sr, bad_words = self._phrase_audio(
+            [("Hôm", 0.2, 0.0), ("nay", 0.2, 0.0), ("tôi", 0.2, 0.0), ("đi", 0.2, 0.40), ("chợ", 0.25, 0.0)]
+        )
+        issues = audio_quality.detect_phrase_internal_pauses(text, bad_words, bad_audio, sr)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues[0]["words"], ["đi", "chợ"])
+        self.assertEqual(issues[0]["pauseContext"], "phrase_internal")
+
+    def test_v360_phrase_internal_pause_english_scope(self):
+        text = "Actuators control the landing gear below forty knots."
+        # Pause after determiner 'the' -> flagged
+        audio, sr, words = self._phrase_audio(
+            [("Actuators", 0.4, 0.0), ("control", 0.3, 0.0), ("the", 0.12, 0.40), ("landing", 0.3, 0.0),
+             ("gear", 0.25, 0.0), ("below", 0.25, 0.0), ("forty", 0.25, 0.0), ("knots.", 0.3, 0.0)]
+        )
+        issues = audio_quality.detect_phrase_internal_pauses(text, words, audio, sr)
+        self.assertEqual([i["words"] for i in issues], [["the", "landing"]])
+        # Pause between subject and verb (natural constituent boundary) -> not flagged
+        audio, sr, words = self._phrase_audio(
+            [("Actuators", 0.4, 0.40), ("control", 0.3, 0.0), ("the", 0.12, 0.0), ("landing", 0.3, 0.0),
+             ("gear", 0.25, 0.0), ("below", 0.25, 0.0), ("forty", 0.25, 0.0), ("knots.", 0.3, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text, words, audio, sr), [])
+        # Pause next to a number ('below | forty') is outside scope (number reading is not checked)
+        audio, sr, words = self._phrase_audio(
+            [("Actuators", 0.4, 0.0), ("control", 0.3, 0.0), ("the", 0.12, 0.0), ("landing", 0.3, 0.0),
+             ("gear", 0.25, 0.0), ("below", 0.25, 0.40), ("forty", 0.25, 0.0), ("knots.", 0.3, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text, words, audio, sr), [])
+        # Short hesitation (0.15s) after a head word stays below the threshold
+        audio, sr, words = self._phrase_audio(
+            [("Actuators", 0.4, 0.0), ("control", 0.3, 0.0), ("the", 0.12, 0.15), ("landing", 0.3, 0.0),
+             ("gear", 0.25, 0.0), ("below", 0.25, 0.0), ("forty", 0.25, 0.0), ("knots.", 0.3, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text, words, audio, sr), [])
+        # 'from above | with' : a pause before a new prepositional phrase is natural phrasing
+        text2 = "Robots drop parts straight down from above with total freedom."
+        audio, sr, words = self._phrase_audio(
+            [("Robots", 0.3, 0.0), ("drop", 0.2, 0.0), ("parts", 0.25, 0.0), ("straight", 0.25, 0.0),
+             ("down", 0.2, 0.0), ("from", 0.15, 0.0), ("above", 0.25, 0.40), ("with", 0.15, 0.0),
+             ("total", 0.25, 0.0), ("freedom.", 0.3, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text2, words, audio, sr), [])
+
+    def test_v360_reducer_drops_number_findings_and_legacy_pauses(self):
+        asr_words = [{"word": " DALF's", "startSec": 1.0, "endSec": 1.5, "probability": 0.6}]
+        issues = [
+            {"severity": "warning", "code": "SUSPECTED_MISPRONUNCIATION", "message": "m", "words": ["eighty", "dalfs"], "timeRange": [1.0, 1.5]},
+            {"severity": "warning", "code": "MISSING_WORD", "message": "m", "words": ["point"], "timeRange": [2.0, 2.0]},
+            {"severity": "warning", "code": "ABNORMAL_PAUSE", "message": "p", "words": ["the", "earth"], "timeRange": [3.0, 3.3], "pauseContext": "tight_determiner"},
+            {"severity": "warning", "code": "ABNORMAL_PAUSE", "message": "p", "words": ["the", "earth"], "timeRange": [3.0, 3.3], "pauseContext": "phrase_internal"},
+        ]
+        core = audio_quality._reduce_to_core_defects(issues, asr_words)
+        self.assertEqual([(i["code"], i.get("pauseContext")) for i in core], [("ABNORMAL_PAUSE", "phrase_internal")])
 
 
 if __name__ == "__main__":

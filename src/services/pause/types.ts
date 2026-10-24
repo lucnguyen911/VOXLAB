@@ -53,6 +53,18 @@ export function validatePauseDuration(seconds: number): {
 }
 
 /**
+ * Replaces manual pause tokens (e.g. [PAUSE 500ms]) with a comma boundary so audio quality checks treat the
+ * intentional pause as phrasing instead of an abnormal break inside a word group.
+ */
+export function replacePauseTokensWithBoundary(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/\s*\[(?:PAUSE|pause|nghỉ|break)\s*[^\]]*\]\s*/gi, ", ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Strips manual pause tokens (e.g. [PAUSE 500ms]) from text, returning clean plain text.
  */
 export function stripPauseTokens(text: string): string {

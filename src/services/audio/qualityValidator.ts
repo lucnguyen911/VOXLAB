@@ -3,9 +3,9 @@ import { getSharedAiServices } from "../batch/batchRuntime";
 import { LocalAiServices } from "../ai/localAiServices";
 import { loadSubtitleSettings } from "../subtitle/profiles";
 import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
-import { stripPauseTokens } from "../pause";
+import { replacePauseTokensWithBoundary } from "../pause";
 
-export const QUALITY_VALIDATOR_VERSION = "3.5.0";
+export const QUALITY_VALIDATOR_VERSION = "3.6.0";
 export const MAX_AUTO_VALIDATION_RETRIES = 1;
 
 export interface QualityCheckableItem {
@@ -425,7 +425,8 @@ export async function validateChunkAudioQuality(
   const audioSig = getChunkAudioSignature(chunk);
   const effectiveRules = getEffectiveRules(projectId);
   const itemText = getItemText(chunk);
-  const cleanSpeechText = stripPauseTokens(itemText);
+  // Manual pause tokens become a comma boundary so intentional pauses are never reported as abnormal breaks
+  const cleanSpeechText = replacePauseTokensWithBoundary(itemText);
   const durationSec = getItemDurationSec(chunk);
   const isRetryingUnverified =
     Boolean(chunk.qualityReview) &&
