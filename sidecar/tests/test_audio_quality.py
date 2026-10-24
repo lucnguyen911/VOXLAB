@@ -3454,6 +3454,35 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(exhausted_res["severity"], "unverified")
         self.assertEqual(exhausted_res["unverifiedReason"], "slice_budget_exhausted")
 
+    def test_v340_whisper_suppressed_whole_word_repetition(self):
+        # Regression test for whole-word repetition ("throttle throttle its data speeds")
+        # where Whisper's language model suppresses the second "throttle" token and stretches
+        # the following word ("its" = 0.76s) over the valley + repeated "throttle".
+        sr = 16000
+        wave = np.zeros(int(sr * 6.0), dtype=np.float32)
+        t_word = np.arange(int(0.30 * sr)) / sr
+        # Two-syllable contoured burst for "throttle" (0.30s)
+        env = np.ones_like(t_word) * 0.24
+        env[int(0.14 * sr) : int(0.17 * sr)] = 0.11
+        word_sig = (
+            env * (0.65 * np.sin(2 * np.pi * 175.0 * t_word) + 0.35 * np.sin(2 * np.pi * 525.0 * t_word))
+        ).astype(np.float32)
+        # First "throttle" at [3.58 .. 3.88], second "throttle" at [4.10 .. 4.40] (0.22s valley)
+        wave[int(3.58 * sr) : int(3.88 * sr)] = word_sig
+        wave[int(4.10 * sr) : int(4.40 * sr)] = word_sig
+
+        asr_words = [
+            {"word": "networks,", "startSec": 2.78, "endSec": 3.30, "probability": 0.99},
+            {"word": "throttle", "startSec": 3.54, "endSec": 3.84, "probability": 0.99},
+            {"word": "its", "startSec": 3.84, "endSec": 4.60, "probability": 0.99},
+            {"word": "data", "startSec": 4.60, "endSec": 4.82, "probability": 0.99},
+        ]
+        script = "They could refuse to certify the device on their networks, throttle its data speeds."
+        issues = audio_quality.detect_acoustic_stutter(wave, sr, text=script, asr_words=asr_words, language="en")
+        rep_issues = [i for i in issues if i["code"] == "REPEATED_WORD"]
+        self.assertEqual(len(rep_issues), 1, f"Expected REPEATED_WORD for 'throttle', got {issues}")
+        self.assertEqual(rep_issues[0]["words"], ["throttle"])
+
 
 if __name__ == "__main__":
     unittest.main()

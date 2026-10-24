@@ -3847,10 +3847,15 @@ def analyze_word_alignment_issues(
                 )
 
                 if is_repeat or is_prefix_stutter or is_suffix_stutter:
-                    # Check whether count in ASR exceeds count in source script
+                    # Check whether count in ASR exceeds count in source script, or if it's a local adjacent repeat
+                    # where the source script does not intentionally repeat `w_clean` back-to-back near `i1`:
                     src_count = source_words_clean.count(w_clean)
                     asr_count = asr_words_clean.count(w_clean)
-                    if asr_count <= src_count:
+                    has_local_src_repeat = any(
+                        source_words_clean[k] == w_clean and source_words_clean[k + 1] == w_clean
+                        for k in range(max(0, i1 - 2), min(len(source_words_clean) - 1, i1 + 2))
+                    )
+                    if asr_count <= src_count and (not is_repeat or has_local_src_repeat):
                         continue
 
                     if j > 0 and (w_clean == prev_w or (is_suffix_stutter and prev_w.endswith(w_clean))):
@@ -5666,6 +5671,230 @@ def detect_acoustic_stutter(
                     "evidence": f"Acoustic burst cos_sim={cos_sim:.2f} formant_sim={formant_sim:.2f} valley={valley_sec:.2f}s",
                 })
                 break
+
+    # Pass 2: Whisper-Suppressed Whole-Word Repetition Detection (bursts 0.18s .. 0.65s)
+    # Uses a 40ms word-level RMS envelope (20ms hop) to smooth over brief intra-word consonant
+    # closures (e.g. the medial flap/glottal in "throt-tle") so each spoken word forms a contiguous burst.
+    wb_frame_len = max(1, int(round(0.040 * sample_rate)))
+    wb_hop_len = max(1, int(round(0.020 * sample_rate)))
+    if mono.size >= wb_frame_len * 2:
+        wb_frames_view = np.lib.stride_tricks.sliding_window_view(mono, wb_frame_len)[::wb_hop_len]
+        wb_rms_frames = np.sqrt(np.mean(wb_frames_view ** 2, axis=1))
+    else:
+        wb_rms_frames = np.zeros(0, dtype=np.float32)
+    wb_num_frames = int(wb_rms_frames.size)
+    wb_peak_rms = float(np.max(wb_rms_frames)) if wb_num_frames > 0 else 0.0
+    wb_speech_thresh = max(0.015, wb_peak_rms * 0.20)
+    wb_valley_thresh = wb_peak_rms * 0.45
+
+    word_bursts: list[dict[str, Any]] = []
+    in_wb = False
+    wb_start = 0
+    for i, r in enumerate(wb_rms_frames):
+        if r >= wb_speech_thresh:
+            if not in_wb:
+                in_wb = True
+                wb_start = i
+        else:
+            if in_wb:
+                in_wb = False
+                wb_dur = (i - wb_start) * wb_hop_len / sample_rate
+                if 0.18 <= wb_dur <= 0.65:
+                    word_bursts.append({
+                        "start_idx": wb_start,
+                        "end_idx": i,
+                        "start_sec": wb_start * wb_hop_len / sample_rate,
+                        "end_sec": (i * wb_hop_len + wb_frame_len) / sample_rate,
+                        "dur_sec": wb_dur,
+                        "peak_rms": float(np.max(wb_rms_frames[wb_start:i])),
+                    })
+    if in_wb:
+        wb_dur = (wb_num_frames - wb_start) * wb_hop_len / sample_rate
+        if 0.18 <= wb_dur <= 0.65:
+            word_bursts.append({
+                "start_idx": wb_start,
+                "end_idx": wb_num_frames,
+                "start_sec": wb_start * wb_hop_len / sample_rate,
+                "end_sec": mono.size / sample_rate,
+                "dur_sec": wb_dur,
+                "peak_rms": float(np.max(wb_rms_frames[wb_start:wb_num_frames])),
+            })
+
+    def _compute_chunk_acoustic_vecs(chunk_arr: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+        if chunk_arr.size < 64:
+            return np.zeros(32, dtype=np.float32), np.zeros(24, dtype=np.float32), 0.0
+        zcr_val = float(np.mean(np.abs(np.diff(np.signbit(chunk_arr))))) if chunk_arr.size > 1 else 0.0
+        win = np.hanning(chunk_arr.size)
+        mag = np.abs(np.fft.rfft(chunk_arr * win))
+        if mag.size >= 32:
+            s_len = mag.size // 32
+            sp = np.array([np.mean(mag[idx_b * s_len : (idx_b + 1) * s_len]) for idx_b in range(32)], dtype=np.float32)
+        else:
+            sp = np.pad(mag.astype(np.float32), (0, 32 - mag.size))
+        sp_norm = np.linalg.norm(sp)
+        sp = sp / sp_norm if sp_norm > 1e-6 else sp
+
+        frqs = np.fft.rfftfreq(chunk_arr.size, d=1.0 / sample_rate)
+        f_msk = (frqs >= 240.0) & (frqs <= 4200.0)
+        f_mg = np.log1p(mag[f_msk] * 50.0) if np.any(f_msk) else np.log1p(mag)
+        if f_mg.size >= 24:
+            edg = np.linspace(0, f_mg.size, 25, dtype=int)
+            fv = np.array([np.mean(f_mg[edg[idx_b] : edg[idx_b + 1]]) for idx_b in range(24)], dtype=np.float32)
+        else:
+            fv = np.pad(f_mg.astype(np.float32), (0, max(0, 24 - f_mg.size)))[:24]
+        fv = fv - float(np.mean(fv)) * 0.85
+        fv_norm = np.linalg.norm(fv)
+        fv = fv / fv_norm if fv_norm > 1e-6 else fv
+        return sp, fv, zcr_val
+
+    for k in range(len(word_bursts) - 1):
+        wb1 = word_bursts[k]
+        wb2 = word_bursts[k + 1]
+        valley_sec = (wb2["start_idx"] - wb1["end_idx"]) * wb_hop_len / sample_rate
+        if not (0.015 <= valley_sec <= 0.35):
+            continue
+        gap_frames = wb_rms_frames[wb1["end_idx"] : wb2["start_idx"]]
+        if gap_frames.size == 0:
+            continue
+        min_gap_rms = float(np.min(gap_frames))
+        min_peak = min(wb1["peak_rms"], wb2["peak_rms"])
+        max_peak = max(wb1["peak_rms"], wb2["peak_rms"])
+        if min_gap_rms > wb_valley_thresh or min_gap_rms > 0.16 * min_peak or (min_peak / max_peak) < 0.75:
+            continue
+        dur1 = wb1["dur_sec"]
+        dur2 = wb2["dur_sec"]
+        # Either equal-length word bursts or wb2 has a coarticulated short trailing word (e.g. 'throttle its')
+        if not (abs(dur1 - dur2) <= 0.08 or (0.0 <= (dur2 - dur1) <= 0.18 and dur1 >= 0.22)):
+            continue
+
+        st1 = wb1["start_idx"] * wb_hop_len
+        en1 = min(mono.size, wb1["end_idx"] * wb_hop_len + wb_frame_len)
+        st2 = wb2["start_idx"] * wb_hop_len
+        en2 = min(mono.size, wb2["end_idx"] * wb_hop_len + wb_frame_len)
+        c1 = mono[st1:en1]
+        c2 = mono[st2:en2]
+        c2_pref = c2[:c1.size] if c2.size > c1.size else c2
+
+        s1, f1, z1 = _compute_chunk_acoustic_vecs(c1)
+        s2, f2, z2 = _compute_chunk_acoustic_vecs(c2)
+        s2p, f2p, _ = _compute_chunk_acoustic_vecs(c2_pref)
+        if z1 >= 0.20 or z2 >= 0.20:
+            continue
+        cos_sim = max(float(np.dot(s1, s2)), float(np.dot(s1, s2p)))
+        formant_sim = max(float(np.dot(f1, f2)), float(np.dot(f1, f2p)))
+
+        env_frame = max(1, int(round(0.02 * sample_rate)))
+        env_hop = max(1, int(round(0.01 * sample_rate)))
+        if c1.size >= env_frame * 3 and c2_pref.size >= env_frame * 3:
+            e1 = np.sqrt(np.mean(np.lib.stride_tricks.sliding_window_view(c1, env_frame)[::env_hop] ** 2, axis=1))
+            e2 = np.sqrt(np.mean(np.lib.stride_tricks.sliding_window_view(c2_pref, env_frame)[::env_hop] ** 2, axis=1))
+            m_len = min(len(e1), len(e2))
+            e1, e2 = e1[:m_len], e2[:m_len]
+            env_corr = float(np.dot(e1, e2) / (np.linalg.norm(e1) * np.linalg.norm(e2) + 1e-8))
+        else:
+            env_corr = 0.0
+
+        if cos_sim < 0.96 or formant_sim < 0.95 or env_corr < 0.80:
+            continue
+
+        rep_word = ""
+        is_whole_word_repeat = False
+        if asr_words:
+            mid1 = (wb1["start_sec"] + wb1["end_sec"]) / 2.0
+            mid2 = (wb2["start_sec"] + wb2["end_sec"]) / 2.0
+            w_idx1 = next(
+                (idx for idx, w in enumerate(asr_words) if float(w.get("startSec", 0.0)) - 0.02 <= mid1 <= float(w.get("endSec", 0.0)) + 0.02),
+                None,
+            )
+            w_idx2 = next(
+                (idx for idx, w in enumerate(asr_words) if float(w.get("startSec", 0.0)) - 0.02 <= mid2 <= float(w.get("endSec", 0.0)) + 0.02),
+                None,
+            )
+            if w_idx1 is not None and w_idx2 is not None and abs(w_idx2 - w_idx1) == 1:
+                w1_obj = asr_words[w_idx1]
+                w2_obj = asr_words[w_idx2]
+                w1_clean = clean_word(w1_obj.get("word", ""))
+                w2_clean = clean_word(w2_obj.get("word", ""))
+                w1_dur = float(w1_obj.get("endSec", 0.0)) - float(w1_obj.get("startSec", 0.0))
+                w2_dur = float(w2_obj.get("endSec", 0.0)) - float(w2_obj.get("startSec", 0.0))
+                exp_syl1 = _estimate_expected_syllables(w1_clean)
+                exp_syl2 = _estimate_expected_syllables(w2_clean)
+                if w1_clean and w2_clean and w1_clean != w2_clean:
+                    if (
+                        dur1 >= 0.65 * w1_dur
+                        and w2_dur >= (valley_sec + dur1 * 0.85 + 0.14 * exp_syl2)
+                    ):
+                        rep_word = w1_clean
+                        is_whole_word_repeat = True
+                    elif (
+                        dur2 >= 0.65 * w2_dur
+                        and w1_dur >= (valley_sec + dur2 * 0.85 + 0.14 * exp_syl1)
+                    ):
+                        rep_word = w2_clean
+                        is_whole_word_repeat = True
+            elif w_idx1 is not None and w_idx2 is not None and w_idx1 == w_idx2:
+                w1_obj = asr_words[w_idx1]
+                w1_clean = clean_word(w1_obj.get("word", ""))
+                w1_dur = float(w1_obj.get("endSec", 0.0)) - float(w1_obj.get("startSec", 0.0))
+                exp_syl1 = _estimate_expected_syllables(w1_clean)
+                if (
+                    w1_clean
+                    and dur1 >= max(0.22, 0.13 * exp_syl1)
+                    and w1_dur >= max(0.56, 0.22 * exp_syl1 + dur1 * 0.90 + valley_sec)
+                ):
+                    rep_word = w1_clean
+                    is_whole_word_repeat = True
+            elif w_idx1 is not None and w_idx2 is None:
+                w1_obj = asr_words[w_idx1]
+                w1_clean = clean_word(w1_obj.get("word", ""))
+                exp_syl1 = _estimate_expected_syllables(w1_clean)
+                next_st = (
+                    float(asr_words[w_idx1 + 1].get("startSec", wb2["end_sec"] + 1.0))
+                    if (w_idx1 + 1) < len(asr_words)
+                    else (wb2["end_sec"] + 1.0)
+                )
+                if w1_clean and dur1 >= max(0.22, 0.13 * exp_syl1) and valley_sec >= 0.10 and wb2["end_sec"] <= next_st + 0.06:
+                    rep_word = w1_clean
+                    is_whole_word_repeat = True
+            elif w_idx1 is None and w_idx2 is not None:
+                w2_obj = asr_words[w_idx2]
+                w2_clean = clean_word(w2_obj.get("word", ""))
+                exp_syl2 = _estimate_expected_syllables(w2_clean)
+                prev_en = float(asr_words[w_idx2 - 1].get("endSec", 0.0)) if w_idx2 > 0 else 0.0
+                if w2_clean and dur2 >= max(0.22, 0.13 * exp_syl2) and valley_sec >= 0.10 and wb1["start_sec"] >= prev_en - 0.04:
+                    rep_word = w2_clean
+                    is_whole_word_repeat = True
+        else:
+            if abs(dur1 - dur2) <= 0.06:
+                is_whole_word_repeat = True
+
+        if (
+            is_whole_word_repeat
+            and (not rep_word or (len(rep_word) >= 3 and rep_word not in intentional_repeats and not re.search(r"\d", rep_word)))
+        ):
+            t_start = round(wb1["start_sec"], 3)
+            t_end = round(wb2["start_sec"] + min(wb2["end_sec"] - wb2["start_sec"], wb1["end_sec"] - wb1["start_sec"]), 3)
+            if any(abs(t_start - r[0]) < 0.35 for r in detected_ranges):
+                continue
+            detected_ranges.append((t_start, t_end))
+            ts = format_timestamp(t_start)
+            msg = (
+                f'Nghi vấn đọc lặp từ "{rep_word}" — khoảng {ts}. Vui lòng nghe kiểm tra.'
+                if rep_word
+                else f"Nghi vấn đọc lặp từ — khoảng {ts}. Vui lòng nghe kiểm tra."
+            )
+            issues.append({
+                "severity": "warning",
+                "code": "REPEATED_WORD",
+                "message": msg,
+                "words": [rep_word] if rep_word else [],
+                "timeRange": [t_start, t_end],
+                "sourceExcerpt": rep_word,
+                "asrRawExcerpt": rep_word,
+                "asrNormalizedExcerpt": rep_word,
+                "tokenSource": "primary_asr",
+                "evidence": f"Acoustic word repeat cos_sim={cos_sim:.2f} formant_sim={formant_sim:.2f} env_corr={env_corr:.2f} valley={valley_sec:.2f}s",
+            })
 
     return issues
 
