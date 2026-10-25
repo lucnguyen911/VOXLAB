@@ -86,13 +86,20 @@ impl SidecarProcess {
                 ),
             ));
         }
+        let host_pid = std::process::id();
+        let spawn_seed_bytes = crate::security::crypto_seal::generate_random_32();
+        let spawn_seed_hex = crate::security::crypto_seal::hex_encode(&spawn_seed_bytes);
+
         let mut cmd = Command::new(&spec.program);
         cmd.args(&spec.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("PYTHONUNBUFFERED", "1")
-            .env("PYTHONIOENCODING", "utf-8");
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("VOXLAB_REQUIRE_HOST_AUTH", "1")
+            .env("VOXLAB_SPAWN_SEED", &spawn_seed_hex)
+            .env("VOXLAB_HOST_PID", host_pid.to_string());
         if let Some(cwd) = &spec.cwd {
             cmd.current_dir(cwd);
         }
@@ -135,7 +142,9 @@ impl SidecarProcess {
                 for line in BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
                     let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                        #[cfg(debug_assertions)]
                         eprintln!("[ai:{}] dropped non-JSON stdout line", runtime);
+                        let _ = &runtime;
                         continue;
                     };
                     let id = msg.get("id").and_then(Value::as_str).map(str::to_string);
@@ -197,7 +206,10 @@ impl SidecarProcess {
             let runtime = runtime.to_string();
             std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    #[cfg(debug_assertions)]
                     eprintln!("[ai:{}] {}", runtime, line);
+                    #[cfg(not(debug_assertions))]
+                    let _ = (&runtime, &line);
                 }
             });
         }
@@ -217,7 +229,102 @@ impl SidecarProcess {
                 format!("runtime '{}' did not become ready", runtime),
             ));
         }
+        proc.authenticate_mutual(runtime, &spawn_seed_hex, host_pid)?;
         Ok(proc)
+    }
+
+    fn authenticate_mutual(
+        &mut self,
+        runtime: &str,
+        spawn_seed_hex: &str,
+        host_pid: u32,
+    ) -> Result<(), AiError> {
+        let nonce_bytes = crate::security::crypto_seal::generate_random_32();
+        let nonce_hex = crate::security::crypto_seal::hex_encode(&nonce_bytes);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut session_key =
+            crate::security::crypto_seal::derive_sidecar_session_key(spawn_seed_hex, host_pid, runtime);
+        let req_msg = format!("HOST_AUTH_V3.1|{}|{}|{}", runtime, nonce_hex, ts);
+        let sig_hex = crate::security::crypto_seal::hex_encode(
+            &crate::security::crypto_seal::hmac_sha256(&session_key, req_msg.as_bytes()),
+        );
+
+        let auth_id = "auth-init".to_string();
+        let (tx, rx) = mpsc::channel();
+        self.pending.lock().unwrap().insert(auth_id.clone(), tx);
+
+        if let Err(e) = self.send(&json!({
+            "id": auth_id,
+            "method": "system.authenticate",
+            "params": {
+                "nonce": nonce_hex,
+                "ts": ts,
+                "sig": sig_hex
+            }
+        })) {
+            self.pending.lock().unwrap().remove(&auth_id);
+            for b in &mut session_key {
+                unsafe {
+                    std::ptr::write_volatile(b, 0);
+                }
+            }
+            let _ = self.child.kill();
+            return Err(e);
+        }
+
+        let auth_reply = match rx.recv_timeout(Duration::from_secs(15)) {
+            Ok(Ok(val)) => val,
+            Ok(Err(err)) => {
+                for b in &mut session_key {
+                    unsafe {
+                        std::ptr::write_volatile(b, 0);
+                    }
+                }
+                let _ = self.child.kill();
+                return Err(err);
+            }
+            Err(_) => {
+                for b in &mut session_key {
+                    unsafe {
+                        std::ptr::write_volatile(b, 0);
+                    }
+                }
+                let _ = self.child.kill();
+                return Err(AiError::new(
+                    "SIDECAR_AUTH_TIMEOUT",
+                    format!("runtime '{}' timed out during mutual HMAC handshake", runtime),
+                ));
+            }
+        };
+
+        let ack_hex = auth_reply.get("ack").and_then(Value::as_str).unwrap_or("");
+        let sidecar_pid = auth_reply.get("sidecarPid").and_then(Value::as_u64).unwrap_or(0);
+        let expected_ack_msg = format!(
+            "SIDECAR_ACK_V3.1|{}|{}|{}|{}",
+            runtime, host_pid, sidecar_pid, nonce_hex
+        );
+        let expected_ack =
+            crate::security::crypto_seal::hmac_sha256(&session_key, expected_ack_msg.as_bytes());
+        let valid_ack = crate::security::crypto_seal::verify_hex_mac_ct(ack_hex, &expected_ack);
+
+        for b in &mut session_key {
+            unsafe {
+                std::ptr::write_volatile(b, 0);
+            }
+        }
+
+        if !valid_ack || sidecar_pid == 0 {
+            let _ = self.child.kill();
+            return Err(AiError::new(
+                "SIDECAR_AUTH_FAILED",
+                format!("runtime '{}' failed mutual HMAC ACK verification", runtime),
+            ));
+        }
+        Ok(())
     }
 
     fn is_alive(&mut self) -> bool {

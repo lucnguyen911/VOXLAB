@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
 
         faulthandler.dump_traceback_later(float(trace_after), repeat=True, file=sys.stderr)
 
-    server = Server(Writer(protocol_out))
+    server = Server(Writer(protocol_out), runtime=args.runtime)
     tts = TtsService(adapters_for_runtime(args.runtime))
     asr = None
     if args.runtime == "core":
@@ -159,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
                 _mod_mtimes[_m_obj.__name__] = os.path.getmtime(_f)
 
         def _ensure_fresh_qc_modules() -> None:
+            if getattr(sys, "frozen", False):
+                return
             for _m_obj in (audio_ops, number_normalizer, pronunciation, audio_quality, subtitle_optimizer):
                 _f = getattr(_m_obj, "__file__", None)
                 if _f and os.path.exists(_f):
@@ -293,7 +295,8 @@ def main(argv: list[str] | None = None) -> int:
 
     server.register_heavy("tts.edge_preview", edge_preview_handler)
     server.register_heavy("tts.edge_synthesize", edge_preview_handler)
-    server.register_heavy("system.debug_sleep", debug_sleep)
+    if not getattr(sys, "frozen", False):
+        server.register_heavy("system.debug_sleep", debug_sleep)
     return server.serve(protocol_in)
 
 

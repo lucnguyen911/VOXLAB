@@ -24,6 +24,7 @@ ERROR_CODES = frozenset(
         "ENGINE_NOT_INSTALLED",
         "NETWORK_ERROR",
         "AUTH_REQUIRED",
+        "UNAUTHORIZED_HOST",
         "PROVIDER_UNAVAILABLE",
         "VOICE_NOT_FOUND",
         "AUDIO_DECODE_FAILED",

@@ -7,6 +7,7 @@ import sys
 import threading
 from typing import Any, Callable
 
+from .ipc_auth import verify_and_ack_host_auth
 from .protocol import PROTOCOL_VERSION, Cancelled, SidecarError, Writer, log
 
 Handler = Callable[[str, dict[str, Any], "RequestContext"], dict[str, Any]]
@@ -34,8 +35,22 @@ class RequestContext:
 
 
 class Server:
-    def __init__(self, writer: Writer | None = None):
+    def __init__(
+        self,
+        writer: Writer | None = None,
+        *,
+        runtime: str = "core",
+        require_auth: bool | None = None,
+    ):
         self.writer = writer or Writer()
+        self._runtime = runtime
+        if require_auth is None:
+            require_auth = bool(
+                getattr(sys, "frozen", False)
+                or os.environ.get("VOXLAB_REQUIRE_HOST_AUTH") == "1"
+            )
+        self._require_auth = require_auth
+        self._authenticated = not self._require_auth
         self._heavy: dict[str, Handler] = {}
         self._light: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
         self._active: RequestContext | None = None
@@ -43,6 +58,12 @@ class Server:
         self._worker: threading.Thread | None = None
         self._running = True
         self.register_light("system.ping", lambda _p: {"pong": True})
+        self.register_light("system.authenticate", self._handle_authenticate)
+
+    def _handle_authenticate(self, params: dict[str, Any]) -> dict[str, Any]:
+        res = verify_and_ack_host_auth(params, self._runtime)
+        self._authenticated = True
+        return res
 
     def register_heavy(self, method: str, handler: Handler) -> None:
         self._heavy[method] = handler
@@ -71,11 +92,21 @@ class Server:
                               "request requires string 'id', string 'method' and object 'params'")
             return
 
-        if method == "cancel":
-            self.writer.ok(req_id, {"cancelRequested": self._cancel(params.get("target"))})
-        elif method == "system.shutdown":
+        if method == "system.shutdown":
             self.writer.ok(req_id, {})
             self._running = False
+            return
+
+        if not self._authenticated and method != "system.authenticate":
+            self.writer.error(
+                req_id,
+                "UNAUTHORIZED_HOST",
+                "Sidecar requires mutual HMAC authentication with VoxLab host.",
+            )
+            return
+
+        if method == "cancel":
+            self.writer.ok(req_id, {"cancelRequested": self._cancel(params.get("target"))})
         elif method in self._light:
             self._run_inline(req_id, method, params)
         elif method in self._heavy:
