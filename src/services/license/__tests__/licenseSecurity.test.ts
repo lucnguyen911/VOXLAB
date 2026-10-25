@@ -103,4 +103,37 @@ describe("TASK-15: License Security Test Suite (LICENSE-AC-01 to LICENSE-AC-14)"
 
     assert.strictEqual(LicenseService.isCommercialGateEnabled(), true);
   });
+
+  test("SECURITY-V3.1: Production mode locks commercial gate regardless of localStorage bypass", () => {
+    const prevStorage = (globalThis as unknown as { localStorage?: Storage }).localStorage;
+    const fakeStore = new Map<string, string>([["voxlab_enforce_license_policy", "0"]]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (k: string) => fakeStore.get(k) ?? null,
+        setItem: (k: string, v: string) => fakeStore.set(k, v),
+        removeItem: (k: string) => fakeStore.delete(k),
+      },
+    });
+
+    try {
+      // In non-production dev/test mode, localStorage "0" can opt out
+      LicenseService._setForceProductionModeForTest(false);
+      assert.strictEqual(LicenseService.isCommercialGateEnabled(), false);
+
+      // In production build, localStorage "0" is strictly ignored (locked ON)
+      LicenseService._setForceProductionModeForTest(true);
+      assert.strictEqual(LicenseService.isCommercialGateEnabled(), true);
+    } finally {
+      LicenseService._setForceProductionModeForTest(false);
+      if (prevStorage === undefined) {
+        Reflect.deleteProperty(globalThis, "localStorage");
+      } else {
+        Object.defineProperty(globalThis, "localStorage", {
+          configurable: true,
+          value: prevStorage,
+        });
+      }
+    }
+  });
 });

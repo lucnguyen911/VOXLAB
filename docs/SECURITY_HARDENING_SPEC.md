@@ -16,7 +16,7 @@ Bảo vệ tài sản trí tuệ (thuật toán TTS/QC/Subtitle Python Sidecar +
 ---
 
 ## 2. Tiêu Chí Nghiệm Thu (Acceptance Criteria)
-- **SEC-AC-01 (Zero Plaintext Binary Secrets)**: Quét nhị phân `target/release/voxlab.exe` xác nhận **0** chuỗi rõ `supabase.co`, `eyJhbGci`, `activate_or_verify_voxlab_license_v3`, `VoxLab-License-v3`.
+- **SEC-AC-01 (Zero Plaintext Binary Secrets)**: Quét nhị phân `target/release/voxlab.exe` xác nhận **0** chuỗi rõ `supabase.co`, chuỗi khóa JWT/Publishable Key, `activate_or_verify_voxlab_license_v3`, `VoxLab-License-v3`, `MachineGuid`.
 - **SEC-AC-02 (Release Bypass Immunity)**: Ở chế độ Release, đặt `VOXLAB_ENFORCE_LICENSE=0`, `VOXLAB_SUPABASE_URL=http://127.0.0.1:9999`, hoặc `localStorage.voxlab_enforce_license_policy = "0"` đều không thể vượt qua cổng bản quyền.
 - **SEC-AC-03 (Tamper-Evident DPAPI Vault)**: Mọi hành vi sửa đổi nội dung JSON bên trong `license.enc` rồi mã hóa lại bằng Windows DPAPI đều bị từ chối bởi chữ ký `integrity_tag` HMAC-SHA256; đồng thời kho `gemini_keys.enc` cũ vẫn giải mã tương thích ngược 100%.
 - **SEC-AC-04 (Fail-Closed Anti-Tamper & Vault FS Isolation)**: Khi cờ tamper kích hoạt, toàn bộ phiên và tác vụ thương mại bị khóa an toàn (`SECURITY_VIOLATION`). Mọi lệnh `fs_*` / `*_app_data_file` truy cập `license.enc`, `device_profile.enc`, `gemini_keys.enc` đều bị chặn ngay tại Rust.

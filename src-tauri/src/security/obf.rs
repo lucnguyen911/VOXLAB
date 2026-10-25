@@ -145,6 +145,14 @@ pub fn decode_reg_machine_guid() -> ZeroizingBytes {
     )
 }
 
+pub fn decode_cim_smbios_query() -> ZeroizingBytes {
+    decrypt_polymorphic(
+        &raw::OBF_CIM_SMBIOS_QUERY_DATA,
+        raw::OBF_CIM_SMBIOS_QUERY_KEY_A,
+        raw::OBF_CIM_SMBIOS_QUERY_KEY_B,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

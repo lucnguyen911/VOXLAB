@@ -1,15 +1,7 @@
-# Danh Sách Công Việc: Bảo Mật & Bản Quyền VoxLab Security v3 (TODO.md)
+# Danh Sách Công Việc: Chống Dịch Ngược & Bảo Mật Đa Lớp VoxLab (Security v3.1)
 
-## Phase 1: Cơ Sở Dữ Liệu Supabase (`MMO-TOOL-Manager`)
-- [x] **TASK-01**: Viết chuẩn SQL v3 (`sql/voxlab_license_setup.sql`, `docs/LICENSE_SUPABASE_DEPLOYMENT.md`), chạy migration lên Supabase `MMO-TOOL-Manager` (`public.voxlab_licenses` + `activate_or_verify_voxlab_license_v3` + admin RPCs), tạo sẵn 1 License Key test và xác minh quyền RLS.
-
-## Phase 2: Nâng Cấp Lõi Bảo Mật Rust (Security v3 + Build Config)
-- [x] **TASK-02**: Thiết lập `.gitignore`, `.env.example`, `.env.local` và cập nhật `src-tauri/build.rs` nạp biến môi trường lúc biên dịch mà không hard-code secret vào source.
-- [x] **TASK-03**: Nâng cấp `src-tauri/src/security/` (`device_identity.rs`, `license_storage.rs`, `license_client.rs`, `mod.rs`) và `src-tauri/src/lib.rs` lên chuẩn Security v3 (HWID v3 64-hex, Win32 Registry MachineGuid, `device_profile.enc` fallback proof, DPAPI entropy, Offline Grace 3 ngày, format ngày `DD/MM/YYYY`, command `exit_application`).
-- [x] **CHECKPOINT-01**: Chạy `cargo test` & `cargo check` xác minh toàn bộ Rust backend biên dịch sạch và vượt qua các test bảo mật.
-
-## Phase 3: Giao Diện Chặn Khởi Động & Cài Đặt Bản Quyền
-- [x] **TASK-04**: Cập nhật `licenseService.ts`, `LicenseModal.tsx`, `App.tsx` (Mandatory Startup Gate chặn vào app khi chưa kích hoạt) và `SettingsWorkspace.tsx` (mở khóa khu vực Key bản quyền, hiển thị trạng thái/hạn dùng, nút Kiểm tra lại & Đổi key).
-
-## Phase 4: Kiểm Thử Toàn Diện & Chạy Thử Thực Tế
-- [x] **TASK-05**: Chạy `npx tsc --noEmit`, unit tests TypeScript, `cargo test` (bao gồm live E2E với Supabase), và khởi chạy ứng dụng VoxLab thực tế kiểm chứng luồng kích hoạt với Supabase `MMO-TOOL-Manager`.
+- [x] **INC-01**: Cấu hình `[profile.release]` (`strip`, `lto`, `codegen-units=1`, `panic="abort"`), nâng cấp `src-tauri/build.rs` mã hóa chuỗi đa hình lúc build và tạo `security/obf.rs` + `security/crypto_seal.rs` (HMAC-SHA256 & constant-time verify).
+- [x] **INC-02**: Gia cố `license_storage.rs` (entropy động KDF + `integrity_tag` HMAC), `license_client.rs` (khóa env/proxy ở Release), tạo `security/anti_tamper.rs` (Fail-Closed Lockout), cập nhật `security/mod.rs` (`SessionSeal` inline) và khóa biên IPC/FS (`lib.rs`, `fsio.rs`, `ai/mod.rs`).
+- [x] **INC-03**: Triển khai xác thực hai chiều HMAC Host↔Sidecar (`ipc_auth.py`, `server.py`, `__main__.py`, `sidecar.rs`) và nâng cấp `sidecar/build_sidecars.ps1` tích hợp PyArmor fail-closed + kiểm tra rò rỉ mã nguồn.
+- [x] **INC-04**: Gia cố Frontend & WebView2 (`antiInspect.ts`, `main.tsx`, `licenseService.ts`, `vite.config.ts`, `tauri.conf.json`, `docs/WINDOWS_PACKAGING.md`).
+- [x] **INC-05**: Kiểm thử toàn diện (Rust tests, Python sidecar tests, Frontend tests, `npm run build`, `cargo build --release` + quét chuỗi nhị phân `voxlab.exe`) và chạy trực tiếp ứng dụng **VoxLab**.

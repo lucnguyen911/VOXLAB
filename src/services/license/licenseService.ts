@@ -27,7 +27,8 @@ export type LicenseStatus =
   | 'CLIENT_CONFIG_ERROR'
   | 'NO_KEY'
   | 'OFFLINE_GRACE'
-  | 'CORRUPT_CACHE';
+  | 'CORRUPT_CACHE'
+  | 'SECURITY_VIOLATION';
 
 export interface LicenseSummary {
   is_valid: boolean;
@@ -123,9 +124,13 @@ export function sanitizeDiagnostics(log: string): string {
 export class LicenseService {
   /**
    * Returns whether mandatory startup & commercial task gating is enabled.
-   * Enabled by default (Gate E approved); only disabled when explicitly set to `0` / `false`.
+   * Locked unconditionally to `true` in production builds (Security v3.1).
+   * Only dev/test environments may opt out via `0` / `false`.
    */
   static isCommercialGateEnabled(): boolean {
+    if (isProductionBuild()) {
+      return true;
+    }
     try {
       const metaEnv = (
         import.meta as unknown as { env?: Record<string, string | boolean | undefined> }

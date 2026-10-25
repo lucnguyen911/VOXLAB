@@ -120,13 +120,14 @@ fn query_smbios_uuid() -> Option<String> {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+        let cim_query = super::obf::decode_cim_smbios_query();
         let output = Command::new("powershell.exe")
             .args([
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "(Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction Stop).UUID",
+                cim_query.as_str_lossy().as_ref(),
             ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
@@ -279,7 +280,7 @@ pub fn try_resolve_identity_from_anchors(
     }
 
     Err(
-        "DEVICE_ID_UNAVAILABLE: Không thể xác định định danh phần cứng đáng tin cậy (SMBIOS UUID / MachineGuid)."
+        "DEVICE_ID_UNAVAILABLE: Không thể xác minh định danh phần cứng hợp lệ cho thiết bị này."
             .to_string(),
     )
 }

@@ -174,6 +174,12 @@ fn generate_obfuscated_constants() {
         b"MachineGuid",
         &mut entropy,
     );
+    emit_obfuscated_constant(
+        &mut generated,
+        "OBF_CIM_SMBIOS_QUERY",
+        b"(Get-CimInstance -ClassName Win32_ComputerSystemProduct -ErrorAction Stop).UUID",
+        &mut entropy,
+    );
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo");
     let out_file = Path::new(&out_dir).join("obf_constants.rs");
