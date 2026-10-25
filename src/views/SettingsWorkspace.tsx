@@ -842,6 +842,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   // License state & management
   const [licenseInfo, setLicenseInfo] = useState<LicenseSummary | null>(null);
   const [isLicenseModalOpen, setIsLicenseModalOpen] = useState(false);
+  const [isVerifyingLicense, setIsVerifyingLicense] = useState(false);
   const [licenseToast, setLicenseToast] = useState<{
     type: "success" | "error";
     message: string;
@@ -867,6 +868,26 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       message: `Kích hoạt bản quyền thành công! Hạn dùng: ${newLicense.expires_at_formatted}`,
     });
     setTimeout(() => setLicenseToast(null), 4000);
+  };
+
+  const handleReverifyLicense = async () => {
+    if (isVerifyingLicense) return;
+    setIsVerifyingLicense(true);
+    try {
+      const updated = await LicenseService.verify();
+      setLicenseInfo(updated);
+      setLicenseToast({
+        type: updated.is_valid ? "success" : "error",
+        message: updated.is_valid
+          ? updated.status === "OFFLINE_GRACE"
+            ? updated.error_message || "Đang hoạt động ngoại tuyến (Ân hạn 3 ngày)."
+            : `Bản quyền hợp lệ • Hạn dùng: ${updated.expires_at_formatted}`
+          : updated.error_message || "Bản quyền không hợp lệ.",
+      });
+      setTimeout(() => setLicenseToast(null), 4000);
+    } finally {
+      setIsVerifyingLicense(false);
+    }
   };
 
   const handleTestConnection = async () => {
@@ -1643,13 +1664,25 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                 </div>
 
                 {/* Key bản quyền */}
-                <div className="pt-3 border-t border-borderDefault/70 space-y-2">
+                <div className="pt-3 border-t border-borderDefault/70 space-y-2.5">
                   <div className="flex items-center justify-between">
                     <label className="font-semibold text-xs text-textPrimary block">
                       Key bản quyền
                     </label>
-                    <span className="text-[10px] text-textMuted bg-surface2 px-2 py-0.5 rounded border border-borderDefault font-medium">
-                      Tạm vô hiệu hóa (xử lý sau)
+                    <span
+                      className={`text-[10px] px-2.5 py-0.5 rounded-full font-semibold border ${
+                        licenseInfo?.is_valid
+                          ? licenseInfo.status === "OFFLINE_GRACE"
+                            ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/25"
+                            : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/25"
+                          : "bg-danger/10 text-danger border-danger/25"
+                      }`}
+                    >
+                      {licenseInfo?.is_valid
+                        ? licenseInfo.status === "OFFLINE_GRACE"
+                          ? "Ngoại tuyến (Ân hạn 3 ngày)"
+                          : "Bản quyền hợp lệ"
+                        : "Chưa kích hoạt"}
                     </span>
                   </div>
 
@@ -1657,33 +1690,48 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     <input
                       type="text"
                       readOnly
-                      disabled
-                      value={licenseInfo ? licenseInfo.masked_key : "VOX-DEV-UNRESTRICTED"}
-                      placeholder="xxx-xxx-xxx-xxx"
-                      className="flex-1 bg-surface2/60 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textMuted cursor-not-allowed select-none"
+                      value={licenseInfo ? licenseInfo.masked_key : "Chưa kích hoạt"}
+                      placeholder="VOXLAB-****-****-XXXX"
+                      className="flex-1 bg-surface2/80 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textPrimary select-none focus:outline-none"
                     />
                     <button
                       type="button"
-                      disabled
-                      className="flex items-center gap-1.5 px-3.5 py-2 bg-surface2 text-textMuted border border-borderDefault font-medium rounded-lg text-xs cursor-not-allowed opacity-60"
-                      title="Tính năng kích hoạt bản quyền tạm thời được vô hiệu hóa và sẽ xử lý sau khi hoàn thành toàn bộ app"
+                      onClick={handleReverifyLicense}
+                      disabled={isVerifyingLicense}
+                      title="Kiểm tra lại trạng thái bản quyền trực tuyến"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary border border-borderDefault font-medium rounded-lg text-xs transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 ${isVerifyingLicense ? "animate-spin text-accent" : ""}`}
+                      />
+                      <span>Kiểm tra</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsLicenseModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-accent hover:bg-accent/90 text-white font-medium rounded-lg text-xs transition-colors cursor-pointer shadow-xs"
                     >
                       <Key className="w-3.5 h-3.5" />
-                      <span>{licenseInfo ? "Đổi key" : "Nhập key"}</span>
+                      <span>{licenseInfo?.is_valid ? "Đổi key" : "Nhập key"}</span>
                     </button>
                   </div>
 
-                  {/* Thời hạn đặt ở dưới thanh nhập key */}
-                  <div className="flex items-center gap-2 text-xs text-textSecondary pt-0.5">
+                  {/* Thời hạn & loại gói đặt ở dưới thanh nhập key */}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-textSecondary pt-0.5">
                     <span>
                       Thời hạn:{" "}
                       <strong className="text-textPrimary font-medium">
-                        Tạm hoãn (Không giới hạn tính năng)
+                        {licenseInfo?.expires_at_formatted || "N/A"}
                       </strong>
                     </span>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20">
-                      Tạm vô hiệu hóa
-                    </span>
+                    {licenseInfo?.license_type && licenseInfo.license_type !== "N/A" && (
+                      <span>
+                        Gói:{" "}
+                        <strong className="text-textPrimary font-medium">
+                          {licenseInfo.license_type}
+                        </strong>
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2195,7 +2243,8 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
         isOpen={isLicenseModalOpen}
         onClose={() => setIsLicenseModalOpen(false)}
         onSuccess={handleLicenseActivated}
-        isInitialLaunch={!licenseInfo}
+        isInitialLaunch={!licenseInfo?.is_valid}
+        mandatory={false}
       />
 
       {/* Toast Notification at bottom-right of the app */}

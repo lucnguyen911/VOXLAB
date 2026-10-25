@@ -1,22 +1,15 @@
-# Danh Sách Công Việc: Cài Đặt TTS Nâng Cao Toàn Cục (TODO.md)
+# Danh Sách Công Việc: Bảo Mật & Bản Quyền VoxLab Security v3 (TODO.md)
 
-## Milestone 1: Backend Python Sidecar & TTS Adapters
-- [x] **TASK-01**: Cập nhật `sidecar/voxlab_sidecar/tts/service.py` để nhận `advancedSettings` và chuyển tiếp an toàn vào `SynthesisRequest.extra`.
-- [x] **TASK-02**: Cập nhật `sidecar/voxlab_sidecar/tts/omnivoice_adapter.py` để tiếp nhận `num_step`, `guidance_scale`, `denoise`, `position_temperature`, `class_temperature`, `postprocess_output` với giới hạn an toàn.
-- [x] **TASK-03**: Cập nhật `sidecar/voxlab_sidecar/tts/chatterbox_adapter.py` để tiếp nhận `temperature`, `top_p`, `top_k`, `repetition_penalty` cho Chatterbox Turbo (loại bỏ cfg_weight/exaggeration không hỗ trợ).
-- [x] **TASK-04**: Cập nhật `sidecar/voxlab_sidecar/tts/qwen_adapter.py` để tiếp nhận `temperature`, `top_p`, `top_k`, `repetition_penalty`, `do_sample`, `x_vector_only_mode`.
-- [x] **TASK-05**: Viết unit test Python `sidecar/tests/test_tts_advanced.py` kiểm chứng adapter và service tiếp nhận, thẩm định và chuyển giao tham số.
+## Phase 1: Cơ Sở Dữ Liệu Supabase (`MMO-TOOL-Manager`)
+- [x] **TASK-01**: Viết chuẩn SQL v3 (`sql/voxlab_license_setup.sql`, `docs/LICENSE_SUPABASE_DEPLOYMENT.md`), chạy migration lên Supabase `MMO-TOOL-Manager` (`public.voxlab_licenses` + `activate_or_verify_voxlab_license_v3` + admin RPCs), tạo sẵn 1 License Key test và xác minh quyền RLS.
 
-## Milestone 2: Dịch Vụ Cài Đặt Toàn Cục & Kết Nối Tự Động
-- [x] **TASK-06**: Tạo `src/services/ai/ttsAdvancedSettings.ts` (Types, Presets: Stable/Balanced/Expressive/Custom, Sanitize/Clamping, Storage bền vững App Data `settings/tts_advanced.json`, In-memory cache).
-- [x] **TASK-07**: Tích hợp cấu hình nâng cao vào `src/services/ai/localAiServices.ts` (tự động gắn thông số theo engine nếu caller không truyền snapshot riêng) và `src/services/batch/batchRuntime.ts`.
-- [x] **TASK-08**: Cập nhật `src/services/batch/executors/ttsExecutor.ts`, `dialogueExecutor.ts`, `dubbingExecutor.ts` để chụp snapshot cấu hình cố định tại đầu mỗi job.
-- [x] **TASK-09**: Cập nhật `src/services/providers/unifiedSynthesis.ts` để đồng bộ cấu hình cho các màn hình đơn lẻ.
-- [x] **TASK-10**: Viết unit test TypeScript `src/services/ai/__tests__/ttsAdvancedSettings.test.ts` và `ttsAdvancedPipeline.test.ts` kiểm chứng lưu trữ, khôi phục, snapshot isolation và đường truyền IPC.
+## Phase 2: Nâng Cấp Lõi Bảo Mật Rust (Security v3 + Build Config)
+- [x] **TASK-02**: Thiết lập `.gitignore`, `.env.example`, `.env.local` và cập nhật `src-tauri/build.rs` nạp biến môi trường lúc biên dịch mà không hard-code secret vào source.
+- [x] **TASK-03**: Nâng cấp `src-tauri/src/security/` (`device_identity.rs`, `license_storage.rs`, `license_client.rs`, `mod.rs`) và `src-tauri/src/lib.rs` lên chuẩn Security v3 (HWID v3 64-hex, Win32 Registry MachineGuid, `device_profile.enc` fallback proof, DPAPI entropy, Offline Grace 3 ngày, format ngày `DD/MM/YYYY`, command `exit_application`).
+- [x] **CHECKPOINT-01**: Chạy `cargo test` & `cargo check` xác minh toàn bộ Rust backend biên dịch sạch và vượt qua các test bảo mật.
 
-## Milestone 3: Giao Diện Cài Đặt TTS Nâng Cao
-- [x] **TASK-11**: Xây dựng UI khu vực "Cài đặt TTS nâng cao" trong `src/views/SettingsWorkspace.tsx` Tab Mô hình với 3 sub-tab (OmniVoice, Chatterbox Turbo, Qwen3-TTS 1.7B Base), các nút chọn Preset, Sliders/Switches, giải thích tiếng Việt, nút Khôi phục mặc định và nút Lưu cài đặt.
+## Phase 3: Giao Diện Chặn Khởi Động & Cài Đặt Bản Quyền
+- [x] **TASK-04**: Cập nhật `licenseService.ts`, `LicenseModal.tsx`, `App.tsx` (Mandatory Startup Gate chặn vào app khi chưa kích hoạt) và `SettingsWorkspace.tsx` (mở khóa khu vực Key bản quyền, hiển thị trạng thái/hạn dùng, nút Kiểm tra lại & Đổi key).
 
-## Milestone 4: Kiểm Thử Toàn Diện & Nghiệm Thu
-- [x] **TASK-12**: Chạy kiểm thử tự động toàn diện (Python unittest + Node test runner), kiểm tra kiểu TypeScript (`tsc --noEmit`), xác minh không lỗi lầm.
-- [x] **TASK-13**: Báo cáo nghiệm thu chi tiết đầy đủ 5 nội dung bắt buộc.
+## Phase 4: Kiểm Thử Toàn Diện & Chạy Thử Thực Tế
+- [x] **TASK-05**: Chạy `npx tsc --noEmit`, unit tests TypeScript, `cargo test` (bao gồm live E2E với Supabase), và khởi chạy ứng dụng VoxLab thực tế kiểm chứng luồng kích hoạt với Supabase `MMO-TOOL-Manager`.

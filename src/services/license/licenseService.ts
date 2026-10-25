@@ -1,5 +1,5 @@
 /**
- * License Service (Frontend Tauri IPC Client)
+ * License Service (Frontend Tauri IPC Client — Security v3)
  *
  * Enforces LICENSE-AC-01 through LICENSE-AC-14:
  * - Communicates with native Rust security subsystem via Tauri IPC.
@@ -12,6 +12,7 @@
 export type LicenseStatus =
   | 'VALID'
   | 'ACTIVATED'
+  | 'MIGRATED'
   | 'EXPIRED'
   | 'DISABLED'
   | 'NOT_FOUND'
@@ -22,6 +23,8 @@ export type LicenseStatus =
   | 'OFFLINE_GRACE_EXPIRED'
   | 'NETWORK_ERROR'
   | 'SERVER_ERROR'
+  | 'AUTH_ERROR'
+  | 'CLIENT_CONFIG_ERROR'
   | 'NO_KEY'
   | 'OFFLINE_GRACE'
   | 'CORRUPT_CACHE';
@@ -36,20 +39,20 @@ export interface LicenseSummary {
   can_use_app: boolean;
 }
 
-// In-memory mock state strictly for automated Node tests and non-production Vite dev preview
+// In-memory mock state strictly for automated Node tests and non-Tauri Vite browser preview
 let mockSummary: LicenseSummary = {
   is_valid: false,
   status: 'NO_KEY',
   masked_key: 'Chưa kích hoạt',
   license_type: 'Chưa kích hoạt',
   expires_at_formatted: 'N/A',
-  error_message: 'Ứng dụng chưa được kích hoạt bản quyền.',
+  error_message: 'Vui lòng nhập License Key để kích hoạt phần mềm.',
   can_use_app: false,
 };
 
 let forceProductionModeForTest = false;
 
-function isTauriEnvironment(): boolean {
+export function isTauriEnvironment(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
@@ -99,18 +102,20 @@ export function maskLicenseKey(key: string): string {
   if (trimmed.length <= 8) {
     return 'VOXL-****-****-KEY';
   }
-  const prefix = trimmed.slice(0, 4);
+  const prefix = trimmed.toUpperCase().startsWith('VOXLAB-')
+    ? trimmed.slice(0, 6)
+    : trimmed.slice(0, 4);
   const suffix = trimmed.slice(-4);
   return `${prefix}-****-****-${suffix}`;
 }
 
 /**
- * Sanitizes diagnostic logs to ensure zero license key leakage (LICENSE-AC-02, LICENSE-AC-11).
+ * Sanitizes diagnostic logs to ensure zero license key leakage (LICENSE-AC-02, LICENSE-AC-12).
  * Replaces any license key pattern with [MASKED_LICENSE_KEY].
  */
 export function sanitizeDiagnostics(log: string): string {
   return log.replace(
-    /[A-Z0-9]{3,5}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}(?:-[A-Z0-9]{4})?/gi,
+    /[A-Z0-9]{2,8}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}(?:-[A-Z0-9]{4})?/gi,
     '[MASKED_LICENSE_KEY]'
   );
 }
@@ -118,17 +123,21 @@ export function sanitizeDiagnostics(log: string): string {
 export class LicenseService {
   /**
    * Returns whether mandatory startup & commercial task gating is enabled.
-   * Controlled by `VITE_VOXLAB_ENFORCE_LICENSE=1` or `voxlab_enforce_license_policy=1`
-   * pending Gate E commercial policy confirmation.
+   * Enabled by default (Gate E approved); only disabled when explicitly set to `0` / `false`.
    */
   static isCommercialGateEnabled(): boolean {
     try {
       const metaEnv = (
         import.meta as unknown as { env?: Record<string, string | boolean | undefined> }
       )?.env;
-      const envVal = String(metaEnv?.VITE_VOXLAB_ENFORCE_LICENSE || '').trim().toLowerCase();
-      if (envVal === '1' || envVal === 'true' || envVal === 'strict') {
-        return true;
+      if (metaEnv && metaEnv.VITE_VOXLAB_ENFORCE_LICENSE !== undefined) {
+        const envVal = String(metaEnv.VITE_VOXLAB_ENFORCE_LICENSE).trim().toLowerCase();
+        if (envVal === '0' || envVal === 'false' || envVal === 'off') {
+          return false;
+        }
+        if (envVal === '1' || envVal === 'true' || envVal === 'strict') {
+          return true;
+        }
       }
     } catch {
       // ignore
@@ -136,6 +145,9 @@ export class LicenseService {
     try {
       if (typeof localStorage !== 'undefined') {
         const stored = localStorage.getItem('voxlab_enforce_license_policy');
+        if (stored === '0' || stored === 'false') {
+          return false;
+        }
         if (stored === '1' || stored === 'true') {
           return true;
         }
@@ -143,7 +155,7 @@ export class LicenseService {
     } catch {
       // ignore
     }
-    return false;
+    return true;
   }
 
   /**
@@ -201,7 +213,7 @@ export class LicenseService {
         return missingNativeRuntimeSummary();
       }
 
-      // Mock handling strictly for non-production test environments
+      // Mock handling strictly for non-production Node test environments
       if (trimmed.toUpperCase().includes('INVALID') || trimmed.toUpperCase().includes('EXPIRED')) {
         mockSummary = {
           is_valid: false,
@@ -247,7 +259,7 @@ export class LicenseService {
           is_valid: true,
           status: 'ACTIVATED',
           masked_key: maskLicenseKey(trimmed),
-          license_type: 'Commercial Pro License',
+          license_type: 'Commercial Lifetime',
           expires_at_formatted: 'Vĩnh viễn',
           error_message: null,
           can_use_app: true,
@@ -348,9 +360,22 @@ export class LicenseService {
       masked_key: 'Chưa kích hoạt',
       license_type: 'Chưa kích hoạt',
       expires_at_formatted: 'N/A',
-      error_message: 'Ứng dụng chưa được kích hoạt bản quyền.',
+      error_message: 'Vui lòng nhập License Key để kích hoạt phần mềm.',
       can_use_app: false,
     };
+  }
+
+  /**
+   * Cleanly exits the desktop application when the user clicks Exit on the mandatory License Gate.
+   */
+  static async exitApplication(): Promise<void> {
+    if (isTauriEnvironment()) {
+      await invokeTauri<void>('exit_application');
+      return;
+    }
+    if (typeof window !== 'undefined') {
+      window.close();
+    }
   }
 
   /**

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub const LICENSE_CACHE_FILE: &str = "license.enc";
-pub const LICENSE_SCHEMA_VERSION: u32 = 1;
+pub const LICENSE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LicenseCacheData {
@@ -14,18 +14,28 @@ pub struct LicenseCacheData {
     pub hwid: String,
     pub status: String,
     pub saved_at: u64,
+    #[serde(default)]
+    pub last_seen_at: u64,
     pub last_verified_at: u64,
     pub expires_at: Option<u64>,
     pub last_server_status: Option<String>,
 }
 
-/// Masks a license key for display e.g. VOXL-****-****-1234
+/// Masks a license key for display e.g. VOXLAB-****-****-462B or VOXL-****-****-1234
 pub fn mask_license_key(key: &str) -> String {
     let trimmed = key.trim();
     if trimmed.len() <= 8 {
-        return "VOXL-****-****-KEY".to_string();
+        return "VOXLAB-****-****-KEY".to_string();
     }
-    let prefix = &trimmed[..4];
+    let prefix = if let Some((head, _)) = trimmed.split_once('-') {
+        if (2..=6).contains(&head.len()) {
+            head
+        } else {
+            &trimmed[..4]
+        }
+    } else {
+        &trimmed[..4]
+    };
     let suffix = &trimmed[trimmed.len() - 4..];
     format!("{}-****-****-{}", prefix, suffix)
 }
@@ -38,10 +48,18 @@ mod dpapi {
         CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
     };
 
+    const DPAPI_ENTROPY: &[u8] = b"VoxLab-License-v3";
+    // CRYPTPROTECT_UI_FORBIDDEN = 0x1
+    const DPAPI_FLAGS: u32 = 0x1;
+
     pub fn encrypt_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
         let mut data_in = CRYPT_INTEGER_BLOB {
             cbData: data.len() as u32,
             pbData: data.as_ptr() as *mut u8,
+        };
+        let mut entropy_blob = CRYPT_INTEGER_BLOB {
+            cbData: DPAPI_ENTROPY.len() as u32,
+            pbData: DPAPI_ENTROPY.as_ptr() as *mut u8,
         };
         let mut data_out = CRYPT_INTEGER_BLOB {
             cbData: 0,
@@ -49,14 +67,13 @@ mod dpapi {
         };
 
         unsafe {
-            // CRYPTPROTECT_UI_FORBIDDEN = 0x1
             let success = CryptProtectData(
                 &mut data_in,
                 null_mut(),
+                &mut entropy_blob,
                 null_mut(),
                 null_mut(),
-                null_mut(),
-                0x1,
+                DPAPI_FLAGS,
                 &mut data_out,
             );
 
@@ -71,35 +88,55 @@ mod dpapi {
         }
     }
 
-    pub fn decrypt_bytes(encrypted: &[u8]) -> Result<Vec<u8>, String> {
+    unsafe fn try_unprotect(
+        encrypted: &[u8],
+        entropy: Option<&[u8]>,
+    ) -> Result<Vec<u8>, String> {
         let mut data_in = CRYPT_INTEGER_BLOB {
             cbData: encrypted.len() as u32,
             pbData: encrypted.as_ptr() as *mut u8,
+        };
+        let mut entropy_blob = entropy.map(|e| CRYPT_INTEGER_BLOB {
+            cbData: e.len() as u32,
+            pbData: e.as_ptr() as *mut u8,
+        });
+        let entropy_ptr = match entropy_blob.as_mut() {
+            Some(b) => b as *mut CRYPT_INTEGER_BLOB,
+            None => null_mut(),
         };
         let mut data_out = CRYPT_INTEGER_BLOB {
             cbData: 0,
             pbData: null_mut(),
         };
 
+        let success = CryptUnprotectData(
+            &mut data_in,
+            null_mut(),
+            entropy_ptr,
+            null_mut(),
+            null_mut(),
+            DPAPI_FLAGS,
+            &mut data_out,
+        );
+
+        if success == 0 {
+            return Err("CryptUnprotectData failed".to_string());
+        }
+
+        let slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
+        let result = slice.to_vec();
+        LocalFree(data_out.pbData as _);
+        Ok(result)
+    }
+
+    pub fn decrypt_bytes(encrypted: &[u8]) -> Result<Vec<u8>, String> {
         unsafe {
-            let success = CryptUnprotectData(
-                &mut data_in,
-                null_mut(),
-                null_mut(),
-                null_mut(),
-                null_mut(),
-                0x1,
-                &mut data_out,
-            );
-
-            if success == 0 {
-                return Err("CryptUnprotectData failed".to_string());
+            // Try v3 entropy first; fall back to legacy null-entropy so existing vaults
+            // (such as previously saved gemini_keys.enc or v1 license.enc) remain readable.
+            if let Ok(plain) = try_unprotect(encrypted, Some(DPAPI_ENTROPY)) {
+                return Ok(plain);
             }
-
-            let slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
-            let result = slice.to_vec();
-            LocalFree(data_out.pbData as _);
-            Ok(result)
+            try_unprotect(encrypted, None)
         }
     }
 }
@@ -107,7 +144,6 @@ mod dpapi {
 #[cfg(not(target_os = "windows"))]
 mod dpapi {
     pub fn encrypt_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
-        // Fallback for non-windows / tests
         Ok(data.iter().map(|b| b ^ 0x5A).collect())
     }
 
@@ -116,12 +152,12 @@ mod dpapi {
     }
 }
 
-/// Encrypts bytes using Windows DPAPI
+/// Encrypts bytes using Windows DPAPI + application entropy.
 pub fn encrypt_data(bytes: &[u8]) -> Result<Vec<u8>, String> {
     dpapi::encrypt_bytes(bytes)
 }
 
-/// Decrypts bytes using Windows DPAPI
+/// Decrypts bytes using Windows DPAPI (with transparent v1 -> v3 entropy fallback).
 pub fn decrypt_data(encrypted: &[u8]) -> Result<Vec<u8>, String> {
     dpapi::decrypt_bytes(encrypted)
 }
@@ -147,6 +183,9 @@ pub fn load_license_cache(base_dir: &Path) -> Result<Option<LicenseCacheData>, S
     }
 
     let encrypted_bytes = std::fs::read(&target_path).map_err(|e| e.to_string())?;
+    if encrypted_bytes.is_empty() {
+        return Err("Empty license cache file".to_string());
+    }
     let decrypted_bytes = decrypt_data(&encrypted_bytes)?;
 
     let data: LicenseCacheData =
@@ -201,10 +240,14 @@ mod tests {
     #[test]
     fn test_mask_license_key() {
         assert_eq!(
+            mask_license_key("VOXLAB-8DEE-C4E6-24D5-462B"),
+            "VOXLAB-****-****-462B"
+        );
+        assert_eq!(
             mask_license_key("VOXL-ABCD-1234-WXYZ"),
             "VOXL-****-****-WXYZ"
         );
-        assert_eq!(mask_license_key("SHORT"), "VOXL-****-****-KEY");
+        assert_eq!(mask_license_key("SHORT"), "VOXLAB-****-****-KEY");
     }
 
     #[test]
@@ -227,14 +270,15 @@ mod tests {
                 .as_nanos()
         ));
         let cache_data = LicenseCacheData {
-            schema_version: 1,
-            license_key: "VOXL-PRO-2026-KEY1".to_string(),
-            license_key_masked: "VOXL-****-****-KEY1".to_string(),
-            license_type: "Commercial License".to_string(),
-            hwid_version: "v1".to_string(),
-            hwid: "v1:abc123456789".to_string(),
+            schema_version: LICENSE_SCHEMA_VERSION,
+            license_key: "VOXLAB-8DEE-C4E6-24D5-462B".to_string(),
+            license_key_masked: "VOXLAB-****-****-462B".to_string(),
+            license_type: "Commercial Lifetime".to_string(),
+            hwid_version: "v3".to_string(),
+            hwid: "a".repeat(64),
             status: "VALID".to_string(),
             saved_at: 1000,
+            last_seen_at: 1000,
             last_verified_at: 1000,
             expires_at: Some(2000),
             last_server_status: Some("ACTIVATED".to_string()),

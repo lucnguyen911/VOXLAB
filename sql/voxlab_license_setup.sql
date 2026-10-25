@@ -1,220 +1,298 @@
 -- =============================================================================
--- VOXLAB — SUPABASE LICENSE SERVER SETUP (PRODUCTION HARDENED)
--- Reference Architecture: Audio-Factory / VoxLab Security Spec (Gate E)
+-- VOXLAB — SUPABASE LICENSE SERVER SETUP (SECURITY V3 - CLEAN 10-COLUMN SCHEMA)
+-- Project: MMO-TOOL-Manager (Aligned with audio_licenses & video_licenses)
 -- =============================================================================
 -- Instructions:
 -- 1. Open Supabase Dashboard -> SQL Editor -> New Query.
 -- 2. Paste this entire script and click "Run".
--- 3. Verify that RLS is enabled on `licenses` and `license_devices`, and only
---    `activate_or_verify_license` is callable by `anon` / `authenticated`.
+-- 3. Verify that RLS is enabled on `public.voxlab_licenses` and only
+--    `activate_or_verify_voxlab_license_v3` is callable by `anon` / `authenticated`.
 -- =============================================================================
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+BEGIN;
 
--- 1. TABLE: public.licenses
-CREATE TABLE IF NOT EXISTS public.licenses (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    license_key TEXT UNIQUE NOT NULL,
-    product_code TEXT NOT NULL DEFAULT 'VOXLAB',
-    license_type TEXT NOT NULL DEFAULT 'Commercial Pro License',
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'expired')),
-    max_devices INT NOT NULL DEFAULT 1 CHECK (max_devices >= 1),
-    expires_at TIMESTAMPTZ NULL,
-    customer_note TEXT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_voxlab_licenses_key ON public.licenses (license_key);
-CREATE INDEX IF NOT EXISTS idx_voxlab_licenses_product ON public.licenses (product_code);
-
--- 2. TABLE: public.license_devices
-CREATE TABLE IF NOT EXISTS public.license_devices (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    license_id UUID NOT NULL REFERENCES public.licenses(id) ON DELETE CASCADE,
-    hwid TEXT NOT NULL,
-    app_version TEXT NULL,
-    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (license_id, hwid)
-);
-
-CREATE INDEX IF NOT EXISTS idx_voxlab_license_devices_license_id ON public.license_devices (license_id);
-CREATE INDEX IF NOT EXISTS idx_voxlab_license_devices_hwid ON public.license_devices (hwid);
-
--- 3. ROW LEVEL SECURITY & DIRECT TABLE LOCKDOWN
-ALTER TABLE public.licenses ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.license_devices ENABLE ROW LEVEL SECURITY;
-
-REVOKE ALL ON TABLE public.licenses FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON TABLE public.license_devices FROM PUBLIC, anon, authenticated;
-
--- 4. ATOMIC RPC: public.activate_or_verify_license
--- Matches `src-tauri/src/security/license_client.rs` contract:
--- Input:  p_license_key TEXT, p_hwid TEXT, p_app_version TEXT
--- Output: JSONB { status, message, expires_at (epoch seconds or null), license_type }
-CREATE OR REPLACE FUNCTION public.activate_or_verify_license(
-    p_license_key TEXT,
-    p_hwid TEXT,
-    p_app_version TEXT DEFAULT '0.1.0'
-)
-RETURNS JSONB
+CREATE OR REPLACE FUNCTION public.generate_voxlab_license_key()
+RETURNS text
 LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
 DECLARE
-    v_clean_key TEXT;
-    v_clean_hwid TEXT;
-    v_lic RECORD;
-    v_device_exists BOOLEAN;
-    v_device_count INT;
-    v_expires_epoch BIGINT;
+    raw_hex text;
 BEGIN
-    v_clean_key := UPPER(TRIM(COALESCE(p_license_key, '')));
-    v_clean_hwid := TRIM(COALESCE(p_hwid, ''));
+    raw_hex := upper(replace(gen_random_uuid()::text, '-', ''));
+    RETURN 'VOXLAB-' ||
+           substring(raw_hex from 1 for 4) || '-' ||
+           substring(raw_hex from 5 for 4) || '-' ||
+           substring(raw_hex from 9 for 4) || '-' ||
+           substring(raw_hex from 13 for 4);
+END;
+$$;
 
-    IF v_clean_key = '' THEN
+CREATE TABLE IF NOT EXISTS public.voxlab_licenses (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    license_key text UNIQUE NOT NULL DEFAULT public.generate_voxlab_license_key(),
+    is_active boolean NOT NULL DEFAULT true,
+    max_devices integer NOT NULL DEFAULT 1,
+    created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+    expired_at timestamptz,
+    customer_name text,
+    contact_info text,
+    note text,
+    device_hwids jsonb NOT NULL DEFAULT '[]'::jsonb,
+    CONSTRAINT voxlab_licenses_max_devices_check CHECK (max_devices >= 1 AND max_devices <= 100),
+    CONSTRAINT voxlab_licenses_device_hwids_array_check CHECK (jsonb_typeof(device_hwids) = 'array')
+);
+
+CREATE INDEX IF NOT EXISTS idx_voxlab_licenses_key_upper
+    ON public.voxlab_licenses (upper(btrim(license_key)));
+
+ALTER TABLE public.voxlab_licenses ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.voxlab_licenses FROM PUBLIC, anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.activate_or_verify_voxlab_license_v3(
+    p_license_key text,
+    p_hwid text,
+    p_hwid_version integer DEFAULT 3,
+    p_legacy_candidates jsonb DEFAULT '[]'::jsonb,
+    p_app_version text DEFAULT ''
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    rec public.voxlab_licenses%ROWTYPE;
+    v_clean_key text;
+    v_clean_hwid text;
+    v_current_hwids jsonb;
+    v_matched boolean := false;
+    v_legacy_idx integer;
+    v_expires_epoch bigint;
+    v_license_type text;
+BEGIN
+    v_clean_key := upper(btrim(coalesce(p_license_key, '')));
+    v_clean_hwid := lower(btrim(coalesce(p_hwid, '')));
+
+    IF v_clean_key = ''
+       OR v_clean_hwid !~ '^[0-9a-f]{64}$'
+       OR p_hwid_version <> 3 THEN
         RETURN jsonb_build_object(
-            'status', 'NOT_FOUND',
-            'message', 'Vui lòng nhập mã bản quyền (License Key).',
-            'expires_at', NULL,
-            'license_type', NULL
+            'valid', false,
+            'status', 'CLIENT_CONFIG_ERROR',
+            'message', 'Dữ liệu xác thực thiết bị không hợp lệ. Vui lòng cập nhật ứng dụng.'
         );
     END IF;
 
-    IF v_clean_hwid = '' OR LENGTH(v_clean_hwid) < 16 THEN
-        RETURN jsonb_build_object(
-            'status', 'DEVICE_MISMATCH',
-            'message', 'Định danh thiết bị phần cứng (HWID) không hợp lệ.',
-            'expires_at', NULL,
-            'license_type', NULL
-        );
-    END IF;
-
-    -- Lock the license row with FOR UPDATE to prevent race conditions during concurrent activations
     SELECT *
-    INTO v_lic
-    FROM public.licenses
-    WHERE UPPER(license_key) = v_clean_key
-      AND (product_code = 'VOXLAB' OR product_code = 'ALL')
-    FOR UPDATE;
+      INTO rec
+      FROM public.voxlab_licenses
+     WHERE upper(btrim(license_key)) = v_clean_key
+     FOR UPDATE;
 
     IF NOT FOUND THEN
         RETURN jsonb_build_object(
+            'valid', false,
             'status', 'NOT_FOUND',
-            'message', 'Mã bản quyền không tồn tại hoặc không dành cho VoxLab.',
-            'expires_at', NULL,
-            'license_type', NULL
+            'message', 'Key bản quyền không tồn tại.'
         );
     END IF;
 
     v_expires_epoch := CASE
-        WHEN v_lic.expires_at IS NOT NULL THEN EXTRACT(EPOCH FROM v_lic.expires_at)::BIGINT
+        WHEN rec.expired_at IS NOT NULL THEN extract(epoch FROM rec.expired_at)::bigint
         ELSE NULL
     END;
 
-    -- Check disabled status
-    IF v_lic.status = 'disabled' THEN
+    v_license_type := CASE
+        WHEN rec.expired_at IS NULL THEN 'Commercial Lifetime'
+        ELSE 'Commercial Subscription'
+    END;
+
+    IF NOT coalesce(rec.is_active, true) THEN
         RETURN jsonb_build_object(
+            'valid', false,
             'status', 'DISABLED',
-            'message', 'Mã bản quyền đã bị khóa hoặc thu hồi bởi quản trị viên.',
+            'message', 'Key bản quyền đã bị khóa hoặc vô hiệu hóa.',
             'expires_at', v_expires_epoch,
-            'license_type', v_lic.license_type
+            'expired_at', rec.expired_at,
+            'license_type', v_license_type
         );
     END IF;
 
-    -- Check expiration
-    IF v_lic.status = 'expired' OR (v_lic.expires_at IS NOT NULL AND v_lic.expires_at < NOW()) THEN
-        IF v_lic.status <> 'expired' THEN
-            UPDATE public.licenses
-            SET status = 'expired', updated_at = NOW()
-            WHERE id = v_lic.id;
-        END IF;
-
+    IF rec.expired_at IS NOT NULL AND rec.expired_at <= now() THEN
         RETURN jsonb_build_object(
+            'valid', false,
             'status', 'EXPIRED',
-            'message', 'Mã bản quyền đã hết hạn sử dụng.',
+            'message', 'Key bản quyền đã hết hạn sử dụng. Vui lòng gia hạn để tiếp tục.',
             'expires_at', v_expires_epoch,
-            'license_type', v_lic.license_type
+            'expired_at', rec.expired_at,
+            'license_type', v_license_type
         );
     END IF;
 
-    -- Check if this HWID is already bound to the license
+    v_current_hwids := coalesce(rec.device_hwids, '[]'::jsonb);
+
     SELECT EXISTS (
         SELECT 1
-        FROM public.license_devices
-        WHERE license_id = v_lic.id
-          AND hwid = v_clean_hwid
-    ) INTO v_device_exists;
+          FROM jsonb_array_elements_text(v_current_hwids) AS d(val)
+         WHERE lower(d.val) = v_clean_hwid
+    ) INTO v_matched;
 
-    IF v_device_exists THEN
-        UPDATE public.license_devices
-        SET last_seen_at = NOW(),
-            app_version = COALESCE(NULLIF(TRIM(p_app_version), ''), app_version)
-        WHERE license_id = v_lic.id
-          AND hwid = v_clean_hwid;
-
+    IF v_matched THEN
         RETURN jsonb_build_object(
+            'valid', true,
             'status', 'VALID',
-            'message', 'Xác thực bản quyền thành công.',
+            'message', 'Bản quyền hợp lệ.',
             'expires_at', v_expires_epoch,
-            'license_type', v_lic.license_type
+            'expired_at', rec.expired_at,
+            'license_type', v_license_type,
+            'device_count', jsonb_array_length(v_current_hwids),
+            'max_devices', rec.max_devices
         );
     END IF;
 
-    -- Count existing bound devices for this license
-    SELECT COUNT(*)
-    INTO v_device_count
-    FROM public.license_devices
-    WHERE license_id = v_lic.id;
+    IF p_legacy_candidates IS NOT NULL
+       AND jsonb_typeof(p_legacy_candidates) = 'array'
+       AND jsonb_array_length(p_legacy_candidates) > 0 THEN
+        SELECT (dev.ord - 1)::integer
+          INTO v_legacy_idx
+          FROM jsonb_array_elements_text(v_current_hwids) WITH ORDINALITY AS dev(val, ord)
+         WHERE dev.val IN (SELECT jsonb_array_elements_text(p_legacy_candidates))
+         LIMIT 1;
 
-    IF v_device_count >= v_lic.max_devices THEN
+        IF FOUND THEN
+            v_current_hwids := jsonb_set(
+                v_current_hwids,
+                ARRAY[v_legacy_idx::text],
+                to_jsonb(v_clean_hwid),
+                false
+            );
+            UPDATE public.voxlab_licenses
+               SET device_hwids = v_current_hwids
+             WHERE id = rec.id;
+
+            RETURN jsonb_build_object(
+                'valid', true,
+                'status', 'MIGRATED',
+                'message', 'Đã chuyển đổi bản quyền sang hệ thống mới thành công!',
+                'expires_at', v_expires_epoch,
+                'expired_at', rec.expired_at,
+                'license_type', v_license_type,
+                'device_count', jsonb_array_length(v_current_hwids),
+                'max_devices', rec.max_devices
+            );
+        END IF;
+    END IF;
+
+    IF jsonb_array_length(v_current_hwids) >= rec.max_devices THEN
         RETURN jsonb_build_object(
-            'status', CASE WHEN v_lic.max_devices = 1 THEN 'DEVICE_MISMATCH' ELSE 'DEVICE_LIMIT' END,
+            'valid', false,
+            'status', CASE WHEN rec.max_devices = 1 THEN 'DEVICE_MISMATCH' ELSE 'DEVICE_LIMIT' END,
             'message', CASE
-                WHEN v_lic.max_devices = 1 THEN 'Mã bản quyền này đã được kích hoạt trên một thiết bị khác.'
-                ELSE format('Mã bản quyền đã đạt giới hạn tối đa (%s/%s thiết bị).', v_device_count, v_lic.max_devices)
+                WHEN rec.max_devices = 1 THEN 'Key đã được sử dụng ở máy khác!'
+                ELSE format('Key đã đạt số thiết bị tối đa (%s/%s). Vui lòng liên hệ quản trị viên để reset thiết bị.', jsonb_array_length(v_current_hwids), rec.max_devices)
             END,
             'expires_at', v_expires_epoch,
-            'license_type', v_lic.license_type
+            'expired_at', rec.expired_at,
+            'license_type', v_license_type,
+            'device_count', jsonb_array_length(v_current_hwids),
+            'max_devices', rec.max_devices
         );
     END IF;
 
-    -- Bind new device atomically
-    INSERT INTO public.license_devices (license_id, hwid, app_version, first_seen_at, last_seen_at)
-    VALUES (v_lic.id, v_clean_hwid, NULLIF(TRIM(p_app_version), ''), NOW(), NOW());
-
-    UPDATE public.licenses
-    SET updated_at = NOW()
-    WHERE id = v_lic.id;
+    v_current_hwids := v_current_hwids || jsonb_build_array(v_clean_hwid);
+    UPDATE public.voxlab_licenses
+       SET device_hwids = v_current_hwids
+     WHERE id = rec.id;
 
     RETURN jsonb_build_object(
+        'valid', true,
         'status', 'ACTIVATED',
-        'message', 'Kích hoạt bản quyền thành công trên thiết bị này.',
+        'message', 'Kích hoạt bản quyền thành công trên máy này!',
         'expires_at', v_expires_epoch,
-        'license_type', v_lic.license_type
+        'expired_at', rec.expired_at,
+        'license_type', v_license_type,
+        'device_count', jsonb_array_length(v_current_hwids),
+        'max_devices', rec.max_devices
     );
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.activate_or_verify_license(TEXT, TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.activate_or_verify_license(TEXT, TEXT, TEXT) TO anon, authenticated;
+CREATE OR REPLACE FUNCTION public.admin_reset_voxlab_license_devices_v3(p_license_key text)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    affected integer;
+BEGIN
+    UPDATE public.voxlab_licenses
+       SET device_hwids = '[]'::jsonb
+     WHERE upper(btrim(license_key)) = upper(btrim(p_license_key));
+    GET DIAGNOSTICS affected = ROW_COUNT;
+    RETURN affected;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.admin_remove_voxlab_license_device_v3(
+    p_license_key text,
+    p_hwid_hash text
+)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    affected integer;
+BEGIN
+    UPDATE public.voxlab_licenses
+       SET device_hwids = coalesce((
+           SELECT jsonb_agg(d.val)
+             FROM jsonb_array_elements_text(device_hwids) AS d(val)
+            WHERE lower(d.val) <> lower(btrim(p_hwid_hash))
+       ), '[]'::jsonb)
+     WHERE upper(btrim(license_key)) = upper(btrim(p_license_key))
+       AND EXISTS (
+           SELECT 1
+             FROM jsonb_array_elements_text(device_hwids) AS d(val)
+            WHERE lower(d.val) = lower(btrim(p_hwid_hash))
+       );
+    GET DIAGNOSTICS affected = ROW_COUNT;
+    RETURN affected;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.generate_voxlab_license_key() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.generate_voxlab_license_key() TO postgres, service_role;
+
+REVOKE ALL ON FUNCTION public.activate_or_verify_voxlab_license_v3(text, text, integer, jsonb, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.activate_or_verify_voxlab_license_v3(text, text, integer, jsonb, text) TO anon, authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.admin_reset_voxlab_license_devices_v3(text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_reset_voxlab_license_devices_v3(text) TO service_role;
+
+REVOKE ALL ON FUNCTION public.admin_remove_voxlab_license_device_v3(text, text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_remove_voxlab_license_device_v3(text, text) TO service_role;
+
+COMMIT;
 
 -- =============================================================================
--- ADMIN HELPER QUERIES (RUN MANUALLY IN SUPABASE SQL EDITOR AS NEEDED)
+-- ADMIN HELPER QUERIES (RUN MANUALLY IN SUPABASE SQL EDITOR OR SERVICE_ROLE BOT)
 -- =============================================================================
--- 1. Create a 1-device Perpetual License:
--- INSERT INTO public.licenses (license_key, product_code, license_type, status, max_devices, expires_at, customer_note)
--- VALUES ('VOXL-PRO1-2026-ABCD', 'VOXLAB', 'Commercial Pro License', 'active', 1, NULL, 'Khách hàng A');
+-- 1. Tạo Key Vĩnh Viễn tự động (VOXLAB-XXXX-XXXX-XXXX-XXXX, 1 thiết bị):
+-- INSERT INTO public.voxlab_licenses (customer_name, max_devices, is_active, expired_at, note)
+-- VALUES ('Nguyễn Văn A', 1, true, NULL, 'Gói Vĩnh viễn')
+-- RETURNING license_key;
 --
--- 2. Create a 30-day Trial License:
--- INSERT INTO public.licenses (license_key, product_code, license_type, status, max_devices, expires_at, customer_note)
--- VALUES ('VOXL-TRIAL-30D-0001', 'VOXLAB', 'Trial 30 Days', 'active', 1, NOW() + INTERVAL '30 days', 'Bản dùng thử');
+-- 2. Tạo Key có thời hạn 30 ngày:
+-- INSERT INTO public.voxlab_licenses (customer_name, max_devices, is_active, expired_at, note)
+-- VALUES ('Khách dùng thử', 1, true, NOW() + INTERVAL '30 days', 'Gói 30 ngày')
+-- RETURNING license_key;
 --
--- 3. Reset device binding for a customer moving to a new PC:
--- DELETE FROM public.license_devices
--- WHERE license_id = (SELECT id FROM public.licenses WHERE license_key = 'VOXL-PRO1-2026-ABCD');
+-- 3. Reset toàn bộ mã máy HWID của 1 Key:
+-- SELECT public.admin_reset_voxlab_license_devices_v3('VOXLAB-XXXX-XXXX-XXXX-XXXX');
 --
--- 4. Disable/revoke a license key:
--- UPDATE public.licenses SET status = 'disabled', updated_at = NOW() WHERE license_key = 'VOXL-PRO1-2026-ABCD';
+-- 4. Khóa / vô hiệu hóa Key:
+-- UPDATE public.voxlab_licenses SET is_active = false WHERE license_key = 'VOXLAB-XXXX-XXXX-XXXX-XXXX';

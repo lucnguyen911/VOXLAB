@@ -34,12 +34,12 @@ import {
   updateCloneVoiceMetadata,
   removeCloneVoice,
 } from "./services/ai/cloneVoiceRegistry";
-import { CheckCircle2, X } from "lucide-react";
+import { CheckCircle2, Loader2, ShieldCheck, X } from "lucide-react";
 
 // Run synchronous migrations before components mount and read localStorage
 migratePunctuationPauseDefaults();
 
-function AppContent() {
+function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   const { t: _t } = useI18n();
 
   // Run settings schema migration and initialize Gemini encrypted key vault once on startup
@@ -55,35 +55,14 @@ function AppContent() {
       });
   }, []);
 
-  // Startup license check: verifies cached DPAPI license in background and opens LicenseModal
-  // when commercial enforcement gate (`VITE_VOXLAB_ENFORCE_LICENSE=1`) is enabled.
-  const [initialLicenseModalOpen, setInitialLicenseModalOpen] = useState(false);
-  const [appToast, setAppToast] = useState<string | null>(null);
+  const [appToast, setAppToast] = useState<string | null>(initialToast);
 
   useEffect(() => {
-    let cancelled = false;
-    LicenseService.verify()
-      .then((summary) => {
-        if (cancelled) return;
-        if (LicenseService.isCommercialGateEnabled() && !summary.can_use_app) {
-          setInitialLicenseModalOpen(true);
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        if (LicenseService.isCommercialGateEnabled()) {
-          setInitialLicenseModalOpen(true);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleInitialLicenseSuccess = (license: LicenseSummary) => {
-    setAppToast(`Kích hoạt bản quyền thành công! Hạn dùng: ${license.expires_at_formatted}`);
-    setTimeout(() => setAppToast(null), 4000);
-  };
+    if (!initialToast) return;
+    setAppToast(initialToast);
+    const timer = setTimeout(() => setAppToast(null), 4500);
+    return () => clearTimeout(timer);
+  }, [initialToast]);
 
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>(() => {
     try {
@@ -599,14 +578,6 @@ function AppContent() {
         currentModel={activeModel}
       />
 
-      {/* Pop-up Kích hoạt bản quyền khi khởi động lần đầu tiên */}
-      <LicenseModal
-        isOpen={initialLicenseModalOpen}
-        onClose={() => setInitialLicenseModalOpen(false)}
-        onSuccess={handleInitialLicenseSuccess}
-        isInitialLaunch={true}
-      />
-
       {/* Global Toast Notification */}
       {appToast && (
         <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-5 duration-200">
@@ -626,10 +597,106 @@ function AppContent() {
   );
 }
 
+function LicenseStartupGate() {
+  const [phase, setPhase] = useState<"checking" | "locked" | "authorized">(() =>
+    LicenseService.isCommercialGateEnabled() ? "checking" : "authorized"
+  );
+  const [lockedError, setLockedError] = useState<string | null>(null);
+  const [startupToast, setStartupToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("voxlab_theme");
+      const activeTheme = saved === "light" ? "light" : "dark";
+      const root = document.documentElement;
+      root.classList.remove("dark", "light");
+      root.classList.add(activeTheme);
+      root.setAttribute("data-theme", activeTheme);
+      root.style.colorScheme = activeTheme;
+    } catch {
+      // ignore
+    }
+
+    if (!LicenseService.isCommercialGateEnabled()) {
+      setPhase("authorized");
+      return;
+    }
+
+    let cancelled = false;
+    LicenseService.verify()
+      .then((summary) => {
+        if (cancelled) return;
+        if (summary.is_valid && summary.can_use_app) {
+          if (summary.status === "OFFLINE_GRACE") {
+            setStartupToast(
+              summary.error_message || "Đang hoạt động ngoại tuyến (Ân hạn tối đa 3 ngày)."
+            );
+          }
+          setPhase("authorized");
+        } else {
+          setLockedError(
+            summary.status !== "NO_KEY" ? summary.error_message || null : null
+          );
+          setPhase("locked");
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLockedError("Không thể kiểm tra bản quyền. Vui lòng kích hoạt lại.");
+        setPhase("locked");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleGateSuccess = (license: LicenseSummary) => {
+    setStartupToast(
+      `Kích hoạt bản quyền thành công! Hạn dùng: ${license.expires_at_formatted}`
+    );
+    setPhase("authorized");
+  };
+
+  if (phase === "checking") {
+    return (
+      <div className="h-screen w-screen bg-bgCanvas text-textPrimary flex items-center justify-center p-4 select-none">
+        <div className="bg-surface1 border border-borderDefault rounded-2xl px-8 py-7 shadow-2xl flex flex-col items-center gap-3 max-w-sm w-full">
+          <div className="w-11 h-11 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center text-accent">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div className="flex items-center gap-2 text-xs font-semibold text-textPrimary">
+            <Loader2 className="w-4 h-4 animate-spin text-accent" />
+            <span>Đang xác thực bản quyền VoxLab...</span>
+          </div>
+          <p className="text-[11px] text-textMuted text-center">
+            Kiểm tra chữ ký phần cứng (HWID v3) và máy chủ bản quyền
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === "locked") {
+    return (
+      <LicenseModal
+        isOpen={true}
+        onClose={() => {}}
+        onSuccess={handleGateSuccess}
+        isInitialLaunch={true}
+        mandatory={true}
+        initialErrorMessage={lockedError}
+      />
+    );
+  }
+
+  return <AppContent initialToast={startupToast} />;
+}
+
 export function App() {
   return (
     <I18nProvider>
-      <AppContent />
+      <LicenseStartupGate />
     </I18nProvider>
   );
 }

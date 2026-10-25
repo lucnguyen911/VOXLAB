@@ -10,6 +10,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.env
+.env.*
+!.env.example
 *.local
 
 # Editor directories and files
@@ -36,5 +39,3 @@ sidecar/dist/
 # Local scratch and temporary work files
 scratch/
 start_app.bat
-
-

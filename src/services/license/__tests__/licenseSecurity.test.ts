@@ -92,4 +92,15 @@ describe("TASK-15: License Security Test Suite (LICENSE-AC-01 to LICENSE-AC-14)"
       LicenseService._setForceProductionModeForTest(false);
     }
   });
+
+  test("SECURITY-V3: VOXLAB-XXXX-XXXX-XXXX-XXXX masking, diagnostics sanitization, and default-enabled gate", () => {
+    const v3RawKey = "VOXLAB-ABCD-1234-EFGH-5678";
+    assert.strictEqual(maskLicenseKey(v3RawKey), "VOXLAB-****-****-5678");
+
+    const diag = sanitizeDiagnostics(`RPC payload key=${v3RawKey} rejected`);
+    assert.ok(!diag.includes(v3RawKey));
+    assert.match(diag, /\[MASKED_LICENSE_KEY\]/);
+
+    assert.strictEqual(LicenseService.isCommercialGateEnabled(), true);
+  });
 });

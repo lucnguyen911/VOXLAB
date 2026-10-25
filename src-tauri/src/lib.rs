@@ -55,27 +55,44 @@ fn get_license_summary(app: tauri::AppHandle) -> Result<LicenseSummary, String> 
 }
 
 #[tauri::command]
-fn activate_license(app: tauri::AppHandle, license_key: String) -> Result<LicenseSummary, String> {
+async fn activate_license(app: tauri::AppHandle, license_key: String) -> Result<LicenseSummary, String> {
     let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    SecurityService::activate(&base_dir, &license_key, APP_VERSION)
+    tauri::async_runtime::spawn_blocking(move || {
+        SecurityService::activate(&base_dir, &license_key, APP_VERSION)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn verify_license(app: tauri::AppHandle) -> Result<LicenseSummary, String> {
+async fn verify_license(app: tauri::AppHandle) -> Result<LicenseSummary, String> {
     let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    SecurityService::verify(&base_dir, APP_VERSION)
+    tauri::async_runtime::spawn_blocking(move || {
+        SecurityService::verify(&base_dir, APP_VERSION)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn change_license_key(app: tauri::AppHandle, new_license_key: String) -> Result<LicenseSummary, String> {
+async fn change_license_key(app: tauri::AppHandle, new_license_key: String) -> Result<LicenseSummary, String> {
     let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    SecurityService::change_key(&base_dir, &new_license_key, APP_VERSION)
+    tauri::async_runtime::spawn_blocking(move || {
+        SecurityService::change_key(&base_dir, &new_license_key, APP_VERSION)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 fn clear_local_license_if_allowed(app: tauri::AppHandle) -> Result<(), String> {
     let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     security::license_storage::clear_license_cache(&base_dir)
+}
+
+#[tauri::command]
+fn exit_application(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -289,6 +306,7 @@ pub fn run() {
             verify_license,
             change_license_key,
             clear_local_license_if_allowed,
+            exit_application,
             save_gemini_keys_secure,
             load_gemini_keys_secure,
             native_http_request,

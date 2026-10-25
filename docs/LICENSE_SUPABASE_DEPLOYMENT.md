@@ -1,107 +1,66 @@
-# Hướng Dẫn Triển Khai & Quản Trị Hệ Thống License VoxLab trên Supabase
+# Hướng Dẫn Triển Khai & Quản Trị Hệ Thống License VoxLab (Security v3)
 
-Tài liệu này hướng dẫn thiết lập cơ sở dữ liệu bản quyền cho **VoxLab** trên Supabase theo kiến trúc bảo mật tham chiếu từ `Audio-Factory` và đặc tả `SPEC-settings.md` (Mục 9).
-
----
-
-## 1. Kiến trúc bảo mật
-
-1. **Client chỉ giữ `SUPABASE_URL` và `SUPABASE_ANON_KEY` (Public Anon Key)**:
-   - Tuyệt đối **không** nhúng `service_role` key vào mã nguồn Rust, React hay biến môi trường phía ứng dụng desktop.
-2. **Row Level Security (RLS) khóa toàn bộ bảng**:
-   - Hai bảng `public.licenses` và `public.license_devices` bật RLS và thu hồi (`REVOKE ALL`) toàn bộ quyền `SELECT / INSERT / UPDATE / DELETE` từ role `anon` và `authenticated`.
-   - Người dùng cuối dù trích xuất được `SUPABASE_ANON_KEY` cũng không thể đọc danh sách key, không thể tự thêm key hoặc xóa thiết bị.
-3. **Mọi thao tác đi qua hàm RPC duy nhất `public.activate_or_verify_license`**:
-   - Chạy với `SECURITY DEFINER` và `SET search_path = public`.
-   - Sử dụng khóa dòng `SELECT ... FOR UPDATE` để chống race condition khi nhiều thiết bị kích hoạt cùng một mã đồng thời.
-4. **Lưu trữ cục bộ bằng Windows DPAPI (`license.enc`)**:
-   - Mã hóa bằng `CryptProtectData` gắn với tài khoản Windows hiện tại.
-   - Ghi tệp nguyên tử (`MoveFileExW` với `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`), không bao giờ xóa `license.enc` cũ trước khi tệp mới ghi xong.
-   - Ràng buộc cứng với định danh phần cứng `HWID v1` (`SMBIOS UUID` hoặc `MachineGuid`, từ chối các chuỗi placeholder OEM và không dùng mã cố định dùng chung).
+Tài liệu này hướng dẫn kiến trúc và cách quản trị bảng bản quyền **VoxLab** trên Supabase (`MMO-TOOL-Manager`), đồng bộ 100% với chuẩn **Security v3** của `audio_licenses` và `video_licenses`.
 
 ---
 
-## 2. Các bước triển khai trên Supabase
+## 1. Kiến trúc bảo mật (Security v3)
 
-1. Đăng nhập [Supabase Dashboard](https://supabase.com/dashboard) và chọn project dành cho VoxLab (khuyến nghị tách project riêng cho VoxLab, hoặc dùng chung project với cột `product_code = 'VOXLAB'`).
-2. Mở **SQL Editor** $\rightarrow$ **New Query**.
-3. Sao chép toàn bộ nội dung tệp [`sql/voxlab_license_setup.sql`](../sql/voxlab_license_setup.sql) và nhấn **Run**.
-4. Vào **Project Settings** $\rightarrow$ **API** để lấy:
-   - `Project URL` $\rightarrow$ cấu hình vào biến môi trường `VOXLAB_SUPABASE_URL`
-   - `anon` `public` key $\rightarrow$ cấu hình vào biến môi trường `VOXLAB_SUPABASE_ANON_KEY`
-
----
-
-## 3. Cấu hình biến môi trường khi chạy & đóng gói VoxLab
-
-Trước khi chạy hoặc build bản cài thử nghiệm/thương mại:
-
-```powershell
-$env:VOXLAB_SUPABASE_URL = "https://<project-ref>.supabase.co"
-$env:VOXLAB_SUPABASE_ANON_KEY = "<anon-public-key>"
-
-# Tùy chọn (Sau khi phê duyệt Gate E để bật khóa thương mại bắt buộc):
-$env:VOXLAB_ENFORCE_LICENSE = "1"
-$env:VITE_VOXLAB_ENFORCE_LICENSE = "1"
-```
+1. **Bảng đơn gọn sạch 10 cột (`public.voxlab_licenses`)**:
+   - Đồng bộ hoàn toàn cấu trúc với `audio_licenses` và `video_licenses`: `id`, `license_key` (tự sinh `VOXLAB-XXXX-XXXX-XXXX-XXXX`), `is_active`, `max_devices`, `created_at`, `expired_at`, `customer_name`, `contact_info`, `note`, `device_hwids` (JSONB array).
+2. **Row Level Security (RLS) & Khóa truy cập bảng trực tiếp**:
+   - Bật RLS và thu hồi (`REVOKE ALL`) toàn bộ quyền đọc/ghi bảng `public.voxlab_licenses` khỏi role `anon` và `authenticated`.
+   - Desktop client chỉ dùng `SUPABASE_URL` và `SUPABASE_ANON_KEY` (đọc từ `.env.local` lúc build/dev, không lưu cứng trong Git). Không bao giờ nhúng `service_role` key vào client.
+3. **Xác thực nguyên tử qua RPC `public.activate_or_verify_voxlab_license_v3`**:
+   - Thực thi với `SECURITY DEFINER`, `SET search_path = public, pg_temp` và khóa dòng `SELECT ... FOR UPDATE` chống race condition khi nhiều máy kích hoạt cùng lúc.
+   - Hỗ trợ tự động nâng cấp định danh thiết bị cũ (`p_legacy_candidates` → `MIGRATED`) mà không tốn thêm slot thiết bị.
+4. **Định danh phần cứng HWID v3 & Lưu trữ DPAPI cục bộ (`license.enc`)**:
+   - Ưu tiên `SMBIOS UUID`, fallback sang `MachineGuid` (Win32 Registry API), lọc chuỗi OEM rác, băm một chiều `SHA-256` 64 ký tự hex (`HWID v3`) kèm `device_profile.enc` (`fallback_proof`).
+   - Lưu cache cục bộ bằng **Windows DPAPI** (`CryptProtectData` + Entropy `VoxLab-License-v3`), ghi nguyên tử qua `MoveFileExW`.
+   - Hỗ trợ **Offline Grace 3 ngày** khi rớt mạng/lỗi máy chủ 5xx, có kiểm tra chống quay ngược đồng hồ hệ thống và từ chối ngay không ân hạn nếu server đã khóa/hết hạn key.
+   - Chặn bắt buộc ngay lúc khởi động ứng dụng (Mandatory Startup Gate) giống `Audio-Factory`.
 
 ---
 
-## 4. Các lệnh SQL quản trị thường dùng
+## 2. Cấu hình môi trường (`.env.local`)
 
-### 4.1. Tạo mã bản quyền vĩnh viễn (1 thiết bị)
-```sql
-INSERT INTO public.licenses (
-    license_key,
-    product_code,
-    license_type,
-    status,
-    max_devices,
-    expires_at,
-    customer_note
-) VALUES (
-    'VOXL-PRO1-2026-ABCD',
-    'VOXLAB',
-    'Commercial Pro License',
-    'active',
-    1,
-    NULL,
-    'Khách hàng Nguyễn Văn A'
-);
+Tạo tệp `.env.local` tại thư mục gốc `Voxlab` (đã được `.gitignore` loại trừ khỏi Git) dựa trên `.env.example`:
+
+```ini
+VOXLAB_SUPABASE_URL=https://<project-ref>.supabase.co
+VOXLAB_SUPABASE_ANON_KEY=<publishable-or-anon-key>
+VOXLAB_ENFORCE_LICENSE=1
+VITE_VOXLAB_ENFORCE_LICENSE=1
 ```
 
-### 4.2. Tạo mã bản quyền có thời hạn (ví dụ 30 ngày)
+Khi chạy `npm run tauri dev` hoặc đóng gói `npx tauri build`, `src-tauri/build.rs` và Vite sẽ tự động nạp các biến từ `.env.local` mà không cần hard-code khóa vào mã nguồn.
+
+---
+
+## 3. Các lệnh SQL quản trị trên Supabase (`MMO-TOOL-Manager`)
+
+### 3.1. Tạo License Key Vĩnh Viễn tự động (1 thiết bị)
 ```sql
-INSERT INTO public.licenses (
-    license_key,
-    product_code,
-    license_type,
-    status,
-    max_devices,
-    expires_at,
-    customer_note
-) VALUES (
-    'VOXL-TRIAL-30D-0001',
-    'VOXLAB',
-    'Trial 30 Days',
-    'active',
-    1,
-    NOW() + INTERVAL '30 days',
-    'Khách hàng dùng thử 30 ngày'
-);
+INSERT INTO public.voxlab_licenses (customer_name, max_devices, is_active, expired_at, note)
+VALUES ('Nguyễn Văn A', 1, true, NULL, 'Gói Vĩnh viễn')
+RETURNING license_key, max_devices, expired_at;
 ```
 
-### 4.3. Đặt lại thiết bị (Reset HWID) khi khách đổi máy tính
+### 3.2. Tạo License Key có thời hạn (ví dụ 30 ngày)
 ```sql
-DELETE FROM public.license_devices
-WHERE license_id = (
-    SELECT id FROM public.licenses WHERE license_key = 'VOXL-PRO1-2026-ABCD'
-);
+INSERT INTO public.voxlab_licenses (customer_name, max_devices, is_active, expired_at, note)
+VALUES ('Khách hàng B', 1, true, NOW() + INTERVAL '30 days', 'Gói 30 ngày')
+RETURNING license_key, max_devices, expired_at;
 ```
 
-### 4.4. Vô hiệu hóa / thu hồi mã bản quyền
+### 3.3. Reset thiết bị (HWID) khi khách đổi máy tính mới
 ```sql
-UPDATE public.licenses
-SET status = 'disabled', updated_at = NOW()
-WHERE license_key = 'VOXL-PRO1-2026-ABCD';
+SELECT public.admin_reset_voxlab_license_devices_v3('VOXLAB-XXXX-XXXX-XXXX-XXXX');
+```
+
+### 3.4. Khóa / Thu hồi License Key
+```sql
+UPDATE public.voxlab_licenses
+SET is_active = false
+WHERE license_key = 'VOXLAB-XXXX-XXXX-XXXX-XXXX';
 ```
