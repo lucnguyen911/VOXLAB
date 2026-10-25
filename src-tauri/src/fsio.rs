@@ -38,19 +38,32 @@ fn absolute(path: &str) -> Result<PathBuf, String> {
     Ok(p)
 }
 
+fn ensure_not_protected_vault(path: &Path) -> Result<(), String> {
+    if crate::security::license_storage::is_protected_vault_path(path) {
+        return Err("ACCESS_DENIED: Protected security vault file cannot be accessed via generic filesystem IPC.".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn fs_write_text(path: String, content: String) -> Result<(), String> {
-    atomic_write(&absolute(&path)?, content.as_bytes())
+    let p = absolute(&path)?;
+    ensure_not_protected_vault(&p)?;
+    atomic_write(&p, content.as_bytes())
 }
 
 #[tauri::command]
 pub fn fs_write_bytes(path: String, bytes: Vec<u8>) -> Result<(), String> {
-    atomic_write(&absolute(&path)?, &bytes)
+    let p = absolute(&path)?;
+    ensure_not_protected_vault(&p)?;
+    atomic_write(&p, &bytes)
 }
 
 #[tauri::command]
 pub fn fs_read_text(path: String) -> Result<String, String> {
-    std::fs::read_to_string(absolute(&path)?).map_err(|e| e.to_string())
+    let p = absolute(&path)?;
+    ensure_not_protected_vault(&p)?;
+    std::fs::read_to_string(p).map_err(|e| e.to_string())
 }
 
 /// File names (not paths) in a directory; empty when the directory does not exist yet.
@@ -94,6 +107,7 @@ pub fn fs_stat(path: String) -> Result<Option<FileStat>, String> {
 #[tauri::command]
 pub fn fs_remove_file(path: String) -> Result<(), String> {
     let p = absolute(&path)?;
+    ensure_not_protected_vault(&p)?;
     match std::fs::remove_file(&p) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -116,6 +130,7 @@ pub fn fs_scratch_dir(app: tauri::AppHandle, name: String) -> Result<String, Str
 #[tauri::command]
 pub async fn fs_read_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     let p = absolute(&path)?;
+    ensure_not_protected_vault(&p)?;
     let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(&p))
         .await
         .map_err(|e| e.to_string())?
@@ -265,9 +280,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_relative_and_parent_paths() {
+    fn rejects_relative_and_parent_paths_and_protected_vaults() {
         assert!(absolute("relative/file.txt").is_err());
         assert!(absolute("C:\\a\\..\\b.txt").is_err());
         assert!(fs_list_dir("C:\\definitely\\missing\\voxlab".into()).unwrap().is_empty());
+
+        // Protected vault files must be blocked across generic WebView FS IPC
+        assert!(fs_read_text("C:\\Users\\test\\AppData\\Roaming\\com.voxlab.app\\license.enc".into()).is_err());
+        assert!(fs_write_text("C:\\Users\\test\\AppData\\Roaming\\com.voxlab.app\\license.enc".into(), "{}".into()).is_err());
+        assert!(fs_write_bytes("C:\\Users\\test\\AppData\\Roaming\\com.voxlab.app\\device_profile.enc".into(), vec![1, 2]).is_err());
+        assert!(fs_remove_file("C:\\Users\\test\\AppData\\Roaming\\com.voxlab.app\\gemini_keys.enc".into()).is_err());
     }
 }

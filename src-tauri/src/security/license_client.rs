@@ -1,21 +1,44 @@
 use serde::{Deserialize, Serialize};
 
-/// Retrieves Supabase URL and anon key from runtime environment or compile-time `.env.local`
-/// injected by `src-tauri/build.rs`. Zero static secrets in git-tracked source code.
+/// Retrieves Supabase URL and anon key from compile-time polymorphically obfuscated constants.
+/// - In **Release** builds (`not(debug_assertions)`), runtime environment variable overrides are
+///   strictly ignored so an attacker cannot redirect license RPCs to a localhost mock server.
+/// - In **Debug/Test** builds (`debug_assertions`), env overrides remain available for local CI.
 pub fn get_supabase_config() -> Option<(String, String)> {
-    let url = std::env::var("VOXLAB_SUPABASE_URL")
-        .ok()
-        .or_else(|| option_env!("VOXLAB_SUPABASE_URL").map(String::from));
-    let key = std::env::var("VOXLAB_SUPABASE_ANON_KEY")
-        .ok()
-        .or_else(|| option_env!("VOXLAB_SUPABASE_ANON_KEY").map(String::from));
+    #[cfg(debug_assertions)]
+    let (url, key) = {
+        let u = std::env::var("VOXLAB_SUPABASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| super::obf::decode_supabase_url().as_str_lossy().into_owned());
+        let k = std::env::var("VOXLAB_SUPABASE_ANON_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| super::obf::decode_supabase_anon_key().as_str_lossy().into_owned());
+        (u, k)
+    };
 
-    match (url, key) {
-        (Some(u), Some(k)) if !u.trim().is_empty() && !k.trim().is_empty() => {
-            Some((u.trim().trim_end_matches('/').to_string(), k.trim().to_string()))
-        }
-        _ => None,
+    #[cfg(not(debug_assertions))]
+    let (url, key) = {
+        let u = super::obf::decode_supabase_url().as_str_lossy().into_owned();
+        let k = super::obf::decode_supabase_anon_key().as_str_lossy().into_owned();
+        (u, k)
+    };
+
+    let clean_url = url.trim().trim_end_matches('/').to_string();
+    let clean_key = key.trim().to_string();
+
+    if clean_url.is_empty() || clean_key.is_empty() {
+        return None;
     }
+
+    // Enforce HTTPS transport strictly in Release builds (prevents plaintext HTTP downgrade).
+    #[cfg(not(debug_assertions))]
+    if !clean_url.to_ascii_lowercase().starts_with("https://") {
+        return None;
+    }
+
+    Some((clean_url, clean_key))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -58,8 +81,8 @@ fn classify_http_error(code: u16) -> (&'static str, &'static str) {
     }
 }
 
-/// Calls Supabase RPC `activate_or_verify_voxlab_license_v3` via ureq (Security v3).
-/// Classifies HTTP 4xx vs 5xx vs transport errors cleanly so client/auth errors never grant Offline Grace.
+/// Calls Supabase RPC via `ureq` with proxy-environment injection disabled (`try_proxy_from_env(false)`).
+/// RPC path is decoded on demand from polymorphic compile-time storage and zeroized immediately.
 pub fn verify_with_server(
     supabase_url: &str,
     anon_key: &str,
@@ -69,10 +92,27 @@ pub fn verify_with_server(
     legacy_candidates: &[String],
     app_version: &str,
 ) -> Result<RpcLicenseResponse, String> {
+    #[cfg(not(debug_assertions))]
+    if !supabase_url.to_ascii_lowercase().starts_with("https://") {
+        return Ok(RpcLicenseResponse {
+            valid: Some(false),
+            status: "CLIENT_CONFIG_ERROR".to_string(),
+            license_type: None,
+            expires_at: None,
+            expired_at: None,
+            device_count: None,
+            max_devices: None,
+            message: Some("Giao thức kết nối máy chủ bản quyền không hợp lệ.".to_string()),
+        });
+    }
+
+    let rpc_path = super::obf::decode_rpc_activate_path();
     let url = format!(
-        "{}/rest/v1/rpc/activate_or_verify_voxlab_license_v3",
-        supabase_url.trim_end_matches('/')
+        "{}{}",
+        supabase_url.trim_end_matches('/'),
+        rpc_path.as_str_lossy()
     );
+    drop(rpc_path);
 
     let request_body = RpcLicenseRequest {
         p_license_key: license_key,
@@ -82,12 +122,27 @@ pub fn verify_with_server(
         p_app_version: app_version,
     };
 
-    let response = ureq::post(&url)
-        .set("apikey", anon_key)
-        .set("Authorization", &format!("Bearer {}", anon_key))
-        .set("Content-Type", "application/json")
+    // Disable automatic HTTP_PROXY / HTTPS_PROXY environment variable pickup so Fiddler/mitmproxy
+    // env-injection cannot silently hijack license verification traffic.
+    let agent = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
         .timeout(std::time::Duration::from_secs(10))
+        .build();
+
+    let mut auth_header = format!("Bearer {}", anon_key);
+    let response = agent
+        .post(&url)
+        .set("apikey", anon_key)
+        .set("Authorization", &auth_header)
+        .set("Content-Type", "application/json")
         .send_json(&request_body);
+
+    // Wipe temporary Bearer token string from heap
+    unsafe {
+        for b in auth_header.as_bytes_mut() {
+            std::ptr::write_volatile(b, 0);
+        }
+    }
 
     match response {
         Ok(res) => {

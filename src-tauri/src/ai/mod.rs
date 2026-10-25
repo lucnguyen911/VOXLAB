@@ -9,35 +9,42 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AiState(pub Arc<SidecarManager>);
 
-/// Dev builds run the sidecar from `<repo>/sidecar/<venv>`; release builds use bundled binaries.
+/// Dev builds run the sidecar from `<repo>/sidecar/<venv>`; release builds strictly use
+/// bundled binaries resolved relative to `current_exe()` (never overridden via env vars).
 fn sidecar_root() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("VOXLAB_SIDECAR_ROOT") {
-        let trimmed = p.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed));
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(p) = std::env::var("VOXLAB_SIDECAR_ROOT") {
+            let trimmed = p.trim();
+            if !trimmed.is_empty() {
+                return Some(PathBuf::from(trimmed));
+            }
         }
-    }
-    if cfg!(debug_assertions) {
         return Some(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("..")
                 .join("sidecar"),
         );
     }
-    None
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
 }
 
 /// Returns whether a sidecar method is a commercial AI operation subject to license guard.
-/// System health checks (`system.ping`, `system.info`, `system.shutdown`) and unload cleanup
-/// (`tts.unload`, `asr.unload`) are never blocked.
+/// System health checks (`system.ping`, `system.info`, `system.shutdown`, `tts.engines`) and
+/// unload/probe cleanup (`tts.unload`, `asr.unload`, `audio.probe`) remain unblocked.
 pub fn is_commercial_ai_method(method: &str) -> bool {
-    if method == "tts.unload" || method == "asr.unload" {
+    if method == "tts.unload" || method == "asr.unload" || method == "tts.engines" {
         return false;
     }
     method.starts_with("tts.")
         || method.starts_with("asr.")
         || method == "audio.assemble"
+        || method == "audio.validate_quality"
         || method == "subtitle.generate_srt"
+        || method == "subtitle.optimize"
 }
 
 pub fn init(app: &AppHandle) -> AiState {

@@ -1,11 +1,5 @@
 use tauri::Manager;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 #[tauri::command]
 fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -20,7 +14,11 @@ fn safe_app_data_path(base_dir: &std::path::Path, relative_path: &str) -> Result
     if rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err("relative_path must not contain '..'".to_string());
     }
-    Ok(base_dir.join(rel))
+    let resolved = base_dir.join(rel);
+    if security::license_storage::is_protected_vault_path(&resolved) {
+        return Err("ACCESS_DENIED: Truy cập trực tiếp tệp kho khóa bảo mật bị từ chối.".to_string());
+    }
+    Ok(resolved)
 }
 
 #[tauri::command]
@@ -86,8 +84,16 @@ async fn change_license_key(app: tauri::AppHandle, new_license_key: String) -> R
 
 #[tauri::command]
 fn clear_local_license_if_allowed(app: tauri::AppHandle) -> Result<(), String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    security::license_storage::clear_license_cache(&base_dir)
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = app;
+        return Err("Thao tác xóa bộ nhớ đệm bản quyền trực tiếp bị khóa ở bản thương mại.".to_string());
+    }
+    #[cfg(debug_assertions)]
+    {
+        let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        security::license_storage::clear_license_cache(&base_dir)
+    }
 }
 
 #[tauri::command]
@@ -98,6 +104,7 @@ fn exit_application(app: tauri::AppHandle) {
 #[tauri::command]
 fn save_gemini_keys_secure(app: tauri::AppHandle, payload_json: String) -> Result<(), String> {
     let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    SecurityService::require_commercial_access_if_enabled(&base_dir, "vault.save_gemini_keys")?;
     security::license_storage::save_encrypted_secret_file(
         &base_dir,
         security::license_storage::GEMINI_KEYS_VAULT_FILE,
@@ -108,6 +115,7 @@ fn save_gemini_keys_secure(app: tauri::AppHandle, payload_json: String) -> Resul
 #[tauri::command]
 fn load_gemini_keys_secure(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    SecurityService::require_commercial_access_if_enabled(&base_dir, "vault.load_gemini_keys")?;
     security::license_storage::load_encrypted_secret_file(
         &base_dir,
         security::license_storage::GEMINI_KEYS_VAULT_FILE,
@@ -162,6 +170,7 @@ fn cancel_native_http_request(request_id: String) -> Result<bool, String> {
 
 #[tauri::command]
 async fn native_http_request(
+    app: tauri::AppHandle,
     method: String,
     url: String,
     headers: std::collections::HashMap<String, String>,
@@ -169,6 +178,8 @@ async fn native_http_request(
     timeout_sec: Option<u64>,
     request_id: Option<String>,
 ) -> Result<NativeHttpResponse, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    SecurityService::require_commercial_access_if_enabled(&base_dir, "http.native_request")?;
     let req_id = request_id
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
@@ -285,19 +296,22 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            #[cfg(debug_assertions)]
             eprintln!("[voxlab] setup hook entered");
             let state = ai::init(app.handle());
             app.manage(state);
             for (label, win) in app.webview_windows() {
+                #[cfg(debug_assertions)]
                 eprintln!("[voxlab] window found: {} (visible: {:?})", label, win.is_visible());
+                let _ = label;
                 let _ = win.show();
                 let _ = win.set_focus();
             }
+            #[cfg(debug_assertions)]
             eprintln!("[voxlab] setup hook finished");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             get_app_data_dir,
             save_app_data_file,
             read_app_data_file,
@@ -332,6 +346,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
     app.run(|handle, event| {
+        #[cfg(debug_assertions)]
         eprintln!("[voxlab] run event: {:?}", event);
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = handle.try_state::<ai::AiState>() {

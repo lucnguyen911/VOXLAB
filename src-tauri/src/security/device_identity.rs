@@ -159,10 +159,12 @@ fn query_machine_guid() -> Option<String> {
             KEY_WOW64_64KEY, REG_SZ,
         };
 
-        let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Cryptography\0"
-            .encode_utf16()
-            .collect();
-        let value_name: Vec<u16> = "MachineGuid\0".encode_utf16().collect();
+        let subkey_dec = super::obf::decode_reg_crypto_subkey();
+        let val_dec = super::obf::decode_reg_machine_guid();
+        let mut subkey: Vec<u16> = subkey_dec.as_str_lossy().encode_utf16().collect();
+        subkey.push(0);
+        let mut value_name: Vec<u16> = val_dec.as_str_lossy().encode_utf16().collect();
+        value_name.push(0);
 
         unsafe {
             let mut hkey: HKEY = 0;

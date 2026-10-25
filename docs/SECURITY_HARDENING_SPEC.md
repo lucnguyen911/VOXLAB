@@ -1,0 +1,24 @@
+# Đặc Tả Kỹ Thuật: Chống Dịch Ngược & Bảo Mật Đa Lớp VoxLab (Security v3.1)
+
+## 1. Mục Tiêu & Mô Hình Mối Đe Dọa (Threat Model)
+Bảo vệ tài sản trí tuệ (thuật toán TTS/QC/Subtitle Python Sidecar + logic bản quyền Rust/Frontend) và ngăn chặn các kỹ thuật bẻ khóa phổ biến trên Windows Desktop:
+
+| Mối đe dọa (Attack Vector) | Lỗ hổng trước khi nâng cấp | Cơ chế phòng thủ Security v3.1 |
+| :--- | :--- | :--- |
+| **Quét chuỗi tĩnh (`strings` / IDA / Ghidra)** | URL Supabase, Anon Key, tên hàm RPC và DPAPI entropy nằm dạng rõ trong `.rdata` của `voxlab.exe`. | Mã hóa đa hình lúc biên dịch (`build.rs` SplitMix64 stream cipher với khóa ngẫu nhiên mỗi lần build) + giải mã trên RAM qua `black_box` + xóa sạch bộ nhớ (`ZeroizingBytes`) ngay sau khi dùng + `strip = "symbols"`, `lto = true`, `panic = "abort"`. |
+| **Vượt rào bằng Biến môi trường / Proxy / LocalStorage** | Ở bản đóng gói vẫn đọc `VOXLAB_ENFORCE_LICENSE=0`, `VOXLAB_SUPABASE_URL=http://127.0.0.1:...`, `HTTPS_PROXY`, `localStorage`. | Ở bản Release (`not(debug_assertions)` / `PROD`): khóa cứng `is_commercial_enforcement_enabled() = true`, khóa cứng URL/Key Supabase lúc build (bắt buộc `https://`), tắt tự động nhận proxy (`try_proxy_from_env(false)`), khóa `VOXLAB_SIDECAR_ROOT`. |
+| **Chỉnh sửa hoặc tráo file `license.enc` (DPAPI Replay/Tamper)** | Entropy DPAPI tĩnh (`VoxLab-License-v3`); tiến trình khác cùng user Windows có thể giải mã và sửa `expires_at` / `status`. | Entropy DPAPI động gắn chặt với HWID thiết bị + chữ ký toàn vẹn **HMAC-SHA256 (`integrity_tag`)** so khớp hằng thời gian (`constant-time`). Mọi chỉnh sửa trái phép đều bị khóa `CORRUPT_CACHE`. |
+| **Đặt Breakpoint / Patch 1 byte `is_licensed` (x64dbg / Cheat Engine)** | Kiểm tra bản quyền chỉ đọc kết quả boolean đơn giản; không phát hiện trình gỡ lỗi. | Module `anti_tamper.rs` kiểm tra `IsDebuggerPresent`, `CheckRemoteDebuggerPresent` và độ trễ bất thường (stepping breakpoint) → kích hoạt **Fail-Closed Lockout** (`SECURITY_VIOLATION`, không gây false positive cho Windows Defender) + con dấu phiên **`SessionSeal` HMAC-SHA256** được inline (`#[inline(always)]` + LTO) tại nhiều điểm IPC. |
+| **Đọc/Xóa trộm kho khóa qua WebView IPC** | Các lệnh `fs_read_bytes`, `read_app_data_file`, `fs_remove_file` chưa chặn đọc/ghi trực tiếp `license.enc` hoặc `gemini_keys.enc`. | Chặn tuyệt đối truy cập các tệp nhạy cảm (`license.enc`, `device_profile.enc`, `gemini_keys.enc`) tại biên hệ thống file Rust (`fsio.rs` & `lib.rs`); bảo vệ các lệnh IPC thương mại (`ai_request`, `native_http_request`, Gemini vault). |
+| **Chạy chui hoặc dịch ngược Python Sidecar (`pyinstxtractor` + `pycdc`)** | `voxlab-sidecar-*.exe` có thể được gọi độc lập qua stdin JSON mà không cần `voxlab.exe`; bytecode Python chưa mã hóa. | (1) **Bắt tay xác thực hai chiều HMAC-SHA256 (`system.authenticate`)** gắn với `parent_pid` + `spawn_seed` chặn gọi lẻ (`UNAUTHORIZED_HOST`). (2) Pipeline **PyArmor + PyInstaller `--onedir`** fail-closed (kiểm tra không lọt file `.py` rõ) + hỗ trợ ký số `signtool`. |
+| **Mở DevTools / Sourcemap trên WebView2** | Có thể bấm F12 / Ctrl+Shift+I / chuột phải Inspect ở bản build. | Tắt hoàn toàn sourcemap (`sourcemap: false`), loại bỏ `debugger` & legal comments lúc build, chặn tổ hợp phím DevTools & chuột phải ngoài ô nhập liệu ở chế độ `PROD`, siết chặt CSP (`object-src 'none'`, `frame-ancestors 'none'`). |
+
+---
+
+## 2. Tiêu Chí Nghiệm Thu (Acceptance Criteria)
+- **SEC-AC-01 (Zero Plaintext Binary Secrets)**: Quét nhị phân `target/release/voxlab.exe` xác nhận **0** chuỗi rõ `supabase.co`, `eyJhbGci`, `activate_or_verify_voxlab_license_v3`, `VoxLab-License-v3`.
+- **SEC-AC-02 (Release Bypass Immunity)**: Ở chế độ Release, đặt `VOXLAB_ENFORCE_LICENSE=0`, `VOXLAB_SUPABASE_URL=http://127.0.0.1:9999`, hoặc `localStorage.voxlab_enforce_license_policy = "0"` đều không thể vượt qua cổng bản quyền.
+- **SEC-AC-03 (Tamper-Evident DPAPI Vault)**: Mọi hành vi sửa đổi nội dung JSON bên trong `license.enc` rồi mã hóa lại bằng Windows DPAPI đều bị từ chối bởi chữ ký `integrity_tag` HMAC-SHA256; đồng thời kho `gemini_keys.enc` cũ vẫn giải mã tương thích ngược 100%.
+- **SEC-AC-04 (Fail-Closed Anti-Tamper & Vault FS Isolation)**: Khi cờ tamper kích hoạt, toàn bộ phiên và tác vụ thương mại bị khóa an toàn (`SECURITY_VIOLATION`). Mọi lệnh `fs_*` / `*_app_data_file` truy cập `license.enc`, `device_profile.enc`, `gemini_keys.enc` đều bị chặn ngay tại Rust.
+- **SEC-AC-05 (Authenticated Sidecar IPC & PyArmor Build)**: Tiến trình `voxlab_sidecar` ở chế độ bảo vệ từ chối mọi lệnh AI (`UNAUTHORIZED_HOST`) nếu chưa hoàn tất bắt tay hai chiều `system.authenticate` với `voxlab.exe`; script `sidecar/build_sidecars.ps1` hỗ trợ PyArmor fail-closed tương tự `Audio-Factory`.
+- **SEC-AC-06 (WebView2 & Production Bundle Hardening)**: `dist/` không chứa bất kỳ tệp `.map` nào; phím tắt DevTools bị khóa ở `PROD` nhưng thao tác cắt/dán văn bản (`Ctrl+C/V/X/A/Z`) trong ô nhập liệu vẫn hoạt động bình thường.

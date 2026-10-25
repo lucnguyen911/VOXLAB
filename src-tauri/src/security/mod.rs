@@ -1,6 +1,9 @@
+pub mod anti_tamper;
+pub mod crypto_seal;
 pub mod device_identity;
 pub mod license_client;
 pub mod license_storage;
+pub mod obf;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -99,7 +102,21 @@ fn status_default_message(status: &str) -> &'static str {
         "CLIENT_CONFIG_ERROR" => {
             "Lỗi cấu hình máy chủ bản quyền. Vui lòng cập nhật phần mềm hoặc liên hệ hỗ trợ."
         }
+        "SECURITY_VIOLATION" => anti_tamper::SECURITY_VIOLATION_MESSAGE,
         _ => "Không thể xác thực bản quyền.",
+    }
+}
+
+fn security_violation_summary() -> LicenseSummary {
+    crypto_seal::clear_authorized_session();
+    LicenseSummary {
+        is_valid: false,
+        status: "SECURITY_VIOLATION".to_string(),
+        masked_key: "Bị khóa bảo mật".to_string(),
+        license_type: "N/A".to_string(),
+        expires_at_formatted: "N/A".to_string(),
+        error_message: Some(anti_tamper::SECURITY_VIOLATION_MESSAGE.to_string()),
+        can_use_app: false,
     }
 }
 
@@ -171,9 +188,15 @@ impl SecurityService {
         base_dir: &Path,
         hwid_result: Result<String, String>,
     ) -> LicenseSummary {
+        if anti_tamper::is_environment_compromised() {
+            return security_violation_summary();
+        }
+        let timing_guard = anti_tamper::IntegrityTimingScope::enter();
+
         let current_hwid = match hwid_result {
             Ok(h) if !h.trim().is_empty() => h,
             Ok(_) => {
+                crypto_seal::clear_authorized_session();
                 return LicenseSummary {
                     is_valid: false,
                     status: "DEVICE_ID_UNAVAILABLE".to_string(),
@@ -187,6 +210,7 @@ impl SecurityService {
                 };
             }
             Err(err) => {
+                crypto_seal::clear_authorized_session();
                 return LicenseSummary {
                     is_valid: false,
                     status: "DEVICE_ID_UNAVAILABLE".to_string(),
@@ -199,11 +223,12 @@ impl SecurityService {
             }
         };
 
-        match license_storage::load_license_cache(base_dir) {
+        let result_summary = match license_storage::load_license_cache(base_dir) {
             Ok(Some(cached)) => {
                 if cached.schema_version != license_storage::LICENSE_SCHEMA_VERSION
                     || cached.hwid_version != device_identity::HWID_VERSION
                 {
+                    crypto_seal::clear_authorized_session_for_hwid(&current_hwid);
                     return LicenseSummary {
                         is_valid: false,
                         status: "CORRUPT_CACHE".to_string(),
@@ -219,6 +244,7 @@ impl SecurityService {
                 }
 
                 if cached.hwid != current_hwid {
+                    crypto_seal::clear_authorized_session_for_hwid(&current_hwid);
                     return LicenseSummary {
                         is_valid: false,
                         status: "DEVICE_MISMATCH".to_string(),
@@ -235,6 +261,7 @@ impl SecurityService {
 
                 if let Some(ref srv_status) = cached.last_server_status {
                     if is_definitive_server_rejection(srv_status) {
+                        crypto_seal::clear_authorized_session_for_hwid(&current_hwid);
                         return LicenseSummary {
                             is_valid: false,
                             status: srv_status.clone(),
@@ -251,6 +278,7 @@ impl SecurityService {
                 if now + 60 < cached.last_verified_at
                     || (cached.last_seen_at > 0 && now + 60 < cached.last_seen_at)
                 {
+                    crypto_seal::clear_authorized_session_for_hwid(&current_hwid);
                     return LicenseSummary {
                         is_valid: false,
                         status: "CLOCK_ROLLBACK".to_string(),
@@ -267,6 +295,7 @@ impl SecurityService {
 
                 if let Some(exp) = cached.expires_at {
                     if now >= exp {
+                        crypto_seal::clear_authorized_session_for_hwid(&current_hwid);
                         return LicenseSummary {
                             is_valid: false,
                             status: "EXPIRED".to_string(),
@@ -288,6 +317,16 @@ impl SecurityService {
                     DEFAULT_OFFLINE_GRACE_DAYS,
                 );
                 let is_valid = status_allows && within_grace;
+                if is_valid {
+                    crypto_seal::seal_authorized_session(
+                        &current_hwid,
+                        &cached.status,
+                        now,
+                        cached.expires_at,
+                    );
+                } else {
+                    crypto_seal::clear_authorized_session_for_hwid(&current_hwid);
+                }
 
                 LicenseSummary {
                     is_valid,
@@ -312,25 +351,36 @@ impl SecurityService {
                     can_use_app: is_valid,
                 }
             }
-            Ok(None) => LicenseSummary {
-                is_valid: false,
-                status: "NO_KEY".to_string(),
-                masked_key: "Chưa kích hoạt".to_string(),
-                license_type: "Chưa kích hoạt".to_string(),
-                expires_at_formatted: "N/A".to_string(),
-                error_message: Some("Vui lòng nhập License Key để kích hoạt phần mềm.".to_string()),
-                can_use_app: false,
-            },
-            Err(e) => LicenseSummary {
-                is_valid: false,
-                status: "CORRUPT_CACHE".to_string(),
-                masked_key: "Lỗi bộ nhớ".to_string(),
-                license_type: "N/A".to_string(),
-                expires_at_formatted: "N/A".to_string(),
-                error_message: Some(format!("Không thể giải mã bộ nhớ bản quyền: {}", e)),
-                can_use_app: false,
-            },
+            Ok(None) => {
+                crypto_seal::clear_authorized_session_for_hwid(&current_hwid);
+                LicenseSummary {
+                    is_valid: false,
+                    status: "NO_KEY".to_string(),
+                    masked_key: "Chưa kích hoạt".to_string(),
+                    license_type: "Chưa kích hoạt".to_string(),
+                    expires_at_formatted: "N/A".to_string(),
+                    error_message: Some("Vui lòng nhập License Key để kích hoạt phần mềm.".to_string()),
+                    can_use_app: false,
+                }
+            }
+            Err(e) => {
+                crypto_seal::clear_authorized_session_for_hwid(&current_hwid);
+                LicenseSummary {
+                    is_valid: false,
+                    status: "CORRUPT_CACHE".to_string(),
+                    masked_key: "Lỗi bộ nhớ".to_string(),
+                    license_type: "N/A".to_string(),
+                    expires_at_formatted: "N/A".to_string(),
+                    error_message: Some(format!("Không thể giải mã bộ nhớ bản quyền: {}", e)),
+                    can_use_app: false,
+                }
+            }
+        };
+
+        if !timing_guard.finish() {
+            return security_violation_summary();
         }
+        result_summary
     }
 
     /// Reads license summary for frontend (LICENSE-AC-11: zero raw keys to frontend).
@@ -347,6 +397,10 @@ impl SecurityService {
         raw_key: &str,
         app_version: &str,
     ) -> Result<LicenseSummary, String> {
+        if anti_tamper::is_environment_compromised() {
+            return Ok(security_violation_summary());
+        }
+
         let trimmed_key = raw_key.trim().to_uppercase();
         if trimmed_key.is_empty() {
             return Err("Vui lòng nhập License Key kích hoạt.".to_string());
@@ -359,8 +413,7 @@ impl SecurityService {
             Some(cfg) => cfg,
             None => {
                 return Err(
-                    "Chưa cấu hình máy chủ bản quyền Supabase (VOXLAB_SUPABASE_URL / VOXLAB_SUPABASE_ANON_KEY)."
-                        .to_string(),
+                    "Chưa cấu hình kết nối máy chủ bản quyền.".to_string(),
                 );
             }
         };
@@ -389,16 +442,23 @@ impl SecurityService {
                 license_key_masked: masked_key.clone(),
                 license_type: license_type.clone(),
                 hwid_version: device_identity::HWID_VERSION.to_string(),
-                hwid: identity.hwid,
+                hwid: identity.hwid.clone(),
                 status: rpc_res.status.clone(),
                 saved_at: now,
                 last_seen_at: now,
                 last_verified_at: now,
                 expires_at: rpc_res.expires_at,
                 last_server_status: Some(rpc_res.status.clone()),
+                integrity_tag: None,
             };
 
             license_storage::save_license_cache(base_dir, &cache)?;
+            crypto_seal::seal_authorized_session(
+                &identity.hwid,
+                &rpc_res.status,
+                now,
+                rpc_res.expires_at,
+            );
 
             Ok(LicenseSummary {
                 is_valid: true,
@@ -410,6 +470,7 @@ impl SecurityService {
                 can_use_app: true,
             })
         } else {
+            crypto_seal::clear_authorized_session();
             let msg = rpc_res
                 .message
                 .unwrap_or_else(|| status_default_message(&rpc_res.status).to_string());
@@ -428,6 +489,10 @@ impl SecurityService {
     /// Verifies existing cached license online on startup/refresh, with 3-day Offline Grace
     /// strictly limited to transient `NETWORK_ERROR` / `SERVER_ERROR`.
     pub fn verify(base_dir: &Path, app_version: &str) -> Result<LicenseSummary, String> {
+        if anti_tamper::is_environment_compromised() {
+            return Ok(security_violation_summary());
+        }
+
         let identity = match device_identity::get_device_identity(Some(base_dir)) {
             Ok(id) => id,
             Err(err) => {
@@ -438,6 +503,7 @@ impl SecurityService {
         let cached_opt = match license_storage::load_license_cache(base_dir) {
             Ok(opt) => opt,
             Err(err) => {
+                crypto_seal::clear_authorized_session();
                 return Ok(LicenseSummary {
                     is_valid: false,
                     status: "CORRUPT_CACHE".to_string(),
@@ -465,6 +531,7 @@ impl SecurityService {
         let (supabase_url, anon_key) = match license_client::get_supabase_config() {
             Some(cfg) => cfg,
             None => {
+                crypto_seal::clear_authorized_session();
                 return Ok(LicenseSummary {
                     is_valid: false,
                     status: "CLIENT_CONFIG_ERROR".to_string(),
@@ -472,7 +539,7 @@ impl SecurityService {
                     license_type: cached.license_type,
                     expires_at_formatted: format_epoch_date(cached.expires_at),
                     error_message: Some(
-                        "Chưa cấu hình kết nối máy chủ bản quyền Supabase.".to_string(),
+                        "Chưa cấu hình kết nối máy chủ bản quyền.".to_string(),
                     ),
                     can_use_app: false,
                 });
@@ -496,7 +563,7 @@ impl SecurityService {
                 if is_success_status(&rpc_res.status) {
                     cached.schema_version = license_storage::LICENSE_SCHEMA_VERSION;
                     cached.hwid_version = device_identity::HWID_VERSION.to_string();
-                    cached.hwid = identity.hwid;
+                    cached.hwid = identity.hwid.clone();
                     cached.status = rpc_res.status.clone();
                     cached.last_seen_at = now;
                     cached.last_verified_at = now;
@@ -509,6 +576,12 @@ impl SecurityService {
                         license_storage::mask_license_key(&cached.license_key);
 
                     license_storage::save_license_cache(base_dir, &cached)?;
+                    crypto_seal::seal_authorized_session(
+                        &identity.hwid,
+                        &rpc_res.status,
+                        now,
+                        cached.expires_at,
+                    );
 
                     Ok(LicenseSummary {
                         is_valid: true,
@@ -531,6 +604,12 @@ impl SecurityService {
                             cached.last_seen_at = now;
                         }
                         let _ = license_storage::save_license_cache(base_dir, &cached);
+                        crypto_seal::seal_authorized_session(
+                            &identity.hwid,
+                            "OFFLINE_GRACE",
+                            now,
+                            cached.expires_at,
+                        );
 
                         Ok(LicenseSummary {
                             is_valid: true,
@@ -544,6 +623,7 @@ impl SecurityService {
                             can_use_app: true,
                         })
                     } else {
+                        crypto_seal::clear_authorized_session();
                         Ok(LicenseSummary {
                             is_valid: false,
                             status: rpc_res.status.clone(),
@@ -561,6 +641,7 @@ impl SecurityService {
                     }
                 } else {
                     // Definitive rejection (EXPIRED, DISABLED, DEVICE_MISMATCH, DEVICE_LIMIT, NOT_FOUND, AUTH_ERROR, CLIENT_CONFIG_ERROR)
+                    crypto_seal::clear_authorized_session();
                     cached.status = rpc_res.status.clone();
                     cached.last_server_status = Some(rpc_res.status.clone());
                     cached.expires_at = rpc_res.expires_at.or(cached.expires_at);
@@ -595,6 +676,12 @@ impl SecurityService {
                         cached.last_seen_at = now;
                     }
                     let _ = license_storage::save_license_cache(base_dir, &cached);
+                    crypto_seal::seal_authorized_session(
+                        &identity.hwid,
+                        "OFFLINE_GRACE",
+                        now,
+                        cached.expires_at,
+                    );
 
                     Ok(LicenseSummary {
                         is_valid: true,
@@ -608,6 +695,7 @@ impl SecurityService {
                         can_use_app: true,
                     })
                 } else {
+                    crypto_seal::clear_authorized_session();
                     Ok(LicenseSummary {
                         is_valid: false,
                         status: "NETWORK_ERROR".to_string(),
@@ -632,31 +720,58 @@ impl SecurityService {
     }
 
     /// Returns whether mandatory commercial license enforcement is active at the Rust boundary.
-    /// Enabled by default (Gate E approved); can only be explicitly disabled in local test builds
-    /// via `VOXLAB_ENFORCE_LICENSE=0` / `false`.
+    /// In **Release** builds (`not(debug_assertions)`), enforcement is unconditionally locked ON
+    /// (`true`) and ignores all environment variables (`VOXLAB_ENFORCE_LICENSE`).
+    #[inline(always)]
     pub fn is_commercial_enforcement_enabled() -> bool {
-        let val = std::env::var("VOXLAB_ENFORCE_LICENSE")
-            .ok()
-            .or_else(|| option_env!("VOXLAB_ENFORCE_LICENSE").map(String::from));
+        #[cfg(not(debug_assertions))]
+        {
+            true
+        }
+        #[cfg(debug_assertions)]
+        {
+            let val = std::env::var("VOXLAB_ENFORCE_LICENSE")
+                .ok()
+                .or_else(|| option_env!("VOXLAB_ENFORCE_LICENSE").map(String::from));
 
-        match val {
-            Some(v) => {
-                let norm = v.trim().to_ascii_lowercase();
-                !(norm == "0" || norm == "false" || norm == "no" || norm == "off")
+            match val {
+                Some(v) => {
+                    let norm = v.trim().to_ascii_lowercase();
+                    !(norm == "0" || norm == "false" || norm == "no" || norm == "off")
+                }
+                None => true,
             }
-            None => true,
         }
     }
 
-    /// Centralized Rust-layer commercial feature guard.
+    /// Centralized Rust-layer commercial feature guard combining DPAPI HMAC cache verification
+    /// AND in-memory `SessionSeal` verification.
+    #[inline(always)]
     pub fn check_commercial_access_for_dir(
         base_dir: &Path,
         hwid_result: Result<String, String>,
         action_name: &str,
     ) -> Result<(), String> {
+        if anti_tamper::is_environment_compromised() {
+            return Err(format!(
+                "LICENSE_REQUIRED [SECURITY_VIOLATION]: Tác vụ thương mại '{}' bị chặn ({})",
+                action_name,
+                anti_tamper::SECURITY_VIOLATION_MESSAGE
+            ));
+        }
+
+        let hwid_copy = hwid_result.clone();
         let summary = Self::get_summary_with_hwid(base_dir, hwid_result);
         if summary.can_use_app && summary.is_valid {
-            Ok(())
+            if let Ok(ref hwid) = hwid_copy {
+                if crypto_seal::verify_session_seal_inline(hwid, now_epoch_secs()) {
+                    return Ok(());
+                }
+            }
+            Err(format!(
+                "LICENSE_REQUIRED [SESSION_SEAL_INVALID]: Tác vụ thương mại '{}' bị chặn do chữ ký phiên không hợp lệ.",
+                action_name
+            ))
         } else {
             let reason = summary
                 .error_message
@@ -668,7 +783,8 @@ impl SecurityService {
         }
     }
 
-    /// Enforces commercial license check when `is_commercial_enforcement_enabled()` is active.
+    /// Enforces commercial license check across IPC boundaries.
+    #[inline(always)]
     pub fn require_commercial_access_if_enabled(
         base_dir: &Path,
         action_name: &str,
@@ -707,7 +823,43 @@ mod tests {
             last_verified_at: now,
             expires_at,
             last_server_status: Some("ACTIVATED".to_string()),
+            integrity_tag: None,
         }
+    }
+
+    #[test]
+    fn test_anti_tamper_lockout_blocks_summary_and_commercial_guard() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "voxlab_tamper_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let hwid = "d".repeat(64);
+        let cache = make_sample_cache(&hwid, "VALID", None);
+        license_storage::save_license_cache(&temp_dir, &cache).unwrap();
+
+        assert!(SecurityService::check_commercial_access_for_dir(
+            &temp_dir,
+            Ok(hwid.clone()),
+            "tts.synthesize"
+        )
+        .is_ok());
+
+        anti_tamper::set_simulated_tamper_for_test(true);
+        let locked_summary = SecurityService::get_summary_with_hwid(&temp_dir, Ok(hwid.clone()));
+        assert!(!locked_summary.is_valid);
+        assert!(!locked_summary.can_use_app);
+        assert_eq!(locked_summary.status, "SECURITY_VIOLATION");
+
+        let blocked =
+            SecurityService::check_commercial_access_for_dir(&temp_dir, Ok(hwid), "tts.synthesize");
+        assert!(blocked.is_err());
+        assert!(blocked.unwrap_err().contains("SECURITY_VIOLATION"));
+
+        anti_tamper::set_simulated_tamper_for_test(false);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -811,7 +963,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let hwid = "a".repeat(64);
+        let hwid = "d".repeat(64);
         let cache = make_sample_cache(&hwid, "VALID", None);
         license_storage::save_license_cache(&temp_dir, &cache).unwrap();
 
