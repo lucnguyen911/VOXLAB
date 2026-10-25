@@ -3753,7 +3753,7 @@ def _reduce_to_core_defects(issues: list[dict[str, Any]], asr_words: list[dict[s
         tr = iss.get("timeRange") or [0.0, 0.0]
         ts = format_timestamp(float(tr[0]) if tr else 0.0)
         if code == "ABNORMAL_PAUSE":
-            if iss.get("pauseContext") == "phrase_internal":
+            if iss.get("pauseContext") in ("phrase_internal", "misplaced_pause"):
                 kept.append(iss)
             continue
         # Number reading (digits, number words, currency) is outside the QC scope
@@ -3992,6 +3992,107 @@ def detect_phrase_internal_pauses(
                 "pauseContext": "phrase_internal",
                 "evidence": f"silence={silence:.3f}s threshold={threshold:.2f}s head={left}",
             })
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Misplaced pause (v3.7.0)
+# ---------------------------------------------------------------------------
+# TTS sometimes moves a comma pause one word too early: "Every single | month, seventy" instead of
+# "Every single month, | seventy". A 50-90 ms voice cut alone is common in connected TTS speech, so it is only
+# reported when the punctuation right after it is read through without any pause.
+MISPLACED_PAUSE_MAX_PUNCT_SILENCE_SEC = 0.08   # the comma is effectively skipped ...
+MISPLACED_PAUSE_MAX_PUNCT_CUT_SEC = 0.03       # ... with (almost) no voice cut at all
+MISPLACED_PAUSE_MIN_EARLY_CUT_SEC = 0.05       # while the boundary one word earlier has a clear voice cut
+
+
+def _voice_cut_sec(audio_data: np.ndarray, sample_rate: int, t0: float, t1: float, threshold: float = 0.002) -> float:
+    """Longest run of near-digital silence (5 ms frames) inside [t0, t1], i.e. where voicing is fully cut."""
+    hop = max(1, int(round(0.005 * sample_rate)))
+    a = max(0, int(round(t0 * sample_rate)))
+    b = min(audio_data.size, int(round(t1 * sample_rate)))
+    if b - a < 2 * hop:
+        return 0.0
+    frames = np.lib.stride_tricks.sliding_window_view(audio_data[a:b], hop)[::hop]
+    silent = np.sqrt(np.mean(np.square(frames, dtype=np.float32), axis=1)) < threshold
+    best = cur = 0
+    for is_silent in silent:
+        cur = cur + 1 if is_silent else 0
+        best = max(best, cur)
+    return round(best * hop / sample_rate, 3)
+
+
+def detect_misplaced_punctuation_pauses(
+    text: str,
+    asr_words: list[dict[str, Any]],
+    audio_data: np.ndarray,
+    sample_rate: int,
+) -> list[dict[str, Any]]:
+    """Flags a pause moved one word before an in-sentence comma/semicolon/colon that is itself read through.
+
+    Requires the two script words before the punctuation to match Whisper exactly and consecutively; the word
+    after the punctuation may be written differently (e.g. 'seventy' -> '$70').
+    """
+    if audio_data is None or sample_rate <= 0 or not text or not asr_words:
+        return []
+    source_words, delimiters = tokenize_text_with_delimiters(text)
+    src_clean = [clean_word(w) for w in source_words]
+    asr_clean = [clean_word(str(w.get("word", ""))) for w in asr_words]
+    src_to_asr: dict[int, int] = {}
+    for block in difflib.SequenceMatcher(None, src_clean, asr_clean, autojunk=False).get_matching_blocks():
+        for off in range(block.size):
+            src_to_asr[block.a + off] = block.b + off
+
+    issues: list[dict[str, Any]] = []
+    for i in range(1, len(source_words) - 1):
+        punct = delimiters[i + 1]
+        if not re.search(r"[,;:]", punct) or re.search(r"[.!?]", punct):
+            continue
+        if has_punctuation_boundary(delimiters[i], source_words[i]):
+            continue
+        j_prev, j_cur = src_to_asr.get(i - 1), src_to_asr.get(i)
+        if j_prev is None or j_cur is None or j_cur != j_prev + 1 or j_cur + 1 >= len(asr_words):
+            continue
+        w_prev, w_cur, w_next = asr_words[j_prev], asr_words[j_cur], asr_words[j_cur + 1]
+        if min(float(w.get("probability", 1.0)) for w in (w_prev, w_cur, w_next)) < 0.50:
+            continue
+        mid_prev = 0.5 * (float(w_prev.get("startSec", 0.0)) + float(w_prev.get("endSec", 0.0)))
+        mid_cur = 0.5 * (float(w_cur.get("startSec", 0.0)) + float(w_cur.get("endSec", 0.0)))
+        mid_next = 0.5 * (float(w_next.get("startSec", 0.0)) + float(w_next.get("endSec", 0.0)))
+
+        punct_silence = _boundary_silence_run_sec(
+            audio_data, sample_rate,
+            float(w_cur.get("startSec", 0.0)), float(w_cur.get("endSec", 0.0)),
+            float(w_next.get("startSec", 0.0)), float(w_next.get("endSec", 0.0)),
+        )
+        if punct_silence >= MISPLACED_PAUSE_MAX_PUNCT_SILENCE_SEC:
+            continue
+        if _voice_cut_sec(audio_data, sample_rate, mid_cur, mid_next) >= MISPLACED_PAUSE_MAX_PUNCT_CUT_SEC:
+            continue
+        early_cut = _voice_cut_sec(audio_data, sample_rate, mid_prev, mid_cur)
+        if early_cut < MISPLACED_PAUSE_MIN_EARLY_CUT_SEC:
+            continue
+
+        raw_prev = source_words[i - 1].strip(" ,.;:!?\"'()")
+        raw_cur = source_words[i].strip(" ,.;:!?\"'()")
+        raw_next = source_words[i + 1].strip(" ,.;:!?\"'()")
+        mark = punct.strip() or ","
+        t_cut = float(w_prev.get("endSec", mid_prev))
+        issues.append({
+            "severity": "warning",
+            "code": "ABNORMAL_PAUSE",
+            "message": (
+                f'Ngắt sai chỗ: nghỉ sau "{raw_prev}" nhưng đọc lướt dấu "{mark}" sau "{raw_cur}" '
+                f'("{raw_prev} ‖ {raw_cur}{mark} {raw_next}") — khoảng {format_timestamp(t_cut)}. Vui lòng nghe lại.'
+            ),
+            "words": [clean_word(raw_prev), clean_word(raw_cur)],
+            "timeRange": [round(mid_prev, 3), round(float(w_next.get("startSec", mid_next)), 3)],
+            "pauseContext": "misplaced_pause",
+            "evidence": (
+                f"early_cut={early_cut * 1000:.0f}ms punct_silence={punct_silence * 1000:.0f}ms "
+                f"punct='{mark}'"
+            ),
+        })
     return issues
 
 
@@ -7100,6 +7201,13 @@ def validate_audio_quality(
                 )
             except Exception as pause_err:
                 log(f"[audio_quality] Phrase pause check failed: {pause_err}")
+            try:
+                # Step 5: Comma pause moved one word too early ('Every single | month, seventy')
+                alignment_issues.extend(
+                    detect_misplaced_punctuation_pauses(text, detected_words, data_wave, sr_wave)
+                )
+            except Exception as misplaced_err:
+                log(f"[audio_quality] Misplaced pause check failed: {misplaced_err}")
         t_pause_ms = round((time.perf_counter() - t_pause0) * 1000.0, 2)
         for iss in alignment_issues:
             iss["asrModelId"] = active_model_id

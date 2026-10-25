@@ -3642,6 +3642,45 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual([(i["code"], i.get("pauseContext")) for i in core], [("ABNORMAL_PAUSE", "phrase_internal")])
 
 
+    def test_v370_misplaced_comma_pause(self):
+        # TTS moved the comma pause one word early: "Every single | month, seventy dollars"
+        text = "Every single month, seventy dollars vanish."
+        bad_audio, sr, bad_words = self._phrase_audio(
+            [("Every", 0.30, 0.0), ("single", 0.30, 0.08), ("month,", 0.30, 0.0),
+             ("$70", 0.35, 0.0), ("dollars", 0.30, 0.0), ("vanish.", 0.35, 0.0)]
+        )
+        issues = audio_quality.detect_misplaced_punctuation_pauses(text, bad_words, bad_audio, sr)
+        self.assertEqual(len(issues), 1, issues)
+        self.assertEqual(issues[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues[0]["pauseContext"], "misplaced_pause")
+        self.assertEqual(issues[0]["words"], ["single", "month"])
+
+        # Correct reading: no break before 'month', normal pause at the comma -> nothing reported
+        ok_audio, sr, ok_words = self._phrase_audio(
+            [("Every", 0.30, 0.0), ("single", 0.30, 0.0), ("month,", 0.30, 0.25),
+             ("$70", 0.35, 0.0), ("dollars", 0.30, 0.0), ("vanish.", 0.35, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_misplaced_punctuation_pauses(text, ok_words, ok_audio, sr), [])
+
+        # A small gap before 'month' while the comma pause is still present is normal connected speech
+        mixed_audio, sr, mixed_words = self._phrase_audio(
+            [("Every", 0.30, 0.0), ("single", 0.30, 0.08), ("month,", 0.30, 0.25),
+             ("$70", 0.35, 0.0), ("dollars", 0.30, 0.0), ("vanish.", 0.35, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_misplaced_punctuation_pauses(text, mixed_words, mixed_audio, sr), [])
+
+        # Comma read through without any earlier break: not a misplaced pause (not reported)
+        flat_audio, sr, flat_words = self._phrase_audio(
+            [("Every", 0.30, 0.0), ("single", 0.30, 0.0), ("month,", 0.30, 0.0),
+             ("$70", 0.35, 0.0), ("dollars", 0.30, 0.0), ("vanish.", 0.35, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_misplaced_punctuation_pauses(text, flat_words, flat_audio, sr), [])
+
+        # The core-scope reducer keeps misplaced-pause findings
+        core = audio_quality._reduce_to_core_defects(issues, bad_words)
+        self.assertEqual([i.get("pauseContext") for i in core], ["misplaced_pause"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
