@@ -67,6 +67,75 @@ export function getDefaultOutputSnapshot(): BatchJobOutputSnapshot {
   };
 }
 
+export const BATCH_GLOBAL_OUTPUT_STORAGE_KEY = "voxlab_batch_output_settings";
+
+export function loadBatchGlobalOutputSettings(fallbackDir = ""): BatchJobOutputSnapshot {
+  const base: BatchJobOutputSnapshot = {
+    ...getDefaultOutputSnapshot(),
+    resolvedOutputDirectory: fallbackDir,
+    flatOutputDirectory: true,
+  };
+  try {
+    const storage =
+      typeof window !== "undefined" && window.localStorage
+        ? window.localStorage
+        : typeof globalThis !== "undefined" && (globalThis as any).localStorage
+        ? (globalThis as any).localStorage
+        : null;
+    if (!storage) return base;
+    const raw = storage.getItem(BATCH_GLOBAL_OUTPUT_STORAGE_KEY);
+    if (!raw) return base;
+    const parsed = JSON.parse(raw);
+    return {
+      resolvedOutputDirectory:
+        typeof parsed.resolvedOutputDirectory === "string" && parsed.resolvedOutputDirectory.trim()
+          ? parsed.resolvedOutputDirectory.trim()
+          : typeof parsed.outputPath === "string" && parsed.outputPath.trim()
+          ? parsed.outputPath.trim()
+          : fallbackDir,
+      saveInSourceFolder:
+        typeof parsed.saveInSourceFolder === "boolean" ? parsed.saveInSourceFolder : false,
+      flatOutputDirectory:
+        typeof parsed.flatOutputDirectory === "boolean"
+          ? parsed.flatOutputDirectory
+          : !parsed.saveInSourceFolder,
+      collisionPolicy: ["auto_rename", "overwrite", "skip"].includes(parsed.collisionPolicy)
+        ? parsed.collisionPolicy
+        : "auto_rename",
+      outputAudioFormat: parsed.outputAudioFormat === "mp3" ? "mp3" : "wav",
+      outputSubtitleFormat: parsed.outputSubtitleFormat === "vtt" ? "vtt" : "srt",
+    };
+  } catch {
+    return base;
+  }
+}
+
+export function saveBatchGlobalOutputSettings(settings: BatchJobOutputSnapshot): void {
+  try {
+    const storage =
+      typeof window !== "undefined" && window.localStorage
+        ? window.localStorage
+        : typeof globalThis !== "undefined" && (globalThis as any).localStorage
+        ? (globalThis as any).localStorage
+        : null;
+    if (!storage) return;
+    storage.setItem(
+      BATCH_GLOBAL_OUTPUT_STORAGE_KEY,
+      JSON.stringify({
+        resolvedOutputDirectory: settings.resolvedOutputDirectory || "",
+        outputPath: settings.resolvedOutputDirectory || "",
+        saveInSourceFolder: Boolean(settings.saveInSourceFolder),
+        flatOutputDirectory: Boolean(settings.flatOutputDirectory),
+        collisionPolicy: settings.collisionPolicy || "auto_rename",
+        outputAudioFormat: settings.outputAudioFormat || "wav",
+        outputSubtitleFormat: settings.outputSubtitleFormat || "srt",
+      })
+    );
+  } catch {
+    // Ignore storage errors in restricted environments
+  }
+}
+
 /**
  * Recursively removes secrets (keys, tokens, passwords) to enforce Zero Secrets Invariant
  */

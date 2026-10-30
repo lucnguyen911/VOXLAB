@@ -10,23 +10,41 @@ import {
   SlidersHorizontal,
   Check,
 } from "lucide-react";
-import { BatchTaskConfigMap } from "../../types/batch";
+import {
+  BatchTaskConfigMap,
+  BatchJobOutputSnapshot,
+  BatchCollisionPolicy,
+} from "../../types/batch";
 import { useI18n } from "../../i18n/context";
 import { loadSubtitleSettings } from "../../services/subtitle/profiles";
+import {
+  loadBatchGlobalOutputSettings,
+  saveBatchGlobalOutputSettings,
+} from "../../services/batch/configSnapshotResolver";
+import { getDefaultBatchOutputDir } from "../../services/batch/batchRuntime";
+import { isTauriRuntime } from "../../services/ai/tauriBackend";
 
 export interface GlobalDefaultsModalProps {
   isOpen: boolean;
   onClose: () => void;
   globalDefaults: BatchTaskConfigMap;
-  onSaveDefaults: (defaults: BatchTaskConfigMap) => void;
+  globalOutputDefaults?: BatchJobOutputSnapshot;
+  onSaveDefaults: (
+    defaults: BatchTaskConfigMap,
+    outputDefaults: BatchJobOutputSnapshot
+  ) => void;
   selectedJobCount: number;
-  onApplyToSelected: (defaults: BatchTaskConfigMap) => void;
+  onApplyToSelected: (
+    defaults: BatchTaskConfigMap,
+    outputDefaults: BatchJobOutputSnapshot
+  ) => void;
 }
 
 export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
   isOpen,
   onClose,
   globalDefaults,
+  globalOutputDefaults,
   onSaveDefaults,
   selectedJobCount,
   onApplyToSelected,
@@ -43,14 +61,49 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
     ...globalDefaults,
   });
 
+  const [localOutput, setLocalOutput] = useState<BatchJobOutputSnapshot>(() => {
+    const initial =
+      globalOutputDefaults ||
+      loadBatchGlobalOutputSettings(getDefaultBatchOutputDir());
+    return {
+      ...initial,
+      resolvedOutputDirectory:
+        initial.resolvedOutputDirectory ||
+        getDefaultBatchOutputDir() ||
+        "C:\\Users\\lucng\\OneDrive\\Documents\\VoxLab\\Batch_Export",
+      flatOutputDirectory: initial.saveInSourceFolder ? false : true,
+    };
+  });
+
+  const handleBrowseFolder = async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: localOutput.resolvedOutputDirectory || undefined,
+      });
+      if (typeof picked === "string" && picked.trim()) {
+        setLocalOutput((prev) => ({
+          ...prev,
+          resolvedOutputDirectory: picked.trim(),
+        }));
+      }
+    } catch (err) {
+      console.error("Không thể mở hộp thoại chọn thư mục:", err);
+    }
+  };
+
   const handleApply = () => {
     if (selectedJobCount === 0) return;
-    onApplyToSelected(localDefaults);
+    onApplyToSelected(localDefaults, localOutput);
     onClose();
   };
 
   const handleSaveDefault = () => {
-    onSaveDefaults(localDefaults);
+    saveBatchGlobalOutputSettings(localOutput);
+    onSaveDefaults(localDefaults, localOutput);
     onClose();
   };
 
@@ -160,31 +213,189 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
           {/* TAB 1: XUẤT & TỆP */}
           {activeTab === "general" && (
             <div className="space-y-4">
+              {/* Chế độ vị trí lưu kết quả */}
               <div>
-                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
-                  Định dạng âm thanh đầu ra
+                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1.5">
+                  Chế độ thư mục lưu kết quả
                 </label>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <button
                     type="button"
                     onClick={() =>
-                      setLocalDefaults((prev) => ({
+                      setLocalOutput((prev) => ({
                         ...prev,
-                        tts: { ...(prev.tts || ({} as any)), volume: 100 },
+                        saveInSourceFolder: false,
+                        flatOutputDirectory: true,
                       }))
                     }
-                    className="p-3 rounded-lg border border-borderDefault bg-surface2 text-left"
+                    className={`p-3 rounded-lg border text-left transition-colors cursor-pointer ${
+                      !localOutput.saveInSourceFolder
+                        ? "border-accent bg-accent/10"
+                        : "border-borderDefault bg-surface2 hover:bg-surface3/60"
+                    }`}
                   >
-                    <div className="font-bold text-textPrimary">WAV (Không nén)</div>
-                    <div className="text-[11px] text-textMuted">Tương thích tối đa cho hậu kỳ</div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-textPrimary">
+                        Lưu toàn bộ vào 1 thư mục
+                      </span>
+                      <span
+                        className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                          !localOutput.saveInSourceFolder
+                            ? "border-accent bg-accent"
+                            : "border-borderDefault"
+                        }`}
+                      >
+                        {!localOutput.saveInSourceFolder && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-slate-950" />
+                        )}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-textMuted leading-relaxed">
+                      Toàn bộ danh sách tệp sẽ được xuất chung vào 1 thư mục đích cố định bên dưới.
+                    </div>
                   </button>
+
                   <button
                     type="button"
-                    className="p-3 rounded-lg border border-borderDefault bg-surface2 text-left opacity-80"
+                    onClick={() =>
+                      setLocalOutput((prev) => ({
+                        ...prev,
+                        saveInSourceFolder: true,
+                        flatOutputDirectory: false,
+                      }))
+                    }
+                    className={`p-3 rounded-lg border text-left transition-colors cursor-pointer ${
+                      localOutput.saveInSourceFolder
+                        ? "border-accent bg-accent/10"
+                        : "border-borderDefault bg-surface2 hover:bg-surface3/60"
+                    }`}
                   >
-                    <div className="font-bold text-textPrimary">MP3 (Chuẩn nén)</div>
-                    <div className="text-[11px] text-textMuted">Tiết kiệm dung lượng lưu trữ</div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-textPrimary">
+                        Tạo folder theo tên file tại thư mục gốc
+                      </span>
+                      <span
+                        className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                          localOutput.saveInSourceFolder
+                            ? "border-accent bg-accent"
+                            : "border-borderDefault"
+                        }`}
+                      >
+                        {localOutput.saveInSourceFolder && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-slate-950" />
+                        )}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-textMuted leading-relaxed">
+                      Mỗi tệp tự tạo 1 folder trùng tên tệp gốc ngay trong chính thư mục chứa tệp đó.
+                    </div>
                   </button>
+                </div>
+              </div>
+
+              {/* Thư mục xuất kết quả */}
+              <div>
+                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
+                  Thư mục xuất kết quả
+                </label>
+                {localOutput.saveInSourceFolder ? (
+                  <div className="w-full bg-surface2/60 border border-borderDefault rounded-lg px-3 py-2 text-xs text-textSecondary font-mono">
+                    &lt;Thư mục chứa file gốc&gt;\&lt;Tên file gốc&gt;\ (Tự động tạo theo từng tệp)
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={localOutput.resolvedOutputDirectory}
+                      onChange={(e) =>
+                        setLocalOutput((prev) => ({
+                          ...prev,
+                          resolvedOutputDirectory: e.target.value,
+                        }))
+                      }
+                      className="flex-1 bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary font-mono focus:border-accent focus:outline-none"
+                      placeholder="C:\Users\...\Documents\VoxLab\Batch_Export"
+                    />
+                    {isTauriRuntime() && (
+                      <button
+                        type="button"
+                        onClick={handleBrowseFolder}
+                        className="px-3 py-1.5 bg-surface2 hover:bg-surface3 border border-borderDefault rounded-lg text-xs font-semibold text-textPrimary transition-colors cursor-pointer shrink-0"
+                      >
+                        Chọn...
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Chính sách trùng tên file */}
+              <div>
+                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
+                  Chính sách trùng tên file
+                </label>
+                <select
+                  value={localOutput.collisionPolicy}
+                  onChange={(e) =>
+                    setLocalOutput((prev) => ({
+                      ...prev,
+                      collisionPolicy: e.target.value as BatchCollisionPolicy,
+                    }))
+                  }
+                  className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none"
+                >
+                  <option value="auto_rename">Tự động đổi tên (_001, _002)</option>
+                  <option value="overwrite">Ghi đè file cũ</option>
+                  <option value="skip">Bỏ qua nếu đã tồn tại</option>
+                </select>
+              </div>
+
+              {/* Định dạng Audio & Định dạng Phụ đề */}
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
+                    Định dạng Audio
+                  </label>
+                  <select
+                    value={localOutput.outputAudioFormat || "wav"}
+                    onChange={(e) =>
+                      setLocalOutput((prev) => ({
+                        ...prev,
+                        outputAudioFormat: e.target.value as "wav" | "mp3",
+                      }))
+                    }
+                    className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none"
+                  >
+                    <option value="wav">WAV (Không nén)</option>
+                    <option value="mp3">MP3 (Chuẩn nén)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
+                    Định dạng Phụ đề
+                  </label>
+                  <select
+                    value={localOutput.outputSubtitleFormat || "srt"}
+                    onChange={(e) => {
+                      const fmt = e.target.value as "srt" | "vtt";
+                      setLocalOutput((prev) => ({
+                        ...prev,
+                        outputSubtitleFormat: fmt,
+                      }));
+                      setLocalDefaults((prev) => ({
+                        ...prev,
+                        transcription: {
+                          ...(prev.transcription || ({} as any)),
+                          outputFormat: fmt,
+                        },
+                      }));
+                    }}
+                    className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none"
+                  >
+                    <option value="srt">SRT (SubRip)</option>
+                    <option value="vtt">VTT (WebVTT)</option>
+                  </select>
                 </div>
               </div>
             </div>

@@ -84,6 +84,9 @@ export function resolveJobOutputDirectory(
     baseDir = getFileDirectory(job.sourceFilePath);
   } else {
     baseDir = configuredOutputPath;
+    if (outputCfg?.flatOutputDirectory && !disambiguator) {
+      return normalizePath(baseDir);
+    }
   }
 
   let folderName = getFileStem(job.sourceFileName || job.sourceFilePath || "job_output");
@@ -285,7 +288,12 @@ export const OutputResolver = {
   isArtifactModifiedExternally,
   resolveOutputPath: (
     sourceFilePath: string,
-    outputSnapshot: { resolvedOutputDirectory: string; saveInSourceFolder?: boolean; collisionPolicy?: BatchCollisionPolicy },
+    outputSnapshot: {
+      resolvedOutputDirectory: string;
+      saveInSourceFolder?: boolean;
+      flatOutputDirectory?: boolean;
+      collisionPolicy?: BatchCollisionPolicy;
+    },
     extension: string,
     checkPathExists: (p: string) => boolean = () => false
   ) => {
@@ -294,7 +302,10 @@ export const OutputResolver = {
         ? getFileDirectory(sourceFilePath)
         : outputSnapshot.resolvedOutputDirectory?.trim() || "./output";
     const subfolder = getFileStem(sourceFilePath || "output");
-    const fullDir = normalizePath(`${baseDir}/${subfolder}`);
+    const fullDir =
+      !outputSnapshot.saveInSourceFolder && outputSnapshot.flatOutputDirectory
+        ? normalizePath(baseDir)
+        : normalizePath(`${baseDir}/${subfolder}`);
     const res = resolveArtifactPath({
       outputDir: fullDir,
       baseName: subfolder,

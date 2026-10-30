@@ -51,6 +51,7 @@ function normalizeOutputConfig(output: Record<string, unknown>): Record<string, 
   return {
     resolvedOutputDirectory: output.resolvedOutputDirectory || "",
     saveInSourceFolder: Boolean(output.saveInSourceFolder),
+    flatOutputDirectory: Boolean(output.flatOutputDirectory),
     collisionPolicy: output.collisionPolicy || "auto_rename",
     outputAudioFormat: output.outputAudioFormat || "wav",
     outputSubtitleFormat: output.outputSubtitleFormat || "srt",

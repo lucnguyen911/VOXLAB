@@ -128,6 +128,43 @@ describe("OutputResolver & Safety Invariants (TASK-06 / AC-13, AC-17, AC-18, AC-
       const resolvedDir = resolveJobOutputDirectory(job, "part2");
       assert.equal(resolvedDir, "F:/VoxLabExports/voiceover_part2");
     });
+
+    it("resolves directly to the shared target folder when flatOutputDirectory = true and saveInSourceFolder = false", () => {
+      const job: BatchJob = {
+        id: "job-flat",
+        stage: "queued",
+        queueOrder: 4,
+        sourceFilePath: "G:/Projects/29/content.docx",
+        sourceFileName: "content.docx",
+        sourceFileSize: 2048,
+        sourceFileMtime: 1000,
+        fileKind: "text",
+        selectedTasks: ["tts"],
+        executionSequence: ["tts"],
+        currentStepIndex: 0,
+        configOverrides: {},
+        hasCustomConfig: false,
+        outputSnapshot: {
+          saveInSourceFolder: false,
+          flatOutputDirectory: true,
+          resolvedOutputDirectory: "C:/Users/lucng/OneDrive/Documents/VoxLab/Batch_Export",
+          collisionPolicy: "auto_rename",
+          outputAudioFormat: "wav",
+          outputSubtitleFormat: "srt",
+        },
+        artifacts: { ownedArtifactPaths: [] },
+        status: "waiting",
+        progressPct: 0,
+        stepResults: {},
+        createdAt: 1000,
+      };
+
+      const resolvedDir = resolveJobOutputDirectory(job);
+      assert.equal(
+        resolvedDir,
+        "C:/Users/lucng/OneDrive/Documents/VoxLab/Batch_Export"
+      );
+    });
   });
 
   describe("AC-17: External Modification Protection > Global Collision Policy", () => {

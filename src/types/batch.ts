@@ -170,6 +170,7 @@ export type BatchCollisionPolicy = "auto_rename" | "overwrite" | "skip";
 export interface BatchJobOutputSnapshot {
   resolvedOutputDirectory: string;
   saveInSourceFolder: boolean;
+  flatOutputDirectory?: boolean;
   collisionPolicy: BatchCollisionPolicy;
   outputAudioFormat?: "wav" | "mp3";
   outputSubtitleFormat?: "srt" | "vtt";
@@ -253,6 +254,7 @@ export interface BatchJob {
 export interface BatchSessionSettings {
   outputDirectory: string;
   saveInSourceFolder: boolean;
+  flatOutputDirectory?: boolean;
   collisionPolicy: "auto_rename" | "overwrite" | "skip";
   outputAudioFormat?: "wav" | "mp3";
   outputSubtitleFormat?: "srt" | "vtt";

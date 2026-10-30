@@ -13,7 +13,11 @@ import { getFileCompatibilityReport, checkTaskCompatibility } from "../services/
 import { validateDialogueScript } from "../services/batch/dialogueValidator";
 import { computeExecutionSequence } from "../services/batch/dependencyResolver";
 import { computeJobConfigDiff } from "../services/batch/configDiffResolver";
-import { getJobWorkingConfig, getDefaultOutputSnapshot } from "../services/batch/configSnapshotResolver";
+import {
+  getJobWorkingConfig,
+  getDefaultOutputSnapshot,
+  applyGlobalDefaultsToJobs,
+} from "../services/batch/configSnapshotResolver";
 import { BatchTopBar } from "./batch/BatchTopBar";
 import { BatchSubToolbar } from "./batch/BatchSubToolbar";
 import { FileTaskMatrixTable } from "./batch/FileTaskMatrixTable";
@@ -171,6 +175,7 @@ export const BatchWorkspace: React.FC = () => {
 
       const seq = computeExecutionSequence(defaultTasks, compat.fileKind);
 
+      const globalOut = orchestrator.getGlobalOutputDefaults(getDefaultBatchOutputDir());
       const job: BatchJob = {
         id: `job-${Date.now()}-${index}`,
         sourceFilePath: file.path,
@@ -183,16 +188,19 @@ export const BatchWorkspace: React.FC = () => {
         selectedTasks: defaultTasks,
         executionSequence: seq,
         currentStepIndex: 0,
-        configOverrides: {},
+        configOverrides: {
+          ...orchestrator.getGlobalDefaults(),
+        },
         hasCustomConfig: false,
         stepResults: {},
         status: "waiting",
         progressPct: 0,
         outputSnapshot: {
           ...getDefaultOutputSnapshot(),
+          ...globalOut,
           // Desktop runtime needs an absolute folder; browser preview keeps the template value.
           resolvedOutputDirectory:
-            getDefaultOutputSnapshot().resolvedOutputDirectory || getDefaultBatchOutputDir(),
+            globalOut.resolvedOutputDirectory || getDefaultBatchOutputDir(),
         },
         artifacts: { ownedArtifactPaths: [] },
         createdAt: Date.now(),
@@ -634,22 +642,43 @@ export const BatchWorkspace: React.FC = () => {
         isOpen={isGlobalModalOpen}
         onClose={() => setIsGlobalModalOpen(false)}
         globalDefaults={orchestrator.getGlobalDefaults()}
-        onSaveDefaults={(defs) => orchestrator.setGlobalDefaults(defs)}
-        selectedJobCount={selectedJobIds.size}
-        onApplyToSelected={(defs) => {
+        globalOutputDefaults={orchestrator.getGlobalOutputDefaults(getDefaultBatchOutputDir())}
+        onSaveDefaults={(defs, outDefs) => {
+          orchestrator.setGlobalDefaults(defs);
+          orchestrator.setGlobalOutputDefaults(outDefs);
+          // Also propagate new defaults to uncustomized jobs in staging/waiting
           const updated = jobs.map((job) => {
-            if (selectedJobIds.has(job.id)) {
+            if (!job.hasCustomConfig && (job.stage === "staging" || job.status === "waiting")) {
               return {
                 ...job,
                 configOverrides: {
                   ...job.configOverrides,
                   ...defs,
+                  dialogue: defs.dialogue
+                    ? {
+                        ...defs.dialogue,
+                        characterVoices: job.configOverrides.dialogue?.characterVoices || {},
+                      }
+                    : job.configOverrides.dialogue,
                 },
-                hasCustomConfig: true,
+                outputSnapshot: {
+                  ...job.outputSnapshot,
+                  ...outDefs,
+                },
               };
             }
             return job;
           });
+          orchestrator.setJobs(updated);
+        }}
+        selectedJobCount={selectedJobIds.size}
+        onApplyToSelected={(defs, outDefs) => {
+          const updated = applyGlobalDefaultsToJobs(
+            jobs,
+            Array.from(selectedJobIds),
+            defs,
+            outDefs
+          );
           orchestrator.setJobs(updated);
         }}
       />
@@ -673,8 +702,21 @@ export const BatchWorkspace: React.FC = () => {
             orchestrator.setJobs(updated);
           }}
           onRestoreSnapshot={(id) => {
+            const globalOut = orchestrator.getGlobalOutputDefaults(getDefaultBatchOutputDir());
             const updated = jobs.map((j) =>
-              j.id === id ? { ...j, configOverrides: {}, hasCustomConfig: false } : j
+              j.id === id
+                ? {
+                    ...j,
+                    configOverrides: {},
+                    outputSnapshot: {
+                      ...getDefaultOutputSnapshot(),
+                      ...globalOut,
+                      resolvedOutputDirectory:
+                        globalOut.resolvedOutputDirectory || getDefaultBatchOutputDir(),
+                    },
+                    hasCustomConfig: false,
+                  }
+                : j
             );
             orchestrator.setJobs(updated);
           }}

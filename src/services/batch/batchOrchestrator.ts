@@ -32,11 +32,14 @@ import {
   BatchTaskType,
   BatchStepResult,
   BatchTaskConfigMap,
+  BatchJobOutputSnapshot,
 } from "../../types/batch";
 import {
   resolveJobOwnedEffectiveConfig,
   getDefaultTaskConfigMap,
   getJobWorkingConfig,
+  loadBatchGlobalOutputSettings,
+  saveBatchGlobalOutputSettings,
 } from "./configSnapshotResolver";
 import { computeJobConfigDiff } from "./configDiffResolver";
 import {
@@ -88,6 +91,7 @@ export class BatchOrchestrator {
   private pauseRequested = false;
   private listeners = new Set<OrchestratorListener>();
   private globalDefaults: BatchTaskConfigMap = getDefaultTaskConfigMap();
+  private globalOutputDefaults: BatchJobOutputSnapshot = loadBatchGlobalOutputSettings();
   private persistChain: Promise<void> = Promise.resolve();
   /** Durable-queue persistence on structural changes (enabled by the production runtime). */
   public autoPersist = false;
@@ -170,6 +174,25 @@ export class BatchOrchestrator {
    */
   getGlobalDefaults(): BatchTaskConfigMap {
     return { ...this.globalDefaults };
+  }
+
+  /**
+   * Updates global output defaults template and persists to localStorage.
+   */
+  setGlobalOutputDefaults(outputDefaults: BatchJobOutputSnapshot): void {
+    this.globalOutputDefaults = { ...outputDefaults };
+    saveBatchGlobalOutputSettings(this.globalOutputDefaults);
+  }
+
+  /**
+   * Gets current global output defaults template.
+   */
+  getGlobalOutputDefaults(fallbackDir = ""): BatchJobOutputSnapshot {
+    const loaded = loadBatchGlobalOutputSettings(
+      this.globalOutputDefaults.resolvedOutputDirectory || fallbackDir
+    );
+    this.globalOutputDefaults = loaded;
+    return { ...this.globalOutputDefaults };
   }
 
   /**

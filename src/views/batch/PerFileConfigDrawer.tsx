@@ -18,6 +18,8 @@ import {
   BatchDialogueSnapshot,
 } from "../../types/batch";
 import { useI18n } from "../../i18n/context";
+import { resolveJobOutputDirectory } from "../../services/batch/outputResolver";
+import { isTauriRuntime } from "../../services/ai/tauriBackend";
 
 export interface PerFileConfigDrawerProps {
   job: BatchJob;
@@ -50,6 +52,31 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
   });
   const [configOverrides, setConfigOverrides] = useState<Partial<BatchTaskConfigMap>>({
     ...job.configOverrides,
+  });
+
+  const handleBrowseFolder = async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: outputSnapshot.resolvedOutputDirectory || undefined,
+      });
+      if (typeof picked === "string" && picked.trim()) {
+        setOutputSnapshot((prev) => ({
+          ...prev,
+          resolvedOutputDirectory: picked.trim(),
+        }));
+      }
+    } catch (err) {
+      console.error("Không thể mở hộp thoại chọn thư mục:", err);
+    }
+  };
+
+  const previewResolvedDir = resolveJobOutputDirectory({
+    ...job,
+    outputSnapshot,
   });
 
   const handleSave = () => {
@@ -192,20 +219,82 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
             <div className="space-y-3">
               <div>
                 <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
+                  Chế độ vị trí lưu
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOutputSnapshot((prev) => ({
+                        ...prev,
+                        saveInSourceFolder: false,
+                        flatOutputDirectory: true,
+                      }))
+                    }
+                    className={`p-2 rounded-lg border text-left transition-colors cursor-pointer ${
+                      !outputSnapshot.saveInSourceFolder
+                        ? "border-accent bg-accent/10 text-textPrimary"
+                        : "border-borderDefault bg-surface2 text-textSecondary hover:bg-surface3/60"
+                    }`}
+                  >
+                    <div className="font-bold text-[11px]">1 thư mục cố định</div>
+                    <div className="text-[10px] text-textMuted">Lưu chung tại folder đích</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOutputSnapshot((prev) => ({
+                        ...prev,
+                        saveInSourceFolder: true,
+                        flatOutputDirectory: false,
+                      }))
+                    }
+                    className={`p-2 rounded-lg border text-left transition-colors cursor-pointer ${
+                      outputSnapshot.saveInSourceFolder
+                        ? "border-accent bg-accent/10 text-textPrimary"
+                        : "border-borderDefault bg-surface2 text-textSecondary hover:bg-surface3/60"
+                    }`}
+                  >
+                    <div className="font-bold text-[11px]">Tại thư mục chứa file</div>
+                    <div className="text-[10px] text-textMuted">Tạo folder theo tên file gốc</div>
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
                   Thư mục xuất kết quả
                 </label>
-                <input
-                  type="text"
-                  value={outputSnapshot.resolvedOutputDirectory}
-                  onChange={(e) =>
-                    setOutputSnapshot((prev) => ({
-                      ...prev,
-                      resolvedOutputDirectory: e.target.value,
-                    }))
-                  }
-                  className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary font-mono focus:border-accent focus:outline-none"
-                  placeholder="D:/VoxLabOutput/Batch_Export"
-                />
+                {!outputSnapshot.saveInSourceFolder ? (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={outputSnapshot.resolvedOutputDirectory}
+                      onChange={(e) =>
+                        setOutputSnapshot((prev) => ({
+                          ...prev,
+                          resolvedOutputDirectory: e.target.value,
+                        }))
+                      }
+                      className="flex-1 bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary font-mono focus:border-accent focus:outline-none"
+                      placeholder="D:/VoxLabOutput/Batch_Export"
+                    />
+                    {isTauriRuntime() && (
+                      <button
+                        type="button"
+                        onClick={handleBrowseFolder}
+                        className="px-2.5 py-1.5 bg-surface2 hover:bg-surface3 border border-borderDefault rounded-lg text-xs font-semibold text-textPrimary transition-colors cursor-pointer shrink-0"
+                      >
+                        Chọn...
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="w-full bg-surface2/70 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary font-mono break-all">
+                    {previewResolvedDir}
+                  </div>
+                )}
               </div>
 
               <div>
