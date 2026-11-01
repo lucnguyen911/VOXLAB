@@ -15,7 +15,6 @@ import {
   Activity,
   Gauge,
   ChevronRight,
-  Settings2,
 } from "lucide-react";
 import {
   BatchTaskConfigMap,
@@ -25,14 +24,7 @@ import {
 import { VoiceProfile, PunctuationPauses } from "../../types/ui";
 import { MOCK_VOICES } from "../../mock/data";
 import { useI18n } from "../../i18n/context";
-import {
-  loadSubtitleSettings,
-  saveSubtitleSettings,
-} from "../../services/subtitle/profiles";
-import {
-  SubtitleAspectRatio,
-  SubtitleMaxLines,
-} from "../../services/subtitle/types";
+import { loadSubtitleSettings } from "../../services/subtitle/profiles";
 import {
   loadStoredTtsSettings,
   saveStoredTtsSettings,
@@ -119,8 +111,6 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
   const [voices, setVoices] = useState<VoiceProfile[]>(loadAvailableVoices);
   const [isTtsVoiceModalOpen, setIsTtsVoiceModalOpen] = useState(false);
   const [isTtsPausesOpen, setIsTtsPausesOpen] = useState(false);
-  const [isTtsAdvancedOpen, setIsTtsAdvancedOpen] = useState(false);
-  const [subtitleSettings, setSubtitleSettings] = useState(() => loadSubtitleSettings());
 
   useEffect(() => {
     let cancelled = false;
@@ -539,7 +529,6 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
                   : Math.round(ttsCfg.volume)
                 : 100;
             const pauses: PunctuationPauses = ttsCfg.pauses || DEFAULT_TTS_SETTINGS.pauses;
-            const exportSrt = Boolean(ttsCfg.exportSrt);
 
             const updateTts = (patch: Partial<typeof ttsCfg>) => {
               setLocalDefaults((prev) => ({
@@ -907,179 +896,6 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
                             </span>
                           </div>
                         </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* 5. NÂNG CAO (Collapsible Accordion) */}
-                <div className="pt-2 border-t border-borderDefault/60">
-                  <button
-                    type="button"
-                    onClick={() => setIsTtsAdvancedOpen(!isTtsAdvancedOpen)}
-                    className="w-full flex items-center justify-between py-2 px-1 rounded-md text-xs font-semibold text-textSecondary hover:text-textPrimary hover:bg-surface2/40 outline-none focus:outline-none transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Settings2 className="w-3.5 h-3.5 text-accent" />
-                      <span className="uppercase tracking-wider font-bold">
-                        {t.inspector.advanced}
-                      </span>
-                    </div>
-                    <ChevronRight
-                      className={`w-3.5 h-3.5 transition-transform duration-200 ${
-                        isTtsAdvancedOpen ? "rotate-90" : ""
-                      }`}
-                    />
-                  </button>
-
-                  {isTtsAdvancedOpen && (
-                    <div className="space-y-3.5 pt-2">
-                      <div>
-                        <div
-                          className="flex items-center justify-between"
-                          title={t.inspector.exportSrtDesc}
-                        >
-                          <span className="text-xs text-textSecondary font-medium select-none">
-                            {t.inspector.exportSrt}
-                          </span>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={exportSrt}
-                            onClick={() => {
-                              const nextVal = !exportSrt;
-                              updateTts({ exportSrt: nextVal });
-                              saveStoredTtsSettings({ exportSrt: nextVal });
-                            }}
-                            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                              exportSrt ? "bg-accent" : "bg-surface3"
-                            }`}
-                          >
-                            <span
-                              aria-hidden="true"
-                              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                                exportSrt ? "translate-x-4" : "translate-x-0"
-                              }`}
-                            />
-                          </button>
-                        </div>
-
-                        {exportSrt && (
-                          <div className="mt-3 pt-3 border-t border-borderDefault/30 space-y-3">
-                            <div className="space-y-1.5">
-                              <label className="block text-textSecondary font-medium text-[11px]">
-                                {t.transcription.aspectRatioLabel}
-                              </label>
-                              <div className="grid grid-cols-3 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
-                                {(["16:9", "9:16", "1:1"] as SubtitleAspectRatio[]).map(
-                                  (ratio) => {
-                                    const isSelected = subtitleSettings.aspectRatio === ratio;
-                                    const labels: Record<
-                                      SubtitleAspectRatio,
-                                      { ratio: string; sub: string }
-                                    > = {
-                                      "16:9": {
-                                        ratio: "16:9",
-                                        sub:
-                                          lang === "vi"
-                                            ? "Ngang"
-                                            : lang === "en"
-                                            ? "Landscape"
-                                            : "横屏",
-                                      },
-                                      "9:16": {
-                                        ratio: "9:16",
-                                        sub:
-                                          lang === "vi"
-                                            ? "Dọc"
-                                            : lang === "en"
-                                            ? "Portrait"
-                                            : "竖屏",
-                                      },
-                                      "1:1": {
-                                        ratio: "1:1",
-                                        sub:
-                                          lang === "vi"
-                                            ? "Vuông"
-                                            : lang === "en"
-                                            ? "Square"
-                                            : "正方形",
-                                      },
-                                    };
-                                    const info = labels[ratio];
-                                    return (
-                                      <button
-                                        key={ratio}
-                                        type="button"
-                                        onClick={() => {
-                                          const updated = {
-                                            ...subtitleSettings,
-                                            aspectRatio: ratio,
-                                          };
-                                          setSubtitleSettings(updated);
-                                          saveSubtitleSettings({ aspectRatio: ratio });
-                                        }}
-                                        className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
-                                          isSelected
-                                            ? "bg-accent text-background font-semibold shadow-sm"
-                                            : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
-                                        }`}
-                                      >
-                                        <span className="leading-tight">{info.ratio}</span>
-                                        <span
-                                          className={`text-[10px] leading-tight ${
-                                            isSelected ? "text-background/80" : "text-textMuted"
-                                          }`}
-                                        >
-                                          {info.sub}
-                                        </span>
-                                      </button>
-                                    );
-                                  }
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="space-y-1.5">
-                              <label className="block text-textSecondary font-medium text-[11px]">
-                                {t.transcription.maxLinesLabel}
-                              </label>
-                              <div className="grid grid-cols-2 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
-                                {([1, 2] as SubtitleMaxLines[]).map((lines) => {
-                                  const isSelected = subtitleSettings.maxLines === lines;
-                                  return (
-                                    <button
-                                      key={lines}
-                                      type="button"
-                                      onClick={() => {
-                                        const updated = {
-                                          ...subtitleSettings,
-                                          maxLines: lines,
-                                        };
-                                        setSubtitleSettings(updated);
-                                        saveSubtitleSettings({ maxLines: lines });
-                                      }}
-                                      className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all text-center cursor-pointer ${
-                                        isSelected
-                                          ? "bg-accent text-background font-semibold shadow-sm"
-                                          : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
-                                      }`}
-                                    >
-                                      {lines}{" "}
-                                      {lang === "vi"
-                                        ? "dòng"
-                                        : lang === "en"
-                                        ? lines === 1
-                                          ? "line"
-                                          : "lines"
-                                        : "行"}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          </div>
-                        )}
                       </div>
                     </div>
                   )}

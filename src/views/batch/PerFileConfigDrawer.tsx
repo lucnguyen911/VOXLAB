@@ -14,7 +14,6 @@ import {
   Activity,
   Gauge,
   ChevronRight,
-  Settings2,
 } from "lucide-react";
 import {
   BatchJob,
@@ -100,7 +99,6 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
   const [voices, setVoices] = useState<VoiceProfile[]>(loadAvailableVoices);
   const [isTtsVoiceModalOpen, setIsTtsVoiceModalOpen] = useState(false);
   const [isTtsPausesOpen, setIsTtsPausesOpen] = useState(false);
-  const [isTtsAdvancedOpen, setIsTtsAdvancedOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -812,53 +810,6 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                             </span>
                           </div>
                         </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* 5. NÂNG CAO */}
-                <div className="pt-2 border-t border-borderDefault/60">
-                  <button
-                    type="button"
-                    onClick={() => setIsTtsAdvancedOpen(!isTtsAdvancedOpen)}
-                    className="w-full flex items-center justify-between py-2 px-1 rounded-md text-xs font-semibold text-textSecondary hover:text-textPrimary hover:bg-surface2/40 outline-none focus:outline-none transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Settings2 className="w-3.5 h-3.5 text-accent" />
-                      <span className="uppercase tracking-wider font-bold">
-                        {t.inspector.advanced}
-                      </span>
-                    </div>
-                    <ChevronRight
-                      className={`w-3.5 h-3.5 transition-transform duration-200 ${
-                        isTtsAdvancedOpen ? "rotate-90" : ""
-                      }`}
-                    />
-                  </button>
-
-                  {isTtsAdvancedOpen && (
-                    <div className="space-y-3 pt-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-textSecondary font-medium select-none">
-                          {t.inspector.exportSrt}
-                        </span>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={Boolean(ttsCfg.exportSrt)}
-                          onClick={() => updateTts({ exportSrt: !ttsCfg.exportSrt })}
-                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-                            ttsCfg.exportSrt ? "bg-accent" : "bg-surface3"
-                          }`}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                              ttsCfg.exportSrt ? "translate-x-4" : "translate-x-0"
-                            }`}
-                          />
-                        </button>
                       </div>
                     </div>
                   )}
