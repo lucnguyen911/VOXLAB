@@ -213,6 +213,7 @@ export interface BatchJob {
   sourceFileSize: number;
   sourceFileMtime: number;
   fileKind: BatchFileKind;
+  isDialogueScript?: boolean;
   subtitleMode?: BatchSubtitleMode;
 
   // Staged Lifecycle Stage & Queue Order

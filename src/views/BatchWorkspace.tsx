@@ -50,6 +50,12 @@ function baseName(p: string): string {
   return p.split(/[\\/]/).pop() || p;
 }
 
+function resolveJobIsDialogue(job: BatchJob): boolean {
+  if (job.fileKind !== "text") return false;
+  if (typeof job.isDialogueScript === "boolean") return job.isDialogueScript;
+  return job.selectedTasks.includes("dialogue");
+}
+
 export const BatchWorkspace: React.FC = () => {
   const orchestrator = useMemo(() => BatchOrchestrator.getInstance(), []);
 
@@ -79,8 +85,26 @@ export const BatchWorkspace: React.FC = () => {
     initBatchRuntime()
       .catch((err) => console.error("Không thể khởi tạo local AI runtime:", err))
       .then(() => loadBatchState())
-      .then((state) => {
-        orchestrator.setJobs(state.jobs);
+      .then(async (state) => {
+        let loadedJobs = state.jobs;
+        if (
+          isTauriRuntime() &&
+          loadedJobs.some((j) => j.fileKind === "text" && typeof j.isDialogueScript !== "boolean")
+        ) {
+          loadedJobs = await Promise.all(
+            loadedJobs.map(async (j) => {
+              if (j.fileKind !== "text" || typeof j.isDialogueScript === "boolean") return j;
+              try {
+                const text = await readBatchTextOrDocxFile(j.sourceFilePath);
+                const isDialogue = validateDialogueScript(text).isDialogueScript;
+                return { ...j, isDialogueScript: isDialogue };
+              } catch {
+                return { ...j, isDialogueScript: j.selectedTasks.includes("dialogue") };
+              }
+            })
+          );
+        }
+        orchestrator.setJobs(loadedJobs);
       });
 
     const unsubscribe = orchestrator.subscribe((updatedJobs, qStatus) => {
@@ -183,6 +207,7 @@ export const BatchWorkspace: React.FC = () => {
         sourceFileSize: file.size,
         sourceFileMtime: file.mtime || Date.now(),
         fileKind: compat.fileKind,
+        isDialogueScript: isDialogueValid,
         stage: "staging",
         queueOrder: jobs.length + index + 1,
         selectedTasks: defaultTasks,
@@ -344,12 +369,12 @@ export const BatchWorkspace: React.FC = () => {
 
   const handleToggleAllColumnTask = (task: BatchTaskType) => {
     const compatibleJobs = viewJobs.filter(
-      (j) => checkTaskCompatibility(j.fileKind, task).isCompatible
+      (j) => checkTaskCompatibility(j.fileKind, task, resolveJobIsDialogue(j)).isCompatible
     );
     const allEnabled = compatibleJobs.length > 0 && compatibleJobs.every((j) => j.selectedTasks.includes(task));
 
     const updated = jobs.map((job) => {
-      const isCompat = checkTaskCompatibility(job.fileKind, task).isCompatible;
+      const isCompat = checkTaskCompatibility(job.fileKind, task, resolveJobIsDialogue(job)).isCompatible;
       if (!isCompat) return job;
 
       let nextTasks: BatchTaskType[];
@@ -378,14 +403,14 @@ export const BatchWorkspace: React.FC = () => {
 
   const isTaskAllEnabled = (task: BatchTaskType) => {
     const compats = viewJobs.filter(
-      (j) => checkTaskCompatibility(j.fileKind, task).isCompatible
+      (j) => checkTaskCompatibility(j.fileKind, task, resolveJobIsDialogue(j)).isCompatible
     );
     return compats.length > 0 && compats.every((j) => j.selectedTasks.includes(task));
   };
 
   const isTaskSomeEnabled = (task: BatchTaskType) => {
     const compats = viewJobs.filter(
-      (j) => checkTaskCompatibility(j.fileKind, task).isCompatible
+      (j) => checkTaskCompatibility(j.fileKind, task, resolveJobIsDialogue(j)).isCompatible
     );
     return compats.some((j) => j.selectedTasks.includes(task));
   };
@@ -558,7 +583,9 @@ export const BatchWorkspace: React.FC = () => {
               onToggleAllColumnTask={handleToggleAllColumnTask}
               isTaskAllEnabled={isTaskAllEnabled}
               isTaskSomeEnabled={isTaskSomeEnabled}
-              getTaskCompatibility={(job, task) => checkTaskCompatibility(job.fileKind, task)}
+              getTaskCompatibility={(job, task) =>
+                checkTaskCompatibility(job.fileKind, task, resolveJobIsDialogue(job))
+              }
               onOpenDrawer={setDrawerJob}
               onDeleteJob={(id) => orchestrator.setJobs(jobs.filter((j) => j.id !== id))}
               onClearAllJobs={() => orchestrator.setJobs([])}
