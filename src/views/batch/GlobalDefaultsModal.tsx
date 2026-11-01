@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   X,
   FolderOpen,
@@ -9,20 +9,79 @@ import {
   Film,
   SlidersHorizontal,
   Check,
+  Clock,
+  RotateCcw,
+  Volume2,
+  Activity,
+  Gauge,
+  ChevronRight,
+  Settings2,
 } from "lucide-react";
 import {
   BatchTaskConfigMap,
   BatchJobOutputSnapshot,
   BatchCollisionPolicy,
 } from "../../types/batch";
+import { VoiceProfile, PunctuationPauses } from "../../types/ui";
+import { MOCK_VOICES } from "../../mock/data";
 import { useI18n } from "../../i18n/context";
-import { loadSubtitleSettings } from "../../services/subtitle/profiles";
+import {
+  loadSubtitleSettings,
+  saveSubtitleSettings,
+} from "../../services/subtitle/profiles";
+import {
+  SubtitleAspectRatio,
+  SubtitleMaxLines,
+} from "../../services/subtitle/types";
+import {
+  loadStoredTtsSettings,
+  saveStoredTtsSettings,
+  DEFAULT_TTS_SETTINGS,
+} from "../../components/inspector/TtsInspector";
+import { VoiceSelectionModal } from "../../components/modals/VoiceSelectionModal";
+import { CountryFlag } from "../../components/common/CountryFlag";
+import {
+  getVoiceLanguageInfo,
+  normalizeAccent,
+  getAccentLabel,
+  getVoiceSecondaryTags,
+  migrateLegacyVoice,
+} from "../../constants/voiceFilters";
+import { reconcileCloneVoicesWithProfiles } from "../../services/ai/cloneVoiceRegistry";
 import {
   loadBatchGlobalOutputSettings,
   saveBatchGlobalOutputSettings,
 } from "../../services/batch/configSnapshotResolver";
 import { getDefaultBatchOutputDir } from "../../services/batch/batchRuntime";
 import { isTauriRuntime } from "../../services/ai/tauriBackend";
+
+function loadAvailableVoices(): VoiceProfile[] {
+  try {
+    const raw = localStorage.getItem("voxlab_voices_v1");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map(migrateLegacyVoice);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return MOCK_VOICES.map(migrateLegacyVoice);
+}
+
+function normalizeModelSelectValue(rawModel?: string): string {
+  const m = (rawModel || "").toLowerCase();
+  if (m.includes("chatterbox")) return "Chatterbox Turbo";
+  if (m.includes("qwen")) return "Qwen TTS 1.7B";
+  return "OmniVoice";
+}
+
+function mapSelectToSnapshotModel(selectVal: string): string {
+  if (selectVal === "Chatterbox Turbo") return "chatterbox_turbo";
+  if (selectVal === "Qwen TTS 1.7B") return "qwen_tts_1_7b";
+  return "omnivoice";
+}
 
 export interface GlobalDefaultsModalProps {
   isOpen: boolean;
@@ -51,14 +110,61 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
 
   const [activeTab, setActiveTab] = useState<
     "general" | "tts" | "dialogue" | "transcription" | "translation" | "dubbing"
   >("general");
 
-  const [localDefaults, setLocalDefaults] = useState<BatchTaskConfigMap>({
-    ...globalDefaults,
+  const [voices, setVoices] = useState<VoiceProfile[]>(loadAvailableVoices);
+  const [isTtsVoiceModalOpen, setIsTtsVoiceModalOpen] = useState(false);
+  const [isTtsPausesOpen, setIsTtsPausesOpen] = useState(false);
+  const [isTtsAdvancedOpen, setIsTtsAdvancedOpen] = useState(false);
+  const [subtitleSettings, setSubtitleSettings] = useState(() => loadSubtitleSettings());
+
+  useEffect(() => {
+    let cancelled = false;
+    reconcileCloneVoicesWithProfiles(loadAvailableVoices())
+      .then((reconciled) => {
+        if (!cancelled) setVoices(reconciled);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const [localDefaults, setLocalDefaults] = useState<BatchTaskConfigMap>(() => {
+    const storedTts = loadStoredTtsSettings();
+    const existingTts = globalDefaults.tts;
+    const rawPitch = existingTts?.pitch;
+    const pitchVal =
+      typeof rawPitch === "number" && rawPitch >= 0.5 && rawPitch <= 1.5
+        ? rawPitch
+        : storedTts.pitch || 1.0;
+    const rawVol = existingTts?.volume;
+    const volPct =
+      typeof rawVol === "number"
+        ? rawVol <= 2.0 && rawVol > 0
+          ? Math.round(rawVol * 100)
+          : Math.round(rawVol)
+        : Math.round((storedTts.volume ?? 1.0) * 100);
+
+    return {
+      ...globalDefaults,
+      tts: {
+        model: existingTts?.model || "omnivoice",
+        voiceId:
+          existingTts?.voiceId && existingTts.voiceId !== "omnivoice-auto"
+            ? existingTts.voiceId
+            : loadAvailableVoices()[0]?.id || "voice_01",
+        speed: existingTts?.speed ?? storedTts.speed ?? 1.0,
+        pitch: pitchVal,
+        volume: volPct,
+        pauses: existingTts?.pauses || storedTts.pauses || DEFAULT_TTS_SETTINGS.pauses,
+        exportSrt: existingTts?.exportSrt ?? storedTts.exportSrt ?? false,
+      },
+    };
   });
 
   const [localOutput, setLocalOutput] = useState<BatchJobOutputSnapshot>(() => {
@@ -401,34 +507,599 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
             </div>
           )}
 
-          {/* TAB 2: TTS */}
-          {activeTab === "tts" && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
-                  Tốc độ đọc mặc định (Speed)
-                </label>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="1.5"
-                  step="0.05"
-                  value={localDefaults.tts?.speed ?? 1.0}
-                  onChange={(e) => {
-                    const speed = parseFloat(e.target.value);
-                    setLocalDefaults((prev) => ({
-                      ...prev,
-                      tts: { ...(prev.tts || ({} as any)), speed },
-                    }));
+          {/* TAB 2: TTS (Đồng bộ 1:1 với TtsInspector) */}
+          {activeTab === "tts" && (() => {
+            const ttsCfg = localDefaults.tts || {
+              model: "omnivoice",
+              voiceId: voices[0]?.id || "voice_01",
+              speed: 1.0,
+              pitch: 1.0,
+              volume: 100,
+              pauses: DEFAULT_TTS_SETTINGS.pauses,
+              exportSrt: false,
+            };
+            const activeVoice =
+              voices.find((v) => v.id === ttsCfg.voiceId) || voices[0];
+            const isOnlineVoice = Boolean(
+              activeVoice?.isOnline ||
+                activeVoice?.provider === "edge" ||
+                activeVoice?.provider === "google_translate" ||
+                activeVoice?.provider === "openai"
+            );
+            const selectedModelLabel = normalizeModelSelectValue(ttsCfg.model);
+            const speedVal = ttsCfg.speed ?? 1.0;
+            const pitchVal =
+              typeof ttsCfg.pitch === "number" && ttsCfg.pitch >= 0.5 && ttsCfg.pitch <= 1.5
+                ? ttsCfg.pitch
+                : 1.0;
+            const volumePct =
+              typeof ttsCfg.volume === "number"
+                ? ttsCfg.volume <= 2.0 && ttsCfg.volume > 0
+                  ? Math.round(ttsCfg.volume * 100)
+                  : Math.round(ttsCfg.volume)
+                : 100;
+            const pauses: PunctuationPauses = ttsCfg.pauses || DEFAULT_TTS_SETTINGS.pauses;
+            const exportSrt = Boolean(ttsCfg.exportSrt);
+
+            const updateTts = (patch: Partial<typeof ttsCfg>) => {
+              setLocalDefaults((prev) => ({
+                ...prev,
+                tts: {
+                  ...ttsCfg,
+                  ...(prev.tts || {}),
+                  ...patch,
+                },
+              }));
+            };
+
+            return (
+              <div className="space-y-4">
+                {/* 1. GIỌNG ĐỌC CHÍNH */}
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                    {t.inspector.primaryVoice || "GIỌNG ĐỌC CHÍNH"}
+                  </label>
+                  {activeVoice && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setIsTtsVoiceModalOpen(true)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setIsTtsVoiceModalOpen(true);
+                        }
+                      }}
+                      className="p-3 bg-surface2/60 hover:bg-surface2 border border-borderDefault hover:border-accent/50 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none rounded-xl transition-all cursor-pointer flex items-center justify-between gap-3 group shadow-2xs"
+                      title={t.inspector.fromLibrary}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className={`w-10 h-10 rounded-full bg-gradient-to-tr ${
+                            activeVoice.avatarColor || "from-pink-500 to-rose-600"
+                          } flex items-center justify-center text-white font-bold text-xs shadow-sm flex-shrink-0`}
+                        >
+                          {activeVoice.name.charAt(0)}
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="font-semibold text-[13px] text-textPrimary truncate group-hover:text-accent transition-colors">
+                            {activeVoice.name}
+                          </h4>
+                          {(() => {
+                            const langInfo = getVoiceLanguageInfo(activeVoice, lang);
+                            let accentOrTag = "";
+                            if (activeVoice.accent) {
+                              const normAcc = normalizeAccent(activeVoice.accent);
+                              accentOrTag = getAccentLabel(normAcc, lang);
+                            }
+                            if (!accentOrTag) {
+                              const secondaryTags = getVoiceSecondaryTags(activeVoice, lang);
+                              accentOrTag =
+                                secondaryTags.length > 0
+                                  ? secondaryTags[0]
+                                  : lang === "vi"
+                                  ? "Tiêu chuẩn"
+                                  : "Standard";
+                            }
+                            return (
+                              <div className="flex items-center gap-1.5 mt-0.5 text-xs text-textSecondary font-medium truncate">
+                                <CountryFlag countryCode={langInfo.countryCode || langInfo.code} />
+                                <span className="truncate">{langInfo.name}</span>
+                                {accentOrTag && (
+                                  <>
+                                    <span className="text-textMuted text-[10px]">·</span>
+                                    <span className="text-[11px] text-textMuted truncate">
+                                      {accentOrTag}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1 text-xs text-accent font-semibold flex-shrink-0 group-hover:translate-x-0.5 transition-transform">
+                        <span>{t.inspector.changeVoice}</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. MODEL */}
+                <div className="space-y-1.5 pt-0.5">
+                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                    {t.inspector.model}
+                  </label>
+                  {isOnlineVoice ? (
+                    <div className="w-full h-[34px] bg-surface2/70 border border-borderDefault rounded-lg px-2.5 flex items-center justify-between text-xs text-textPrimary">
+                      <div className="flex items-center gap-2 truncate">
+                        <span className="w-2 h-2 rounded-full bg-sky-400" />
+                        <span className="font-medium truncate">
+                          {activeVoice?.provider === "edge"
+                            ? "Microsoft Edge Neural (Cloud API)"
+                            : activeVoice?.provider === "google_translate"
+                            ? "Google Cloud TTS (API v1)"
+                            : "OpenAI Audio TTS"}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-textMuted uppercase font-mono tracking-wider ml-2 flex-shrink-0">
+                        Online
+                      </span>
+                    </div>
+                  ) : (
+                    <select
+                      value={selectedModelLabel}
+                      onChange={(e) => {
+                        const mapped = mapSelectToSnapshotModel(e.target.value);
+                        updateTts({ model: mapped });
+                      }}
+                      className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
+                    >
+                      <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
+                      <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
+                      <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>
+                    </select>
+                  )}
+                </div>
+
+                <div className="border-t border-borderDefault/60 pt-1" />
+
+                {/* 3. CÀI ĐẶT */}
+                <div className="space-y-3.5">
+                  <div className="flex items-center justify-between pb-0.5">
+                    <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                      {t.inspector.settings}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateTts({ speed: 1.0, pitch: 1.0, volume: 100 });
+                        saveStoredTtsSettings({ speed: 1.0, pitch: 1.0, volume: 1.0 });
+                      }}
+                      title={t.inspector.resetSettingsTooltip}
+                      className="flex items-center gap-1 text-xs text-textMuted hover:text-accent focus-visible:ring-1 focus-visible:ring-accent rounded px-1.5 py-0.5 transition-colors cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>{t.inspector.resetSettings}</span>
+                    </button>
+                  </div>
+
+                  {/* Speed Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Gauge className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.speed}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {speedVal.toFixed(2)}×
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="1.5"
+                      step="0.05"
+                      value={speedVal}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        updateTts({ speed: val });
+                        saveStoredTtsSettings({ speed: val });
+                      }}
+                      className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>0.5×</span>
+                      <span>1.5×</span>
+                    </div>
+                  </div>
+
+                  {/* Pitch Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Activity className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.pitch}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {pitchVal.toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="1.5"
+                      step="0.05"
+                      value={pitchVal}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        updateTts({ pitch: val });
+                        saveStoredTtsSettings({ pitch: val });
+                      }}
+                      className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>{t.inspector.low}</span>
+                      <span>{t.inspector.high}</span>
+                    </div>
+                  </div>
+
+                  {/* Volume Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Volume2 className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.volume}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {volumePct}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="200"
+                      step="5"
+                      value={volumePct}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        updateTts({ volume: val });
+                        saveStoredTtsSettings({ volume: val / 100 });
+                      }}
+                      className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>0%</span>
+                      <span>200%</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. NGẮT NGHỈ (Collapsible Accordion) */}
+                <div className="pt-2 border-t border-borderDefault/60">
+                  <button
+                    type="button"
+                    onClick={() => setIsTtsPausesOpen(!isTtsPausesOpen)}
+                    className="w-full flex items-center justify-between py-2 px-1 rounded-md text-xs font-semibold text-textSecondary hover:text-textPrimary hover:bg-surface2/40 outline-none focus:outline-none transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-accent" />
+                      <span className="uppercase tracking-wider font-bold">
+                        {t.inspector.pausesTitle}
+                      </span>
+                    </div>
+                    <ChevronRight
+                      className={`w-3.5 h-3.5 transition-transform duration-200 ${
+                        isTtsPausesOpen ? "rotate-90" : ""
+                      }`}
+                    />
+                  </button>
+
+                  {isTtsPausesOpen && (
+                    <div className="space-y-3 pt-2">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <span className="text-xs font-medium text-textSecondary block truncate">
+                            {t.inspector.comma}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.1"
+                              max="3.0"
+                              step="0.1"
+                              value={pauses.comma}
+                              onChange={(e) => {
+                                const next = {
+                                  ...pauses,
+                                  comma: parseFloat(e.target.value) || 0.1,
+                                };
+                                updateTts({ pauses: next });
+                                saveStoredTtsSettings({ pauses: next });
+                              }}
+                              className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                            />
+                            <span className="text-textMuted text-[11px] flex-shrink-0">
+                              {t.inspector.sec}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="text-xs font-medium text-textSecondary block truncate">
+                            {t.inspector.period}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.2"
+                              max="5.0"
+                              step="0.1"
+                              value={pauses.period}
+                              onChange={(e) => {
+                                const next = {
+                                  ...pauses,
+                                  period: parseFloat(e.target.value) || 0.2,
+                                };
+                                updateTts({ pauses: next });
+                                saveStoredTtsSettings({ pauses: next });
+                              }}
+                              className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                            />
+                            <span className="text-textMuted text-[11px] flex-shrink-0">
+                              {t.inspector.sec}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="text-xs font-medium text-textSecondary block truncate">
+                            {t.inspector.questionExclamation}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.2"
+                              max="5.0"
+                              step="0.1"
+                              value={pauses.questionExclamation}
+                              onChange={(e) => {
+                                const next = {
+                                  ...pauses,
+                                  questionExclamation: parseFloat(e.target.value) || 0.2,
+                                };
+                                updateTts({ pauses: next });
+                                saveStoredTtsSettings({ pauses: next });
+                              }}
+                              className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                            />
+                            <span className="text-textMuted text-[11px] flex-shrink-0">
+                              {t.inspector.sec}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="text-xs font-medium text-textSecondary block truncate">
+                            {t.inspector.colonSemicolon}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.1"
+                              max="3.0"
+                              step="0.1"
+                              value={pauses.colonSemicolon}
+                              onChange={(e) => {
+                                const next = {
+                                  ...pauses,
+                                  colonSemicolon: parseFloat(e.target.value) || 0.1,
+                                };
+                                updateTts({ pauses: next });
+                                saveStoredTtsSettings({ pauses: next });
+                              }}
+                              className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                            />
+                            <span className="text-textMuted text-[11px] flex-shrink-0">
+                              {t.inspector.sec}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 5. NÂNG CAO (Collapsible Accordion) */}
+                <div className="pt-2 border-t border-borderDefault/60">
+                  <button
+                    type="button"
+                    onClick={() => setIsTtsAdvancedOpen(!isTtsAdvancedOpen)}
+                    className="w-full flex items-center justify-between py-2 px-1 rounded-md text-xs font-semibold text-textSecondary hover:text-textPrimary hover:bg-surface2/40 outline-none focus:outline-none transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Settings2 className="w-3.5 h-3.5 text-accent" />
+                      <span className="uppercase tracking-wider font-bold">
+                        {t.inspector.advanced}
+                      </span>
+                    </div>
+                    <ChevronRight
+                      className={`w-3.5 h-3.5 transition-transform duration-200 ${
+                        isTtsAdvancedOpen ? "rotate-90" : ""
+                      }`}
+                    />
+                  </button>
+
+                  {isTtsAdvancedOpen && (
+                    <div className="space-y-3.5 pt-2">
+                      <div>
+                        <div
+                          className="flex items-center justify-between"
+                          title={t.inspector.exportSrtDesc}
+                        >
+                          <span className="text-xs text-textSecondary font-medium select-none">
+                            {t.inspector.exportSrt}
+                          </span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={exportSrt}
+                            onClick={() => {
+                              const nextVal = !exportSrt;
+                              updateTts({ exportSrt: nextVal });
+                              saveStoredTtsSettings({ exportSrt: nextVal });
+                            }}
+                            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                              exportSrt ? "bg-accent" : "bg-surface3"
+                            }`}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                exportSrt ? "translate-x-4" : "translate-x-0"
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        {exportSrt && (
+                          <div className="mt-3 pt-3 border-t border-borderDefault/30 space-y-3">
+                            <div className="space-y-1.5">
+                              <label className="block text-textSecondary font-medium text-[11px]">
+                                {t.transcription.aspectRatioLabel}
+                              </label>
+                              <div className="grid grid-cols-3 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                                {(["16:9", "9:16", "1:1"] as SubtitleAspectRatio[]).map(
+                                  (ratio) => {
+                                    const isSelected = subtitleSettings.aspectRatio === ratio;
+                                    const labels: Record<
+                                      SubtitleAspectRatio,
+                                      { ratio: string; sub: string }
+                                    > = {
+                                      "16:9": {
+                                        ratio: "16:9",
+                                        sub:
+                                          lang === "vi"
+                                            ? "Ngang"
+                                            : lang === "en"
+                                            ? "Landscape"
+                                            : "横屏",
+                                      },
+                                      "9:16": {
+                                        ratio: "9:16",
+                                        sub:
+                                          lang === "vi"
+                                            ? "Dọc"
+                                            : lang === "en"
+                                            ? "Portrait"
+                                            : "竖屏",
+                                      },
+                                      "1:1": {
+                                        ratio: "1:1",
+                                        sub:
+                                          lang === "vi"
+                                            ? "Vuông"
+                                            : lang === "en"
+                                            ? "Square"
+                                            : "正方形",
+                                      },
+                                    };
+                                    const info = labels[ratio];
+                                    return (
+                                      <button
+                                        key={ratio}
+                                        type="button"
+                                        onClick={() => {
+                                          const updated = {
+                                            ...subtitleSettings,
+                                            aspectRatio: ratio,
+                                          };
+                                          setSubtitleSettings(updated);
+                                          saveSubtitleSettings({ aspectRatio: ratio });
+                                        }}
+                                        className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                                          isSelected
+                                            ? "bg-accent text-background font-semibold shadow-sm"
+                                            : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                                        }`}
+                                      >
+                                        <span className="leading-tight">{info.ratio}</span>
+                                        <span
+                                          className={`text-[10px] leading-tight ${
+                                            isSelected ? "text-background/80" : "text-textMuted"
+                                          }`}
+                                        >
+                                          {info.sub}
+                                        </span>
+                                      </button>
+                                    );
+                                  }
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <label className="block text-textSecondary font-medium text-[11px]">
+                                {t.transcription.maxLinesLabel}
+                              </label>
+                              <div className="grid grid-cols-2 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                                {([1, 2] as SubtitleMaxLines[]).map((lines) => {
+                                  const isSelected = subtitleSettings.maxLines === lines;
+                                  return (
+                                    <button
+                                      key={lines}
+                                      type="button"
+                                      onClick={() => {
+                                        const updated = {
+                                          ...subtitleSettings,
+                                          maxLines: lines,
+                                        };
+                                        setSubtitleSettings(updated);
+                                        saveSubtitleSettings({ maxLines: lines });
+                                      }}
+                                      className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all text-center cursor-pointer ${
+                                        isSelected
+                                          ? "bg-accent text-background font-semibold shadow-sm"
+                                          : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                                      }`}
+                                    >
+                                      {lines}{" "}
+                                      {lang === "vi"
+                                        ? "dòng"
+                                        : lang === "en"
+                                        ? lines === 1
+                                          ? "line"
+                                          : "lines"
+                                        : "行"}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Voice Selection Modal */}
+                <VoiceSelectionModal
+                  isOpen={isTtsVoiceModalOpen}
+                  onClose={() => setIsTtsVoiceModalOpen(false)}
+                  voices={voices}
+                  activeVoiceId={ttsCfg.voiceId}
+                  currentModel={selectedModelLabel}
+                  onSelectVoice={(voice) => {
+                    updateTts({ voiceId: voice.id });
+                    setIsTtsVoiceModalOpen(false);
                   }}
-                  className="w-full accent-accent bg-surface3 h-1.5 rounded-full cursor-pointer"
                 />
-                <span className="font-mono text-accent text-right block">
-                  {(localDefaults.tts?.speed ?? 1.0).toFixed(2)}x
-                </span>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB 3: DIALOGUE */}
           {activeTab === "dialogue" && (() => {

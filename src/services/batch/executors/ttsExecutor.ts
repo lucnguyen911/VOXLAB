@@ -218,7 +218,7 @@ export class TtsExecutor {
     // 6. Assemble master from the real chunk audio (sidecar writes atomically; MP3 = real LAME encode)
     if (audioResolution.action !== "skip") {
       onProgress?.(75, "Đang ghép nối tệp âm thanh Master...");
-      const pauses = computeChunkPausesMs(sortedChunks);
+      const pauses = computeChunkPausesMs(sortedChunks, ttsSnapshot?.pauses);
       try {
         await ai.assemble({
           inputs: sortedChunks.map((c, i) => ({ path: c.audioUrl as string, gapAfterMs: pauses[i] })),
@@ -236,6 +236,7 @@ export class TtsExecutor {
     // 7. YouTube Cinematic Subtitle alignment (ASR word-timestamps on Master Audio with chunk-clause fallback)
     const needsSubtitle =
       job.selectedTasks.includes("transcription") ||
+      Boolean(ttsSnapshot?.exportSrt) ||
       (job.effectiveConfigSnapshot?.tasks.tts?.sentencePauseMs !== undefined);
 
     if (needsSubtitle) {

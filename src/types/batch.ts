@@ -119,6 +119,13 @@ export interface BatchTtsSnapshot {
   speed: number;
   pitch: number;
   volume: number;
+  pauses?: {
+    comma: number;
+    period: number;
+    questionExclamation: number;
+    colonSemicolon: number;
+  };
+  exportSrt?: boolean;
   sentencePauseMs?: number;
   emotion?: string;
 }
