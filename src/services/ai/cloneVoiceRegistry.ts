@@ -156,6 +156,8 @@ export async function reconcileCloneVoicesWithProfiles(
     return {
       ...p,
       name: p.name || entry.name,
+      provider: p.provider === ("clone" as any) || !p.provider ? "local" : p.provider,
+      sourceType: p.sourceType === ("clone" as any) || !p.sourceType ? "local" : p.sourceType,
       sampleAudioPath: entry.refAudioPath || p.sampleAudioPath,
       ...(entry.durationSec ? { sampleDurationSec: entry.durationSec } : {}),
       ...(entry.refText ? { referenceTranscript: entry.refText } : {}),

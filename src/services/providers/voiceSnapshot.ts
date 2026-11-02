@@ -78,7 +78,7 @@ export function createEffectiveVoiceSnapshot(
     voiceId: voice.id,
     provider,
     engine,
-    modelId: provider === "local" ? options.activeModel : undefined,
+    modelId: provider === "local" || provider === "clone" ? options.activeModel : undefined,
     language: voice.supportedLanguages?.[0],
     voiceName: voice.name,
     speed: options.speed ?? 1.0,
