@@ -1,5 +1,5 @@
 import React from "react";
-import { Ban } from "lucide-react";
+import { Ban, Settings } from "lucide-react";
 import { BatchJob, BatchTaskType } from "../../types/batch";
 
 export interface TaskMatrixCellProps {
@@ -10,6 +10,8 @@ export interface TaskMatrixCellProps {
   isSelected: boolean;
   disabled?: boolean;
   onToggle: () => void;
+  onConfigureTask?: () => void;
+  hasTaskCustomConfig?: boolean;
 }
 
 /**
@@ -26,6 +28,8 @@ export const TaskMatrixCell: React.FC<TaskMatrixCellProps> = ({
   isSelected,
   disabled = false,
   onToggle,
+  onConfigureTask,
+  hasTaskCustomConfig = false,
 }) => {
   if (!isCompatible) {
     return (
@@ -39,7 +43,7 @@ export const TaskMatrixCell: React.FC<TaskMatrixCellProps> = ({
   }
 
   return (
-    <div className="flex items-center justify-center min-h-[36px]">
+    <div className="flex items-center justify-center gap-1.5 min-h-[36px]">
       <input
         type="checkbox"
         checked={isSelected}
@@ -47,6 +51,23 @@ export const TaskMatrixCell: React.FC<TaskMatrixCellProps> = ({
         onChange={onToggle}
         className="w-4 h-4 rounded border-borderDefault text-accent accent-accent focus:ring-0 focus:outline-none focus-visible:outline-none outline-none ring-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
       />
+      {onConfigureTask && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onConfigureTask();
+          }}
+          className={`p-1 rounded-md transition-colors cursor-pointer ${
+            hasTaskCustomConfig
+              ? "text-accent bg-accent/15 hover:bg-accent/25 border border-accent/30"
+              : "text-textMuted hover:text-accent hover:bg-surface2"
+          }`}
+          title="Chọn giọng cho từng nhân vật trong đoạn hội thoại"
+        >
+          <Settings className="w-3.5 h-3.5" />
+        </button>
+      )}
     </div>
   );
 };

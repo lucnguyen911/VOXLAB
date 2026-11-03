@@ -25,6 +25,7 @@ import { QueueReorderTable } from "./batch/QueueReorderTable";
 import { FailedJobsTable } from "./batch/FailedJobsTable";
 import { PerFileConfigDrawer } from "./batch/PerFileConfigDrawer";
 import { GlobalDefaultsModal } from "./batch/GlobalDefaultsModal";
+import { DialogueCharacterVoiceModal } from "./batch/DialogueCharacterVoiceModal";
 import { BatchArtifactPreviewModal } from "./batch/BatchArtifactPreviewModal";
 import { BatchFooter } from "../components/batch/BatchFooter";
 import {
@@ -71,6 +72,7 @@ export const BatchWorkspace: React.FC = () => {
   // Modals & Drawers
   const [isGlobalModalOpen, setIsGlobalModalOpen] = useState(false);
   const [drawerJob, setDrawerJob] = useState<BatchJob | null>(null);
+  const [dialogueVoiceJob, setDialogueVoiceJob] = useState<BatchJob | null>(null);
   const [previewArtifact, setPreviewArtifact] = useState<{
     path: string;
     fileName: string;
@@ -208,6 +210,7 @@ export const BatchWorkspace: React.FC = () => {
         sourceFileMtime: file.mtime || Date.now(),
         fileKind: compat.fileKind,
         isDialogueScript: isDialogueValid,
+        dialogueScriptText: isDialogueValid ? file.textContent : undefined,
         stage: "staging",
         queueOrder: jobs.length + index + 1,
         selectedTasks: defaultTasks,
@@ -587,6 +590,7 @@ export const BatchWorkspace: React.FC = () => {
                 checkTaskCompatibility(job.fileKind, task, resolveJobIsDialogue(job))
               }
               onOpenDrawer={setDrawerJob}
+              onOpenDialogueVoices={setDialogueVoiceJob}
               onDeleteJob={(id) => orchestrator.setJobs(jobs.filter((j) => j.id !== id))}
               onClearAllJobs={() => orchestrator.setJobs([])}
             />
@@ -745,6 +749,41 @@ export const BatchWorkspace: React.FC = () => {
                   }
                 : j
             );
+            orchestrator.setJobs(updated);
+          }}
+        />
+      )}
+
+      {dialogueVoiceJob && (
+        <DialogueCharacterVoiceModal
+          job={dialogueVoiceJob}
+          isOpen={Boolean(dialogueVoiceJob)}
+          onClose={() => setDialogueVoiceJob(null)}
+          onSaveCharacterVoices={(jobId, characterVoices, defaultVoiceId) => {
+            const updated = jobs.map((j) => {
+              if (j.id !== jobId) return j;
+              const existingDialogue =
+                j.configOverrides.dialogue ||
+                orchestrator.getGlobalDefaults().dialogue || {
+                  model: "omnivoice",
+                  defaultVoiceId: defaultVoiceId || "omnivoice-auto",
+                  sameSpeakerPauseSec: 0.3,
+                  exportSrt: true,
+                };
+              return {
+                ...j,
+                configOverrides: {
+                  ...j.configOverrides,
+                  dialogue: {
+                    ...existingDialogue,
+                    defaultVoiceId:
+                      defaultVoiceId || existingDialogue.defaultVoiceId || "omnivoice-auto",
+                    characterVoices,
+                  },
+                },
+                hasCustomConfig: true,
+              };
+            });
             orchestrator.setJobs(updated);
           }}
         />

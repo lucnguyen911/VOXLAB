@@ -30,6 +30,7 @@ export interface FileTaskMatrixTableProps {
     task: BatchTaskType
   ) => { isCompatible: boolean; reason?: string };
   onOpenDrawer: (job: BatchJob) => void;
+  onOpenDialogueVoices?: (job: BatchJob) => void;
   onDeleteJob: (jobId: string) => void;
   onClearAllJobs: () => void;
 }
@@ -60,6 +61,7 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
   isTaskSomeEnabled,
   getTaskCompatibility,
   onOpenDrawer,
+  onOpenDialogueVoices,
   onDeleteJob,
   onClearAllJobs,
 }) => {
@@ -219,6 +221,18 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                       incompatibilityReason={dialCompat.reason}
                       isSelected={job.selectedTasks.includes("dialogue")}
                       onToggle={() => onToggleJobTask(job.id, "dialogue")}
+                      onConfigureTask={
+                        dialCompat.isCompatible && onOpenDialogueVoices
+                          ? () => onOpenDialogueVoices(job)
+                          : undefined
+                      }
+                      hasTaskCustomConfig={
+                        Object.keys(
+                          job.configOverrides.dialogue?.characterVoices ||
+                            job.effectiveConfigSnapshot?.tasks?.dialogue?.characterVoices ||
+                            {}
+                        ).length > 0
+                      }
                     />
                   </td>
 
