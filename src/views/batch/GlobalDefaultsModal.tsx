@@ -17,6 +17,8 @@ import {
   ChevronRight,
   Sparkles,
   Sliders,
+  Settings2,
+  Zap,
 } from "lucide-react";
 import {
   BatchTaskConfigMap,
@@ -24,7 +26,9 @@ import {
   BatchCollisionPolicy,
   BatchTranscriptionSnapshot,
   BatchTranslationSnapshot,
+  BatchDubbingSnapshot,
 } from "../../types/batch";
+import { DubbingMode, normalizeDubbingMode } from "../../types/dubbing";
 import { VoiceProfile, PunctuationPauses } from "../../types/ui";
 import { MOCK_VOICES } from "../../mock/data";
 import { useI18n } from "../../i18n/context";
@@ -98,8 +102,91 @@ function normalizeModelSelectValue(rawModel?: string): string {
 
 function mapSelectToSnapshotModel(selectVal: string): string {
   if (selectVal === "Chatterbox Turbo") return "chatterbox_turbo";
-  if (selectVal === "Qwen TTS 1.7B") return "qwen_tts_1_7b";
+  if (selectVal === "Qwen TTS 1.7B" || selectVal === "Qwen 1.7B") return "qwen_tts_1_7b";
   return "omnivoice";
+}
+
+function normalizeDubbingModelSelectValue(rawModel?: string): string {
+  const m = (rawModel || "").toLowerCase();
+  if (m.includes("chatterbox")) return "Chatterbox Turbo";
+  if (m.includes("qwen")) return "Qwen 1.7B";
+  return "Omni Voice";
+}
+
+function loadStoredDubbingSettings() {
+  let dubbingMode: DubbingMode = "source_sync";
+  let voiceId = "";
+  let speed = 1.0;
+  let pitch = 1.0;
+  let volume = 100;
+  let pauses: PunctuationPauses = { ...DEFAULT_TTS_SETTINGS.pauses };
+
+  try {
+    if (typeof localStorage !== "undefined") {
+      const savedMode = localStorage.getItem("voxlab_dubbing_mode");
+      if (savedMode) dubbingMode = normalizeDubbingMode(savedMode);
+      const savedVoice = localStorage.getItem("voxlab_dubbing_selected_voice");
+      if (savedVoice) voiceId = savedVoice;
+      const savedVoiceSettings = localStorage.getItem("voxlab_dubbing_voice_settings");
+      if (savedVoiceSettings) {
+        const parsed = JSON.parse(savedVoiceSettings);
+        if (typeof parsed.speed === "number") speed = parsed.speed;
+        if (typeof parsed.pitch === "number") pitch = parsed.pitch;
+        if (typeof parsed.volume === "number") {
+          volume = parsed.volume <= 2.0 ? Math.round(parsed.volume * 100) : Math.round(parsed.volume);
+        }
+        if (parsed.pauses && typeof parsed.pauses === "object") {
+          pauses = { ...DEFAULT_TTS_SETTINGS.pauses, ...parsed.pauses };
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return { dubbingMode, voiceId, speed, pitch, volume, pauses };
+}
+
+function saveStoredDubbingSettings(patch: {
+  dubbingMode?: DubbingMode;
+  voiceId?: string;
+  speed?: number;
+  pitch?: number;
+  volume?: number;
+  pauses?: PunctuationPauses;
+}) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (patch.dubbingMode) {
+      localStorage.setItem("voxlab_dubbing_mode", patch.dubbingMode);
+    }
+    if (patch.voiceId) {
+      localStorage.setItem("voxlab_dubbing_selected_voice", patch.voiceId);
+    }
+    if (
+      patch.speed !== undefined ||
+      patch.pitch !== undefined ||
+      patch.volume !== undefined ||
+      patch.pauses !== undefined
+    ) {
+      const current = loadStoredDubbingSettings();
+      const nextSpeed = patch.speed ?? current.speed;
+      const nextPitch = patch.pitch ?? current.pitch;
+      const nextVolRatio = (patch.volume ?? current.volume) / 100;
+      const nextPauses = patch.pauses ?? current.pauses;
+      localStorage.setItem(
+        "voxlab_dubbing_voice_settings",
+        JSON.stringify({
+          speed: nextSpeed,
+          pitch: nextPitch,
+          volume: nextVolRatio,
+          pauses: nextPauses,
+          concurrency: 1,
+        })
+      );
+    }
+  } catch {
+    // ignore
+  }
 }
 
 export interface GlobalDefaultsModalProps {
@@ -139,6 +226,9 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
   const [isTtsVoiceModalOpen, setIsTtsVoiceModalOpen] = useState(false);
   const [isTtsPausesOpen, setIsTtsPausesOpen] = useState(false);
   const [isDialoguePausesOpen, setIsDialoguePausesOpen] = useState(false);
+  const [isDubbingVoiceModalOpen, setIsDubbingVoiceModalOpen] = useState(false);
+  const [isDubbingPausesOpen, setIsDubbingPausesOpen] = useState(false);
+  const [isDubbingAdvancedOpen, setIsDubbingAdvancedOpen] = useState(false);
   const [recommendedAsrModel, setRecommendedAsrModel] = useState<string>("large-v3-turbo");
 
   useEffect(() => {
@@ -219,6 +309,25 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
         style: initialStyle,
         outputFormat: existingTrans?.outputFormat || "preserve_input",
       },
+      dubbing: (() => {
+        const storedDub = loadStoredDubbingSettings();
+        const existingDub = globalDefaults.dubbing;
+        return {
+          ttsModel: existingDub?.ttsModel || "omnivoice",
+          voiceId:
+            existingDub?.voiceId && existingDub.voiceId !== "omnivoice-auto"
+              ? existingDub.voiceId
+              : storedDub.voiceId || loadAvailableVoices()[0]?.id || "voice_01",
+          dubbingMode: existingDub?.dubbingMode || storedDub.dubbingMode || "source_sync",
+          speed: existingDub?.speed ?? storedDub.speed ?? 1.0,
+          pitch: existingDub?.pitch ?? storedDub.pitch ?? 1.0,
+          volume: existingDub?.volume ?? storedDub.volume ?? 100,
+          pauses: existingDub?.pauses || storedDub.pauses || DEFAULT_TTS_SETTINGS.pauses,
+          autoFitEnabled: existingDub?.autoFitEnabled ?? false,
+          speedMultiplier: existingDub?.speedMultiplier ?? 1.0,
+          turnPauseSec: existingDub?.turnPauseSec ?? 0.3,
+        };
+      })(),
     };
   });
 
@@ -1762,19 +1871,543 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
           })()}
 
           {/* TAB 6: DUBBING */}
-          {activeTab === "dubbing" && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
-                  Giới hạn tăng tốc WSOLA
-                </label>
-                <div className="p-3 bg-surface2/60 border border-borderDefault rounded-lg text-xs leading-relaxed text-textSecondary">
-                  Tự động co giãn thời lượng để khớp video với trần tốc độ tối đa 1.20x. Nếu vượt quá
-                  ngưỡng an toàn, hệ thống kích hoạt cảnh báo va chạm âm thanh.
+          {activeTab === "dubbing" && (() => {
+            const storedDub = loadStoredDubbingSettings();
+            const currentDub = localDefaults.dubbing || {
+              ttsModel: "omnivoice",
+              voiceId: storedDub.voiceId || voices[0]?.id || "voice_01",
+              dubbingMode: storedDub.dubbingMode || "source_sync",
+              speed: storedDub.speed ?? 1.0,
+              pitch: storedDub.pitch ?? 1.0,
+              volume: storedDub.volume ?? 100,
+              pauses: storedDub.pauses || DEFAULT_TTS_SETTINGS.pauses,
+              autoFitEnabled: false,
+              speedMultiplier: 1.0,
+              turnPauseSec: 0.3,
+            };
+
+            const dubbingModeVal: DubbingMode =
+              currentDub.dubbingMode || storedDub.dubbingMode || "source_sync";
+            const selectedVoice =
+              voices.find((v) => v.id === currentDub.voiceId) ||
+              voices[0] || {
+                id: "voice_01",
+                name: "Thảo Trinh (Hà Nội)",
+                gender: "female",
+                language: "vi-VN",
+                accent: "Bắc",
+                avatarColor: "from-pink-500 to-rose-600",
+              };
+
+            const selectModelVal = normalizeDubbingModelSelectValue(currentDub.ttsModel);
+            const speedVal = currentDub.speed ?? 1.0;
+            const pitchVal =
+              typeof currentDub.pitch === "number" &&
+              currentDub.pitch >= 0.5 &&
+              currentDub.pitch <= 1.5
+                ? currentDub.pitch
+                : 1.0;
+            const volPctVal =
+              typeof currentDub.volume === "number"
+                ? currentDub.volume <= 2.0 && currentDub.volume > 0
+                  ? Math.round(currentDub.volume * 100)
+                  : Math.round(currentDub.volume)
+                : 100;
+            const pausesVal: PunctuationPauses =
+              currentDub.pauses || DEFAULT_TTS_SETTINGS.pauses;
+            const autoFitVal = Boolean(currentDub.autoFitEnabled);
+
+            const updateDubbing = (patch: Partial<BatchDubbingSnapshot>) => {
+              const next: BatchDubbingSnapshot = {
+                ...currentDub,
+                ...(localDefaults.dubbing || {}),
+                ...patch,
+              };
+              setLocalDefaults((prev) => ({
+                ...prev,
+                dubbing: next,
+              }));
+              saveStoredDubbingSettings({
+                dubbingMode: next.dubbingMode,
+                voiceId: next.voiceId,
+                speed: next.speed,
+                pitch: next.pitch,
+                volume: next.volume,
+                pauses: next.pauses,
+              });
+            };
+
+            const handleResetDubbing = () => {
+              updateDubbing({
+                speed: 1.0,
+                pitch: 1.0,
+                volume: 100,
+                pauses: { ...DEFAULT_TTS_SETTINGS.pauses },
+                speedMultiplier: 1.0,
+              });
+            };
+
+            const handleDubbingPauseChange = (
+              key: keyof PunctuationPauses,
+              value: number
+            ) => {
+              updateDubbing({
+                pauses: {
+                  ...pausesVal,
+                  [key]: value,
+                },
+              });
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 pb-0.5">
+                  <Volume2 className="w-4 h-4 text-accent" />
+                  <span className="font-bold text-xs text-textPrimary uppercase tracking-wide">
+                    Lồng Tiếng
+                  </span>
                 </div>
+
+                {/* 1. Chế độ Lồng tiếng */}
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                    Chế Độ Lồng Tiếng
+                  </label>
+                  <select
+                    value={dubbingModeVal}
+                    onChange={(e) =>
+                      updateDubbing({
+                        dubbingMode: normalizeDubbingMode(e.target.value),
+                      })
+                    }
+                    className="w-full h-[32px] bg-surface2/50 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
+                  >
+                    <option value="source_sync">Đồng bộ video gốc</option>
+                    <option value="free_narration">Thuyết minh tự do</option>
+                  </select>
+                  <p className="text-[11px] text-textMuted leading-tight pt-0.5">
+                    {dubbingModeVal === "source_sync"
+                      ? "Giữ nguyên mốc thời gian phụ đề gốc, tự động căn chỉnh tốc độ đọc khớp với hình ảnh video."
+                      : "Gộp và dịch theo câu hoàn chỉnh tự nhiên, đọc liền mạch và tạo phụ đề mới khớp theo giọng đọc."}
+                  </p>
+                </div>
+
+                {/* 2. Chọn giọng */}
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                    {lang === "en" ? "Select Voice" : "Chọn giọng"}
+                  </label>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setIsDubbingVoiceModalOpen(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setIsDubbingVoiceModalOpen(true);
+                      }
+                    }}
+                    className="p-3 bg-surface1 hover:bg-surface2/60 border border-borderDefault hover:border-accent/50 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none rounded-xl transition-all cursor-pointer flex items-center justify-between gap-3 group shadow-2xs"
+                    title={t.inspector.fromLibrary}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={`w-10 h-10 rounded-full bg-gradient-to-tr ${
+                          selectedVoice.avatarColor || "from-pink-500 to-rose-600"
+                        } flex items-center justify-center text-white font-bold text-xs shadow-sm flex-shrink-0`}
+                      >
+                        {selectedVoice.name.charAt(0)}
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="font-semibold text-[13px] text-textPrimary truncate group-hover:text-accent transition-colors">
+                          {selectedVoice.name}
+                        </h4>
+                        {(() => {
+                          const langInfo = getVoiceLanguageInfo(selectedVoice, lang);
+                          let accentOrTag = "";
+                          if (selectedVoice.accent) {
+                            const normAcc = normalizeAccent(selectedVoice.accent);
+                            accentOrTag = getAccentLabel(normAcc, lang);
+                          }
+                          if (!accentOrTag) {
+                            const secondaryTags = getVoiceSecondaryTags(
+                              selectedVoice,
+                              lang
+                            );
+                            accentOrTag =
+                              secondaryTags.length > 0
+                                ? secondaryTags[0]
+                                : lang === "vi"
+                                ? "Tiêu chuẩn"
+                                : "Standard";
+                          }
+                          return (
+                            <div className="flex items-center gap-1.5 mt-0.5 text-xs text-textSecondary font-medium truncate">
+                              <CountryFlag
+                                countryCode={langInfo.countryCode || langInfo.code}
+                              />
+                              <span className="truncate">{langInfo.name}</span>
+                              {accentOrTag && (
+                                <>
+                                  <span className="text-textMuted text-[10px]">·</span>
+                                  <span className="text-[11px] text-textMuted truncate">
+                                    {accentOrTag}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 text-xs text-accent font-semibold flex-shrink-0 group-hover:translate-x-0.5 transition-transform">
+                      <span>{t.inspector.changeVoice}</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Model Đọc */}
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                    {lang === "en" ? "Reading Model" : "Model Đọc"}
+                  </label>
+                  <select
+                    value={selectModelVal}
+                    onChange={(e) =>
+                      updateDubbing({
+                        ttsModel: mapSelectToSnapshotModel(e.target.value),
+                      })
+                    }
+                    className="w-full h-[34px] bg-surface1 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
+                  >
+                    <option value="Omni Voice">Omni Voice</option>
+                    <option value="Chatterbox Turbo">Chatterbox Turbo</option>
+                    <option value="Qwen 1.7B">Qwen 1.7B</option>
+                  </select>
+                </div>
+
+                {/* 4. Cài đặt (Tốc độ, Cao độ, Âm lượng) với Đặt lại */}
+                <div className="border-t border-borderDefault/60 pt-2 space-y-3">
+                  <div className="flex items-center justify-between pb-0.5">
+                    <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                      {t.inspector.settings}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleResetDubbing}
+                      title={t.inspector.resetSettingsTooltip}
+                      className="flex items-center gap-1 text-xs text-textMuted hover:text-accent focus-visible:ring-1 focus-visible:ring-accent rounded px-1.5 py-0.5 transition-colors cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>{t.inspector.resetSettings}</span>
+                    </button>
+                  </div>
+
+                  {/* Speed Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Gauge className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.speed}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {speedVal.toFixed(2)}×
+                      </span>
+                    </div>
+                    <div className="relative flex items-center">
+                      <input
+                        type="range"
+                        min="0.5"
+                        max="1.5"
+                        step="0.05"
+                        value={speedVal}
+                        onChange={(e) => {
+                          const s = parseFloat(e.target.value);
+                          updateDubbing({ speed: s, speedMultiplier: s });
+                        }}
+                        className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                      />
+                    </div>
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>0.5×</span>
+                      <span>1.5×</span>
+                    </div>
+                  </div>
+
+                  {/* Pitch Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Activity className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.pitch}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {pitchVal.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="relative flex items-center">
+                      <input
+                        type="range"
+                        min="0.5"
+                        max="1.5"
+                        step="0.05"
+                        value={pitchVal}
+                        onChange={(e) =>
+                          updateDubbing({ pitch: parseFloat(e.target.value) })
+                        }
+                        className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                      />
+                    </div>
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>{t.inspector.low}</span>
+                      <span>{t.inspector.high}</span>
+                    </div>
+                  </div>
+
+                  {/* Volume Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Volume2 className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.volume}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {volPctVal}%
+                      </span>
+                    </div>
+                    <div className="relative flex items-center">
+                      <input
+                        type="range"
+                        min="0"
+                        max="200"
+                        step="5"
+                        value={volPctVal}
+                        onChange={(e) =>
+                          updateDubbing({ volume: parseInt(e.target.value, 10) })
+                        }
+                        className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                      />
+                    </div>
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>0%</span>
+                      <span>200%</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5. Ngắt nghỉ (Collapsible) */}
+                <div className="pt-2 border-t border-borderDefault/60">
+                  <button
+                    type="button"
+                    onClick={() => setIsDubbingPausesOpen(!isDubbingPausesOpen)}
+                    className="w-full flex items-center justify-between py-1.5 px-1 rounded-md text-xs font-semibold text-textSecondary hover:text-textPrimary hover:bg-surface2/40 outline-none focus:outline-none transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-accent" />
+                      <span className="uppercase tracking-wider font-bold">
+                        {t.inspector.pausesTitle}
+                      </span>
+                    </div>
+                    <ChevronRight
+                      className={`w-3.5 h-3.5 transition-transform duration-200 ${
+                        isDubbingPausesOpen ? "rotate-90" : ""
+                      }`}
+                    />
+                  </button>
+
+                  {isDubbingPausesOpen && (
+                    <div className="space-y-3 pt-2">
+                      <div className="grid grid-cols-2 gap-3">
+                        {/* Comma Pause */}
+                        <div className="space-y-1">
+                          <span className="text-xs font-medium text-textSecondary block truncate">
+                            {t.inspector.comma}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.1"
+                              max="3.0"
+                              step="0.1"
+                              value={pausesVal.comma}
+                              onChange={(e) =>
+                                handleDubbingPauseChange(
+                                  "comma",
+                                  parseFloat(e.target.value) || 0.1
+                                )
+                              }
+                              className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
+                            />
+                            <span className="text-textMuted text-[11px] flex-shrink-0">
+                              {t.inspector.sec}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Period Pause */}
+                        <div className="space-y-1">
+                          <span className="text-xs font-medium text-textSecondary block truncate">
+                            {t.inspector.period}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.2"
+                              max="5.0"
+                              step="0.1"
+                              value={pausesVal.period}
+                              onChange={(e) =>
+                                handleDubbingPauseChange(
+                                  "period",
+                                  parseFloat(e.target.value) || 0.2
+                                )
+                              }
+                              className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
+                            />
+                            <span className="text-textMuted text-[11px] flex-shrink-0">
+                              {t.inspector.sec}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Question & Exclamation Pause */}
+                        <div className="space-y-1">
+                          <span className="text-xs font-medium text-textSecondary block truncate">
+                            {t.inspector.questionExclamation}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.2"
+                              max="5.0"
+                              step="0.1"
+                              value={pausesVal.questionExclamation}
+                              onChange={(e) =>
+                                handleDubbingPauseChange(
+                                  "questionExclamation",
+                                  parseFloat(e.target.value) || 0.2
+                                )
+                              }
+                              className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
+                            />
+                            <span className="text-textMuted text-[11px] flex-shrink-0">
+                              {t.inspector.sec}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Colon & Semicolon Pause */}
+                        <div className="space-y-1">
+                          <span className="text-xs font-medium text-textSecondary block truncate">
+                            {t.inspector.colonSemicolon}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0.1"
+                              max="3.0"
+                              step="0.1"
+                              value={pausesVal.colonSemicolon}
+                              onChange={(e) =>
+                                handleDubbingPauseChange(
+                                  "colonSemicolon",
+                                  parseFloat(e.target.value) || 0.1
+                                )
+                              }
+                              className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:outline-none"
+                            />
+                            <span className="text-textMuted text-[11px] flex-shrink-0">
+                              {t.inspector.sec}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 6. Nâng cao (Collapsible) */}
+                <div className="pt-2 border-t border-borderDefault/60">
+                  <button
+                    type="button"
+                    onClick={() => setIsDubbingAdvancedOpen(!isDubbingAdvancedOpen)}
+                    className="w-full flex items-center justify-between py-1.5 px-1 rounded-md text-xs font-semibold text-textSecondary hover:text-textPrimary hover:bg-surface2/40 outline-none focus:outline-none transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Settings2 className="w-3.5 h-3.5 text-accent" />
+                      <span className="uppercase tracking-wider font-bold">
+                        {t.inspector.advanced}
+                      </span>
+                    </div>
+                    <ChevronRight
+                      className={`w-3.5 h-3.5 transition-transform duration-200 ${
+                        isDubbingAdvancedOpen ? "rotate-90" : ""
+                      }`}
+                    />
+                  </button>
+
+                  {isDubbingAdvancedOpen && (
+                    <div className="space-y-3 pt-2">
+                      {dubbingModeVal === "source_sync" ? (
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-textSecondary font-medium select-none flex items-center gap-1.5">
+                              <Zap
+                                className={`w-3.5 h-3.5 ${
+                                  autoFitVal ? "text-accent" : "text-textMuted"
+                                }`}
+                              />
+                              Khớp thời gian file gốc
+                            </span>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={autoFitVal}
+                              onClick={() =>
+                                updateDubbing({ autoFitEnabled: !autoFitVal })
+                              }
+                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                autoFitVal ? "bg-accent" : "bg-surface3"
+                              }`}
+                              title={`Khớp thời gian file gốc: ${
+                                autoFitVal ? "Bật (ON)" : "Tắt (OFF)"
+                              }`}
+                            >
+                              <span
+                                aria-hidden="true"
+                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                  autoFitVal ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-textMuted italic">
+                          Chế độ Thuyết minh tự do phát âm theo tốc độ tự nhiên, không ép mốc thời gian video gốc.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Voice Selection Modal for Dubbing */}
+                <VoiceSelectionModal
+                  isOpen={isDubbingVoiceModalOpen}
+                  onClose={() => setIsDubbingVoiceModalOpen(false)}
+                  voices={voices}
+                  activeVoiceId={selectedVoice.id}
+                  currentModel={selectModelVal}
+                  onSelectVoice={(voice) => {
+                    updateDubbing({ voiceId: voice.id });
+                    setIsDubbingVoiceModalOpen(false);
+                  }}
+                />
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
 
         {/* Modal Footer with Selection Scope Safeguard (AC-16) */}

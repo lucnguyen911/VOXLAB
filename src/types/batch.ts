@@ -171,6 +171,17 @@ export interface BatchTranslationSnapshot {
 export interface BatchDubbingSnapshot {
   ttsModel: string;
   voiceId: string;
+  dubbingMode?: "source_sync" | "free_narration";
+  speed?: number;
+  pitch?: number;
+  volume?: number;
+  pauses?: {
+    comma: number;
+    period: number;
+    questionExclamation: number;
+    colonSemicolon: number;
+  };
+  autoFitEnabled?: boolean;
   speedMultiplier: number;
   turnPauseSec: number;
 }

@@ -160,9 +160,17 @@ export class DubbingExecutor {
 
     const model = dubSnapshot?.ttsModel || "";
     const voiceId = dubSnapshot?.voiceId || "";
+    const speed =
+      dubSnapshot?.speed && dubSnapshot.speed !== 1 ? dubSnapshot.speed : undefined;
     const effectiveRules = getEffectiveRules("dubbing");
     try {
-      ai.resolveEngine(model, voiceId, cues.map((c) => normalizeCueTextForSpeech(c.text)).join(" "));
+      ai.resolveEngine(
+        model,
+        voiceId,
+        cues.map((c) => normalizeCueTextForSpeech(c.text)).join(" "),
+        undefined,
+        speed
+      );
     } catch (e) {
       return fail(20, AiError.from(e).message);
     }
@@ -206,6 +214,7 @@ export class DubbingExecutor {
             voiceId,
             text: cleanText,
             outputPath,
+            speed,
             advancedSettings: jobAdvancedSettings,
             pronunciationRules: effectiveRules,
             projectId: "dubbing",
@@ -288,6 +297,7 @@ export class DubbingExecutor {
             voiceId,
             text: cleanText,
             outputPath,
+            speed,
             advancedSettings: jobAdvancedSettings,
             pronunciationRules: effectiveRules,
             projectId: "dubbing",
