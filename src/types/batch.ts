@@ -133,6 +133,15 @@ export interface BatchTtsSnapshot {
 export interface BatchDialogueSnapshot {
   model: string;
   defaultVoiceId: string;
+  speed?: number;
+  pitch?: number;
+  volume?: number;
+  pauses?: {
+    comma: number;
+    period: number;
+    questionExclamation: number;
+    colonSemicolon: number;
+  };
   turnPauseSec?: number;
   turnPauseMinSec?: number;
   turnPauseMaxSec?: number;

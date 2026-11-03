@@ -109,6 +109,9 @@ export class DialogueExecutor {
     const characterVoices = dialogueSnapshot?.characterVoices || {};
     const defaultVoice = dialogueSnapshot?.defaultVoiceId || "vi-VN-HoaiMyNeural";
     const model = dialogueSnapshot?.model || "";
+    const speed = dialogueSnapshot?.speed;
+    const pitch = dialogueSnapshot?.pitch;
+    const volume = dialogueSnapshot?.volume;
     const effectiveRules = getEffectiveRules("dialogue");
     const fail = (progressPct: number, error: string): BatchStepResult => ({
       task: "dialogue",
@@ -168,6 +171,9 @@ export class DialogueExecutor {
             voiceId: vId,
             text: seg.cleanText,
             outputPath,
+            ...(speed !== undefined ? { speed } : {}),
+            ...(pitch !== undefined ? { pitch } : {}),
+            ...(volume !== undefined ? { volume: volume > 2 ? volume / 100 : volume } : {}),
           });
         } else {
           r = await ai.synthesize({
@@ -175,6 +181,7 @@ export class DialogueExecutor {
             voiceId: vId,
             text: seg.cleanText,
             outputPath,
+            ...(speed !== undefined ? { speed } : {}),
             advancedSettings: jobAdvancedSettings,
             pronunciationRules: effectiveRules,
             projectId: "dialogue",
@@ -218,10 +225,16 @@ export class DialogueExecutor {
     const globalSettings: DialogueGlobalSettings = {
       ...DEFAULT_DIALOGUE_SETTINGS,
       model: model || DEFAULT_DIALOGUE_SETTINGS.model,
-      masterVolume: 1.0,
+      masterVolume:
+        typeof volume === "number"
+          ? volume > 2
+            ? volume / 100
+            : volume
+          : 1.0,
       turnPauseMinSec: pauseRange.minSec,
       turnPauseMaxSec: pauseRange.maxSec,
       sameSpeakerPauseSec: dialogueSnapshot?.sameSpeakerPauseSec ?? 0.3,
+      ...(dialogueSnapshot?.pauses ? { pauses: dialogueSnapshot.pauses } : {}),
       exportSrt: dialogueSnapshot?.exportSrt ?? true,
     };
     const assembly = calculateDialogueTimeline(segments, globalSettings);

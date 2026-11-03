@@ -111,6 +111,7 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
   const [voices, setVoices] = useState<VoiceProfile[]>(loadAvailableVoices);
   const [isTtsVoiceModalOpen, setIsTtsVoiceModalOpen] = useState(false);
   const [isTtsPausesOpen, setIsTtsPausesOpen] = useState(false);
+  const [isDialoguePausesOpen, setIsDialoguePausesOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -919,8 +920,35 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
 
           {/* TAB 3: DIALOGUE */}
           {activeTab === "dialogue" && (() => {
-            const rawMin = localDefaults.dialogue?.turnPauseMinSec;
-            const rawMax = localDefaults.dialogue?.turnPauseMaxSec;
+            const dlgCfg = localDefaults.dialogue || {
+              model: "omnivoice",
+              defaultVoiceId: "omnivoice-auto",
+              speed: 1.0,
+              pitch: 1.0,
+              volume: 100,
+              pauses: DEFAULT_TTS_SETTINGS.pauses,
+              turnPauseMinSec: 0.40,
+              turnPauseMaxSec: 0.70,
+              sameSpeakerPauseSec: 0.3,
+              exportSrt: true,
+            };
+
+            const selectedModelLabel = normalizeModelSelectValue(dlgCfg.model);
+            const speedVal = typeof dlgCfg.speed === "number" ? dlgCfg.speed : 1.0;
+            const pitchVal =
+              typeof dlgCfg.pitch === "number" && dlgCfg.pitch >= 0.5 && dlgCfg.pitch <= 1.5
+                ? dlgCfg.pitch
+                : 1.0;
+            const volumePct =
+              typeof dlgCfg.volume === "number"
+                ? dlgCfg.volume <= 2.0 && dlgCfg.volume > 0
+                  ? Math.round(dlgCfg.volume * 100)
+                  : Math.round(dlgCfg.volume)
+                : 100;
+            const pauses: PunctuationPauses = dlgCfg.pauses || DEFAULT_TTS_SETTINGS.pauses;
+
+            const rawMin = dlgCfg.turnPauseMinSec;
+            const rawMax = dlgCfg.turnPauseMaxSec;
             const isZeroRange = rawMin === 0 && rawMax === 0;
 
             const minSec =
@@ -932,20 +960,27 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
                 ? rawMax
                 : 0.70;
 
+            const updateDialogue = (patch: Partial<typeof dlgCfg>) => {
+              setLocalDefaults((prev) => ({
+                ...prev,
+                dialogue: {
+                  ...dlgCfg,
+                  ...(prev.dialogue || {}),
+                  ...patch,
+                },
+              }));
+            };
+
             const handleMinChange = (raw: number) => {
               const val = isNaN(raw) ? 0 : Math.max(0, Math.min(2.0, Math.round(raw * 100) / 100));
               let newMax = maxSec;
               if (val > newMax) {
                 newMax = val;
               }
-              setLocalDefaults((prev) => ({
-                ...prev,
-                dialogue: {
-                  ...(prev.dialogue || ({} as any)),
-                  turnPauseMinSec: val,
-                  turnPauseMaxSec: newMax,
-                },
-              }));
+              updateDialogue({
+                turnPauseMinSec: val,
+                turnPauseMaxSec: newMax,
+              });
             };
 
             const handleMaxChange = (raw: number) => {
@@ -954,60 +989,329 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
               if (val < newMin) {
                 newMin = val;
               }
-              setLocalDefaults((prev) => ({
-                ...prev,
-                dialogue: {
-                  ...(prev.dialogue || ({} as any)),
-                  turnPauseMinSec: newMin,
-                  turnPauseMaxSec: val,
-                },
-              }));
+              updateDialogue({
+                turnPauseMinSec: newMin,
+                turnPauseMaxSec: val,
+              });
             };
 
             return (
               <div className="space-y-4">
-                <div className="p-3.5 rounded-xl bg-surface2/60 border border-borderDefault/70 space-y-3">
-                  <div className="text-xs font-semibold text-textPrimary">
-                    {t.inspector.segmentPauseTitle}
+                {/* 1. MODEL */}
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                    {t.inspector.model}
+                  </label>
+                  <select
+                    value={selectedModelLabel}
+                    onChange={(e) => {
+                      const mapped = mapSelectToSnapshotModel(e.target.value);
+                      updateDialogue({ model: mapped });
+                    }}
+                    className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
+                  >
+                    <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
+                    <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
+                    <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>
+                  </select>
+                </div>
+
+                <div className="border-t border-borderDefault/60 pt-1" />
+
+                {/* 2. CÀI ĐẶT */}
+                <div className="space-y-3.5">
+                  <div className="flex items-center justify-between pb-0.5">
+                    <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                      {t.inspector.settings}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateDialogue({ speed: 1.0, pitch: 1.0, volume: 100 });
+                      }}
+                      title={t.inspector.resetSettingsTooltip}
+                      className="flex items-center gap-1 text-xs text-textMuted hover:text-accent focus-visible:ring-1 focus-visible:ring-accent rounded px-1.5 py-0.5 transition-colors cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>{t.inspector.resetSettings}</span>
+                    </button>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="block text-[11px] font-medium text-textSecondary">
-                        {t.inspector.min}
-                      </label>
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="number"
-                          min="0.00"
-                          max="2.00"
-                          step="0.05"
-                          value={minSec}
-                          onChange={(e) => handleMinChange(parseFloat(e.target.value))}
-                          className="w-full bg-surface1 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary text-center focus:border-accent focus:outline-none"
-                        />
-                        <span className="text-textMuted text-xs shrink-0">{t.inspector.sec}</span>
-                      </div>
+                  {/* Speed Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Gauge className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.speed}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {speedVal.toFixed(2)}×
+                      </span>
                     </div>
-
-                    <div className="space-y-1">
-                      <label className="block text-[11px] font-medium text-textSecondary">
-                        {t.inspector.max}
-                      </label>
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="number"
-                          min="0.00"
-                          max="2.00"
-                          step="0.05"
-                          value={maxSec}
-                          onChange={(e) => handleMaxChange(parseFloat(e.target.value))}
-                          className="w-full bg-surface1 border border-borderDefault rounded-lg px-2.5 py-1.5 font-mono text-xs text-textPrimary text-center focus:border-accent focus:outline-none"
-                        />
-                        <span className="text-textMuted text-xs shrink-0">{t.inspector.sec}</span>
-                      </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="1.5"
+                      step="0.05"
+                      value={speedVal}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        updateDialogue({ speed: val });
+                      }}
+                      className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>0.5×</span>
+                      <span>1.5×</span>
                     </div>
                   </div>
+
+                  {/* Pitch Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Activity className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.pitch}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {pitchVal.toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="1.5"
+                      step="0.05"
+                      value={pitchVal}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        updateDialogue({ pitch: val });
+                      }}
+                      className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>{t.inspector.low}</span>
+                      <span>{t.inspector.high}</span>
+                    </div>
+                  </div>
+
+                  {/* Volume Slider */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-textSecondary flex items-center gap-1.5 font-medium">
+                        <Volume2 className="w-3.5 h-3.5 text-textMuted" />
+                        <span>{t.inspector.volume}</span>
+                      </span>
+                      <span className="font-mono text-accent font-semibold">
+                        {volumePct}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="200"
+                      step="5"
+                      value={volumePct}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        updateDialogue({ volume: val });
+                      }}
+                      className="w-full accent-accent bg-surface3 h-1.5 rounded-full appearance-none cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[11px] text-textMuted pt-0.5">
+                      <span>0%</span>
+                      <span>200%</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. NGẮT NGHỈ (Collapsible Accordion) */}
+                <div className="pt-2 border-t border-borderDefault/60">
+                  <button
+                    type="button"
+                    onClick={() => setIsDialoguePausesOpen(!isDialoguePausesOpen)}
+                    className="w-full flex items-center justify-between py-2 px-1 rounded-md text-xs font-semibold text-textSecondary hover:text-textPrimary hover:bg-surface2/40 outline-none focus:outline-none transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-accent" />
+                      <span className="uppercase tracking-wider font-bold">
+                        {t.inspector.pausesTitle}
+                      </span>
+                    </div>
+                    <ChevronRight
+                      className={`w-3.5 h-3.5 transition-transform duration-200 ${
+                        isDialoguePausesOpen ? "rotate-90" : ""
+                      }`}
+                    />
+                  </button>
+
+                  {isDialoguePausesOpen && (
+                    <div className="space-y-3.5 pt-2">
+                      {/* Segment Turn Pause (Min - Max) */}
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-semibold text-textMuted uppercase tracking-wider px-0.5">
+                          {t.inspector.segmentPauseTitle}
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <span className="text-xs font-medium text-textSecondary block truncate">
+                              {t.inspector.min}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0.00"
+                                max="2.00"
+                                step="0.05"
+                                value={minSec}
+                                onChange={(e) => handleMinChange(parseFloat(e.target.value))}
+                                className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                              />
+                              <span className="text-textMuted text-[11px] flex-shrink-0">
+                                {t.inspector.sec}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-xs font-medium text-textSecondary block truncate">
+                              {t.inspector.max}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0.00"
+                                max="2.00"
+                                step="0.05"
+                                value={maxSec}
+                                onChange={(e) => handleMaxChange(parseFloat(e.target.value))}
+                                className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                              />
+                              <span className="text-textMuted text-[11px] flex-shrink-0">
+                                {t.inspector.sec}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Punctuation Pauses */}
+                      <div className="space-y-2 pt-1">
+                        <div className="text-[10px] font-semibold text-textMuted uppercase tracking-wider px-0.5">
+                          {t.inspector.punctuationPausesTitle}
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <span className="text-xs font-medium text-textSecondary block truncate">
+                              {t.inspector.comma}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0.1"
+                                max="3.0"
+                                step="0.1"
+                                value={pauses.comma}
+                                onChange={(e) =>
+                                  updateDialogue({
+                                    pauses: {
+                                      ...pauses,
+                                      comma: parseFloat(e.target.value) || 0.1,
+                                    },
+                                  })
+                                }
+                                className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                              />
+                              <span className="text-textMuted text-[11px] flex-shrink-0">
+                                {t.inspector.sec}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-xs font-medium text-textSecondary block truncate">
+                              {t.inspector.period}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0.2"
+                                max="5.0"
+                                step="0.1"
+                                value={pauses.period}
+                                onChange={(e) =>
+                                  updateDialogue({
+                                    pauses: {
+                                      ...pauses,
+                                      period: parseFloat(e.target.value) || 0.2,
+                                    },
+                                  })
+                                }
+                                className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                              />
+                              <span className="text-textMuted text-[11px] flex-shrink-0">
+                                {t.inspector.sec}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-xs font-medium text-textSecondary block truncate">
+                              {t.inspector.questionExclamation}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0.2"
+                                max="5.0"
+                                step="0.1"
+                                value={pauses.questionExclamation}
+                                onChange={(e) =>
+                                  updateDialogue({
+                                    pauses: {
+                                      ...pauses,
+                                      questionExclamation: parseFloat(e.target.value) || 0.2,
+                                    },
+                                  })
+                                }
+                                className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                              />
+                              <span className="text-textMuted text-[11px] flex-shrink-0">
+                                {t.inspector.sec}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-xs font-medium text-textSecondary block truncate">
+                              {t.inspector.colonSemicolon}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0.1"
+                                max="3.0"
+                                step="0.1"
+                                value={pauses.colonSemicolon}
+                                onChange={(e) =>
+                                  updateDialogue({
+                                    pauses: {
+                                      ...pauses,
+                                      colonSemicolon: parseFloat(e.target.value) || 0.1,
+                                    },
+                                  })
+                                }
+                                className="w-full h-8 bg-surface1 border border-borderDefault rounded-lg px-2 text-xs text-textPrimary font-mono text-center focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
+                              />
+                              <span className="text-textMuted text-[11px] flex-shrink-0">
+                                {t.inspector.sec}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             );
