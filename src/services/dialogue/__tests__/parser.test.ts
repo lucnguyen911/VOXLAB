@@ -100,5 +100,18 @@ describe("Smart Dialogue Parser Suite", () => {
       assert.equal(detected.confidence, "ambiguous");
       assert.ok(detected.warning);
     });
+
+    it("does not misclassify narrative articles containing colons or Type A/B/C list items as dialogue", () => {
+      const articleText = [
+        "According to the American Automobile Association, the average American now spends one thousand dollars every single month.",
+        "But a newly uncovered Tesla patent filing, combined with federal E P A test data, suggests Elon Musk may have engineered the ultimate escape route: a next generation electric vehicle.",
+        "Every conventional electric motor relies on two main components: a stator and a rotor.",
+        "Type A: You wait until your current car breaks down.",
+        "Type B: You switch to an affordable electric platform early.",
+        "Or type C: You keep paying rising maintenance costs.",
+      ].join("\n\n");
+      const detected = detectDialogueScript(articleText);
+      assert.equal(detected.isDialogue, false);
+    });
   });
 });

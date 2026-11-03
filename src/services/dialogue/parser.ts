@@ -75,10 +75,18 @@ export function parseDialogueScript(
 
     if (match) {
       // Group 1 is [Name], Group 2 is Name
+      const isBracketed = Boolean(match[1]);
       const speakerName = (match[1] || match[2] || "").trim();
       let speechContent = (match[3] || "").trim();
 
-      if (speakerName && !/^(?:pause|nghỉ|break)\b/i.test(speakerName)) {
+      const isValidSpeaker =
+        Boolean(speakerName) &&
+        !/^(?:pause|nghỉ|break)\b/i.test(speakerName) &&
+        (isBracketed
+          ? speakerName.length <= 40 && !/^\d+$/.test(speakerName)
+          : isPlausibleUnbracketedSpeakerName(speakerName));
+
+      if (isValidSpeaker) {
         if (leadingPauseToken) {
           speechContent = `${leadingPauseToken} ${speechContent}`.trim();
         }
@@ -206,6 +214,12 @@ const COMMON_NON_SPEAKER_HEADERS = new Set([
   "địa điểm",
   "tóm tắt",
   "nội dung",
+  "kết luận",
+  "mở đầu",
+  "ví dụ",
+  "bước",
+  "loại",
+  "nhóm",
   "note",
   "warning",
   "chapter",
@@ -216,9 +230,33 @@ const COMMON_NON_SPEAKER_HEADERS = new Set([
   "date",
   "summary",
   "title",
+  "type",
+  "option",
+  "step",
+  "point",
+  "item",
+  "case",
+  "example",
+  "conclusion",
+  "introduction",
   "http",
   "https",
 ]);
+
+const NON_SPEAKER_PREFIX_REGEX =
+  /^(?:chương|phần|bài|mục|bước|loại|nhóm|ý|điểm|ví dụ|trường hợp|kết luận|mở đầu|lưu ý|chú ý|ghi chú|type|option|step|part|chapter|section|point|item|case|example|phase|stage|level|group|category|rule|fact|number|no\.?|#|\d+|or\s+type|and\s+type)\b/i;
+
+function isPlausibleUnbracketedSpeakerName(rawName: string): boolean {
+  const name = rawName.trim();
+  if (!name || name.length > 28) return false;
+  const words = name.split(/\s+/);
+  if (words.length > 4) return false;
+  if (/[,.;?!"'()[\]{}<>@#$%^&*+=~`/\\|]/.test(name)) return false;
+  const lower = name.toLowerCase();
+  if (COMMON_NON_SPEAKER_HEADERS.has(lower)) return false;
+  if (NON_SPEAKER_PREFIX_REGEX.test(lower)) return false;
+  return true;
+}
 
 /**
  * Validates whether a text file contains a genuine dialogue script structure
@@ -237,10 +275,17 @@ export function detectDialogueScript(script: string): DialogueDetectionResult {
   }
 
   // 1. Explicit bracketed speaker tags: [Nam]: ... or [Người dẫn chuyện]: ...
-  const bracketedLineRegex = /^\s*\[([^\]]+)\](?:\s*[:：]|\s+)\s*(.+)$/m;
-  const hasBracketedSpeaker = bracketedLineRegex.test(trimmed);
+  const bracketedLineRegex = /^\s*\[([^\]\r\n]{1,40})\](?:\s*[:：]|\s+)\s*(.+)$/m;
+  const bracketMatch = trimmed.match(bracketedLineRegex);
+  const hasBracketedSpeaker =
+    Boolean(bracketMatch) &&
+    !/^(?:pause|nghỉ|break|\d+)\b/i.test((bracketMatch?.[1] || "").trim());
 
   const parsed = parseDialogueScript(trimmed);
+  const nonEmptyLines = trimmed
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   if (hasBracketedSpeaker && parsed.segments.length >= 1 && parsed.characters.length >= 1) {
     return {
@@ -254,16 +299,13 @@ export function detectDialogueScript(script: string): DialogueDetectionResult {
 
   // 2. Unbracketed speaker syntax (Name: Speech)
   if (parsed.characters.length >= 2 && parsed.segments.length >= 2) {
-    const validCharacters = parsed.characters.filter((c) => {
-      const lower = c.name.trim().toLowerCase();
-      return (
-        !COMMON_NON_SPEAKER_HEADERS.has(lower) &&
-        !lower.startsWith("chương ") &&
-        !lower.startsWith("phần ")
-      );
-    });
+    const validCharacters = parsed.characters.filter((c) =>
+      isPlausibleUnbracketedSpeakerName(c.name)
+    );
+    const turnRatio =
+      nonEmptyLines.length > 0 ? parsed.segments.length / nonEmptyLines.length : 0;
 
-    if (validCharacters.length >= 2) {
+    if (validCharacters.length >= 2 && turnRatio >= 0.4) {
       return {
         isDialogue: true,
         confidence: "high",

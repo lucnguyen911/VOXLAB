@@ -89,19 +89,33 @@ export const BatchWorkspace: React.FC = () => {
       .then(() => loadBatchState())
       .then(async (state) => {
         let loadedJobs = state.jobs;
-        if (
-          isTauriRuntime() &&
-          loadedJobs.some((j) => j.fileKind === "text" && typeof j.isDialogueScript !== "boolean")
-        ) {
+        if (isTauriRuntime() && loadedJobs.some((j) => j.fileKind === "text")) {
           loadedJobs = await Promise.all(
             loadedJobs.map(async (j) => {
-              if (j.fileKind !== "text" || typeof j.isDialogueScript === "boolean") return j;
+              if (j.fileKind !== "text") return j;
               try {
                 const text = await readBatchTextOrDocxFile(j.sourceFilePath);
                 const isDialogue = validateDialogueScript(text).isDialogueScript;
-                return { ...j, isDialogueScript: isDialogue };
+                const sanitizedTasks =
+                  j.stage === "staging"
+                    ? j.selectedTasks.filter((t) =>
+                        isDialogue ? t !== "tts" : t !== "dialogue"
+                      )
+                    : j.selectedTasks;
+                return {
+                  ...j,
+                  isDialogueScript: isDialogue,
+                  selectedTasks: sanitizedTasks,
+                  executionSequence: computeExecutionSequence(sanitizedTasks, j.fileKind),
+                };
               } catch {
-                return { ...j, isDialogueScript: j.selectedTasks.includes("dialogue") };
+                return {
+                  ...j,
+                  isDialogueScript:
+                    typeof j.isDialogueScript === "boolean"
+                      ? j.isDialogueScript
+                      : j.selectedTasks.includes("dialogue"),
+                };
               }
             })
           );
