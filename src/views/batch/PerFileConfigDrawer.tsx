@@ -24,6 +24,7 @@ import {
   BatchCollisionPolicy,
   BatchDialogueSnapshot,
   BatchTranscriptionSnapshot,
+  BatchTranslationSnapshot,
 } from "../../types/batch";
 import { VoiceProfile, PunctuationPauses } from "../../types/ui";
 import { MOCK_VOICES } from "../../mock/data";
@@ -35,6 +36,15 @@ import {
   SubtitleMaxLines,
   WHISPER_AUDIO_LANGUAGES,
 } from "../../services/subtitle";
+import {
+  TRANSLATION_SOURCE_LANGUAGES,
+  TRANSLATION_TARGET_LANGUAGES,
+} from "../../services/subtitle/languages";
+import {
+  translationManager,
+  loadTranslationSettings,
+  TranslationStyle,
+} from "../../services/translation";
 import { SearchableLanguageSelect } from "../../components/common/SearchableLanguageSelect";
 import {
   queryHardwareProfile,
@@ -1485,32 +1495,178 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
           })()}
 
           {/* TAB 3: TRANSLATION OVERRIDES */}
-          {activeTab === "translation" && (
-            <div className="space-y-3">
-              <div>
-                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
-                  Phong cách dịch
-                </label>
-                <select
-                  value={configOverrides.translation?.style || "default"}
-                  onChange={(e) => {
-                    const style = e.target.value as "default" | "cinema";
-                    setConfigOverrides((prev) => ({
-                      ...prev,
-                      translation: {
-                        ...(prev.translation || {}),
-                        style,
-                      } as any,
-                    }));
-                  }}
-                  className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none"
-                >
-                  <option value="default">Mặc định (Chính xác ngữ nghĩa)</option>
-                  <option value="cinema">Cinema Dubbing (Súc tích, khớp timeline)</option>
-                </select>
+          {activeTab === "translation" && (() => {
+            const transSettings = loadTranslationSettings();
+            const allProviders = translationManager.listProviders();
+            const baseTrans = job.effectiveConfigSnapshot?.tasks?.translation;
+            const currentTrans = configOverrides.translation || baseTrans || {
+              providerId: transSettings.translationProviderId || "google",
+              sourceLanguage: transSettings.sourceLanguage || "auto",
+              targetLanguage: transSettings.targetLanguage || "vi",
+              style: transSettings.translationStyle || "default",
+              outputFormat: "preserve_input" as const,
+            };
+
+            const styleVal: TranslationStyle =
+              currentTrans.style ||
+              baseTrans?.style ||
+              transSettings.translationStyle ||
+              "default";
+            const availableProviders =
+              styleVal === "cinema"
+                ? allProviders.filter((p) => p.type !== "google")
+                : allProviders;
+            const rawProviderId =
+              currentTrans.providerId ||
+              baseTrans?.providerId ||
+              transSettings.translationProviderId ||
+              "google";
+            const providerIdVal = availableProviders.some((p) => p.id === rawProviderId)
+              ? rawProviderId
+              : availableProviders[0]?.id || rawProviderId || "google";
+            const sourceLangVal =
+              currentTrans.sourceLanguage ||
+              baseTrans?.sourceLanguage ||
+              transSettings.sourceLanguage ||
+              "auto";
+            const targetLangVal =
+              currentTrans.targetLanguage ||
+              baseTrans?.targetLanguage ||
+              transSettings.targetLanguage ||
+              "vi";
+
+            const updateTranslation = (patch: Partial<BatchTranslationSnapshot>) => {
+              setConfigOverrides((prev) => ({
+                ...prev,
+                translation: {
+                  providerId: providerIdVal,
+                  sourceLanguage: sourceLangVal,
+                  targetLanguage: targetLangVal,
+                  style: styleVal,
+                  outputFormat: currentTrans.outputFormat || "preserve_input",
+                  ...(prev.translation || {}),
+                  ...patch,
+                },
+              }));
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="space-y-3 p-3.5 bg-surface2/40 rounded-xl border border-borderDefault">
+                  <div className="flex items-center gap-2 pb-1.5 border-b border-borderDefault/60">
+                    <Languages className="w-4 h-4 text-accent" />
+                    <span className="font-bold text-xs text-textPrimary uppercase tracking-wide">
+                      Dịch Phụ Đề
+                    </span>
+                  </div>
+
+                  {/* Phong Cách Dịch */}
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                      Phong Cách Dịch
+                    </label>
+                    <select
+                      value={styleVal}
+                      onChange={(e) => {
+                        const val = e.target.value as TranslationStyle;
+                        let nextProviderId = providerIdVal;
+                        if (val === "cinema" && nextProviderId === "google") {
+                          const supported = allProviders.filter((p) => p.type !== "google");
+                          if (supported.length > 0) {
+                            nextProviderId = supported[0].id;
+                          }
+                        }
+                        updateTranslation({ style: val, providerId: nextProviderId });
+                      }}
+                      className="w-full h-[32px] bg-surface1 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
+                    >
+                      <option value="default">Mặc định</option>
+                      <option value="cinema">Điện ảnh</option>
+                    </select>
+                  </div>
+
+                  {/* Model Dịch */}
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                      Model Dịch
+                    </label>
+                    <select
+                      value={providerIdVal}
+                      onChange={(e) => updateTranslation({ providerId: e.target.value })}
+                      className="w-full h-[32px] bg-surface1 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
+                    >
+                      {availableProviders.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.displayName} ({p.badge})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Ngôn Ngữ Gốc & Ngôn Ngữ Đích (Cùng dòng) */}
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* Ngôn Ngữ Gốc */}
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider truncate">
+                        {lang === "en"
+                          ? "Source Language"
+                          : lang === "zh"
+                          ? "源语言"
+                          : lang === "ja"
+                          ? "原言語"
+                          : "Ngôn Ngữ Gốc"}
+                      </label>
+                      <SearchableLanguageSelect
+                        value={sourceLangVal}
+                        onChange={(val) => updateTranslation({ sourceLanguage: val })}
+                        languages={TRANSLATION_SOURCE_LANGUAGES}
+                        size="sm"
+                        dropdownAlign="left"
+                        ariaLabel={
+                          lang === "en"
+                            ? "Source language"
+                            : lang === "zh"
+                            ? "源语言"
+                            : lang === "ja"
+                            ? "原言語"
+                            : "Ngôn ngữ gốc"
+                        }
+                      />
+                    </div>
+
+                    {/* Ngôn Ngữ Đích */}
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider truncate">
+                        {lang === "en"
+                          ? "Target Language"
+                          : lang === "zh"
+                          ? "目标语言"
+                          : lang === "ja"
+                          ? "対象言語"
+                          : "Ngôn Ngữ Đích"}
+                      </label>
+                      <SearchableLanguageSelect
+                        value={targetLangVal}
+                        onChange={(val) => updateTranslation({ targetLanguage: val })}
+                        languages={TRANSLATION_TARGET_LANGUAGES}
+                        size="sm"
+                        dropdownAlign="right"
+                        ariaLabel={
+                          lang === "en"
+                            ? "Target language"
+                            : lang === "zh"
+                            ? "目标语言"
+                            : lang === "ja"
+                            ? "対象言語"
+                            : "Ngôn ngữ đích"
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB 4: DUBBING OVERRIDES */}
           {activeTab === "dubbing" && (
