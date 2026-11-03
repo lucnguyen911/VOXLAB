@@ -197,6 +197,8 @@ export class TranscriptionExecutor {
     if (!mockSegments && ai && typeof ai.optimizeSubtitlesV2 === "function") {
       try {
         const subSettings = loadSubtitleSettings();
+        const aspectRatio = transSnapshot?.aspectRatio || subSettings.aspectRatio;
+        const maxLines = transSnapshot?.maxLines || subSettings.maxLines;
         const optRes = await ai.optimizeSubtitlesV2({
           segments: remappedSegments.map((s, idx) => ({
             id: typeof s.id === "number" ? s.id : Number(s.id) || idx + 1,
@@ -210,8 +212,8 @@ export class TranscriptionExecutor {
               probability: w.confidence ?? 0.99,
             })),
           })),
-          aspectRatio: subSettings.aspectRatio,
-          maxLines: subSettings.maxLines,
+          aspectRatio,
+          maxLines,
           audioPath: speechSpeed === 1.0 ? (options.audioFilePath || job.sourceFilePath) : undefined,
           language: detectedLanguage || "en",
         });

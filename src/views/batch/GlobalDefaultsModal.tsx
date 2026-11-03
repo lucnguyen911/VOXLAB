@@ -15,16 +15,33 @@ import {
   Activity,
   Gauge,
   ChevronRight,
+  Sparkles,
+  Sliders,
 } from "lucide-react";
 import {
   BatchTaskConfigMap,
   BatchJobOutputSnapshot,
   BatchCollisionPolicy,
+  BatchTranscriptionSnapshot,
 } from "../../types/batch";
 import { VoiceProfile, PunctuationPauses } from "../../types/ui";
 import { MOCK_VOICES } from "../../mock/data";
 import { useI18n } from "../../i18n/context";
-import { loadSubtitleSettings } from "../../services/subtitle/profiles";
+import {
+  loadSubtitleSettings,
+  saveSubtitleSettings,
+  SubtitleSpeechSpeed,
+  SubtitleAspectRatio,
+  SubtitleMaxLines,
+  WHISPER_AUDIO_LANGUAGES,
+} from "../../services/subtitle";
+import { SearchableLanguageSelect } from "../../components/common/SearchableLanguageSelect";
+import {
+  queryHardwareProfile,
+  evaluateRecommendedAsrModel,
+} from "../../services/ai/hardwareRecommendation";
+import { syncAsrModelToAiRuntime } from "../../services/ai/aiRuntimeSettings";
+import { reloadAiRuntimeSettings, getDefaultBatchOutputDir } from "../../services/batch/batchRuntime";
 import {
   loadStoredTtsSettings,
   saveStoredTtsSettings,
@@ -44,7 +61,6 @@ import {
   loadBatchGlobalOutputSettings,
   saveBatchGlobalOutputSettings,
 } from "../../services/batch/configSnapshotResolver";
-import { getDefaultBatchOutputDir } from "../../services/batch/batchRuntime";
 import { isTauriRuntime } from "../../services/ai/tauriBackend";
 
 function loadAvailableVoices(): VoiceProfile[] {
@@ -112,6 +128,22 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
   const [isTtsVoiceModalOpen, setIsTtsVoiceModalOpen] = useState(false);
   const [isTtsPausesOpen, setIsTtsPausesOpen] = useState(false);
   const [isDialoguePausesOpen, setIsDialoguePausesOpen] = useState(false);
+  const [recommendedAsrModel, setRecommendedAsrModel] = useState<string>("large-v3-turbo");
+
+  useEffect(() => {
+    let active = true;
+    queryHardwareProfile()
+      .then((profile) => {
+        if (active) {
+          const rec = evaluateRecommendedAsrModel(profile);
+          setRecommendedAsrModel(rec.recommendedModel);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1318,23 +1350,213 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
           })()}
 
           {/* TAB 4: TRANSCRIPTION */}
-          {activeTab === "transcription" && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-textMuted uppercase mb-1">
-                  Mô hình Whisper ASR (Đồng bộ toàn ứng dụng)
-                </label>
-                <div className="w-full bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs text-textPrimary flex items-center justify-between">
-                  <span className="font-medium text-accent">
-                    {loadSubtitleSettings().whisperModel}
-                  </span>
-                  <span className="text-[11px] text-textMuted italic">
-                    Cấu hình tại Tab Phụ đề
-                  </span>
+          {activeTab === "transcription" && (() => {
+            const subSettings = loadSubtitleSettings();
+            const currentTrans = localDefaults.transcription || {
+              audioLanguage: subSettings.audioLanguage || "auto",
+              whisperModel: subSettings.whisperModel || "large-v3-turbo",
+              speechSpeed: subSettings.speechSpeed || 1.0,
+              aspectRatio: subSettings.aspectRatio || "16:9",
+              maxLines: subSettings.maxLines || 1,
+              outputFormat: (localOutput.outputSubtitleFormat || "srt") as "srt" | "vtt",
+            };
+
+            const whisperModelVal =
+              !currentTrans.whisperModel || currentTrans.whisperModel === "auto"
+                ? "large-v3-turbo"
+                : currentTrans.whisperModel;
+            const audioLangVal = currentTrans.audioLanguage || "auto";
+            const speechSpeedVal = currentTrans.speechSpeed ?? 1.0;
+            const aspectRatioVal: SubtitleAspectRatio = currentTrans.aspectRatio || subSettings.aspectRatio || "16:9";
+            const maxLinesVal: SubtitleMaxLines = currentTrans.maxLines || subSettings.maxLines || 1;
+
+            const updateTranscription = (patch: Partial<BatchTranscriptionSnapshot>) => {
+              setLocalDefaults((prev) => ({
+                ...prev,
+                transcription: {
+                  ...currentTrans,
+                  ...(prev.transcription || {}),
+                  ...patch,
+                },
+              }));
+
+              if (patch.whisperModel || patch.audioLanguage || patch.speechSpeed || patch.aspectRatio || patch.maxLines) {
+                saveSubtitleSettings({
+                  ...(patch.whisperModel ? { whisperModel: patch.whisperModel } : {}),
+                  ...(patch.audioLanguage ? { audioLanguage: patch.audioLanguage } : {}),
+                  ...(patch.speechSpeed ? { speechSpeed: patch.speechSpeed as SubtitleSpeechSpeed } : {}),
+                  ...(patch.aspectRatio ? { aspectRatio: patch.aspectRatio } : {}),
+                  ...(patch.maxLines ? { maxLines: patch.maxLines } : {}),
+                });
+              }
+
+              if (patch.whisperModel) {
+                syncAsrModelToAiRuntime(patch.whisperModel)
+                  .then(() => reloadAiRuntimeSettings())
+                  .catch(() => {});
+              }
+            };
+
+            return (
+              <div className="space-y-4">
+                {/* Group 1: Nhận diện */}
+                <div className="space-y-3 p-3.5 bg-surface2/40 rounded-xl border border-borderDefault">
+                  <div className="flex items-center gap-1.5 pb-1.5 border-b border-borderDefault/60">
+                    <Sparkles className="w-3.5 h-3.5 text-accent" />
+                    <span className="font-semibold text-xs text-textPrimary uppercase tracking-wide">
+                      {t.transcription.recognitionGroupTitle}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.modelLabel}
+                    </label>
+                    <select
+                      value={whisperModelVal}
+                      onChange={(e) => updateTranscription({ whisperModel: e.target.value })}
+                      className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
+                    >
+                      <option value="large-v3-turbo">
+                        {t.transcription.whisperModelTurbo}
+                        {recommendedAsrModel === "large-v3-turbo"
+                          ? ` · (${t.transcription.recommendedBadge})`
+                          : ""}
+                      </option>
+                      <option value="large-v3">
+                        {t.transcription.whisperModelLarge}
+                        {recommendedAsrModel === "large-v3"
+                          ? ` · (${t.transcription.recommendedBadge})`
+                          : ""}
+                      </option>
+                      <option value="medium">
+                        {t.transcription.whisperModelMedium}
+                        {recommendedAsrModel === "medium"
+                          ? ` · (${t.transcription.recommendedBadge})`
+                          : ""}
+                      </option>
+                      <option value="small">
+                        {t.transcription.whisperModelSmall}
+                        {recommendedAsrModel === "small"
+                          ? ` · (${t.transcription.recommendedBadge})`
+                          : ""}
+                      </option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.langAudio}
+                    </label>
+                    <SearchableLanguageSelect
+                      value={audioLangVal}
+                      onChange={(code) => updateTranscription({ audioLanguage: code })}
+                      languages={WHISPER_AUDIO_LANGUAGES}
+                      searchPlaceholder={
+                        lang === "vi" ? "Tìm ngôn ngữ âm thanh..." : "Search audio language..."
+                      }
+                      ariaLabel={t.transcription.langAudio}
+                      size="sm"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.speechSpeedLabel}
+                    </label>
+                    <select
+                      value={speechSpeedVal}
+                      onChange={(e) =>
+                        updateTranscription({
+                          speechSpeed: Number(e.target.value) as SubtitleSpeechSpeed,
+                        })
+                      }
+                      className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
+                    >
+                      <option value={1.0}>{t.transcription.speechSpeedNormal}</option>
+                      <option value={0.9}>{t.transcription.speechSpeedFast}</option>
+                      <option value={0.8}>{t.transcription.speechSpeedVeryFast}</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Group 2: Hiển thị */}
+                <div className="space-y-3 p-3.5 bg-surface2/40 rounded-xl border border-borderDefault">
+                  <div className="flex items-center gap-1.5 pb-1.5 border-b border-borderDefault/60">
+                    <Sliders className="w-3.5 h-3.5 text-accent" />
+                    <span className="font-semibold text-xs text-textPrimary uppercase tracking-wide">
+                      {t.transcription.displayGroupTitle}
+                    </span>
+                  </div>
+
+                  {/* Tỷ lệ khung hình */}
+                  <div className="space-y-1.5">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.aspectRatioLabel}
+                    </label>
+                    <div className="grid grid-cols-3 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                      {(["16:9", "9:16", "1:1"] as SubtitleAspectRatio[]).map((ratio) => {
+                        const isSelected = aspectRatioVal === ratio;
+                        const labels: Record<SubtitleAspectRatio, { ratio: string; sub: string }> = {
+                          "16:9": { ratio: "16:9", sub: "Ngang" },
+                          "9:16": { ratio: "9:16", sub: "Dọc" },
+                          "1:1": { ratio: "1:1", sub: "Vuông" },
+                        };
+                        const info = labels[ratio];
+                        return (
+                          <button
+                            key={ratio}
+                            type="button"
+                            onClick={() => updateTranscription({ aspectRatio: ratio })}
+                            className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                              isSelected
+                                ? "bg-accent text-background font-semibold shadow-sm"
+                                : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                            }`}
+                          >
+                            <span className="leading-tight">{info.ratio}</span>
+                            <span
+                              className={`text-[10px] leading-tight ${
+                                isSelected ? "text-background/80" : "text-textMuted"
+                              }`}
+                            >
+                              {info.sub}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Số dòng tối đa */}
+                  <div className="space-y-1.5">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.maxLinesLabel}
+                    </label>
+                    <div className="grid grid-cols-2 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                      {([1, 2] as SubtitleMaxLines[]).map((lines) => {
+                        const isSelected = maxLinesVal === lines;
+                        return (
+                          <button
+                            key={lines}
+                            type="button"
+                            onClick={() => updateTranscription({ maxLines: lines })}
+                            className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all text-center cursor-pointer ${
+                              isSelected
+                                ? "bg-accent text-background font-semibold shadow-sm"
+                                : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                            }`}
+                          >
+                            {lines} dòng
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB 5: TRANSLATION */}
           {activeTab === "translation" && (

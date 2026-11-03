@@ -277,10 +277,12 @@ export class DialogueExecutor {
     // 7. Generate Speaker-labeled Subtitle (.srt / .vtt)
     if (globalSettings.exportSrt) {
       onProgress?.(90, "Đang tạo phụ đề phân vai có nhãn nhân vật...");
+      const transSnapshot =
+        job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
       const subSettings = loadSubtitleSettings();
       const srtContent = generateDialogueSrt(assembly.timeline, {
-        aspectRatio: subSettings.aspectRatio,
-        maxLines: subSettings.maxLines,
+        aspectRatio: transSnapshot?.aspectRatio || subSettings.aspectRatio,
+        maxLines: transSnapshot?.maxLines || subSettings.maxLines,
       });
       const subFormat = job.outputSnapshot?.outputSubtitleFormat || "srt";
       const finalSubContent =

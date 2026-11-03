@@ -14,6 +14,8 @@ import {
   Activity,
   Gauge,
   ChevronRight,
+  Sparkles,
+  Sliders,
 } from "lucide-react";
 import {
   BatchJob,
@@ -21,10 +23,23 @@ import {
   BatchJobOutputSnapshot,
   BatchCollisionPolicy,
   BatchDialogueSnapshot,
+  BatchTranscriptionSnapshot,
 } from "../../types/batch";
 import { VoiceProfile, PunctuationPauses } from "../../types/ui";
 import { MOCK_VOICES } from "../../mock/data";
 import { useI18n } from "../../i18n/context";
+import {
+  loadSubtitleSettings,
+  SubtitleSpeechSpeed,
+  SubtitleAspectRatio,
+  SubtitleMaxLines,
+  WHISPER_AUDIO_LANGUAGES,
+} from "../../services/subtitle";
+import { SearchableLanguageSelect } from "../../components/common/SearchableLanguageSelect";
+import {
+  queryHardwareProfile,
+  evaluateRecommendedAsrModel,
+} from "../../services/ai/hardwareRecommendation";
 import {
   loadStoredTtsSettings,
   DEFAULT_TTS_SETTINGS,
@@ -100,6 +115,22 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
   const [isTtsVoiceModalOpen, setIsTtsVoiceModalOpen] = useState(false);
   const [isTtsPausesOpen, setIsTtsPausesOpen] = useState(false);
   const [isDialoguePausesOpen, setIsDialoguePausesOpen] = useState(false);
+  const [recommendedAsrModel, setRecommendedAsrModel] = useState<string>("large-v3-turbo");
+
+  useEffect(() => {
+    let active = true;
+    queryHardwareProfile()
+      .then((profile) => {
+        if (active) {
+          const rec = evaluateRecommendedAsrModel(profile);
+          setRecommendedAsrModel(rec.recommendedModel);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1238,6 +1269,216 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                       </div>
                     </div>
                   )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* TAB: TRANSCRIPTION OVERRIDES */}
+          {activeTab === "transcription" && (() => {
+            const subSettings = loadSubtitleSettings();
+            const currentTrans: Partial<BatchTranscriptionSnapshot> = configOverrides.transcription || {};
+            const baseTrans = job.effectiveConfigSnapshot?.tasks.transcription;
+
+            const rawModel =
+              currentTrans.whisperModel ||
+              baseTrans?.whisperModel ||
+              subSettings.whisperModel ||
+              "large-v3-turbo";
+            const whisperModelVal = rawModel === "auto" ? "large-v3-turbo" : rawModel;
+            const audioLangVal =
+              currentTrans.audioLanguage ||
+              baseTrans?.audioLanguage ||
+              subSettings.audioLanguage ||
+              "auto";
+            const speechSpeedVal =
+              currentTrans.speechSpeed ??
+              baseTrans?.speechSpeed ??
+              subSettings.speechSpeed ??
+              1.0;
+            const aspectRatioVal: SubtitleAspectRatio =
+              currentTrans.aspectRatio ||
+              baseTrans?.aspectRatio ||
+              subSettings.aspectRatio ||
+              "16:9";
+            const maxLinesVal: SubtitleMaxLines =
+              currentTrans.maxLines ||
+              baseTrans?.maxLines ||
+              subSettings.maxLines ||
+              1;
+
+            const updateTranscription = (patch: Partial<BatchTranscriptionSnapshot>) => {
+              setConfigOverrides((prev) => ({
+                ...prev,
+                transcription: {
+                  audioLanguage: audioLangVal,
+                  whisperModel: whisperModelVal,
+                  speechSpeed: speechSpeedVal,
+                  aspectRatio: aspectRatioVal,
+                  maxLines: maxLinesVal,
+                  outputFormat: (outputSnapshot.outputSubtitleFormat || "srt") as "srt" | "vtt",
+                  ...(prev.transcription || {}),
+                  ...patch,
+                },
+              }));
+            };
+
+            return (
+              <div className="space-y-4">
+                {/* Group 1: Nhận diện */}
+                <div className="space-y-3 p-3.5 bg-surface2/40 rounded-xl border border-borderDefault">
+                  <div className="flex items-center gap-1.5 pb-1.5 border-b border-borderDefault/60">
+                    <Sparkles className="w-3.5 h-3.5 text-accent" />
+                    <span className="font-semibold text-xs text-textPrimary uppercase tracking-wide">
+                      {t.transcription.recognitionGroupTitle}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.modelLabel}
+                    </label>
+                    <select
+                      value={whisperModelVal}
+                      onChange={(e) => updateTranscription({ whisperModel: e.target.value })}
+                      className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
+                    >
+                      <option value="large-v3-turbo">
+                        {t.transcription.whisperModelTurbo}
+                        {recommendedAsrModel === "large-v3-turbo"
+                          ? ` · (${t.transcription.recommendedBadge})`
+                          : ""}
+                      </option>
+                      <option value="large-v3">
+                        {t.transcription.whisperModelLarge}
+                        {recommendedAsrModel === "large-v3"
+                          ? ` · (${t.transcription.recommendedBadge})`
+                          : ""}
+                      </option>
+                      <option value="medium">
+                        {t.transcription.whisperModelMedium}
+                        {recommendedAsrModel === "medium"
+                          ? ` · (${t.transcription.recommendedBadge})`
+                          : ""}
+                      </option>
+                      <option value="small">
+                        {t.transcription.whisperModelSmall}
+                        {recommendedAsrModel === "small"
+                          ? ` · (${t.transcription.recommendedBadge})`
+                          : ""}
+                      </option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.langAudio}
+                    </label>
+                    <SearchableLanguageSelect
+                      value={audioLangVal}
+                      onChange={(code) => updateTranscription({ audioLanguage: code })}
+                      languages={WHISPER_AUDIO_LANGUAGES}
+                      searchPlaceholder={
+                        lang === "vi" ? "Tìm ngôn ngữ âm thanh..." : "Search audio language..."
+                      }
+                      ariaLabel={t.transcription.langAudio}
+                      size="sm"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.speechSpeedLabel}
+                    </label>
+                    <select
+                      value={speechSpeedVal}
+                      onChange={(e) =>
+                        updateTranscription({
+                          speechSpeed: Number(e.target.value) as SubtitleSpeechSpeed,
+                        })
+                      }
+                      className="w-full bg-surface1 border border-borderDefault rounded-md px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
+                    >
+                      <option value={1.0}>{t.transcription.speechSpeedNormal}</option>
+                      <option value={0.9}>{t.transcription.speechSpeedFast}</option>
+                      <option value={0.8}>{t.transcription.speechSpeedVeryFast}</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Group 2: Hiển thị */}
+                <div className="space-y-3 p-3.5 bg-surface2/40 rounded-xl border border-borderDefault">
+                  <div className="flex items-center gap-1.5 pb-1.5 border-b border-borderDefault/60">
+                    <Sliders className="w-3.5 h-3.5 text-accent" />
+                    <span className="font-semibold text-xs text-textPrimary uppercase tracking-wide">
+                      {t.transcription.displayGroupTitle}
+                    </span>
+                  </div>
+
+                  {/* Tỷ lệ khung hình */}
+                  <div className="space-y-1.5">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.aspectRatioLabel}
+                    </label>
+                    <div className="grid grid-cols-3 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                      {(["16:9", "9:16", "1:1"] as SubtitleAspectRatio[]).map((ratio) => {
+                        const isSelected = aspectRatioVal === ratio;
+                        const labels: Record<SubtitleAspectRatio, { ratio: string; sub: string }> = {
+                          "16:9": { ratio: "16:9", sub: "Ngang" },
+                          "9:16": { ratio: "9:16", sub: "Dọc" },
+                          "1:1": { ratio: "1:1", sub: "Vuông" },
+                        };
+                        const info = labels[ratio];
+                        return (
+                          <button
+                            key={ratio}
+                            type="button"
+                            onClick={() => updateTranscription({ aspectRatio: ratio })}
+                            className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                              isSelected
+                                ? "bg-accent text-background font-semibold shadow-sm"
+                                : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                            }`}
+                          >
+                            <span className="leading-tight">{info.ratio}</span>
+                            <span
+                              className={`text-[10px] leading-tight ${
+                                isSelected ? "text-background/80" : "text-textMuted"
+                              }`}
+                            >
+                              {info.sub}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Số dòng tối đa */}
+                  <div className="space-y-1.5">
+                    <label className="block text-textSecondary font-medium text-[11px]">
+                      {t.transcription.maxLinesLabel}
+                    </label>
+                    <div className="grid grid-cols-2 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                      {([1, 2] as SubtitleMaxLines[]).map((lines) => {
+                        const isSelected = maxLinesVal === lines;
+                        return (
+                          <button
+                            key={lines}
+                            type="button"
+                            onClick={() => updateTranscription({ maxLines: lines })}
+                            className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all text-center cursor-pointer ${
+                              isSelected
+                                ? "bg-accent text-background font-semibold shadow-sm"
+                                : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                            }`}
+                          >
+                            {lines} dòng
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
             );

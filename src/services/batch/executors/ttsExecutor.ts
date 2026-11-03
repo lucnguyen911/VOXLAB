@@ -241,6 +241,8 @@ export class TtsExecutor {
 
     if (needsSubtitle) {
       onProgress?.(88, "Đang nhận dạng & tối ưu phụ đề YouTube từ Master Audio...");
+      const transSnapshot =
+        job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
       const subFormat = job.outputSnapshot?.outputSubtitleFormat || "srt";
       let subContent = "";
       if (subFormat === "srt" && audioResolution.action !== "skip" && typeof ai.generateMasterSubtitles === "function") {
@@ -249,6 +251,11 @@ export class TtsExecutor {
             audioPath: audioResolution.resolvedPath,
             scriptText: sortedChunks.map((c) => c.text || c.originalText).join("\n"),
             chunkCount: sortedChunks.length,
+            ...(transSnapshot?.aspectRatio ? { aspectRatio: transSnapshot.aspectRatio } : {}),
+            ...(transSnapshot?.maxLines ? { maxLines: transSnapshot.maxLines } : {}),
+            ...(transSnapshot?.whisperModel ? { asrModelId: transSnapshot.whisperModel } : {}),
+            ...(transSnapshot?.audioLanguage ? { language: transSnapshot.audioLanguage } : {}),
+            ...(transSnapshot?.speechSpeed ? { speechSpeed: transSnapshot.speechSpeed } : {}),
           });
           if (masterSub?.srt?.trim()) {
             subContent = masterSub.srt;

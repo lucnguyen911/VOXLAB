@@ -154,6 +154,8 @@ export interface BatchTranscriptionSnapshot {
   audioLanguage: string;
   whisperModel: string;
   speechSpeed: 1.0 | 0.9 | 0.8;
+  aspectRatio?: "16:9" | "9:16" | "1:1";
+  maxLines?: 1 | 2;
   outputFormat: "srt" | "vtt";
   subtitleMode?: BatchSubtitleMode;
 }
