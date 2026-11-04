@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Eye, CheckCircle2, AlertTriangle, AlertCircle, SlidersHorizontal } from "lucide-react";
+import { Eye, CheckCircle2, AlertTriangle, AlertCircle, FolderOpen } from "lucide-react";
 import {
   BatchJob,
   BatchWorkspaceView,
@@ -33,7 +33,9 @@ import {
   initBatchRuntime,
   readBatchTextOrDocxFile,
   getDefaultBatchOutputDir,
+  showPathInFolder,
 } from "../services/batch/batchRuntime";
+import { resolveJobOutputDirectory } from "../services/batch/outputResolver";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { isTauriRuntime } from "../services/ai/tauriBackend";
 import { expandTauriPaths, extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
@@ -637,10 +639,22 @@ export const BatchWorkspace: React.FC = () => {
                       ? job.stepResults.tts
                       : job.stepResults.dialogue?.qcChunks?.length
                       ? job.stepResults.dialogue
+                      : job.stepResults.dubbing?.qcChunks?.length
+                      ? job.stepResults.dubbing
                       : undefined;
                     const errCount = qcStep?.qcStats?.errorCount ?? 0;
                     const warnCount = qcStep?.qcStats?.warningCount ?? 0;
-                    const hasQcIssues = errCount > 0 || warnCount > 0 || Boolean(job.warningMessage);
+                    const hasQcIssues =
+                      errCount > 0 || warnCount > 0 || Boolean(job.warningMessage);
+
+                    const handleOpenJobFolder = () => {
+                      const targetPath =
+                        job.artifacts.ownedArtifactPaths[0] ||
+                        resolveJobOutputDirectory(job);
+                      showPathInFolder(targetPath).catch((err) =>
+                        console.error("Không thể mở thư mục:", err)
+                      );
+                    };
 
                     return (
                       <div
@@ -659,8 +673,8 @@ export const BatchWorkspace: React.FC = () => {
                               {job.sourceFileName}
                             </span>
 
-                            {qcStep && (
-                              errCount > 0 ? (
+                            {qcStep &&
+                              (errCount > 0 ? (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-danger/15 text-danger border border-danger/30">
                                   <AlertCircle className="w-3 h-3" />
                                   <span>
@@ -678,8 +692,7 @@ export const BatchWorkspace: React.FC = () => {
                                   <CheckCircle2 className="w-3 h-3" />
                                   <span>Đạt chuẩn ({qcStep.qcChunks?.length || 0} câu)</span>
                                 </span>
-                              )
-                            )}
+                              ))}
                           </div>
 
                           <div className="text-[11px] text-textMuted font-mono flex items-center gap-2">
@@ -693,44 +706,31 @@ export const BatchWorkspace: React.FC = () => {
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
-                          {qcStep && (
-                            <button
-                              type="button"
-                              onClick={() => setQcModalJob(job)}
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded font-semibold border transition-colors cursor-pointer ${
-                                errCount > 0
-                                  ? "bg-danger/15 hover:bg-danger/25 text-danger border-danger/35"
-                                  : warnCount > 0
-                                  ? "bg-warning/15 hover:bg-warning/25 text-warning border-warning/35"
-                                  : "bg-surface3 hover:bg-surface2 text-textPrimary border-borderDefault"
-                              }`}
-                              title="Mở bảng hậu kiểm chi tiết từng câu, nghe thử, sửa văn bản và tạo lại câu lỗi"
-                            >
-                              <SlidersHorizontal className="w-3.5 h-3.5" />
-                              <span>
-                                {errCount > 0 || warnCount > 0
-                                  ? "Kiểm tra & Sửa lỗi"
-                                  : "Chi tiết câu đọc"}
-                              </span>
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={handleOpenJobFolder}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer"
+                            title="Mở thư mục lưu tệp kết quả xuất"
+                          >
+                            <FolderOpen className="w-3.5 h-3.5 text-accent" />
+                            <span>Mở thư mục</span>
+                          </button>
 
-                          {job.artifacts.ownedArtifactPaths.map((path, pIdx) => (
-                            <button
-                              key={pIdx}
-                              type="button"
-                              onClick={() =>
-                                setPreviewArtifact({
-                                  path,
-                                  fileName: path.split("/").pop() || "artifact",
-                                })
-                              }
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault cursor-pointer"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                              <span>{/\.(wav|mp3)$/i.test(path) ? "Audio" : "Phụ đề"}</span>
-                            </button>
-                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setQcModalJob(job)}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded font-semibold border transition-colors cursor-pointer ${
+                              errCount > 0
+                                ? "bg-danger/15 hover:bg-danger/25 text-danger border-danger/35"
+                                : warnCount > 0
+                                ? "bg-warning/15 hover:bg-warning/25 text-warning border-warning/35"
+                                : "bg-surface3 hover:bg-surface2 text-textPrimary border-borderDefault"
+                            }`}
+                            title="Xem chi tiết các tác vụ (TTS, Hội thoại, Phụ đề...), chỉnh sửa câu chữ, tạo lại câu cảnh báo và nghe thử"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Chi tiết</span>
+                          </button>
                         </div>
                       </div>
                     );

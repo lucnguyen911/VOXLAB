@@ -11,7 +11,7 @@
  * 5. Registers artifacts in BatchStepResult.
  */
 
-import { BatchJob, BatchStepResult, BatchDubbingSnapshot } from "../../../types/batch";
+import { BatchJob, BatchStepResult, BatchDubbingSnapshot, BatchQcChunkItem } from "../../../types/batch";
 import {
   OriginalCue,
   DubAudioSegment,
@@ -525,11 +525,30 @@ export class DubbingExecutor {
         ? `Hậu kiểm chất lượng Lồng tiếng: ${qcStats.errorCount} câu lỗi, ${qcStats.warningCount} câu cảnh báo.`
         : undefined;
 
+    const qcChunks: BatchQcChunkItem[] = primarySegmentsForQc.map((seg, idx) => ({
+      id: `dub-${seg.cueIndex ?? idx + 1}`,
+      index: seg.cueIndex ?? idx + 1,
+      text: seg.text || "",
+      originalText: seg.text || "",
+      voiceId,
+      durationSec: seg.fittedDurationSec || seg.rawDurationSec || 0,
+      audioFilePath: seg.audioFilePath || "",
+      ...(seg.qualityReview ? { qualityReview: seg.qualityReview } : {}),
+    }));
+
     return {
       task: "dubbing",
       status: "completed",
       progressPct: 100,
       outputArtifactPaths,
+      qcChunks,
+      qcStats: {
+        totalChunks: primarySegmentsForQc.length,
+        passCount: qcStats.passCount,
+        warningCount: qcStats.warningCount,
+        errorCount: qcStats.errorCount,
+        unverifiedCount: qcStats.unverifiedCount,
+      },
       ...(qcWarning ? { warning: qcWarning } : {}),
       startedAt,
       completedAt: Date.now(),
