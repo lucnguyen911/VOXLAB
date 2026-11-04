@@ -11,7 +11,7 @@
  * 7. Resolves output paths with External Modification Protection and registers artifacts.
  */
 
-import { BatchJob, BatchStepResult, BatchTtsSnapshot } from "../../../types/batch";
+import { BatchJob, BatchStepResult, BatchTtsSnapshot, BatchQcChunkItem } from "../../../types/batch";
 import { ChunkItem } from "../../../types/ui";
 import { normalizeText, getDefaultEnabledGroupIds } from "../../normalizer/engine";
 import { splitScriptWithPauses } from "../../pause/chunker";
@@ -175,28 +175,34 @@ export class TtsExecutor {
         chunk.audioUrl = r.outputPath;
         chunk.audioFilePath = r.outputPath;
         chunk.status = "ready";
-
-        if (typeof ai.validateAudioQuality === "function") {
-          try {
-            chunk.qualityReview = await validateChunkAudioQuality(
-              chunk,
-              undefined,
-              ai,
-              speed,
-              undefined,
-              "current"
-            );
-          } catch {
-            // Non-blocking: quality check failure must not abort batch synthesis
-          }
-        }
       } catch (e) {
         const err = AiError.from(e);
-        if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(Math.floor(10 + (i / totalChunks) * 60));
-        return fail(Math.floor(10 + (i / totalChunks) * 60), `Lỗi tạo giọng đoạn ${i + 1}/${totalChunks}: ${err.message}`);
+        if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(Math.floor(10 + (i / totalChunks) * 55));
+        return fail(Math.floor(10 + (i / totalChunks) * 55), `Lỗi tạo giọng đoạn ${i + 1}/${totalChunks}: ${err.message}`);
       }
-      const pct = Math.floor(10 + ((i + 1) / totalChunks) * 60);
+      const pct = Math.floor(10 + ((i + 1) / totalChunks) * 55);
       onProgress?.(pct, `Đang tạo giọng đọc: đoạn ${i + 1}/${totalChunks}...`);
+    }
+
+    // 4b. Dedicated post-TTS Whisper quality validation pass (avoids TTS <-> ASR GPU model thrashing)
+    if (typeof ai.validateAudioQuality === "function" && sortedChunks.length > 0) {
+      onProgress?.(68, "Đang hậu kiểm chất lượng giọng đọc bằng Whisper...");
+      for (let i = 0; i < sortedChunks.length; i++) {
+        if (isCancelled?.()) return cancelled(68);
+        const chunk = sortedChunks[i];
+        try {
+          chunk.qualityReview = await validateChunkAudioQuality(
+            chunk,
+            undefined,
+            ai,
+            speed,
+            undefined,
+            "current"
+          );
+        } catch {
+          // Non-blocking: quality check failure must not abort batch synthesis
+        }
+      }
     }
 
     // 5. Resolve Output Paths
@@ -294,11 +300,30 @@ export class TtsExecutor {
         ? `Hậu kiểm chất lượng TTS: ${qcStats.errorCount} đoạn lỗi, ${qcStats.warningCount} đoạn cảnh báo.`
         : undefined;
 
+    const qcChunks: BatchQcChunkItem[] = sortedChunks.map((c) => ({
+      id: c.id,
+      index: c.index,
+      text: c.text,
+      originalText: c.originalText,
+      voiceId,
+      durationSec: c.durationSec ?? 0,
+      audioFilePath: c.audioFilePath || c.audioUrl || "",
+      ...(c.qualityReview ? { qualityReview: c.qualityReview } : {}),
+    }));
+
     return {
       task: "tts",
-      status: "completed",
+      status: qcWarning ? "completed_with_warning" : "completed",
       progressPct: 100,
       outputArtifactPaths,
+      qcChunks,
+      qcStats: {
+        totalChunks: sortedChunks.length,
+        passCount: qcStats.passCount,
+        warningCount: qcStats.warningCount,
+        errorCount: qcStats.errorCount,
+        unverifiedCount: qcStats.unverifiedCount,
+      },
       ...(qcWarning ? { warning: qcWarning } : {}),
       startedAt,
       completedAt: Date.now(),

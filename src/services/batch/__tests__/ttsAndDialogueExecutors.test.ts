@@ -174,6 +174,59 @@ describe("TTS & Dialogue Step Executors (TASK-07 / AC-03, AC-04, AC-19)", () => 
       assert.equal(result.status, "failed");
       assert.ok(result.error?.includes("trống"));
     });
+
+    it("surfaces completed_with_warning, qcStats, and qcChunks when Whisper quality check flags an issue", async () => {
+      const { ai, backend } = makeTestAi({
+        validateQualityFor: (params) => {
+          const text = String(params.text ?? "");
+          if (text.includes("câu thứ hai")) {
+            return {
+              status: "warning",
+              summary: "Thiếu từ",
+              issues: [
+                {
+                  severity: "warning",
+                  code: "MISSING_WORD",
+                  message: 'Nghi ngờ đọc thiếu từ "hai"',
+                },
+              ],
+              metrics: { wpm: 165 },
+            };
+          }
+          return {
+            status: "pass",
+            summary: "Đạt chuẩn",
+            issues: [],
+            metrics: { wpm: 140 },
+          };
+        },
+      });
+
+      const result = await TtsExecutor.execute(baseTtsJob, {
+        textContent:
+          "Đây là câu thứ nhất hoàn toàn chuẩn xác. Tiếp theo là câu bổ trợ của đoạn đầu tiên. Mọi thứ trong đoạn một đều đạt chuẩn.\n\nVà đây là câu thứ hai bị đọc lướt từ.",
+        writeFile: async () => {},
+        ai,
+      });
+
+      assert.equal(result.status, "completed_with_warning");
+      assert.ok(result.warning?.includes("1 đoạn cảnh báo"), result.warning ?? "");
+      assert.ok(result.qcStats);
+      assert.equal(result.qcStats?.totalChunks, 2);
+      assert.equal(result.qcStats?.passCount, 1);
+      assert.equal(result.qcStats?.warningCount, 1);
+      assert.equal(result.qcStats?.errorCount, 0);
+      assert.equal(result.qcChunks?.length, 2);
+      assert.equal(result.qcChunks?.[0].qualityReview?.status, "pass");
+      assert.equal(result.qcChunks?.[1].qualityReview?.status, "warning");
+      assert.equal(result.qcChunks?.[1].qualityReview?.issues?.[0]?.code, "MISSING_WORD");
+
+      // Verify dedicated post-TTS pass: all tts.synthesize calls occur before any audio.validate_quality call
+      const methods = backend.methods();
+      const lastSynthIdx = methods.lastIndexOf("tts.synthesize");
+      const firstValidateIdx = methods.indexOf("audio.validate_quality");
+      assert.ok(firstValidateIdx > lastSynthIdx, "Whisper validation must run after all TTS chunks finish");
+    });
   });
 
   describe("DialogueExecutor", () => {
@@ -286,6 +339,46 @@ describe("TTS & Dialogue Step Executors (TASK-07 / AC-03, AC-04, AC-19)", () => 
 
       assert.equal(result.status, "cancelled");
       assert.equal(result.outputArtifactPaths.length, 0);
+    });
+
+    it("surfaces completed_with_warning and speaker-tagged qcChunks when Dialogue turn has a QC error", async () => {
+      const { ai } = makeTestAi(
+        {
+          validateQualityFor: (params) => {
+            const text = String(params.text ?? "");
+            if (text.includes("xem phim")) {
+              return {
+                status: "error",
+                summary: "Lặp từ",
+                issues: [
+                  {
+                    severity: "error",
+                    code: "REPEATED_WORD",
+                    message: 'Phát hiện lặp từ "xem phim"',
+                  },
+                ],
+              };
+            }
+            return { status: "pass", summary: "Đạt chuẩn", issues: [] };
+          },
+        },
+        voices
+      );
+
+      const result = await DialogueExecutor.execute(baseDialogueJob, {
+        scriptContent: validScript,
+        writeFile: async () => {},
+        ai,
+      });
+
+      assert.equal(result.status, "completed_with_warning");
+      assert.ok(result.warning?.includes("1 lượt lỗi"), result.warning ?? "");
+      assert.equal(result.qcStats?.totalChunks, 3);
+      assert.equal(result.qcStats?.errorCount, 1);
+      assert.equal(result.qcStats?.passCount, 2);
+      assert.equal(result.qcChunks?.length, 3);
+      assert.equal(result.qcChunks?.[2].characterName, "Nam");
+      assert.equal(result.qcChunks?.[2].qualityReview?.status, "error");
     });
   });
 });

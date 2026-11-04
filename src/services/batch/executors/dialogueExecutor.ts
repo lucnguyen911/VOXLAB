@@ -11,7 +11,7 @@
  * 6. Resolves output paths with External Modification Protection and registers artifacts.
  */
 
-import { BatchJob, BatchStepResult, BatchDialogueSnapshot } from "../../../types/batch";
+import { BatchJob, BatchStepResult, BatchDialogueSnapshot, BatchQcChunkItem } from "../../../types/batch";
 import {
   DialogueGlobalSettings,
   DialogueSegment,
@@ -191,33 +191,38 @@ export class DialogueExecutor {
         seg.audioFilePath = r.outputPath;
         seg.status = "ready";
         segmentPaths.push(r.outputPath);
-
-        if (typeof ai.validateAudioQuality === "function") {
-          try {
-            seg.qualityReview = await validateChunkAudioQuality(
-              seg,
-              undefined,
-              ai,
-              undefined,
-              undefined,
-              "dialogue"
-            );
-          } catch {
-            // Non-blocking: quality check failure must not abort batch synthesis
-          }
-        }
       } catch (e) {
         const err = AiError.from(e);
-        if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(Math.floor(15 + (i / totalSegments) * 55));
-        return fail(Math.floor(15 + (i / totalSegments) * 55),
+        if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(Math.floor(15 + (i / totalSegments) * 50));
+        return fail(Math.floor(15 + (i / totalSegments) * 50),
           `Lỗi tạo giọng (${seg.characterName}) lượt ${i + 1}/${totalSegments}: ${err.message}`);
       }
 
-      const pct = Math.floor(15 + ((i + 1) / totalSegments) * 55);
+      const pct = Math.floor(15 + ((i + 1) / totalSegments) * 50);
       onProgress?.(
         pct,
         `Đang tạo giọng thoại (${seg.characterName}): lượt ${i + 1}/${totalSegments}...`
       );
+    }
+
+    // 4b. Dedicated post-TTS Whisper quality validation pass (avoids TTS <-> ASR GPU model thrashing)
+    if (typeof ai.validateAudioQuality === "function" && segments.length > 0) {
+      onProgress?.(68, "Đang hậu kiểm chất lượng giọng thoại bằng Whisper...");
+      for (const seg of segments) {
+        if (isCancelled?.()) return cancelled(68);
+        try {
+          seg.qualityReview = await validateChunkAudioQuality(
+            seg,
+            undefined,
+            ai,
+            speed,
+            undefined,
+            "dialogue"
+          );
+        } catch {
+          // Non-blocking: quality check failure must not abort batch synthesis
+        }
+      }
     }
 
     // 5. Timeline from real durations + turn-taking pauses
@@ -314,11 +319,31 @@ export class DialogueExecutor {
         ? `Hậu kiểm chất lượng Hội thoại: ${qcStats.errorCount} lượt lỗi, ${qcStats.warningCount} lượt cảnh báo.`
         : undefined;
 
+    const qcChunks: BatchQcChunkItem[] = segments.map((s) => ({
+      id: s.id,
+      index: s.index,
+      text: s.cleanText || s.rawText,
+      originalText: s.rawText,
+      characterName: s.characterName,
+      voiceId: s.voiceId,
+      durationSec: s.durationSec || 0,
+      audioFilePath: s.audioFilePath || "",
+      ...(s.qualityReview ? { qualityReview: s.qualityReview } : {}),
+    }));
+
     return {
       task: "dialogue",
-      status: "completed",
+      status: qcWarning ? "completed_with_warning" : "completed",
       progressPct: 100,
       outputArtifactPaths,
+      qcChunks,
+      qcStats: {
+        totalChunks: segments.length,
+        passCount: qcStats.passCount,
+        warningCount: qcStats.warningCount,
+        errorCount: qcStats.errorCount,
+        unverifiedCount: qcStats.unverifiedCount,
+      },
       ...(qcWarning ? { warning: qcWarning } : {}),
       startedAt,
       completedAt: Date.now(),

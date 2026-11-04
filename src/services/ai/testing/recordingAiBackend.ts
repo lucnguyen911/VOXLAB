@@ -22,6 +22,13 @@ export interface RecordingBackendOptions {
   durationFor?: (text: string) => number;
   asrSegments?: { id: number; startSec: number; endSec: number; text: string }[];
   asrLanguage?: string;
+  /** Optional custom handler for audio.validate_quality in tests. */
+  validateQualityFor?: (params: Record<string, unknown>) => {
+    status: "pass" | "warning" | "error" | "unverified";
+    summary?: string;
+    issues?: { severity: "error" | "warning" | "unverified"; code: string; message: string }[];
+    metrics?: Record<string, unknown>;
+  };
   /** Throw this for the given method (once if `once`). */
   failOn?: { method: string; code: string; message?: string; once?: boolean };
   /** Delay (ms) before resolving tts.synthesize / asr.transcribe — lets tests cancel mid-flight. */
@@ -106,6 +113,17 @@ export class RecordingAiBackend implements AiBackend {
           durationSec: (params.totalDurationSec as number) ?? t,
           peakAmplitude: 0.5,
           segments,
+        };
+      }
+      case "audio.validate_quality": {
+        if (this.opts.validateQualityFor) {
+          return this.opts.validateQualityFor(params);
+        }
+        return {
+          status: "pass",
+          summary: "Đạt chuẩn",
+          issues: [],
+          metrics: { wpm: 145 },
         };
       }
       default:

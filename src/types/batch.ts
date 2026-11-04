@@ -4,6 +4,8 @@
  * Architecture: File-Centric Multi-Task Batch Orchestrator
  */
 
+import type { AudioQualityReview } from "./ui";
+
 // 1. Task Types & Matrix
 export type BatchTaskType = "tts" | "dialogue" | "transcription" | "translation" | "dubbing";
 
@@ -82,12 +84,34 @@ export type HeaderSelectionState = "none" | "partial" | "all";
 
 // 3. Step Results & Artifacts
 
+export interface BatchQcChunkItem {
+  id: string;
+  index: number;
+  text: string;
+  originalText?: string;
+  characterName?: string;
+  voiceId?: string;
+  durationSec: number;
+  audioFilePath: string;
+  qualityReview?: AudioQualityReview;
+  acknowledgedAt?: number;
+  acknowledgedAudioSignature?: string;
+}
+
 export interface BatchStepResult {
   task: BatchTaskType;
   status: BatchStepStatus;
   progressPct: number;
   stageMessage?: string;
   outputArtifactPaths: string[]; // Các artifact sinh ra bởi riêng bước này
+  qcChunks?: BatchQcChunkItem[];
+  qcStats?: {
+    totalChunks?: number;
+    passCount: number;
+    warningCount: number;
+    errorCount: number;
+    unverifiedCount: number;
+  };
   error?: string;
   warning?: string;
   skipReason?: string;          // Ví dụ: "Không cần dịch vì ngôn ngữ nguồn trùng ngôn ngữ đích."
