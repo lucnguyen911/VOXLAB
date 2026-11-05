@@ -185,6 +185,7 @@ export class TtsExecutor {
     }
 
     // 4b. Dedicated post-TTS Whisper quality validation pass (avoids TTS <-> ASR GPU model thrashing)
+    let retriesUsed = 0;
     if (typeof ai.validateAudioQuality === "function" && sortedChunks.length > 0) {
       onProgress?.(68, "Đang hậu kiểm chất lượng giọng đọc bằng Whisper...");
       for (let i = 0; i < sortedChunks.length; i++) {
@@ -201,6 +202,96 @@ export class TtsExecutor {
           );
         } catch {
           // Non-blocking: quality check failure must not abort batch synthesis
+        }
+      }
+
+      // 4c. Auto-retry flagged chunks up to maxAutoRetries (default 5) when enabled
+      const autoRetryEnabled = Boolean(
+        job.effectiveConfigSnapshot?.output?.autoRetryFailedChunks ??
+          job.outputSnapshot?.autoRetryFailedChunks
+      );
+      const maxAutoRetries =
+        job.effectiveConfigSnapshot?.output?.maxAutoRetries ??
+        job.outputSnapshot?.maxAutoRetries ??
+        5;
+
+      if (autoRetryEnabled && maxAutoRetries > 0) {
+        for (let attempt = 1; attempt <= maxAutoRetries; attempt++) {
+          const flaggedChunks = sortedChunks.filter(
+            (c) =>
+              c.qualityReview?.status === "error" ||
+              c.qualityReview?.status === "warning"
+          );
+          if (flaggedChunks.length === 0) {
+            break;
+          }
+          retriesUsed = attempt;
+          if (isCancelled?.()) return cancelled(70);
+          onProgress?.(
+            70,
+            `Đang tự động tạo lại ${flaggedChunks.length} đoạn lỗi/cảnh báo (Lần ${attempt}/${maxAutoRetries})...`
+          );
+
+          // Sub-pass A: Batch synthesize all flagged chunks in this round
+          for (const chunk of flaggedChunks) {
+            if (isCancelled?.()) return cancelled(70);
+            try {
+              const retryOutputPath = await ai.scratchPath(
+                scratchScope,
+                `chunk_${String(chunk.index).padStart(4, "0")}_retry${attempt}.${
+                  isOnlineVoice ? "mp3" : "wav"
+                }`
+              );
+              let r: { durationSec: number; outputPath: string };
+              if (isOnlineVoice) {
+                r = await edgeTtsProvider.synthesize({
+                  voiceId,
+                  text: chunk.text,
+                  outputPath: retryOutputPath,
+                  speed,
+                });
+              } else {
+                r = await ai.synthesize({
+                  model,
+                  voiceId,
+                  text: chunk.text,
+                  outputPath: retryOutputPath,
+                  speed,
+                  advancedSettings: jobAdvancedSettings,
+                  pronunciationRules: effectiveRules,
+                });
+              }
+              chunk.durationSec = r.durationSec;
+              chunk.audioUrl = r.outputPath;
+              chunk.audioFilePath = r.outputPath;
+              chunk.status = "ready";
+            } catch (e) {
+              const err = AiError.from(e);
+              if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(70);
+              // Non-blocking on retry: preserve previous chunk audio if retry synthesis fails
+            }
+          }
+
+          // Sub-pass B: Batch validate all flagged chunks in this round via Whisper
+          onProgress?.(
+            72,
+            `Đang hậu kiểm lại ${flaggedChunks.length} đoạn (Lần ${attempt}/${maxAutoRetries})...`
+          );
+          for (const chunk of flaggedChunks) {
+            if (isCancelled?.()) return cancelled(72);
+            try {
+              chunk.qualityReview = await validateChunkAudioQuality(
+                chunk,
+                undefined,
+                ai,
+                speed,
+                undefined,
+                "current"
+              );
+            } catch {
+              // Non-blocking
+            }
+          }
         }
       }
     }
@@ -297,7 +388,9 @@ export class TtsExecutor {
     const qcStats = countChunkQualityIssues(sortedChunks);
     const qcWarning =
       qcStats.errorCount > 0 || qcStats.warningCount > 0
-        ? `Hậu kiểm chất lượng TTS: ${qcStats.errorCount} đoạn lỗi, ${qcStats.warningCount} đoạn cảnh báo.`
+        ? retriesUsed > 0
+          ? `Hậu kiểm chất lượng TTS (đã tự động tạo lại ${retriesUsed} lần): ${qcStats.errorCount} đoạn lỗi, ${qcStats.warningCount} đoạn cảnh báo.`
+          : `Hậu kiểm chất lượng TTS: ${qcStats.errorCount} đoạn lỗi, ${qcStats.warningCount} đoạn cảnh báo.`
         : undefined;
 
     const qcChunks: BatchQcChunkItem[] = sortedChunks.map((c) => ({

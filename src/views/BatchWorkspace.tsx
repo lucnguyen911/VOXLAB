@@ -71,6 +71,9 @@ export const BatchWorkspace: React.FC = () => {
   // Selection & Search
   const [selectedJobIds, setSelectedJobIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
+  const [autoRetryFailedChunks, setAutoRetryFailedChunks] = useState<boolean>(() =>
+    Boolean(orchestrator.getGlobalOutputDefaults().autoRetryFailedChunks)
+  );
 
   // Modals & Drawers
   const [isGlobalModalOpen, setIsGlobalModalOpen] = useState(false);
@@ -486,6 +489,42 @@ export const BatchWorkspace: React.FC = () => {
     orchestrator.startQueue();
   };
 
+  const handleToggleAutoRetry = (enabled: boolean) => {
+    setAutoRetryFailedChunks(enabled);
+    const currentOut = orchestrator.getGlobalOutputDefaults(getDefaultBatchOutputDir());
+    orchestrator.setGlobalOutputDefaults({
+      ...currentOut,
+      autoRetryFailedChunks: enabled,
+      maxAutoRetries: 5,
+    });
+    const updated = jobs.map((job) => {
+      if (job.stage === "staging" || job.status === "waiting") {
+        return {
+          ...job,
+          outputSnapshot: {
+            ...job.outputSnapshot,
+            autoRetryFailedChunks: enabled,
+            maxAutoRetries: 5,
+          },
+          ...(job.effectiveConfigSnapshot
+            ? {
+                effectiveConfigSnapshot: {
+                  ...job.effectiveConfigSnapshot,
+                  output: {
+                    ...job.effectiveConfigSnapshot.output,
+                    autoRetryFailedChunks: enabled,
+                    maxAutoRetries: 5,
+                  },
+                },
+              }
+            : {}),
+        };
+      }
+      return job;
+    });
+    orchestrator.setJobs(updated);
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-background select-none">
       {/* Hidden File Input */}
@@ -539,6 +578,9 @@ export const BatchWorkspace: React.FC = () => {
             onSearchChange={setSearchQuery}
             onUploadClick={handleUploadClick}
             onGlobalConfigClick={() => setIsGlobalModalOpen(true)}
+            autoRetryEnabled={autoRetryFailedChunks}
+            onToggleAutoRetry={handleToggleAutoRetry}
+            maxAutoRetries={5}
           />
         )}
 
@@ -762,8 +804,13 @@ export const BatchWorkspace: React.FC = () => {
         globalDefaults={orchestrator.getGlobalDefaults()}
         globalOutputDefaults={orchestrator.getGlobalOutputDefaults(getDefaultBatchOutputDir())}
         onSaveDefaults={(defs, outDefs) => {
+          const mergedOut = {
+            ...outDefs,
+            autoRetryFailedChunks,
+            maxAutoRetries: 5,
+          };
           orchestrator.setGlobalDefaults(defs);
-          orchestrator.setGlobalOutputDefaults(outDefs);
+          orchestrator.setGlobalOutputDefaults(mergedOut);
           // Also propagate new defaults to uncustomized jobs in staging/waiting
           const updated = jobs.map((job) => {
             if (!job.hasCustomConfig && (job.stage === "staging" || job.status === "waiting")) {
@@ -781,7 +828,7 @@ export const BatchWorkspace: React.FC = () => {
                 },
                 outputSnapshot: {
                   ...job.outputSnapshot,
-                  ...outDefs,
+                  ...mergedOut,
                 },
               };
             }

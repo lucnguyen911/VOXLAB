@@ -104,6 +104,12 @@ export function loadBatchGlobalOutputSettings(fallbackDir = ""): BatchJobOutputS
         : "auto_rename",
       outputAudioFormat: parsed.outputAudioFormat === "mp3" ? "mp3" : "wav",
       outputSubtitleFormat: parsed.outputSubtitleFormat === "vtt" ? "vtt" : "srt",
+      ...(typeof parsed.autoRetryFailedChunks === "boolean"
+        ? { autoRetryFailedChunks: parsed.autoRetryFailedChunks }
+        : {}),
+      ...(typeof parsed.maxAutoRetries === "number" && parsed.maxAutoRetries > 0
+        ? { maxAutoRetries: parsed.maxAutoRetries }
+        : {}),
     };
   } catch {
     return base;
@@ -129,6 +135,12 @@ export function saveBatchGlobalOutputSettings(settings: BatchJobOutputSnapshot):
         collisionPolicy: settings.collisionPolicy || "auto_rename",
         outputAudioFormat: settings.outputAudioFormat || "wav",
         outputSubtitleFormat: settings.outputSubtitleFormat || "srt",
+        ...(typeof settings.autoRetryFailedChunks === "boolean"
+          ? { autoRetryFailedChunks: settings.autoRetryFailedChunks }
+          : {}),
+        ...(typeof settings.maxAutoRetries === "number" && settings.maxAutoRetries > 0
+          ? { maxAutoRetries: settings.maxAutoRetries }
+          : {}),
       })
     );
   } catch {

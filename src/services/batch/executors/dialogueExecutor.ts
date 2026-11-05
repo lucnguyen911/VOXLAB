@@ -206,6 +206,7 @@ export class DialogueExecutor {
     }
 
     // 4b. Dedicated post-TTS Whisper quality validation pass (avoids TTS <-> ASR GPU model thrashing)
+    let retriesUsed = 0;
     if (typeof ai.validateAudioQuality === "function" && segments.length > 0) {
       onProgress?.(68, "Đang hậu kiểm chất lượng giọng thoại bằng Whisper...");
       for (const seg of segments) {
@@ -221,6 +222,109 @@ export class DialogueExecutor {
           );
         } catch {
           // Non-blocking: quality check failure must not abort batch synthesis
+        }
+      }
+
+      // 4c. Auto-retry flagged dialogue segments up to maxAutoRetries (default 5) when enabled
+      const autoRetryEnabled = Boolean(
+        job.effectiveConfigSnapshot?.output?.autoRetryFailedChunks ??
+          job.outputSnapshot?.autoRetryFailedChunks
+      );
+      const maxAutoRetries =
+        job.effectiveConfigSnapshot?.output?.maxAutoRetries ??
+        job.outputSnapshot?.maxAutoRetries ??
+        5;
+
+      if (autoRetryEnabled && maxAutoRetries > 0) {
+        for (let attempt = 1; attempt <= maxAutoRetries; attempt++) {
+          const flaggedIndices: number[] = [];
+          segments.forEach((seg, idx) => {
+            if (
+              seg.qualityReview?.status === "error" ||
+              seg.qualityReview?.status === "warning"
+            ) {
+              flaggedIndices.push(idx);
+            }
+          });
+          if (flaggedIndices.length === 0) {
+            break;
+          }
+          retriesUsed = attempt;
+          if (isCancelled?.()) return cancelled(70);
+          onProgress?.(
+            70,
+            `Đang tự động tạo lại ${flaggedIndices.length} lượt thoại lỗi/cảnh báo (Lần ${attempt}/${maxAutoRetries})...`
+          );
+
+          // Sub-pass A: Batch synthesize all flagged dialogue segments in this round
+          for (const segIdx of flaggedIndices) {
+            if (isCancelled?.()) return cancelled(70);
+            const seg = segments[segIdx];
+            try {
+              const vId = String(seg.voiceId || defaultVoice);
+              const isOnline = vId.includes("Neural") || vId.startsWith("edge_");
+              const retryOutputPath = await ai.scratchPath(
+                scratchScope,
+                `turn_${String(segIdx + 1).padStart(4, "0")}_retry${attempt}.${
+                  isOnline ? "mp3" : "wav"
+                }`
+              );
+              let r: { durationSec: number; outputPath: string };
+              if (isOnline) {
+                r = await edgeTtsProvider.synthesize({
+                  voiceId: vId,
+                  text: seg.cleanText,
+                  outputPath: retryOutputPath,
+                  ...(speed !== undefined ? { speed } : {}),
+                  ...(pitch !== undefined ? { pitch } : {}),
+                  ...(volume !== undefined
+                    ? { volume: volume > 2 ? volume / 100 : volume }
+                    : {}),
+                });
+              } else {
+                r = await ai.synthesize({
+                  model,
+                  voiceId: vId,
+                  text: seg.cleanText,
+                  outputPath: retryOutputPath,
+                  ...(speed !== undefined ? { speed } : {}),
+                  advancedSettings: jobAdvancedSettings,
+                  pronunciationRules: effectiveRules,
+                  projectId: "dialogue",
+                });
+              }
+              seg.durationSec = r.durationSec;
+              seg.audioFilePath = r.outputPath;
+              seg.status = "ready";
+              segmentPaths[segIdx] = r.outputPath;
+            } catch (e) {
+              const err = AiError.from(e);
+              if (err.code === "CANCELLED" || isCancelled?.()) return cancelled(70);
+              // Non-blocking on retry: preserve previous segment audio if retry synthesis fails
+            }
+          }
+
+          // Sub-pass B: Batch validate all flagged dialogue segments in this round via Whisper
+          onProgress?.(
+            72,
+            `Đang hậu kiểm lại ${flaggedIndices.length} lượt thoại (Lần ${attempt}/${maxAutoRetries})...`
+          );
+          for (const segIdx of flaggedIndices) {
+            if (isCancelled?.()) return cancelled(72);
+            const seg = segments[segIdx];
+            try {
+              seg.qualityReview = await validateChunkAudioQuality(
+                seg,
+                undefined,
+                ai,
+                speed,
+                undefined,
+                "dialogue"
+              );
+            } catch {
+              // Non-blocking
+            }
+          }
         }
       }
     }
@@ -316,7 +420,9 @@ export class DialogueExecutor {
     const qcStats = countChunkQualityIssues(segments);
     const qcWarning =
       qcStats.errorCount > 0 || qcStats.warningCount > 0
-        ? `Hậu kiểm chất lượng Hội thoại: ${qcStats.errorCount} lượt lỗi, ${qcStats.warningCount} lượt cảnh báo.`
+        ? retriesUsed > 0
+          ? `Hậu kiểm chất lượng Hội thoại (đã tự động tạo lại ${retriesUsed} lần): ${qcStats.errorCount} lượt lỗi, ${qcStats.warningCount} lượt cảnh báo.`
+          : `Hậu kiểm chất lượng Hội thoại: ${qcStats.errorCount} lượt lỗi, ${qcStats.warningCount} lượt cảnh báo.`
         : undefined;
 
     const qcChunks: BatchQcChunkItem[] = segments.map((s) => ({

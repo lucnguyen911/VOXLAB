@@ -227,6 +227,101 @@ describe("TTS & Dialogue Step Executors (TASK-07 / AC-03, AC-04, AC-19)", () => 
       const firstValidateIdx = methods.indexOf("audio.validate_quality");
       assert.ok(firstValidateIdx > lastSynthIdx, "Whisper validation must run after all TTS chunks finish");
     });
+
+    it("automatically retries flagged chunks when autoRetryFailedChunks is enabled and stops early once they pass", async () => {
+      let secondChunkValCount = 0;
+      const { ai, backend } = makeTestAi({
+        validateQualityFor: (params) => {
+          const text = String(params.text ?? "");
+          if (text.includes("câu thứ hai")) {
+            secondChunkValCount++;
+            // Fail on Pass 1 and Retry 1; Pass on Retry 2
+            if (secondChunkValCount < 3) {
+              return {
+                status: "error",
+                summary: "Lặp từ",
+                issues: [{ severity: "error", code: "REPEATED_WORD", message: "Lặp từ" }],
+              };
+            }
+          }
+          return { status: "pass", summary: "Đạt chuẩn", issues: [] };
+        },
+      });
+
+      const autoRetryJob: BatchJob = {
+        ...baseTtsJob,
+        outputSnapshot: {
+          ...baseTtsJob.outputSnapshot,
+          autoRetryFailedChunks: true,
+          maxAutoRetries: 5,
+        },
+      };
+
+      const result = await TtsExecutor.execute(autoRetryJob, {
+        textContent:
+          "Đây là câu thứ nhất hoàn toàn chuẩn xác. Tiếp theo là câu bổ trợ của đoạn đầu tiên. Mọi thứ trong đoạn một đều đạt chuẩn.\n\nVà đây là câu thứ hai bị đọc lướt từ.",
+        writeFile: async () => {},
+        ai,
+      });
+
+      assert.equal(result.status, "completed");
+      assert.equal(result.warning, undefined);
+      assert.equal(result.qcStats?.passCount, 2);
+      assert.equal(result.qcStats?.errorCount, 0);
+      assert.equal(result.qcStats?.warningCount, 0);
+      assert.ok(
+        result.qcChunks?.[1].audioFilePath.includes("_retry2."),
+        result.qcChunks?.[1].audioFilePath ?? ""
+      );
+
+      // Initial pass synthesized 2 chunks + 2 retry rounds for chunk 2 = 4 tts.synthesize calls total
+      const synthCalls = backend.calls.filter((c) => c.method === "tts.synthesize");
+      assert.equal(synthCalls.length, 4);
+    });
+
+    it("caps auto-retries at maxAutoRetries (5) and still exports master audio with warning when issues persist", async () => {
+      const { ai, backend } = makeTestAi({
+        validateQualityFor: (params) => {
+          const text = String(params.text ?? "");
+          if (text.includes("câu thứ hai")) {
+            return {
+              status: "warning",
+              summary: "Thiếu từ",
+              issues: [{ severity: "warning", code: "MISSING_WORD", message: "Thiếu từ" }],
+            };
+          }
+          return { status: "pass", summary: "Đạt chuẩn", issues: [] };
+        },
+      });
+
+      const autoRetryJob: BatchJob = {
+        ...baseTtsJob,
+        outputSnapshot: {
+          ...baseTtsJob.outputSnapshot,
+          autoRetryFailedChunks: true,
+          maxAutoRetries: 5,
+        },
+      };
+
+      const result = await TtsExecutor.execute(autoRetryJob, {
+        textContent:
+          "Đây là câu thứ nhất hoàn toàn chuẩn xác. Tiếp theo là câu bổ trợ của đoạn đầu tiên. Mọi thứ trong đoạn một đều đạt chuẩn.\n\nVà đây là câu thứ hai bị đọc lướt từ.",
+        writeFile: async () => {},
+        ai,
+      });
+
+      assert.equal(result.status, "completed_with_warning");
+      assert.ok(result.warning?.includes("đã tự động tạo lại 5 lần"), result.warning ?? "");
+      assert.equal(result.qcStats?.warningCount, 1);
+      assert.ok(
+        result.outputArtifactPaths.some((p) => p.endsWith(".wav")),
+        "Master WAV must still be exported even when warning persists after 5 retries"
+      );
+
+      // 2 initial chunks + 5 retries for chunk 2 = 7 tts.synthesize calls
+      const synthCalls = backend.calls.filter((c) => c.method === "tts.synthesize");
+      assert.equal(synthCalls.length, 7);
+    });
   });
 
   describe("DialogueExecutor", () => {

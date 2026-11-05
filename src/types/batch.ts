@@ -227,6 +227,8 @@ export interface BatchJobOutputSnapshot {
   collisionPolicy: BatchCollisionPolicy;
   outputAudioFormat?: "wav" | "mp3";
   outputSubtitleFormat?: "srt" | "vtt";
+  autoRetryFailedChunks?: boolean;
+  maxAutoRetries?: number;
 }
 
 /**
