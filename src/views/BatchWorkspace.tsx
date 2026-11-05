@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Eye, CheckCircle2, AlertTriangle, AlertCircle, FolderOpen } from "lucide-react";
+import { Eye, CheckCircle2, AlertTriangle, AlertCircle, FolderOpen, Trash2 } from "lucide-react";
 import {
   BatchJob,
   BatchWorkspaceView,
@@ -779,7 +779,29 @@ export const BatchWorkspace: React.FC = () => {
                   })
                 )}
               </div>
-              <BatchFooter totalCount={viewJobs.length} />
+              <BatchFooter
+                totalCount={viewJobs.length}
+                actions={
+                  <button
+                    type="button"
+                    onClick={() =>
+                      orchestrator.setJobs(
+                        jobs.filter(
+                          (j) =>
+                            j.status !== "completed" &&
+                            j.status !== "completed_with_warning"
+                        )
+                      )
+                    }
+                    disabled={viewJobs.length === 0}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-danger/80 hover:text-danger bg-danger/5 hover:bg-danger/10 border border-danger/20 hover:border-danger/30 transition-all cursor-pointer disabled:opacity-40"
+                    title="Dọn dẹp danh sách các tệp đã hoàn tất (không xóa tệp đã xuất trên ổ đĩa)"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Dọn dẹp</span>
+                  </button>
+                }
+              />
             </div>
           )}
 
