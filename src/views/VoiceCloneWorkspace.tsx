@@ -331,8 +331,12 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
 
   // Adjust selectedAccent when language changes
   useEffect(() => {
-    if (selectedAccent && availableAccents.length > 0 && !availableAccents.some((a) => a.id === selectedAccent)) {
-      setSelectedAccent(availableAccents[0]?.id || "");
+    if (availableAccents.length === 0) {
+      if (selectedAccent !== "") {
+        setSelectedAccent("");
+      }
+    } else if (!availableAccents.some((a) => a.id === selectedAccent)) {
+      setSelectedAccent(availableAccents[0].id);
     }
   }, [availableAccents, selectedAccent]);
 
@@ -1138,7 +1142,6 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                             onChange={(e) => setSelectedGender(e.target.value)}
                             className="w-full bg-surface2 border border-borderDefault rounded-lg px-2 py-1.5 text-[11px] text-textPrimary focus:border-accent focus:outline-none"
                           >
-                            <option value="">{lang === "vi" ? "Trống" : "None"}</option>
                             {GENDER_OPTIONS.map((g) => (
                               <option key={g.id} value={g.id}>
                                 {getGenderLabel(g.id, lang)}
@@ -1156,7 +1159,6 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                             onChange={(e) => setSelectedAge(e.target.value)}
                             className="w-full bg-surface2 border border-borderDefault rounded-lg px-2 py-1.5 text-[11px] text-textPrimary focus:border-accent focus:outline-none"
                           >
-                            <option value="">{lang === "vi" ? "Trống" : "None"}</option>
                             {AGE_OPTIONS.map((a) => (
                               <option key={a.id} value={a.id}>
                                 {getAgeLabel(a.id, lang)}
@@ -1175,12 +1177,15 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                             disabled={availableAccents.length === 0}
                             className="w-full bg-surface2 border border-borderDefault rounded-lg px-2 py-1.5 text-[11px] text-textPrimary focus:border-accent focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            <option value="">{lang === "vi" ? "Trống" : "None"}</option>
-                            {availableAccents.map((acc) => (
-                              <option key={acc.id} value={acc.id}>
-                                {getAccentLabel(acc.id, lang)}
-                              </option>
-                            ))}
+                            {availableAccents.length === 0 ? (
+                              <option value="">{lang === "vi" ? "Mặc định" : "Default"}</option>
+                            ) : (
+                              availableAccents.map((acc) => (
+                                <option key={acc.id} value={acc.id}>
+                                  {getAccentLabel(acc.id, lang)}
+                                </option>
+                              ))
+                            )}
                           </select>
                         </div>
                       </div>

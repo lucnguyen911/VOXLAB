@@ -75,8 +75,12 @@ export const EditVoiceModal: React.FC<EditVoiceModalProps> = ({
   }, [selectedLanguage]);
 
   useEffect(() => {
-    if (selectedAccent && availableAccents.length > 0 && !availableAccents.some((a) => a.id === selectedAccent)) {
-      setSelectedAccent(availableAccents[0]?.id || "");
+    if (availableAccents.length === 0) {
+      if (selectedAccent !== "") {
+        setSelectedAccent("");
+      }
+    } else if (!availableAccents.some((a) => a.id === selectedAccent)) {
+      setSelectedAccent(availableAccents[0].id);
     }
   }, [availableAccents, selectedAccent]);
 
@@ -266,12 +270,15 @@ export const EditVoiceModal: React.FC<EditVoiceModalProps> = ({
                 disabled={availableAccents.length === 0}
                 className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <option value="">{notSpecifiedLabel}</option>
-                {availableAccents.map((acc) => (
-                  <option key={acc.id} value={acc.id}>
-                    {getAccentLabel(acc.id, lang)}
-                  </option>
-                ))}
+                {availableAccents.length === 0 ? (
+                  <option value="">{lang === "vi" ? "Mặc định" : "Default"}</option>
+                ) : (
+                  availableAccents.map((acc) => (
+                    <option key={acc.id} value={acc.id}>
+                      {getAccentLabel(acc.id, lang)}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
 
