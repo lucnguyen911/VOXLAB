@@ -20,7 +20,6 @@ import {
   Tag,
   ChevronDown,
   FileText,
-  Info,
 } from "lucide-react";
 import { VoiceProfile } from "../types/ui";
 import { ActiveAudioTrack } from "../components/layout/BottomAudioPlayer";
@@ -1007,17 +1006,6 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                       showGlobe={true}
                     />
                   </div>
-                </div>
-
-                {/* Single-line subtle model hint with tooltip */}
-                <div
-                  className="flex items-center gap-1.5 text-[11px] text-textMuted pt-0.5"
-                  title={currentModel.description}
-                >
-                  <Info className="w-3 h-3 text-accent shrink-0" />
-                  <span className="font-medium text-accent/90 shrink-0">{currentModel.badge}</span>
-                  <span className="text-borderDefault">•</span>
-                  <span className="truncate">{currentModel.description}</span>
                 </div>
               </div>
 
