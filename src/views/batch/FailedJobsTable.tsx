@@ -215,7 +215,7 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
               title="Thử lại tất cả tệp lỗi"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Thử lại tất cả lỗi</span>
+              <span>Thử lại tất cả</span>
             </button>
             {onClearFailedJobs && (
               <button
