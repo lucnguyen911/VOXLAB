@@ -838,7 +838,14 @@ export async function loadHistoryFromFileAsync(): Promise<UnifiedHistoryItem[]> 
   const reconciled = Array.from(mergedMap.values()).sort(
     (a, b) => b.timestamp - a.timestamp
   );
-  saveHistoryItems(reconciled);
+  // Only persist + notify on a real change. saveHistoryItems() dispatches `voxlab_history_updated`,
+  // and HistoryWorkspace reloads from disk on that event; saving an identical list here would
+  // re-trigger this function forever (unbounded history.json read/write + fs_stat churn).
+  const unchanged =
+    inMemoryHistory !== null && JSON.stringify(inMemoryHistory) === JSON.stringify(reconciled);
+  if (!unchanged) {
+    saveHistoryItems(reconciled);
+  }
 
   return [...reconciled];
 }
