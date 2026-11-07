@@ -11,6 +11,7 @@ import { getAppDataDir, readAppDataFile, saveAppDataFile } from "../storage/taur
 import { isTauriRuntime } from "./tauriBackend";
 import type { VoiceReference } from "./localAiServices";
 import type { VoiceProfile } from "../../types/ui";
+import { resolveCountryFromLangAndAccent } from "../../constants/voiceFilters";
 
 export interface CloneVoiceEntry {
   id: string;
@@ -183,7 +184,7 @@ export async function reconcileCloneVoicesWithProfiles(
         engine,
         sourceType: "local",
         provider: "local",
-        country: entry.language === "vi" ? "VN" : (entry.language || "EN").toUpperCase(),
+        country: resolveCountryFromLangAndAccent(entry.language || "en"),
         styles: ["natural"],
         style: "natural",
         category: "natural",

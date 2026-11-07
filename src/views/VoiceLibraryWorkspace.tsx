@@ -12,6 +12,8 @@ import {
   AlertCircle,
   MoreVertical,
   Sparkles,
+  Edit2,
+  Download,
 } from "lucide-react";
 import { VoiceProfile, VoiceSource } from "../types/ui";
 import { useI18n } from "../i18n/context";
@@ -40,6 +42,8 @@ import { VoiceProviderBadge } from "../components/common/VoiceProviderBadge";
 import { HiddenTagsBadge } from "../components/common/HiddenTagsBadge";
 import { DeleteVoiceModal } from "../components/clone/DeleteVoiceModal";
 import { EditVoiceModal } from "../components/clone/EditVoiceModal";
+import { TestVoiceModal } from "../components/clone/TestVoiceModal";
+import { readAudioFileBlobUrl } from "../services/batch/batchRuntime";
 
 interface VoiceLibraryWorkspaceProps {
   voices: VoiceProfile[];
@@ -88,6 +92,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
   const [openCardMenuId, setOpenCardMenuId] = useState<string | null>(null);
   const [voiceToDelete, setVoiceToDelete] = useState<VoiceProfile | null>(null);
   const [voiceToEdit, setVoiceToEdit] = useState<VoiceProfile | null>(null);
+  const [voiceToTest, setVoiceToTest] = useState<VoiceProfile | null>(null);
   const [langFilterSearch, setLangFilterSearch] = useState("");
 
   const filteredVoiceLanguages = useMemo(() => {
@@ -263,6 +268,28 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
       }
 
       return true;
+    }).sort((a, b) => {
+      const getGroupOrder = (v: VoiceProfile): number => {
+        if (v.origin === "clone" || v.source === "local_clone" || v.sourceType === "clone" || v.id.startsWith("clone_")) {
+          return 0;
+        }
+        if (v.source === "local" || v.source === "preset_local" || v.sourceType === "local") {
+          return 1;
+        }
+        if (v.source === "edge") {
+          return 2;
+        }
+        return 3;
+      };
+      const groupA = getGroupOrder(a);
+      const groupB = getGroupOrder(b);
+      if (groupA !== groupB) return groupA - groupB;
+      if (groupA === 0) {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (timeA !== timeB) return timeB - timeA;
+      }
+      return 0;
     });
   }, [
     voices,
@@ -312,11 +339,43 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
     }
   };
 
+  const handleDownloadReference = async (voice: VoiceProfile) => {
+    const cleanName = voice.name.replace(/\s*\(Clone\)$/i, "");
+    const targetPath = voice.sampleAudioPath;
+    if (!targetPath) {
+      alert(
+        lang === "vi"
+          ? "Giọng nói này chưa có đường dẫn tệp mẫu hợp lệ."
+          : "This voice does not have a valid reference audio path."
+      );
+      return;
+    }
+
+    try {
+      const downloadUrl =
+        targetPath.startsWith("blob:") || targetPath.startsWith("http")
+          ? targetPath
+          : await readAudioFileBlobUrl(targetPath);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = `${cleanName.toLowerCase().replace(/\s+/g, "_")}_reference.wav`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err: any) {
+      alert(
+        lang === "vi"
+          ? `Không thể tải tệp mẫu tại "${targetPath}": ${err?.message || String(err)}`
+          : `Failed to download reference audio from "${targetPath}": ${err?.message || String(err)}`
+      );
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
       {/* Subheader Toolbar */}
       <div className="p-4 border-b border-borderDefault bg-surface1 space-y-3 flex-shrink-0">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent flex-shrink-0">
               <AudioWaveform className="w-4 h-4" />
@@ -324,48 +383,61 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
             <h2 className="text-sm font-bold text-textPrimary">{t.library.title}</h2>
           </div>
 
-          {/* Source Filters */}
-          <div className="flex bg-surface2 rounded-md p-0.5 border border-borderDefault text-xs">
-            <button
-              onClick={() => setSelectedSource("all")}
-              className={`px-3 py-1 rounded font-medium transition-colors ${
-                selectedSource === "all"
-                  ? "bg-accent text-background font-semibold"
-                  : "text-textSecondary hover:text-textPrimary"
-              }`}
-            >
-              {t.library.filterAll.replace("{count}", String(voices.length))}
-            </button>
-            <button
-              onClick={() => setSelectedSource("local_clone")}
-              className={`px-3 py-1 rounded font-medium transition-colors ${
-                selectedSource === "local_clone"
-                  ? "bg-accent text-background font-semibold"
-                  : "text-textSecondary hover:text-textPrimary"
-              }`}
-            >
-              {t.library.filterCloned.replace("{count}", String(voices.filter((v) => v.origin === "clone" || v.source === "local_clone" || v.sourceType === "clone").length))}
-            </button>
-            <button
-              onClick={() => setSelectedSource("preset_local")}
-              className={`px-3 py-1 rounded font-medium transition-colors ${
-                selectedSource === "preset_local"
-                  ? "bg-accent text-background font-semibold"
-                  : "text-textSecondary hover:text-textPrimary"
-              }`}
-            >
-              {t.library.filterPreset.replace("{count}", String(voices.filter((v) => (v.origin === "system" || !v.origin) && (v.source === "local" || v.source === "preset_local" || v.sourceType === "local") && v.source !== "local_clone" && v.sourceType !== "clone").length))}
-            </button>
-            <button
-              onClick={() => setSelectedSource("online")}
-              className={`px-3 py-1 rounded font-medium transition-colors ${
-                selectedSource === "online"
-                  ? "bg-accent text-background font-semibold"
-                  : "text-textSecondary hover:text-textPrimary"
-              }`}
-            >
-              {t.library.filterOnline.replace("{count}", String(voices.filter((v) => v.source === "edge" || v.source === "google" || v.source === "online").length))}
-            </button>
+          <div className="flex items-center gap-2.5">
+            {/* Source Filters */}
+            <div className="flex bg-surface2 rounded-md p-0.5 border border-borderDefault text-xs">
+              <button
+                onClick={() => setSelectedSource("all")}
+                className={`px-3 py-1 rounded font-medium transition-colors ${
+                  selectedSource === "all"
+                    ? "bg-accent text-background font-semibold"
+                    : "text-textSecondary hover:text-textPrimary"
+                }`}
+              >
+                {t.library.filterAll.replace("{count}", String(voices.length))}
+              </button>
+              <button
+                onClick={() => setSelectedSource("local_clone")}
+                className={`px-3 py-1 rounded font-medium transition-colors ${
+                  selectedSource === "local_clone"
+                    ? "bg-accent text-background font-semibold"
+                    : "text-textSecondary hover:text-textPrimary"
+                }`}
+              >
+                {t.library.filterCloned.replace("{count}", String(voices.filter((v) => v.origin === "clone" || v.source === "local_clone" || v.sourceType === "clone").length))}
+              </button>
+              <button
+                onClick={() => setSelectedSource("preset_local")}
+                className={`px-3 py-1 rounded font-medium transition-colors ${
+                  selectedSource === "preset_local"
+                    ? "bg-accent text-background font-semibold"
+                    : "text-textSecondary hover:text-textPrimary"
+                }`}
+              >
+                {t.library.filterPreset.replace("{count}", String(voices.filter((v) => (v.origin === "system" || !v.origin) && (v.source === "local" || v.source === "preset_local" || v.sourceType === "local") && v.source !== "local_clone" && v.sourceType !== "clone").length))}
+              </button>
+              <button
+                onClick={() => setSelectedSource("online")}
+                className={`px-3 py-1 rounded font-medium transition-colors ${
+                  selectedSource === "online"
+                    ? "bg-accent text-background font-semibold"
+                    : "text-textSecondary hover:text-textPrimary"
+                }`}
+              >
+                {t.library.filterOnline.replace("{count}", String(voices.filter((v) => v.source === "edge" || v.source === "google" || v.source === "online").length))}
+              </button>
+            </div>
+
+            {onNavigateToClone && (
+              <button
+                type="button"
+                onClick={onNavigateToClone}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent text-xs font-semibold transition-colors cursor-pointer shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{lang === "vi" ? "Tạo giọng nhân bản" : "Create Clone"}</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -878,7 +950,11 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
                         ))
                       ) : (
                         <span className="inline-flex items-center h-5 px-1.5 py-0.5 rounded-md bg-surface2 text-textMuted text-[10px] font-medium border border-borderDefault/40 truncate shrink-0">
-                          {voice.modelCompatibility?.[0] || voice.engine || (lang === "vi" ? "Tự nhiên" : "Natural")}
+                          {voice.source === "google" || voice.source === "edge" || voice.sourceType === "online"
+                            ? lang === "vi"
+                              ? "Đọc chuẩn"
+                              : "Standard"
+                            : voice.modelCompatibility?.[0] || voice.engine || (lang === "vi" ? "Tự nhiên" : "Natural")}
                         </span>
                       )}
                       <HiddenTagsBadge hiddenTags={hiddenTags} lang={lang} />
@@ -895,78 +971,76 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
                       <ArrowRight className="w-3.5 h-3.5" />
                     </button>
 
-                    {/* 3-dots more options menu (Test, Edit, Delete) */}
-                    <div className="relative">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setOpenCardMenuId(openCardMenuId === voice.id ? null : voice.id);
-                        }}
-                        className="p-1.5 rounded-lg text-textMuted hover:text-textPrimary hover:bg-surface2 transition-colors"
-                        title={lang === "vi" ? "Tùy chọn khác" : "More options"}
-                      >
-                        <MoreVertical className="w-4 h-4" />
-                      </button>
-
-                      {openCardMenuId === voice.id && (
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          className="absolute right-0 bottom-full mb-1 w-44 bg-surface1 border border-borderDefault rounded-xl shadow-xl p-1.5 z-40 animate-fade-in text-xs"
+                    {/* 3-dots more options menu — only for cloned voices (Test, Edit, Download, Delete) */}
+                    {(voice.source === "local_clone" || voice.origin === "clone" || voice.id.startsWith("clone_")) && (
+                      <div className="relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenCardMenuId(openCardMenuId === voice.id ? null : voice.id);
+                          }}
+                          className="p-1.5 rounded-lg text-textMuted hover:text-textPrimary hover:bg-surface2 transition-colors"
+                          title={lang === "vi" ? "Tùy chọn khác" : "More options"}
                         >
-                          <button
-                            onClick={() => {
-                              setOpenCardMenuId(null);
-                              handlePlayVoice(voice);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-surface2 text-textPrimary flex items-center gap-2"
-                          >
-                            <Sparkles className="w-3.5 h-3.5 text-accent" />
-                            <span>{lang === "vi" ? "Thử giọng (Test)" : "Test voice"}</span>
-                          </button>
+                          <MoreVertical className="w-4 h-4" />
+                        </button>
 
-                          <button
-                            onClick={() => {
-                              setOpenCardMenuId(null);
-                              onSelectForTts(voice);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-surface2 text-textPrimary flex items-center gap-2"
+                        {openCardMenuId === voice.id && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute right-0 bottom-full mb-1 w-44 bg-surface1 border border-borderDefault rounded-xl shadow-xl p-1.5 z-40 animate-fade-in text-xs"
                           >
-                            <ArrowRight className="w-3.5 h-3.5 text-textSecondary" />
-                            <span>{lang === "vi" ? "Dùng trong TTS" : "Use in TTS"}</span>
-                          </button>
+                            <button
+                              onClick={() => {
+                                setOpenCardMenuId(null);
+                                setVoiceToTest(voice);
+                              }}
+                              className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-surface2 text-textPrimary flex items-center gap-2 transition-colors"
+                            >
+                              <Sparkles className="w-3.5 h-3.5 text-accent" />
+                              <span>{lang === "vi" ? "Thử giọng (Test)" : "Test voice"}</span>
+                            </button>
 
-                          {(voice.source === "local_clone" || voice.origin === "clone") && (
-                            <>
-                              {onUpdateVoice && (
-                                <button
-                                  onClick={() => {
-                                    setOpenCardMenuId(null);
-                                    setVoiceToEdit(voice);
-                                  }}
-                                  className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-surface2 text-textPrimary flex items-center gap-2"
-                                >
-                                  <svg className="w-3.5 h-3.5 text-textSecondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                  </svg>
-                                  <span>{lang === "vi" ? "Chỉnh sửa" : "Edit"}</span>
-                                </button>
-                              )}
-                              <div className="my-1 border-t border-borderDefault/50" />
+                            {onUpdateVoice && (
                               <button
                                 onClick={() => {
                                   setOpenCardMenuId(null);
-                                  setVoiceToDelete(voice);
+                                  setVoiceToEdit(voice);
                                 }}
-                                className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-rose-500/10 text-rose-500 flex items-center gap-2"
+                                className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-surface2 text-textPrimary flex items-center gap-2 transition-colors"
                               >
-                                <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                                <span>{lang === "vi" ? "Xóa giọng" : "Delete voice"}</span>
+                                <Edit2 className="w-3.5 h-3.5 text-textSecondary" />
+                                <span>{lang === "vi" ? "Chỉnh sửa" : "Edit voice"}</span>
                               </button>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                            )}
+
+                            <button
+                              onClick={() => {
+                                setOpenCardMenuId(null);
+                                handleDownloadReference(voice);
+                              }}
+                              className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-surface2 text-textPrimary flex items-center gap-2 transition-colors"
+                            >
+                              <Download className="w-3.5 h-3.5 text-textSecondary" />
+                              <span>{lang === "vi" ? "Tải tệp mẫu" : "Download reference"}</span>
+                            </button>
+
+                            <div className="my-1 border-t border-borderDefault/60" />
+
+                            <button
+                              onClick={() => {
+                                setOpenCardMenuId(null);
+                                setVoiceToDelete(voice);
+                              }}
+                              className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-rose-950/30 text-rose-400 flex items-center gap-2 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>{lang === "vi" ? "Xóa giọng" : "Delete voice"}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -996,6 +1070,18 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
           </div>
         )}
       </div>
+
+      {/* Test Voice Modal */}
+      <TestVoiceModal
+        isOpen={Boolean(voiceToTest)}
+        onClose={() => setVoiceToTest(null)}
+        voice={voiceToTest}
+        onPlayTestTrack={(track) => {
+          if (onPlayTrack) {
+            onPlayTrack(track);
+          }
+        }}
+      />
 
       {/* Delete Confirmation Modal */}
       <DeleteVoiceModal

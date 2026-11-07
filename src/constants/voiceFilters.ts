@@ -744,6 +744,54 @@ export interface VoiceLanguageInfo {
   countryName: string;
 }
 
+export function resolveCountryFromLangAndAccent(
+  langCode?: string | null,
+  accent?: string | null
+): string {
+  const code = (langCode || "vi").toLowerCase().trim();
+  const acc = (accent || "").toLowerCase().trim();
+
+  if (code === "vi" || acc.startsWith("vi")) return "VN";
+  if (code === "en" || acc.startsWith("en")) {
+    if (acc.includes("gb") || acc.includes("uk") || acc.includes("anh") || acc.includes("british")) return "GB";
+    if (acc.includes("au") || acc.includes("úc") || acc.includes("australian")) return "AU";
+    if (acc.includes("ca") || acc.includes("canada")) return "CA";
+    if (acc.includes("in") || acc.includes("india") || acc.includes("ấn độ")) return "IN";
+    return "US";
+  }
+  if (code === "es" || acc.startsWith("es")) {
+    if (acc.includes("mx") || acc.includes("mexico")) return "MX";
+    if (acc.includes("ar") || acc.includes("argentina")) return "AR";
+    return "ES";
+  }
+  if (code === "pt" || acc.startsWith("pt")) {
+    if (acc.includes("br") || acc.includes("brazil")) return "BR";
+    return "PT";
+  }
+  if (code === "fr" || acc.startsWith("fr")) {
+    if (acc.includes("ca") || acc.includes("canada")) return "CA";
+    return "FR";
+  }
+  const map: Record<string, string> = {
+    ja: "JP",
+    zh: "CN",
+    "zh-tw": "CN",
+    ko: "KR",
+    de: "DE",
+    it: "IT",
+    ru: "RU",
+    ar: "SA",
+    hi: "IN",
+    id: "ID",
+    nl: "NL",
+    tr: "TR",
+    pl: "PL",
+    sv: "SE",
+    th: "TH",
+  };
+  return map[code] || code.toUpperCase();
+}
+
 export function getVoiceLanguageInfo(
   voice: { supportedLanguages?: string[]; accent?: string | null; id?: string; country?: string | null },
   uiLang: SupportedLang
@@ -771,12 +819,18 @@ export function getVoiceLanguageInfo(
     countryCode = "vn";
     flag = "🇻🇳";
   } else if (code === "en") {
-    if (acc.includes("uk") || acc.includes("anh") || acc.includes("british")) {
+    if (acc.includes("uk") || acc.includes("gb") || acc.includes("anh") || acc.includes("british")) {
       countryCode = "gb";
       flag = "🇬🇧";
     } else if (acc.includes("au") || acc.includes("úc") || acc.includes("australian")) {
       countryCode = "au";
       flag = "🇦🇺";
+    } else if (acc.includes("ca") || acc.includes("canada")) {
+      countryCode = "ca";
+      flag = "🇨🇦";
+    } else if (acc.includes("in") || acc.includes("india") || acc.includes("ấn độ")) {
+      countryCode = "in";
+      flag = "🇮🇳";
     } else {
       countryCode = "us";
       flag = "🇺🇸";
@@ -855,9 +909,12 @@ export function getVoiceLanguageInfo(
     }
   }
 
-  // If voice explicitly specifies country (e.g. "VN", "US", "GB"), use that authoritative countryCode
+  // If voice explicitly specifies a valid ISO country (e.g. "VN", "US", "GB"), use that authoritative countryCode
   if (voice.country) {
-    countryCode = voice.country.toLowerCase().trim();
+    const rawCountry = voice.country.toLowerCase().trim();
+    if (COUNTRY_NAMES[rawCountry]) {
+      countryCode = rawCountry;
+    }
   }
 
   const name = getLanguageLabel(code, uiLang);
@@ -1043,6 +1100,8 @@ export function getVoiceSecondaryTags(
           "openai",
           "google",
           "google tts",
+          "cloud voice",
+          "cloud",
           "local",
           "local ai",
           "clone",
@@ -1120,6 +1179,10 @@ export function extractStructuredMetadataFromTags(tags: string[]): ExtractedStru
       continue;
     }
 
+    if (lower === "cloud voice" || lower === "cloud") {
+      continue;
+    }
+
     // Otherwise keep unmapped tag
     unmappedTags.push(clean);
   }
@@ -1158,10 +1221,20 @@ export function migrateLegacyVoice(voice: VoiceProfile): VoiceProfile {
   const ageGroup = voice.ageGroup ? normalizeAge(voice.ageGroup) : (extracted.ageGroup || undefined);
 
   // Keep unmapped tags + canonical representations
-  const finalTags = extracted.unmappedTags.length > 0 ? extracted.unmappedTags : (voice.tags || []);
+  const finalTags = extracted.unmappedTags.filter(
+    (tg) => !["cloud voice", "cloud"].includes(tg.toLowerCase().trim())
+  );
+
+  // Normalize country if missing or saved as language code (e.g. "EN")
+  const rawCountryLower = (voice.country || "").toLowerCase().trim();
+  const normalizedCountry =
+    rawCountryLower && COUNTRY_NAMES[rawCountryLower]
+      ? voice.country!.toUpperCase().trim()
+      : resolveCountryFromLangAndAccent(voice.supportedLanguages?.[0], accent);
 
   return {
     ...voice,
+    country: normalizedCountry,
     gender: (gender === "male" || gender === "female") ? gender : undefined,
     accent: accent || undefined,
     styles: normalizedStyles.length > 0 ? normalizedStyles : (style ? [style] : []),

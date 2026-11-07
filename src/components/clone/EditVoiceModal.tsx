@@ -12,6 +12,7 @@ import {
   getStyleLabel,
   getAgeLabel,
   extractStructuredMetadataFromTags,
+  resolveCountryFromLangAndAccent,
 } from "../../constants/voiceFilters";
 import { SearchableLanguageSelect } from "../common/SearchableLanguageSelect";
 import { TRANSLATION_TARGET_LANGUAGES } from "../../services/subtitle/languages";
@@ -120,6 +121,7 @@ export const EditVoiceModal: React.FC<EditVoiceModalProps> = ({
     const updated: VoiceProfile = {
       ...voice,
       name: name.trim(),
+      country: resolveCountryFromLangAndAccent(selectedLanguage, selectedAccent),
       supportedLanguages: [selectedLanguage],
       gender: (selectedGender === "male" || selectedGender === "female") ? selectedGender : undefined,
       accent: selectedAccent || undefined,

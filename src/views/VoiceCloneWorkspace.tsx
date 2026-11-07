@@ -37,6 +37,7 @@ import {
   getVoiceSecondaryTags,
   getVoiceLanguageInfo,
   computeVisibleTags,
+  resolveCountryFromLangAndAccent,
 } from "../constants/voiceFilters";
 import { CountryFlag } from "../components/common/CountryFlag";
 import { HiddenTagsBadge } from "../components/common/HiddenTagsBadge";
@@ -660,7 +661,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
         engine: currentModel.engine,
         sourceType: "local",
         provider: "local",
-        country: effectiveLang === "vi" ? "VN" : effectiveLang.toUpperCase(),
+        country: resolveCountryFromLangAndAccent(effectiveLang, selectedAccent),
         gender: (selectedGender === "male" || selectedGender === "female") ? selectedGender : undefined,
         accent: selectedAccent || undefined,
         styles: selectedStyles.length > 0 ? selectedStyles : ["natural"],
