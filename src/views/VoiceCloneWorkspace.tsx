@@ -18,6 +18,9 @@ import {
   Plus,
   X,
   Tag,
+  ChevronDown,
+  FileText,
+  Info,
 } from "lucide-react";
 import { VoiceProfile } from "../types/ui";
 import { ActiveAudioTrack } from "../components/layout/BottomAudioPlayer";
@@ -37,7 +40,6 @@ import {
   computeVisibleTags,
 } from "../constants/voiceFilters";
 import { CountryFlag } from "../components/common/CountryFlag";
-import { VoiceProviderBadge } from "../components/common/VoiceProviderBadge";
 import { HiddenTagsBadge } from "../components/common/HiddenTagsBadge";
 import {
   decodeAudioFile,
@@ -196,6 +198,8 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
 
   // Transcript State (Optional)
   const [referenceTranscript, setReferenceTranscript] = useState<string>("");
+  const [showTranscriptField, setShowTranscriptField] = useState<boolean>(false);
+  const [showAttributesAccordion, setShowAttributesAccordion] = useState<boolean>(false);
 
   // Reference Audio State
   const [referenceFileMeta, setReferenceFileMeta] = useState<{
@@ -776,66 +780,15 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
           {/* ======================================================== */}
           <div className="w-full lg:w-[380px] xl:w-[390px] flex flex-col bg-surface1 rounded-xl border border-borderDefault shrink-0 overflow-hidden shadow-xs">
             {/* Scrollable Form Body */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-              {/* 1. TÊN GIỌNG NÓI */}
-              <div className="space-y-1.5">
-                <label className="block text-textSecondary font-medium">Tên giọng nói</label>
-                <input
-                  type="text"
-                  value={voiceName}
-                  onChange={(e) => setVoiceName(e.target.value)}
-                  placeholder="VD: Thảo Vy"
-                  className="w-full bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs text-textPrimary focus:border-accent focus:outline-none"
-                />
-              </div>
-
-              {/* 2. MODEL */}
-              <div className="space-y-1.5">
-                <label className="block text-textSecondary font-medium">Model</label>
-                <select
-                  value={selectedModelId}
-                  onChange={(e) => setSelectedModelId(e.target.value)}
-                  className="w-full bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs text-textPrimary focus:border-accent focus:outline-none"
-                >
-                  {CLONE_MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-                <div className="p-2.5 bg-surface2/60 rounded-lg border border-borderDefault/80 text-[11px] space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-accent">{currentModel.badge}</span>
-                    {currentModel.requiresTranscript ? (
-                      <span className="text-warning font-semibold">Cần văn bản mẫu</span>
-                    ) : (
-                      <span className="text-textMuted">Văn bản mẫu tùy chọn</span>
-                    )}
-                  </div>
-                  <p className="text-textMuted leading-relaxed">{currentModel.description}</p>
-                </div>
-              </div>
-
-              {/* 3. NGÔN NGỮ */}
-              <div className="space-y-1.5">
-                <label className="block text-textSecondary font-medium">
-                  {lang === "vi" ? "Ngôn ngữ" : "Language"}
-                </label>
-                <SearchableLanguageSelect
-                  value={selectedLang}
-                  onChange={(code) => setSelectedLang(code)}
-                  languages={cloneModelLanguages}
-                  searchPlaceholder={lang === "vi" ? "Tìm ngôn ngữ..." : "Search language..."}
-                  size="md"
-                  showGlobe={true}
-                />
-              </div>
-
-              {/* 4. ÂM THANH THAM CHIẾU */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3.5 text-xs">
+              {/* 1. ÂM THANH THAM CHIẾU */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <label className="text-textSecondary font-medium">Âm thanh tham chiếu</label>
-                  <span className="text-[11px] text-accent font-medium" title={`Tối thiểu ${durationRules.minSec}s · Khuyến nghị tối đa ${durationRules.maxRecommendedSec}s`}>
+                  <span
+                    className="text-[11px] text-accent font-medium"
+                    title={`Tối thiểu ${durationRules.minSec}s · Khuyến nghị tối đa ${durationRules.maxRecommendedSec}s`}
+                  >
                     {durationRules.badgeLabel}
                   </span>
                 </div>
@@ -867,45 +820,69 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                   onDrop={handleDrop}
                 >
                   {audioBuffer && referenceFileMeta ? (
-                    /* Audio Reference Component */
+                    /* Compact Loaded Audio Reference Card */
                     <div
-                      className={`p-4 bg-surface2/60 rounded-xl border space-y-3.5 transition-all ${
+                      className={`p-3 bg-surface2/60 rounded-xl border space-y-2.5 transition-all ${
                         isDraggingOverRef
                           ? "border-accent ring-2 ring-accent/30 bg-accent/5"
                           : "border-borderDefault"
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-9 h-9 rounded-lg bg-accent/20 border border-accent/40 flex items-center justify-center text-accent shrink-0">
-                            <FileAudio className="w-4.5 h-4.5" />
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-accent/20 border border-accent/40 flex items-center justify-center text-accent shrink-0">
+                            <FileAudio className="w-4 h-4" />
                           </div>
                           <div className="min-w-0">
-                            <div className="text-sm font-semibold text-textPrimary truncate" title={referenceFileMeta.name}>
+                            <div
+                              className="text-xs font-semibold text-textPrimary truncate"
+                              title={referenceFileMeta.name}
+                            >
                               {referenceFileMeta.name}
                             </div>
-                            <div className="text-[11px] text-textMuted font-mono mt-0.5">
-                              {referenceFileMeta.duration} • {(audioBuffer.sampleRate / 1000).toFixed(1)}kHz • {audioBuffer.numberOfChannels === 1 ? "Mono" : "Stereo"}
+                            <div className="text-[10px] text-textMuted font-mono mt-0.5">
+                              {referenceFileMeta.duration} • {(audioBuffer.sampleRate / 1000).toFixed(1)}kHz •{" "}
+                              {audioBuffer.numberOfChannels === 1 ? "Mono" : "Stereo"}
                             </div>
                           </div>
                         </div>
 
-                        {/* Play / Pause button */}
-                        <button
-                          onClick={handleTogglePlayReference}
-                          className={`w-8 h-8 rounded-full flex items-center justify-center transition-all shrink-0 ${
-                            isPlayingReference
-                              ? "bg-rose-500 text-white shadow-md animate-pulse"
-                              : "bg-accent text-background hover:bg-accent/90"
-                          }`}
-                          title={isPlayingReference ? "Dừng nghe" : "Nghe mẫu"}
-                        >
-                          {isPlayingReference ? (
-                            <Pause className="w-4 h-4 fill-current" />
-                          ) : (
-                            <Play className="w-4 h-4 fill-current ml-0.5" />
-                          )}
-                        </button>
+                        {/* Quick actions: Trim, Change, Play */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setTrimModalOpen(true)}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-surface3 hover:bg-surface2 border border-borderDefault rounded-md text-textPrimary hover:text-accent font-medium text-[11px] transition-colors cursor-pointer"
+                            title={lang === "vi" ? "Cắt đoạn âm thanh mẫu" : "Trim reference audio"}
+                          >
+                            <Scissors className="w-3 h-3 text-accent" />
+                            <span>{lang === "vi" ? "Cắt" : "Trim"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handlePickReferenceAudio}
+                            className="px-2 py-1 rounded-md text-[11px] text-textSecondary hover:text-accent hover:bg-surface3 font-medium transition-colors cursor-pointer"
+                            title={lang === "vi" ? "Chọn file âm thanh khác" : "Change file"}
+                          >
+                            {lang === "vi" ? "Đổi" : "Change"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleTogglePlayReference}
+                            className={`w-7 h-7 rounded-full flex items-center justify-center transition-all shrink-0 cursor-pointer ${
+                              isPlayingReference
+                                ? "bg-rose-500 text-white shadow-md animate-pulse"
+                                : "bg-accent text-background hover:bg-accent/90"
+                            }`}
+                            title={isPlayingReference ? "Dừng nghe" : "Nghe mẫu"}
+                          >
+                            {isPlayingReference ? (
+                              <Pause className="w-3.5 h-3.5 fill-current" />
+                            ) : (
+                              <Play className="w-3.5 h-3.5 fill-current ml-0.5" />
+                            )}
+                          </button>
+                        </div>
                       </div>
 
                       {/* High-density PCM waveform */}
@@ -915,14 +892,14 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                           isPlaying={isPlayingReference}
                           currentTime={refPlayCurrentSec}
                           duration={audioBuffer.duration}
-                          height={36}
+                          height={32}
                         />
                       </div>
 
-                      {/* Real-time Audio Quality & Model Duration Assessment */}
+                      {/* Compact 1-line Audio Quality Badge (only expands details when issues exist) */}
                       {qualityReport && (
                         <div
-                          className={`p-2.5 rounded-lg border text-[11px] space-y-1.5 ${
+                          className={`px-2.5 py-1.5 rounded-lg border text-[11px] space-y-1 ${
                             qualityReport.status === "good"
                               ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-300"
                               : qualityReport.status === "warning"
@@ -943,7 +920,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                               {qualityReport.durationSec.toFixed(1)}s
                             </span>
                           </div>
-                          {qualityReport.details.some((m) => m.status !== "pass") ? (
+                          {qualityReport.details.some((m) => m.status !== "pass") && (
                             <div className="space-y-0.5 pl-5 text-[10px] opacity-90">
                               {qualityReport.details
                                 .filter((m) => m.status !== "pass")
@@ -953,50 +930,28 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                                   </div>
                                 ))}
                             </div>
-                          ) : (
-                            <div className="pl-5 text-[10px] opacity-85">
-                              {qualityReport.details.find((m) => m.id === "duration")?.description}
-                            </div>
                           )}
                         </div>
                       )}
-
-                      {/* Action Bar: Trim & Change File */}
-                      <div className="flex items-center justify-between pt-1">
-                        <button
-                          onClick={() => setTrimModalOpen(true)}
-                          className="flex items-center gap-1.5 px-3.5 py-1.5 bg-surface3 hover:bg-surface2 border border-borderDefault rounded-lg text-textPrimary hover:text-accent font-semibold text-xs transition-colors"
-                        >
-                          <Scissors className="w-3.5 h-3.5 text-accent" />
-                          <span>{lang === "vi" ? "Cắt" : "Trim"}</span>
-                        </button>
-
-                        <button
-                          onClick={handlePickReferenceAudio}
-                          className="text-xs text-accent hover:underline font-semibold transition-colors"
-                        >
-                          {lang === "vi" ? "Đổi file" : "Change file"}
-                        </button>
-                      </div>
                     </div>
                   ) : (
                     /* Empty Dropzone */
                     <div
                       onClick={handlePickReferenceAudio}
-                      className={`border-2 border-dashed rounded-xl p-7 text-center cursor-pointer transition-all space-y-2.5 group ${
+                      className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all space-y-2 group ${
                         isDraggingOverRef
                           ? "border-accent bg-accent/10"
                           : "border-borderDefault hover:border-accent/70 hover:bg-accent/5 bg-surface2/30"
                       }`}
                     >
-                      <div className="w-11 h-11 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center text-accent mx-auto group-hover:scale-110 transition-transform">
-                        <UploadCloud className="w-5.5 h-5.5" />
+                      <div className="w-10 h-10 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center text-accent mx-auto group-hover:scale-110 transition-transform">
+                        <UploadCloud className="w-5 h-5" />
                       </div>
                       <div>
                         <p className="text-xs font-semibold text-textPrimary group-hover:text-accent transition-colors">
                           Kéo thả file âm thanh vào đây hoặc ấn để chọn
                         </p>
-                        <p className="text-[11px] text-textMuted mt-1">
+                        <p className="text-[11px] text-textMuted mt-0.5">
                           Hỗ trợ WAV, MP3, M4A, FLAC ({durationRules.badgeLabel})
                         </p>
                       </div>
@@ -1005,184 +960,306 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                 </div>
               </div>
 
-              {/* 5. VĂN BẢN THAM CHIẾU */}
+              {/* 2. TÊN GIỌNG NÓI */}
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="block text-textSecondary font-medium">
-                    Văn bản tham chiếu
-                  </label>
-                  {currentModel.requiresTranscript ? (
-                    <span className="text-[11px] font-semibold text-danger">* Bắt buộc với {currentModel.name}</span>
-                  ) : (
-                    <span className="text-[11px] text-textMuted">Tùy chọn</span>
-                  )}
-                </div>
-                {(transcriptNeedsVerifyAfterTrim || (trimRange && currentModel.requiresTranscript)) && (
-                  <div className="flex items-start gap-1.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px]">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>
-                      Bạn đã cắt đoạn audio mẫu ({trimRange ? `${trimRange.startSec.toFixed(1)}s – ${trimRange.endSec.toFixed(1)}s` : `${audioBuffer?.duration.toFixed(1)}s`}). Hãy đảm bảo văn bản tham chiếu khớp chính xác với đoạn đã cắt.
-                    </span>
-                  </div>
-                )}
-                <textarea
-                  rows={2}
-                  value={referenceTranscript}
-                  onChange={(e) => {
-                    setReferenceTranscript(e.target.value);
-                    if (transcriptNeedsVerifyAfterTrim) {
-                      setTranscriptNeedsVerifyAfterTrim(false);
-                    }
-                  }}
-                  placeholder={
-                    currentModel.requiresTranscript
-                      ? "Bắt buộc nhập chính xác lời thoại trong đoạn audio mẫu đã chọn để mô hình Qwen clone..."
-                      : "Nội dung lời nói trong đoạn âm thanh đã chọn (giúp mô hình clone chính xác hơn)..."
-                  }
-                  className="w-full bg-surface2 border border-borderDefault rounded-lg p-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none resize-none leading-relaxed cursor-text caret-accent"
+                <label className="block text-textSecondary font-medium">Tên giọng nói</label>
+                <input
+                  type="text"
+                  value={voiceName}
+                  onChange={(e) => setVoiceName(e.target.value)}
+                  placeholder="VD: Thảo Vy (tự điền khi chọn file mẫu)"
+                  className="w-full bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs text-textPrimary focus:border-accent focus:outline-none"
                 />
               </div>
 
-              {/* 6. PHÂN LOẠI (STRUCTURED VOICE TAXONOMY) */}
-              <div className="space-y-3 p-3.5 rounded-xl border border-borderDefault bg-surface2/30">
-                <div className="flex items-center">
-                  <span className="text-xs font-semibold text-textPrimary flex items-center gap-1.5">
-                    <Tag className="w-3.5 h-3.5 text-accent" />
-                    <span>{lang === "vi" ? "Phân loại" : "Voice Attributes"}</span>
-                  </span>
-                </div>
-
-                {/* Row 1: Gender & Age (2 columns) */}
+              {/* 3. MODEL & NGÔN NGỮ (2-Column Compact Row) */}
+              <div className="space-y-1.5">
                 <div className="grid grid-cols-2 gap-2.5">
-                  <div className="space-y-1.5">
-                    <label className="block text-[11px] text-textSecondary font-medium">
-                      {lang === "vi" ? "Giới tính" : "Gender"}
-                    </label>
+                  <div className="space-y-1.5 min-w-0">
+                    <label className="block text-textSecondary font-medium">Model</label>
                     <select
-                      value={selectedGender}
-                      onChange={(e) => setSelectedGender(e.target.value)}
-                      className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none"
+                      value={selectedModelId}
+                      onChange={(e) => setSelectedModelId(e.target.value)}
+                      className="w-full h-[34px] bg-surface2 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none"
                     >
-                      <option value="">{lang === "vi" ? "Chưa chọn" : "Not specified"}</option>
-                      {GENDER_OPTIONS.map((g) => (
-                        <option key={g.id} value={g.id}>
-                          {getGenderLabel(g.id, lang)}
+                      {CLONE_MODELS.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
                         </option>
                       ))}
                     </select>
                   </div>
 
-                  <div className="space-y-1.5">
-                    <label className="block text-[11px] text-textSecondary font-medium">
-                      {lang === "vi" ? "Độ tuổi" : "Age Group"}
+                  <div className="space-y-1.5 min-w-0">
+                    <label className="block text-textSecondary font-medium">
+                      {lang === "vi" ? "Ngôn ngữ" : "Language"}
                     </label>
-                    <select
-                      value={selectedAge}
-                      onChange={(e) => setSelectedAge(e.target.value)}
-                      className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none"
-                    >
-                      <option value="">{lang === "vi" ? "Chưa chọn" : "Not specified"}</option>
-                      {AGE_OPTIONS.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {getAgeLabel(a.id, lang)}
-                        </option>
-                      ))}
-                    </select>
+                    <SearchableLanguageSelect
+                      value={selectedLang}
+                      onChange={(code) => setSelectedLang(code)}
+                      languages={cloneModelLanguages}
+                      searchPlaceholder={lang === "vi" ? "Tìm ngôn ngữ..." : "Search language..."}
+                      size="md"
+                      showGlobe={true}
+                    />
                   </div>
                 </div>
 
-                {/* Row 2: Vùng / Accent (Linked dynamically to chosen language) */}
-                <div className="space-y-1.5">
-                  <label className="block text-[11px] text-textSecondary font-medium">
-                    {lang === "vi" ? "Vùng / Accent" : "Accent / Region"}
-                  </label>
-                  <select
-                    value={selectedAccent}
-                    onChange={(e) => setSelectedAccent(e.target.value)}
-                    disabled={availableAccents.length === 0}
-                    className="w-full bg-surface2 border border-borderDefault rounded-lg px-2.5 py-1.5 text-xs text-textPrimary focus:border-accent focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <option value="">{lang === "vi" ? "Chưa chọn" : "Not specified"}</option>
-                    {availableAccents.map((acc) => (
-                      <option key={acc.id} value={acc.id}>
-                        {getAccentLabel(acc.id, lang)}
-                      </option>
-                    ))}
-                  </select>
+                {/* Single-line subtle model hint with tooltip */}
+                <div
+                  className="flex items-center gap-1.5 text-[11px] text-textMuted pt-0.5"
+                  title={currentModel.description}
+                >
+                  <Info className="w-3 h-3 text-accent shrink-0" />
+                  <span className="font-medium text-accent/90 shrink-0">{currentModel.badge}</span>
+                  <span className="text-borderDefault">•</span>
+                  <span className="truncate">{currentModel.description}</span>
                 </div>
+              </div>
 
-                {/* Row 3: Phong cách (Style) - Multi-select Chips + Checklist Popover */}
-                <div className="space-y-1.5">
-                  <label className="block text-[11px] text-textSecondary font-medium">
-                    {lang === "vi" ? "Phong cách" : "Styles"}
-                  </label>
-
-                  <div className="p-2 bg-surface2/60 rounded-lg border border-borderDefault min-h-[38px] flex flex-wrap items-center gap-1.5 relative">
-                    {selectedStyles.map((styleId) => (
-                      <span
-                        key={styleId}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface3 border border-borderDefault text-textPrimary text-[11px] font-medium animate-fade-in"
-                      >
-                        <span>{getStyleLabel(styleId, lang)}</span>
+              {/* 4. TÙY CHỌN MỞ RỘNG: VĂN BẢN THAM CHIẾU & PHÂN LOẠI */}
+              <div className="pt-2 border-t border-borderDefault/60 space-y-2.5">
+                {/* 4A. VĂN BẢN THAM CHIẾU (Tự mở khi bắt buộc hoặc khi người dùng bấm mở) */}
+                {currentModel.requiresTranscript ||
+                showTranscriptField ||
+                Boolean(referenceTranscript.trim()) ||
+                transcriptNeedsVerifyAfterTrim ? (
+                  <div className="space-y-1.5 animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-textSecondary font-medium">
+                        Văn bản tham chiếu
+                      </label>
+                      {currentModel.requiresTranscript ? (
+                        <span className="text-[11px] font-semibold text-danger">
+                          * Bắt buộc với {currentModel.name}
+                        </span>
+                      ) : (
                         <button
                           type="button"
-                          onClick={() => handleRemoveStyle(styleId)}
-                          className="text-textMuted hover:text-rose-400 transition-colors"
-                          title="Xóa phong cách"
+                          onClick={() => {
+                            if (!referenceTranscript.trim()) {
+                              setShowTranscriptField(false);
+                            }
+                          }}
+                          className="text-[11px] text-textMuted hover:text-textPrimary transition-colors cursor-pointer"
                         >
-                          <X className="w-3 h-3" />
+                          {referenceTranscript.trim() ? "Tùy chọn" : "Thu gọn"}
                         </button>
-                      </span>
-                    ))}
-
-                    {/* Popover trigger button */}
-                    <div className="relative inline-block" ref={stylePopoverRef}>
-                      <button
-                        type="button"
-                        onClick={() => setStylePopoverOpen(!stylePopoverOpen)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-dashed border-borderDefault hover:border-accent/80 text-textMuted hover:text-accent text-[11px] transition-colors bg-surface2/80"
-                      >
-                        <Plus className="w-3 h-3" />
-                        <span>{lang === "vi" ? "Chọn phong cách" : "Add style"}</span>
-                      </button>
-
-                      {/* Popover dropdown checklist */}
-                      {stylePopoverOpen && (
-                        <div className="absolute left-0 top-full mt-1.5 w-64 max-h-56 overflow-y-auto bg-surface1 border border-borderDefault rounded-xl shadow-xl p-2 z-50 animate-fade-in space-y-1">
-                          <div className="px-2 py-1 text-[11px] font-bold text-textMuted uppercase tracking-wider border-b border-borderDefault/60 flex items-center justify-between">
-                            <span>{lang === "vi" ? "Danh sách phong cách" : "Style List"}</span>
-                            <button
-                              type="button"
-                              onClick={() => setStylePopoverOpen(false)}
-                              className="text-textMuted hover:text-textPrimary"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <div className="pt-1 space-y-0.5">
-                            {STYLE_OPTIONS.map((st) => {
-                              const isSelected = selectedStyles.includes(st.id);
-                              return (
-                                <button
-                                  key={st.id}
-                                  type="button"
-                                  onClick={() => handleToggleStyle(st.id)}
-                                  className={`w-full text-left px-2 py-1.5 rounded-lg flex items-center justify-between text-xs transition-colors ${
-                                    isSelected
-                                      ? "bg-accent/15 text-accent font-medium"
-                                      : "hover:bg-surface2 text-textPrimary"
-                                  }`}
-                                >
-                                  <span>{getStyleLabel(st.id, lang)}</span>
-                                  {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-accent" />}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
                       )}
                     </div>
+                    {(transcriptNeedsVerifyAfterTrim || (trimRange && currentModel.requiresTranscript)) && (
+                      <div className="flex items-start gap-1.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px]">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>
+                          Bạn đã cắt đoạn audio mẫu (
+                          {trimRange
+                            ? `${trimRange.startSec.toFixed(1)}s – ${trimRange.endSec.toFixed(1)}s`
+                            : `${audioBuffer?.duration.toFixed(1)}s`}
+                          ). Hãy đảm bảo văn bản tham chiếu khớp chính xác với đoạn đã cắt.
+                        </span>
+                      </div>
+                    )}
+                    <textarea
+                      rows={2}
+                      value={referenceTranscript}
+                      onChange={(e) => {
+                        setReferenceTranscript(e.target.value);
+                        if (transcriptNeedsVerifyAfterTrim) {
+                          setTranscriptNeedsVerifyAfterTrim(false);
+                        }
+                      }}
+                      placeholder={
+                        currentModel.requiresTranscript
+                          ? "Bắt buộc nhập chính xác lời thoại trong đoạn audio mẫu đã chọn để mô hình Qwen clone..."
+                          : "Nội dung lời nói trong đoạn âm thanh đã chọn (giúp mô hình clone chính xác hơn)..."
+                      }
+                      className="w-full bg-surface2 border border-borderDefault rounded-lg p-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none resize-none leading-relaxed cursor-text caret-accent"
+                    />
                   </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowTranscriptField(true)}
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-surface2/40 hover:bg-surface2 border border-dashed border-borderDefault hover:border-accent/60 text-textSecondary hover:text-textPrimary transition-colors cursor-pointer"
+                  >
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <FileText className="w-3.5 h-3.5 text-accent" />
+                      <span>+ Thêm văn bản tham chiếu</span>
+                    </span>
+                    <span className="text-[11px] text-textMuted">Tùy chọn</span>
+                  </button>
+                )}
+
+                {/* 4B. PHÂN LOẠI (Collapsible Accordion with 1-line summary) */}
+                <div className="rounded-xl border border-borderDefault bg-surface2/30 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setShowAttributesAccordion((prev) => !prev)}
+                    className="w-full px-3 py-2.5 flex items-center justify-between gap-2 hover:bg-surface2/60 transition-colors cursor-pointer text-left"
+                  >
+                    <span className="text-xs font-semibold text-textPrimary flex items-center gap-1.5 shrink-0">
+                      <Tag className="w-3.5 h-3.5 text-accent" />
+                      <span>{lang === "vi" ? "Phân loại" : "Attributes"}</span>
+                    </span>
+
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1 justify-end">
+                      <span className="text-[11px] text-textSecondary truncate">
+                        {[
+                          selectedGender ? getGenderLabel(selectedGender, lang) : null,
+                          selectedAge ? getAgeLabel(selectedAge, lang) : null,
+                          selectedAccent ? getAccentLabel(selectedAccent, lang) : null,
+                          selectedStyles[0]
+                            ? `${getStyleLabel(selectedStyles[0], lang)}${
+                                selectedStyles.length > 1 ? ` +${selectedStyles.length - 1}` : ""
+                              }`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ") || (lang === "vi" ? "Chưa chọn" : "None")}
+                      </span>
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 text-textMuted shrink-0 transition-transform duration-200 ${
+                          showAttributesAccordion ? "rotate-180 text-accent" : ""
+                        }`}
+                      />
+                    </div>
+                  </button>
+
+                  {showAttributesAccordion && (
+                    <div className="px-3 pb-3 pt-1.5 border-t border-borderDefault/60 space-y-2.5 animate-fade-in">
+                      {/* Row 1: Gender, Age, Accent in a compact 3-column grid */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="space-y-1 min-w-0">
+                          <label className="block text-[10px] text-textSecondary font-medium truncate">
+                            {lang === "vi" ? "Giới tính" : "Gender"}
+                          </label>
+                          <select
+                            value={selectedGender}
+                            onChange={(e) => setSelectedGender(e.target.value)}
+                            className="w-full bg-surface2 border border-borderDefault rounded-lg px-2 py-1.5 text-[11px] text-textPrimary focus:border-accent focus:outline-none"
+                          >
+                            <option value="">{lang === "vi" ? "Trống" : "None"}</option>
+                            {GENDER_OPTIONS.map((g) => (
+                              <option key={g.id} value={g.id}>
+                                {getGenderLabel(g.id, lang)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-1 min-w-0">
+                          <label className="block text-[10px] text-textSecondary font-medium truncate">
+                            {lang === "vi" ? "Độ tuổi" : "Age"}
+                          </label>
+                          <select
+                            value={selectedAge}
+                            onChange={(e) => setSelectedAge(e.target.value)}
+                            className="w-full bg-surface2 border border-borderDefault rounded-lg px-2 py-1.5 text-[11px] text-textPrimary focus:border-accent focus:outline-none"
+                          >
+                            <option value="">{lang === "vi" ? "Trống" : "None"}</option>
+                            {AGE_OPTIONS.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {getAgeLabel(a.id, lang)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-1 min-w-0">
+                          <label className="block text-[10px] text-textSecondary font-medium truncate">
+                            {lang === "vi" ? "Vùng / Accent" : "Accent"}
+                          </label>
+                          <select
+                            value={selectedAccent}
+                            onChange={(e) => setSelectedAccent(e.target.value)}
+                            disabled={availableAccents.length === 0}
+                            className="w-full bg-surface2 border border-borderDefault rounded-lg px-2 py-1.5 text-[11px] text-textPrimary focus:border-accent focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <option value="">{lang === "vi" ? "Trống" : "None"}</option>
+                            {availableAccents.map((acc) => (
+                              <option key={acc.id} value={acc.id}>
+                                {getAccentLabel(acc.id, lang)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Row 2: Phong cách (Style) - Multi-select Chips + Checklist Popover */}
+                      <div className="space-y-1">
+                        <label className="block text-[10px] text-textSecondary font-medium">
+                          {lang === "vi" ? "Phong cách" : "Styles"}
+                        </label>
+
+                        <div className="p-1.5 bg-surface2/60 rounded-lg border border-borderDefault min-h-[34px] flex flex-wrap items-center gap-1.5 relative">
+                          {selectedStyles.map((styleId) => (
+                            <span
+                              key={styleId}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface3 border border-borderDefault text-textPrimary text-[11px] font-medium animate-fade-in"
+                            >
+                              <span>{getStyleLabel(styleId, lang)}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveStyle(styleId)}
+                                className="text-textMuted hover:text-rose-400 transition-colors"
+                                title="Xóa phong cách"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </span>
+                          ))}
+
+                          {/* Popover trigger button */}
+                          <div className="relative inline-block" ref={stylePopoverRef}>
+                            <button
+                              type="button"
+                              onClick={() => setStylePopoverOpen(!stylePopoverOpen)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-dashed border-borderDefault hover:border-accent/80 text-textMuted hover:text-accent text-[11px] transition-colors bg-surface2/80"
+                            >
+                              <Plus className="w-3 h-3" />
+                              <span>{lang === "vi" ? "Chọn phong cách" : "Add style"}</span>
+                            </button>
+
+                            {/* Popover dropdown checklist */}
+                            {stylePopoverOpen && (
+                              <div className="absolute left-0 bottom-full mb-1.5 w-60 max-h-52 overflow-y-auto bg-surface1 border border-borderDefault rounded-xl shadow-xl p-2 z-50 animate-fade-in space-y-1">
+                                <div className="px-2 py-1 text-[11px] font-bold text-textMuted uppercase tracking-wider border-b border-borderDefault/60 flex items-center justify-between">
+                                  <span>{lang === "vi" ? "Danh sách phong cách" : "Style List"}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setStylePopoverOpen(false)}
+                                    className="text-textMuted hover:text-textPrimary"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                                <div className="pt-1 space-y-0.5">
+                                  {STYLE_OPTIONS.map((st) => {
+                                    const isSelected = selectedStyles.includes(st.id);
+                                    return (
+                                      <button
+                                        key={st.id}
+                                        type="button"
+                                        onClick={() => handleToggleStyle(st.id)}
+                                        className={`w-full text-left px-2 py-1.5 rounded-lg flex items-center justify-between text-xs transition-colors ${
+                                          isSelected
+                                            ? "bg-accent/15 text-accent font-medium"
+                                            : "hover:bg-surface2 text-textPrimary"
+                                        }`}
+                                      >
+                                        <span>{getStyleLabel(st.id, lang)}</span>
+                                        {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-accent" />}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1323,7 +1400,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                                 >
                                   {cleanVoiceName}
                                 </h3>
-                                {/* Row 2: Prioritized Language with Flag + Provider Badge */}
+                                {/* Row 2: Prioritized Language with Flag + Model Badge */}
                                 <div className="flex items-center gap-2 mt-1 text-xs text-textSecondary font-medium min-h-[18px]">
                                   <div className="flex items-center gap-1.5 min-w-0 truncate">
                                     <CountryFlag
@@ -1334,7 +1411,14 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
                                       {langInfo.countryName || langInfo.name}
                                     </span>
                                   </div>
-                                  <VoiceProviderBadge voice={voice} />
+                                  <span className="px-1.5 py-0.5 bg-accent/10 text-accent text-[10px] rounded border border-accent/25 font-semibold shrink-0 leading-none inline-flex items-center">
+                                    {voice.modelCompatibility?.[0] ||
+                                      (voice.engine === "chatterbox_turbo" || voice.engine === "chatterbox"
+                                        ? "Chatterbox"
+                                        : voice.engine === "qwen_tts_1_7b" || voice.engine === "qwen"
+                                        ? "Qwen TTS"
+                                        : "OmniVoice")}
+                                  </span>
                                 </div>
                               </div>
                             </div>
