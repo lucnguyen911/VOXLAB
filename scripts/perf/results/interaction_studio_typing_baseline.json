@@ -1,0 +1,88 @@
+{
+  "url": "http://localhost:1420/",
+  "build": "vite-dev (React development, upper bound)",
+  "results": {
+    "cpu_1x": {
+      "doc_5000": {
+        "chunkClickInp": 32,
+        "chunkLongTaskTotal": 0,
+        "chunkLongTaskMax": 0,
+        "chunkCount": 16,
+        "domNodes": 512,
+        "studioKeystrokeInp": {
+          "n": 15,
+          "median": 32,
+          "p75": 32,
+          "max": 40
+        }
+      },
+      "doc_30000": {
+        "chunkClickInp": 104,
+        "chunkLongTaskTotal": 86,
+        "chunkLongTaskMax": 86,
+        "chunkCount": 96,
+        "domNodes": 1712,
+        "studioKeystrokeInp": {
+          "n": 15,
+          "median": 64,
+          "p75": 72,
+          "max": 72
+        }
+      },
+      "doc_100000": {
+        "chunkClickInp": 312,
+        "chunkLongTaskTotal": 287,
+        "chunkLongTaskMax": 287,
+        "chunkCount": 319,
+        "domNodes": 5057,
+        "studioKeystrokeInp": {
+          "n": 15,
+          "median": 24,
+          "p75": 32,
+          "max": 168
+        }
+      }
+    },
+    "cpu_4x": {
+      "doc_5000": {
+        "chunkClickInp": 192,
+        "chunkLongTaskTotal": 165,
+        "chunkLongTaskMax": 165,
+        "chunkCount": 16,
+        "domNodes": 512,
+        "studioKeystrokeInp": {
+          "n": 15,
+          "median": 112,
+          "p75": 120,
+          "max": 136
+        }
+      },
+      "doc_30000": {
+        "chunkClickInp": 568,
+        "chunkLongTaskTotal": 531,
+        "chunkLongTaskMax": 531,
+        "chunkCount": 96,
+        "domNodes": 1712,
+        "studioKeystrokeInp": {
+          "n": 15,
+          "median": 368,
+          "p75": 384,
+          "max": 432
+        }
+      },
+      "doc_100000": {
+        "chunkClickInp": 1992,
+        "chunkLongTaskTotal": 1956,
+        "chunkLongTaskMax": 1956,
+        "chunkCount": 319,
+        "domNodes": 5057,
+        "studioKeystrokeInp": {
+          "n": 15,
+          "median": 984,
+          "p75": 1024,
+          "max": 1072
+        }
+      }
+    }
+  }
+}

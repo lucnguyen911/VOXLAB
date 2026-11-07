@@ -1,0 +1,225 @@
+{
+  "url": "http://localhost:1420/",
+  "build": "vite-dev (React development, upper bound)",
+  "results": {
+    "cpu_1x": {
+      "nav": {
+        "inpPerWorkspace": {
+          "Text to Speech": {
+            "n": 2,
+            "median": 24,
+            "p75": 24,
+            "max": 40
+          },
+          "Hội Thoại": {
+            "n": 2,
+            "median": 16,
+            "p75": 16,
+            "max": 24
+          },
+          "Voice Clone": {
+            "n": 2,
+            "median": 16,
+            "p75": 16,
+            "max": 24
+          },
+          "Voice Library": {
+            "n": 2,
+            "median": 40,
+            "p75": 40,
+            "max": 40
+          },
+          "Phụ đề": {
+            "n": 2,
+            "median": 16,
+            "p75": 16,
+            "max": 24
+          },
+          "Dịch & Lồng tiếng": {
+            "n": 2,
+            "median": 16,
+            "p75": 16,
+            "max": 32
+          },
+          "Hàng loạt": {
+            "n": 2,
+            "median": 16,
+            "p75": 16,
+            "max": 16
+          },
+          "Lịch sử": {
+            "n": 2,
+            "median": 32,
+            "p75": 32,
+            "max": 32
+          },
+          "Cài đặt": {
+            "n": 2,
+            "median": 40,
+            "p75": 40,
+            "max": 56
+          }
+        },
+        "inpAll": {
+          "n": 18,
+          "median": 24,
+          "p75": 32,
+          "max": 56
+        },
+        "longTasks": {
+          "n": 0
+        }
+      },
+      "doc_5000": {
+        "keystrokeInp": {
+          "n": 15,
+          "median": 0,
+          "p75": 16,
+          "max": 24
+        },
+        "chunkClickInp": 40,
+        "chunkLongTaskTotal": 0,
+        "chunkLongTaskMax": 0,
+        "chunkCount": 16,
+        "domNodes": 512
+      },
+      "doc_30000": {
+        "keystrokeInp": {
+          "n": 15,
+          "median": 16,
+          "p75": 16,
+          "max": 16
+        },
+        "chunkClickInp": 112,
+        "chunkLongTaskTotal": 90,
+        "chunkLongTaskMax": 90,
+        "chunkCount": 96,
+        "domNodes": 1712
+      },
+      "doc_100000": {
+        "keystrokeInp": {
+          "n": 15,
+          "median": 16,
+          "p75": 16,
+          "max": 32
+        },
+        "chunkClickInp": 336,
+        "chunkLongTaskTotal": 322,
+        "chunkLongTaskMax": 322,
+        "chunkCount": 319,
+        "domNodes": 5057
+      }
+    },
+    "cpu_4x": {
+      "nav": {
+        "inpPerWorkspace": {
+          "Text to Speech": {
+            "n": 2,
+            "median": 232,
+            "p75": 232,
+            "max": 272
+          },
+          "Hội Thoại": {
+            "n": 2,
+            "median": 48,
+            "p75": 48,
+            "max": 56
+          },
+          "Voice Clone": {
+            "n": 2,
+            "median": 64,
+            "p75": 64,
+            "max": 72
+          },
+          "Voice Library": {
+            "n": 2,
+            "median": 224,
+            "p75": 224,
+            "max": 232
+          },
+          "Phụ đề": {
+            "n": 2,
+            "median": 64,
+            "p75": 64,
+            "max": 72
+          },
+          "Dịch & Lồng tiếng": {
+            "n": 2,
+            "median": 168,
+            "p75": 168,
+            "max": 168
+          },
+          "Hàng loạt": {
+            "n": 2,
+            "median": 72,
+            "p75": 72,
+            "max": 72
+          },
+          "Lịch sử": {
+            "n": 2,
+            "median": 144,
+            "p75": 144,
+            "max": 152
+          },
+          "Cài đặt": {
+            "n": 2,
+            "median": 232,
+            "p75": 232,
+            "max": 240
+          }
+        },
+        "inpAll": {
+          "n": 18,
+          "median": 144,
+          "p75": 224,
+          "max": 272
+        },
+        "longTasks": {
+          "n": 14,
+          "median": 132,
+          "p75": 210,
+          "max": 245
+        }
+      },
+      "doc_5000": {
+        "keystrokeInp": {
+          "n": 15,
+          "median": 32,
+          "p75": 32,
+          "max": 32
+        },
+        "chunkClickInp": 160,
+        "chunkLongTaskTotal": 134,
+        "chunkLongTaskMax": 134,
+        "chunkCount": 16,
+        "domNodes": 512
+      },
+      "doc_30000": {
+        "keystrokeInp": {
+          "n": 15,
+          "median": 32,
+          "p75": 40,
+          "max": 48
+        },
+        "chunkClickInp": 608,
+        "chunkLongTaskTotal": 573,
+        "chunkLongTaskMax": 573,
+        "chunkCount": 96,
+        "domNodes": 1712
+      },
+      "doc_100000": {
+        "keystrokeInp": {
+          "n": 15,
+          "median": 32,
+          "p75": 40,
+          "max": 48
+        },
+        "chunkClickInp": 2064,
+        "chunkLongTaskTotal": 2015,
+        "chunkLongTaskMax": 2015,
+        "chunkCount": 319,
+        "domNodes": 5057
+      }
+    }
+  }
+}
