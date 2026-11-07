@@ -478,9 +478,26 @@ export const BatchWorkspace: React.FC = () => {
   };
 
   const handleRetryAll = () => {
-    const failed = jobs.filter((j) => j.status === "failed" || j.status === "failed_with_artifact");
-    failed.forEach((j) => orchestrator.retryJob(j.id));
-    setActiveView("queued");
+    const failed = jobs.filter(
+      (j) =>
+        j.status === "failed" ||
+        j.status === "failed_with_artifact" ||
+        j.status === "cancelled" ||
+        j.status === "interrupted"
+    );
+    failed.forEach((j) => {
+      const diff = getJobDiff(j);
+      if (diff.recommendedCta === "regenerate") {
+        orchestrator.regenerateJob(j.id);
+      } else if (diff.recommendedCta === "reexport") {
+        void orchestrator.reexportJob(j.id);
+      } else {
+        orchestrator.retryJob(j.id);
+      }
+    });
+    if (failed.some((j) => getJobDiff(j).recommendedCta !== "reexport")) {
+      setActiveView("queued");
+    }
   };
 
   // Stage to Queue and directly start processing
@@ -661,8 +678,23 @@ export const BatchWorkspace: React.FC = () => {
               jobs={viewJobs}
               onMoveJob={(id, dir) => orchestrator.moveWaitingJob(id, dir)}
               onCancelJob={(id) => {
-                const updated = jobs.map((j) => (j.id === id ? { ...j, status: "cancelled" as const } : j));
-                orchestrator.setJobs(updated);
+                const target = jobs.find((j) => j.id === id);
+                if (target?.status === "processing") {
+                  orchestrator.requestCancel();
+                  return;
+                }
+                orchestrator.setJobs(jobs.filter((j) => j.id !== id));
+              }}
+              onClearQueuedJobs={() => {
+                orchestrator.setJobs(
+                  jobs.filter(
+                    (j) =>
+                      !(
+                        j.stage === "queued" &&
+                        (j.status === "waiting" || j.status === "paused")
+                      )
+                  )
+                );
               }}
             />
           )}
@@ -814,6 +846,18 @@ export const BatchWorkspace: React.FC = () => {
               onReexport={handleReexport}
               onRetryAll={handleRetryAll}
               onOpenDrawer={setDrawerJob}
+              onDeleteJob={(id) => orchestrator.setJobs(jobs.filter((j) => j.id !== id))}
+              onClearFailedJobs={() =>
+                orchestrator.setJobs(
+                  jobs.filter(
+                    (j) =>
+                      j.status !== "failed" &&
+                      j.status !== "failed_with_artifact" &&
+                      j.status !== "cancelled" &&
+                      j.status !== "interrupted"
+                  )
+                )
+              }
             />
           )}
         </div>

@@ -9,6 +9,7 @@ import {
   Play,
   X,
   Lock,
+  Trash2,
 } from "lucide-react";
 import { BatchJob, BatchFileKind } from "../../types/batch";
 import { BatchFooter } from "../../components/batch/BatchFooter";
@@ -19,6 +20,7 @@ export interface QueueReorderTableProps {
   onPauseJob?: (jobId: string) => void;
   onResumeJob?: (jobId: string) => void;
   onCancelJob: (jobId: string) => void;
+  onClearQueuedJobs?: () => void;
 }
 
 const renderFileIcon = (fileKind: BatchFileKind) => {
@@ -40,7 +42,9 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
   onPauseJob,
   onResumeJob,
   onCancelJob,
+  onClearQueuedJobs,
 }) => {
+  const clearableCount = jobs.filter((j) => j.status !== "processing").length;
   // Sort: processing job pinned at top, then waiting jobs sorted by queueOrder
   const sortedJobs = [...jobs].sort((a, b) => {
     if (a.status === "processing") return -1;
@@ -271,7 +275,23 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
       </div>
 
       {/* Shared BatchFooter Status Bar (AC-43) */}
-      <BatchFooter totalCount={jobs.length} />
+      <BatchFooter
+        totalCount={jobs.length}
+        actions={
+          onClearQueuedJobs ? (
+            <button
+              type="button"
+              onClick={onClearQueuedJobs}
+              disabled={clearableCount === 0}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-danger/80 hover:text-danger bg-danger/5 hover:bg-danger/10 border border-danger/20 hover:border-danger/30 transition-all cursor-pointer disabled:opacity-40"
+              title="Dọn dẹp các tệp đang chờ khỏi hàng đợi"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Dọn dẹp</span>
+            </button>
+          ) : undefined
+        }
+      />
     </div>
   );
 };

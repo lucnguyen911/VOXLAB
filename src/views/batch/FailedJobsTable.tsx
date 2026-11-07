@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Sliders,
   AlertTriangle,
+  Trash2,
 } from "lucide-react";
 import { BatchJob, BatchFileKind, ConfigDiffResult } from "../../types/batch";
 import { BatchFooter } from "../../components/batch/BatchFooter";
@@ -20,6 +21,8 @@ export interface FailedJobsTableProps {
   onReexport: (jobId: string) => void;
   onRetryAll: () => void;
   onOpenDrawer: (job: BatchJob) => void;
+  onDeleteJob?: (jobId: string) => void;
+  onClearFailedJobs?: () => void;
 }
 
 const renderFileIcon = (fileKind: BatchFileKind) => {
@@ -43,6 +46,8 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
   onReexport,
   onRetryAll,
   onOpenDrawer,
+  onDeleteJob,
+  onClearFailedJobs,
 }) => {
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
@@ -167,16 +172,28 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                     </div>
                   </td>
 
-                  {/* Drawer Open Button */}
+                  {/* Drawer Open & Delete Buttons */}
                   <td className="py-3 px-2 text-center">
-                    <button
-                      type="button"
-                      onClick={() => onOpenDrawer(job)}
-                      className="p-1 rounded text-textMuted hover:text-textPrimary hover:bg-surface2 transition-colors cursor-pointer"
-                      title="Mở cấu hình nâng cao để chỉnh sửa"
-                    >
-                      <Sliders className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center justify-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => onOpenDrawer(job)}
+                        className="p-1 rounded text-textMuted hover:text-textPrimary hover:bg-surface2 transition-colors cursor-pointer"
+                        title="Mở cấu hình nâng cao để chỉnh sửa"
+                      >
+                        <Sliders className="w-3.5 h-3.5" />
+                      </button>
+                      {onDeleteJob && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteJob(job.id)}
+                          className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                          title="Xóa tệp khỏi danh sách lỗi"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -189,16 +206,30 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
       <BatchFooter
         totalCount={jobs.length}
         actions={
-          <button
-            type="button"
-            onClick={onRetryAll}
-            disabled={jobs.length === 0}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-accent hover:bg-accent/10 border border-accent/30 transition-all cursor-pointer disabled:opacity-40"
-            title="Thử lại tất cả tệp lỗi"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Thử lại tất cả lỗi</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onRetryAll}
+              disabled={jobs.length === 0}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-accent hover:bg-accent/10 border border-accent/30 transition-all cursor-pointer disabled:opacity-40"
+              title="Thử lại tất cả tệp lỗi"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Thử lại tất cả lỗi</span>
+            </button>
+            {onClearFailedJobs && (
+              <button
+                type="button"
+                onClick={onClearFailedJobs}
+                disabled={jobs.length === 0}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-danger/80 hover:text-danger bg-danger/5 hover:bg-danger/10 border border-danger/20 hover:border-danger/30 transition-all cursor-pointer disabled:opacity-40"
+                title="Dọn dẹp toàn bộ danh sách lỗi"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Dọn dẹp</span>
+              </button>
+            )}
+          </div>
         }
       />
     </div>
