@@ -114,6 +114,17 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   };
 
   const VOICES_STORAGE_KEY = "voxlab_voices_v1";
+  const REMOVED_DEMO_VOICE_IDS = new Set([
+    "voice_03",
+    "voice_04",
+    "voice_05",
+    "voice_09",
+    "voice_10",
+    "voice_11",
+    "voice_12",
+    "voice_13",
+    "voice_14",
+  ]);
 
   function loadInitialVoices(): VoiceProfile[] {
     try {
@@ -121,7 +132,12 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map(migrateLegacyVoice);
+          const cleaned = parsed
+            .filter((v: any) => v && typeof v.id === "string" && !REMOVED_DEMO_VOICE_IDS.has(v.id))
+            .map(migrateLegacyVoice);
+          if (cleaned.length > 0) {
+            return cleaned;
+          }
         }
       }
     } catch (e) {
