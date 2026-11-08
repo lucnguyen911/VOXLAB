@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Eye, CheckCircle2, AlertTriangle, AlertCircle, FolderOpen, Trash2 } from "lucide-react";
 import {
   BatchJob,
   BatchWorkspaceView,
@@ -22,20 +21,18 @@ import { BatchTopBar } from "./batch/BatchTopBar";
 import { BatchSubToolbar } from "./batch/BatchSubToolbar";
 import { FileTaskMatrixTable } from "./batch/FileTaskMatrixTable";
 import { QueueReorderTable } from "./batch/QueueReorderTable";
+import { CompletedJobsTable } from "./batch/CompletedJobsTable";
 import { FailedJobsTable } from "./batch/FailedJobsTable";
 import { PerFileConfigDrawer } from "./batch/PerFileConfigDrawer";
 import { GlobalDefaultsModal } from "./batch/GlobalDefaultsModal";
 import { DialogueCharacterVoiceModal } from "./batch/DialogueCharacterVoiceModal";
 import { BatchTtsQcModal } from "./batch/BatchTtsQcModal";
 import { BatchArtifactPreviewModal } from "./batch/BatchArtifactPreviewModal";
-import { BatchFooter } from "../components/batch/BatchFooter";
 import {
   initBatchRuntime,
   readBatchTextOrDocxFile,
   getDefaultBatchOutputDir,
-  showPathInFolder,
 } from "../services/batch/batchRuntime";
-import { resolveJobOutputDirectory } from "../services/batch/outputResolver";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { isTauriRuntime } from "../services/ai/tauriBackend";
 import { expandTauriPaths, extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
@@ -729,141 +726,20 @@ export const BatchWorkspace: React.FC = () => {
           )}
 
           {activeView === "completed" && (
-            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              <div className="flex-1 overflow-auto p-4 space-y-2">
-                {viewJobs.length === 0 ? (
-                  <div className="flex-1 flex flex-col items-center justify-center p-12 text-center text-textMuted">
-                    <CheckCircle2 className="w-10 h-10 mb-2 opacity-40 text-emerald-400" />
-                    <p className="text-xs">Chưa có tệp nào hoàn tất xử lý.</p>
-                  </div>
-                ) : (
-                  viewJobs.map((job) => {
-                    const qcStep = job.stepResults.tts?.qcChunks?.length
-                      ? job.stepResults.tts
-                      : job.stepResults.dialogue?.qcChunks?.length
-                      ? job.stepResults.dialogue
-                      : job.stepResults.dubbing?.qcChunks?.length
-                      ? job.stepResults.dubbing
-                      : undefined;
-                    const errCount = qcStep?.qcStats?.errorCount ?? 0;
-                    const warnCount = qcStep?.qcStats?.warningCount ?? 0;
-                    const hasQcIssues =
-                      errCount > 0 || warnCount > 0 || Boolean(job.warningMessage);
-
-                    const handleOpenJobFolder = () => {
-                      const targetPath =
-                        job.artifacts.ownedArtifactPaths[0] ||
-                        resolveJobOutputDirectory(job);
-                      showPathInFolder(targetPath).catch((err) =>
-                        console.error("Không thể mở thư mục:", err)
-                      );
-                    };
-
-                    return (
-                      <div
-                        key={job.id}
-                        className={`p-3 rounded-lg flex items-center justify-between text-xs border transition-colors ${
-                          errCount > 0
-                            ? "bg-danger/5 border-danger/35"
-                            : hasQcIssues
-                            ? "bg-warning/5 border-warning/35"
-                            : "bg-surface2/40 border-borderDefault"
-                        }`}
-                      >
-                        <div className="space-y-1 min-w-0 pr-3">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-textPrimary truncate">
-                              {job.sourceFileName}
-                            </span>
-
-                            {qcStep &&
-                              (errCount > 0 ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-danger/15 text-danger border border-danger/30">
-                                  <AlertCircle className="w-3 h-3" />
-                                  <span>
-                                    {errCount} đoạn lỗi
-                                    {warnCount > 0 ? `, ${warnCount} cảnh báo` : ""}
-                                  </span>
-                                </span>
-                              ) : warnCount > 0 ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-warning/15 text-warning border border-warning/30">
-                                  <AlertTriangle className="w-3 h-3" />
-                                  <span>{warnCount} đoạn cảnh báo</span>
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                                  <CheckCircle2 className="w-3 h-3" />
-                                  <span>Đạt chuẩn ({qcStep.qcChunks?.length || 0} câu)</span>
-                                </span>
-                              ))}
-                          </div>
-
-                          <div className="text-[11px] text-textMuted font-mono flex items-center gap-2">
-                            <span>{job.artifacts.ownedArtifactPaths.length} kết quả xuất</span>
-                            {job.warningMessage && (
-                              <span className="text-warning truncate">
-                                • {job.warningMessage}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={handleOpenJobFolder}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer"
-                            title="Mở thư mục lưu tệp kết quả xuất"
-                          >
-                            <FolderOpen className="w-3.5 h-3.5 text-accent" />
-                            <span>Mở thư mục</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => setQcModalJob(job)}
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded font-semibold border transition-colors cursor-pointer ${
-                              errCount > 0
-                                ? "bg-danger/15 hover:bg-danger/25 text-danger border-danger/35"
-                                : warnCount > 0
-                                ? "bg-warning/15 hover:bg-warning/25 text-warning border-warning/35"
-                                : "bg-surface3 hover:bg-surface2 text-textPrimary border-borderDefault"
-                            }`}
-                            title="Xem chi tiết các tác vụ (TTS, Hội thoại, Phụ đề...), chỉnh sửa câu chữ, tạo lại câu cảnh báo và nghe thử"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                            <span>Chi tiết</span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-              <BatchFooter
-                totalCount={viewJobs.length}
-                actions={
-                  <button
-                    type="button"
-                    onClick={() =>
-                      orchestrator.setJobs(
-                        jobs.filter(
-                          (j) =>
-                            j.status !== "completed" &&
-                            j.status !== "completed_with_warning"
-                        )
-                      )
-                    }
-                    disabled={viewJobs.length === 0}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-danger/80 hover:text-danger bg-danger/5 hover:bg-danger/10 border border-danger/20 hover:border-danger/30 transition-all cursor-pointer disabled:opacity-40"
-                    title="Dọn dẹp danh sách các tệp đã hoàn tất (không xóa tệp đã xuất trên ổ đĩa)"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Dọn dẹp</span>
-                  </button>
-                }
-              />
-            </div>
+            <CompletedJobsTable
+              jobs={viewJobs}
+              onInspectJob={(job) => setQcModalJob(job)}
+              onDeleteJob={(id) => orchestrator.setJobs(jobs.filter((j) => j.id !== id))}
+              onClearCompletedJobs={() =>
+                orchestrator.setJobs(
+                  jobs.filter(
+                    (j) =>
+                      j.status !== "completed" &&
+                      j.status !== "completed_with_warning"
+                  )
+                )
+              }
+            />
           )}
 
           {activeView === "failed" && (
