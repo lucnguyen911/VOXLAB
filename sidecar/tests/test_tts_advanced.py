@@ -344,6 +344,31 @@ class TestChatterboxAdapterAdvancedSettings(unittest.TestCase):
         self.assertNotIn("exaggeration", kwargs)
         self.assertNotIn("speed", kwargs)
 
+    def test_chatterbox_splits_long_chunks_at_sentence_boundaries(self):
+        adapter = ChatterboxAdapter()
+        mock_model = MagicMock()
+        mock_model.sr = 24000
+        # Return a voiced sine wave so _trim_piece_edges preserves the voiced span
+        t = np.linspace(0, 1.0, 24000, endpoint=False, dtype=np.float32)
+        mock_model.generate.return_value = 0.2 * np.sin(2 * np.pi * 220 * t)
+        adapter._model = mock_model
+
+        long_text = (
+            "In reality, over eighty percent of regional and national retail freight runs on predictable, "
+            "repeatable point to point routes between distribution warehouses, ports, and grocery fulfillment centers. "
+            "These trucks do not wander randomly across the map, because they operate from depot to depot on strict "
+            "schedules. When a Tesla Semi backs into a loading dock at a PepsiCo distribution center, the truck "
+            "plugs into a liquid cooled Megacharger that delivers megawatt direct current power."
+        )
+        self.assertGreater(len(long_text), 380)
+
+        audio, sr = adapter.synthesize(SynthesisRequest(text=long_text))
+        self.assertEqual(sr, 24000)
+        self.assertEqual(mock_model.generate.call_count, 2)
+        for call in mock_model.generate.call_args_list:
+            self.assertLessEqual(len(call.kwargs["text"]), 380)
+        self.assertGreater(len(audio), 48000)
+
 
 class TestQwenAdapterAdvancedSettings(unittest.TestCase):
     def test_qwen_parameters_and_icl_mode(self):

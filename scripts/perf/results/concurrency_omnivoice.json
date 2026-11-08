@@ -1,0 +1,28 @@
+[
+  {
+    "engine": "omnivoice",
+    "n": 1,
+    "k": 3,
+    "jobs": 5,
+    "failed": 0,
+    "errors": [],
+    "wallSec": 20.78,
+    "audioSec": 124.62,
+    "throughputAudioSecPerSec": 5.997,
+    "vramLoadedMb": 2237,
+    "peakVramMb": 10689
+  },
+  {
+    "engine": "omnivoice",
+    "n": 2,
+    "k": 3,
+    "jobs": 5,
+    "failed": 0,
+    "errors": [],
+    "wallSec": 20.48,
+    "audioSec": 124.94,
+    "throughputAudioSecPerSec": 6.1,
+    "vramLoadedMb": 4491,
+    "peakVramMb": 12921
+  }
+]

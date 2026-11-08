@@ -1,0 +1,776 @@
+[
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 136,
+  "dur": 7.04,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 145,
+  "dur": 7.84,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 198,
+  "dur": 10.24,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 51,
+  "dur": 2.72,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 53,
+  "dur": 3.28,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 127,
+  "dur": 7.28,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 129,
+  "dur": 7.36,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 136,
+  "dur": 6.755,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 48,
+  "dur": 2.8,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 136,
+  "dur": 7.715,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 172,
+  "dur": 8.655,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 153,
+  "dur": 7.6,
+  "status": "warning",
+  "issues": [
+   "ABNORMAL_PAUSE"
+  ]
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 68,
+  "dur": 4.08,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 108,
+  "dur": 6.56,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 0,
+  "chars": 171,
+  "dur": 8.64,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 136,
+  "dur": 7.36,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 145,
+  "dur": 8.88,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 198,
+  "dur": 11.2,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 51,
+  "dur": 2.88,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 53,
+  "dur": 3.44,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 127,
+  "dur": 7.36,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 129,
+  "dur": 7.44,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 136,
+  "dur": 7.44,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 48,
+  "dur": 3.28,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 136,
+  "dur": 7.395,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 172,
+  "dur": 9.36,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 153,
+  "dur": 9.04,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 68,
+  "dur": 4.08,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 108,
+  "dur": 6.32,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 1,
+  "chars": 171,
+  "dur": 9.28,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 136,
+  "dur": 7.28,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 145,
+  "dur": 8.48,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 198,
+  "dur": 10.8,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 51,
+  "dur": 2.56,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 53,
+  "dur": 3.6,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 127,
+  "dur": 7.12,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 129,
+  "dur": 7.04,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 136,
+  "dur": 7.915,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 48,
+  "dur": 2.96,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 136,
+  "dur": 7.2,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 172,
+  "dur": 9.36,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 153,
+  "dur": 8.32,
+  "status": "warning",
+  "issues": [
+   "ABNORMAL_PAUSE"
+  ]
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 68,
+  "dur": 4.32,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 108,
+  "dur": 6.64,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 1,
+  "rep": 2,
+  "chars": 171,
+  "dur": 9.2,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 0,
+  "chars": 282,
+  "dur": 14.48,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 0,
+  "chars": 250,
+  "dur": 12.72,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 0,
+  "chars": 181,
+  "dur": 9.92,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 0,
+  "chars": 266,
+  "dur": 13.925,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 0,
+  "chars": 185,
+  "dur": 9.795,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 0,
+  "chars": 326,
+  "dur": 17.76,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 0,
+  "chars": 177,
+  "dur": 10.0,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 0,
+  "chars": 171,
+  "dur": 9.28,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 1,
+  "chars": 282,
+  "dur": 14.195,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 1,
+  "chars": 250,
+  "dur": 12.56,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 1,
+  "chars": 181,
+  "dur": 10.24,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 1,
+  "chars": 266,
+  "dur": 14.16,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 1,
+  "chars": 185,
+  "dur": 10.32,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 1,
+  "chars": 326,
+  "dur": 17.29,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 1,
+  "chars": 177,
+  "dur": 10.24,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 1,
+  "chars": 171,
+  "dur": 8.88,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 2,
+  "chars": 282,
+  "dur": 15.885,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 2,
+  "chars": 250,
+  "dur": 13.92,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 2,
+  "chars": 181,
+  "dur": 10.24,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 2,
+  "chars": 266,
+  "dur": 14.435,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 2,
+  "chars": 185,
+  "dur": 10.16,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 2,
+  "chars": 326,
+  "dur": 17.805,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 2,
+  "chars": 177,
+  "dur": 10.16,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 2,
+  "rep": 2,
+  "chars": 171,
+  "dur": 8.96,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 0,
+  "chars": 481,
+  "dur": 25.41,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 0,
+  "chars": 233,
+  "dur": 13.005,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 0,
+  "chars": 315,
+  "dur": 16.0,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 0,
+  "chars": 463,
+  "dur": 23.365,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 0,
+  "chars": 349,
+  "dur": 18.795,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 1,
+  "chars": 481,
+  "dur": 24.025,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 1,
+  "chars": 233,
+  "dur": 12.24,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 1,
+  "chars": 315,
+  "dur": 16.09,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 1,
+  "chars": 463,
+  "dur": 24.625,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 1,
+  "chars": 349,
+  "dur": 18.255,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 2,
+  "chars": 481,
+  "dur": 24.28,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 2,
+  "chars": 233,
+  "dur": 12.8,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 2,
+  "chars": 315,
+  "dur": 16.8,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 2,
+  "chars": 463,
+  "dur": 23.535,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 3,
+  "rep": 2,
+  "chars": 349,
+  "dur": 19.03,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 0,
+  "chars": 533,
+  "dur": 27.675,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 0,
+  "chars": 448,
+  "dur": 23.99,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 0,
+  "chars": 512,
+  "dur": 26.0,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 0,
+  "chars": 349,
+  "dur": 18.94,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 1,
+  "chars": 533,
+  "dur": 27.965,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 1,
+  "chars": 448,
+  "dur": 23.605,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 1,
+  "chars": 512,
+  "dur": 26.105,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 1,
+  "chars": 349,
+  "dur": 17.68,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 2,
+  "chars": 533,
+  "dur": 25.52,
+  "status": "warning",
+  "issues": [
+   "ABNORMAL_PAUSE"
+  ]
+ },
+ {
+  "k": 4,
+  "rep": 2,
+  "chars": 448,
+  "dur": 24.88,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 2,
+  "chars": 512,
+  "dur": 27.225,
+  "status": "pass",
+  "issues": []
+ },
+ {
+  "k": 4,
+  "rep": 2,
+  "chars": 349,
+  "dur": 18.265,
+  "status": "pass",
+  "issues": []
+ }
+]

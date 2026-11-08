@@ -2,8 +2,9 @@
  * Local AI runtime settings (Gate E): models directory, device preference, ASR model folder,
  * default TTS engine. Persisted in App Data (`settings/ai_runtime.json`), never in source.
  *
- * `asrModelId` default "faster-whisper-small" is the DEVELOPMENT VERIFICATION BASELINE only;
- * the production default is still TUNING REQUIRED (to be decided from the real benchmark).
+ * Production default is `faster-whisper-large-v3-turbo` (synchronized from `DEFAULT_SUBTITLE_SETTINGS.whisperModel`,
+ * verified in Phase 11 `PERFORMANCE.md` §2.4: RTF 0.0225, WER 2.13%, 2.2 GB VRAM standalone / 4.2 GB co-resident).
+ * `DEV_BASELINE_ASR_MODEL` ("faster-whisper-small") is used only as the headless fallback when `localStorage` is absent.
  */
 import { readAppDataFile, saveAppDataFile } from "../storage/tauriFsBridge";
 import type { AiRuntimeSettings } from "./localAiServices";

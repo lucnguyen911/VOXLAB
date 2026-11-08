@@ -61,7 +61,7 @@ class QwenTtsAdapter(TtsEngineAdapter):
             torch.backends.cuda.matmul.allow_tf32 = True
         if hasattr(torch.backends, "cudnn"):
             torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.benchmark = False
         from qwen_tts import Qwen3TTSModel
 
         # flash-attn is optional upstream and not available on Windows; use PyTorch SDPA.

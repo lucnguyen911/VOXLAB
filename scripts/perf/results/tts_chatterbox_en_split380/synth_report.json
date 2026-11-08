@@ -1,0 +1,317 @@
+﻿{
+  "engine": "chatterbox",
+  "lang": "en",
+  "maxChars": 380,
+  "gapSec": 0.3,
+  "configs": [
+    {
+      "k": 3,
+      "rep": 0,
+      "chunks": 5,
+      "audioSec": 106.03,
+      "inferenceSec": 25.47,
+      "rtfTotal": 0.2403,
+      "charsMean": 368.2,
+      "items": [
+        {
+          "ok": true,
+          "chars": 481,
+          "parts": 2,
+          "durationSec": 27.72,
+          "inferenceSec": 7.107,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r0_00.wav",
+          "text": "To see why the charging delay myth falls apart in practice, you have to understand how commercial freight actually moves across America. Critics often imagine an eighteen wheeler pulling into a crowded highway rest stop and waiting three hours behind family sedans for an open plug. In reality, over eighty percent of regional and national retail freight runs on predictable, repeatable point to point routes between distribution warehouses, ports, and grocery fulfillment centers."
+        },
+        {
+          "ok": true,
+          "chars": 233,
+          "parts": 1,
+          "durationSec": 13.06,
+          "inferenceSec": 2.86,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r0_01.wav",
+          "text": "These trucks do not wander randomly across the map. They operate from depot to depot on strict schedules. When a Tesla Semi backs into a loading dock at a PepsiCo distribution center, the truck plugs into a liquid cooled Megacharger."
+        },
+        {
+          "ok": true,
+          "chars": 315,
+          "parts": 1,
+          "durationSec": 18.98,
+          "inferenceSec": 4.675,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r0_02.wav",
+          "text": "Operating on the new Megawatt Charging System architecture, these cables deliver one point two megawatts of direct current power. They replenish sixty to seventy percent of the battery pack in just thirty minutes, right while forklifts unload pallets in the trailer. By the time the dock doors close, the rig rolls."
+        },
+        {
+          "ok": true,
+          "chars": 463,
+          "parts": 2,
+          "durationSec": 25.61,
+          "inferenceSec": 6.114,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r0_03.wav",
+          "text": "Even more impressive, fleet operators are discovering that they do not even need megawatt chargers for every single truck in their yard. For regional delivery fleets that return to a home warehouse at the end of an eight or ten hour shift, Tesla engineered a turnkey overnight solution called the Basecharger. A fleet manager can simply plug in twenty or thirty trucks at midnight, soak up cheap off peak power, and wake up to a fully charged fleet every morning."
+        },
+        {
+          "ok": true,
+          "chars": 349,
+          "parts": 1,
+          "durationSec": 20.66,
+          "inferenceSec": 4.717,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r0_04.wav",
+          "text": "That vertical integration locks in stable energy prices for decades. Of course, a revolutionary truck means nothing to the oil industry if it only exists as a small pilot fleet. For the past three years, diesel executives comforted themselves with the belief that Tesla could never mass produce a Class eight commercial tractor at industrial volume."
+        }
+      ]
+    },
+    {
+      "k": 3,
+      "rep": 1,
+      "chunks": 5,
+      "audioSec": 107.02,
+      "inferenceSec": 25.15,
+      "rtfTotal": 0.235,
+      "charsMean": 368.2,
+      "items": [
+        {
+          "ok": true,
+          "chars": 481,
+          "parts": 2,
+          "durationSec": 27.1,
+          "inferenceSec": 6.24,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r1_00.wav",
+          "text": "To see why the charging delay myth falls apart in practice, you have to understand how commercial freight actually moves across America. Critics often imagine an eighteen wheeler pulling into a crowded highway rest stop and waiting three hours behind family sedans for an open plug. In reality, over eighty percent of regional and national retail freight runs on predictable, repeatable point to point routes between distribution warehouses, ports, and grocery fulfillment centers."
+        },
+        {
+          "ok": true,
+          "chars": 233,
+          "parts": 1,
+          "durationSec": 14.46,
+          "inferenceSec": 3.573,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r1_01.wav",
+          "text": "These trucks do not wander randomly across the map. They operate from depot to depot on strict schedules. When a Tesla Semi backs into a loading dock at a PepsiCo distribution center, the truck plugs into a liquid cooled Megacharger."
+        },
+        {
+          "ok": true,
+          "chars": 315,
+          "parts": 1,
+          "durationSec": 18.22,
+          "inferenceSec": 4.677,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r1_02.wav",
+          "text": "Operating on the new Megawatt Charging System architecture, these cables deliver one point two megawatts of direct current power. They replenish sixty to seventy percent of the battery pack in just thirty minutes, right while forklifts unload pallets in the trailer. By the time the dock doors close, the rig rolls."
+        },
+        {
+          "ok": true,
+          "chars": 463,
+          "parts": 2,
+          "durationSec": 26.74,
+          "inferenceSec": 6.126,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r1_03.wav",
+          "text": "Even more impressive, fleet operators are discovering that they do not even need megawatt chargers for every single truck in their yard. For regional delivery fleets that return to a home warehouse at the end of an eight or ten hour shift, Tesla engineered a turnkey overnight solution called the Basecharger. A fleet manager can simply plug in twenty or thirty trucks at midnight, soak up cheap off peak power, and wake up to a fully charged fleet every morning."
+        },
+        {
+          "ok": true,
+          "chars": 349,
+          "parts": 1,
+          "durationSec": 20.5,
+          "inferenceSec": 4.536,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r1_04.wav",
+          "text": "That vertical integration locks in stable energy prices for decades. Of course, a revolutionary truck means nothing to the oil industry if it only exists as a small pilot fleet. For the past three years, diesel executives comforted themselves with the belief that Tesla could never mass produce a Class eight commercial tractor at industrial volume."
+        }
+      ]
+    },
+    {
+      "k": 3,
+      "rep": 2,
+      "chunks": 5,
+      "audioSec": 105.62,
+      "inferenceSec": 23.8,
+      "rtfTotal": 0.2254,
+      "charsMean": 368.2,
+      "items": [
+        {
+          "ok": true,
+          "chars": 481,
+          "parts": 2,
+          "durationSec": 27.64,
+          "inferenceSec": 6.661,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r2_00.wav",
+          "text": "To see why the charging delay myth falls apart in practice, you have to understand how commercial freight actually moves across America. Critics often imagine an eighteen wheeler pulling into a crowded highway rest stop and waiting three hours behind family sedans for an open plug. In reality, over eighty percent of regional and national retail freight runs on predictable, repeatable point to point routes between distribution warehouses, ports, and grocery fulfillment centers."
+        },
+        {
+          "ok": true,
+          "chars": 233,
+          "parts": 1,
+          "durationSec": 14.54,
+          "inferenceSec": 3.131,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r2_01.wav",
+          "text": "These trucks do not wander randomly across the map. They operate from depot to depot on strict schedules. When a Tesla Semi backs into a loading dock at a PepsiCo distribution center, the truck plugs into a liquid cooled Megacharger."
+        },
+        {
+          "ok": true,
+          "chars": 315,
+          "parts": 1,
+          "durationSec": 18.62,
+          "inferenceSec": 3.832,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r2_02.wav",
+          "text": "Operating on the new Megawatt Charging System architecture, these cables deliver one point two megawatts of direct current power. They replenish sixty to seventy percent of the battery pack in just thirty minutes, right while forklifts unload pallets in the trailer. By the time the dock doors close, the rig rolls."
+        },
+        {
+          "ok": true,
+          "chars": 463,
+          "parts": 2,
+          "durationSec": 25.92,
+          "inferenceSec": 6.127,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r2_03.wav",
+          "text": "Even more impressive, fleet operators are discovering that they do not even need megawatt chargers for every single truck in their yard. For regional delivery fleets that return to a home warehouse at the end of an eight or ten hour shift, Tesla engineered a turnkey overnight solution called the Basecharger. A fleet manager can simply plug in twenty or thirty trucks at midnight, soak up cheap off peak power, and wake up to a fully charged fleet every morning."
+        },
+        {
+          "ok": true,
+          "chars": 349,
+          "parts": 1,
+          "durationSec": 18.9,
+          "inferenceSec": 4.053,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k3_r2_04.wav",
+          "text": "That vertical integration locks in stable energy prices for decades. Of course, a revolutionary truck means nothing to the oil industry if it only exists as a small pilot fleet. For the past three years, diesel executives comforted themselves with the belief that Tesla could never mass produce a Class eight commercial tractor at industrial volume."
+        }
+      ]
+    },
+    {
+      "k": 4,
+      "rep": 0,
+      "chunks": 4,
+      "audioSec": 107.47,
+      "inferenceSec": 25.89,
+      "rtfTotal": 0.2409,
+      "charsMean": 460.5,
+      "items": [
+        {
+          "ok": true,
+          "chars": 533,
+          "parts": 2,
+          "durationSec": 30.75,
+          "inferenceSec": 7.844,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r0_00.wav",
+          "text": "To see why the charging delay myth falls apart in practice, you have to understand how commercial freight actually moves across America. Critics often imagine an eighteen wheeler pulling into a crowded highway rest stop and waiting three hours behind family sedans for an open plug. In reality, over eighty percent of regional and national retail freight runs on predictable, repeatable point to point routes between distribution warehouses, ports, and grocery fulfillment centers. These trucks do not wander randomly across the map."
+        },
+        {
+          "ok": true,
+          "chars": 448,
+          "parts": 2,
+          "durationSec": 26.05,
+          "inferenceSec": 5.708,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r0_01.wav",
+          "text": "They operate from depot to depot on strict schedules. When a Tesla Semi backs into a loading dock at a PepsiCo distribution center, the truck plugs into a liquid cooled Megacharger. Operating on the new Megawatt Charging System architecture, these cables deliver one point two megawatts of direct current power. They replenish sixty to seventy percent of the battery pack in just thirty minutes, right while forklifts unload pallets in the trailer."
+        },
+        {
+          "ok": true,
+          "chars": 512,
+          "parts": 2,
+          "durationSec": 30.17,
+          "inferenceSec": 7.383,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r0_02.wav",
+          "text": "By the time the dock doors close, the rig rolls. Even more impressive, fleet operators are discovering that they do not even need megawatt chargers for every single truck in their yard. For regional delivery fleets that return to a home warehouse at the end of an eight or ten hour shift, Tesla engineered a turnkey overnight solution called the Basecharger. A fleet manager can simply plug in twenty or thirty trucks at midnight, soak up cheap off peak power, and wake up to a fully charged fleet every morning."
+        },
+        {
+          "ok": true,
+          "chars": 349,
+          "parts": 1,
+          "durationSec": 20.5,
+          "inferenceSec": 4.952,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r0_03.wav",
+          "text": "That vertical integration locks in stable energy prices for decades. Of course, a revolutionary truck means nothing to the oil industry if it only exists as a small pilot fleet. For the past three years, diesel executives comforted themselves with the belief that Tesla could never mass produce a Class eight commercial tractor at industrial volume."
+        }
+      ]
+    },
+    {
+      "k": 4,
+      "rep": 1,
+      "chunks": 4,
+      "audioSec": 103.74,
+      "inferenceSec": 24.82,
+      "rtfTotal": 0.2392,
+      "charsMean": 460.5,
+      "items": [
+        {
+          "ok": true,
+          "chars": 533,
+          "parts": 2,
+          "durationSec": 30.24,
+          "inferenceSec": 6.81,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r1_00.wav",
+          "text": "To see why the charging delay myth falls apart in practice, you have to understand how commercial freight actually moves across America. Critics often imagine an eighteen wheeler pulling into a crowded highway rest stop and waiting three hours behind family sedans for an open plug. In reality, over eighty percent of regional and national retail freight runs on predictable, repeatable point to point routes between distribution warehouses, ports, and grocery fulfillment centers. These trucks do not wander randomly across the map."
+        },
+        {
+          "ok": true,
+          "chars": 448,
+          "parts": 2,
+          "durationSec": 24.71,
+          "inferenceSec": 5.968,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r1_01.wav",
+          "text": "They operate from depot to depot on strict schedules. When a Tesla Semi backs into a loading dock at a PepsiCo distribution center, the truck plugs into a liquid cooled Megacharger. Operating on the new Megawatt Charging System architecture, these cables deliver one point two megawatts of direct current power. They replenish sixty to seventy percent of the battery pack in just thirty minutes, right while forklifts unload pallets in the trailer."
+        },
+        {
+          "ok": true,
+          "chars": 512,
+          "parts": 2,
+          "durationSec": 29.73,
+          "inferenceSec": 7.104,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r1_02.wav",
+          "text": "By the time the dock doors close, the rig rolls. Even more impressive, fleet operators are discovering that they do not even need megawatt chargers for every single truck in their yard. For regional delivery fleets that return to a home warehouse at the end of an eight or ten hour shift, Tesla engineered a turnkey overnight solution called the Basecharger. A fleet manager can simply plug in twenty or thirty trucks at midnight, soak up cheap off peak power, and wake up to a fully charged fleet every morning."
+        },
+        {
+          "ok": true,
+          "chars": 349,
+          "parts": 1,
+          "durationSec": 19.06,
+          "inferenceSec": 4.934,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r1_03.wav",
+          "text": "That vertical integration locks in stable energy prices for decades. Of course, a revolutionary truck means nothing to the oil industry if it only exists as a small pilot fleet. For the past three years, diesel executives comforted themselves with the belief that Tesla could never mass produce a Class eight commercial tractor at industrial volume."
+        }
+      ]
+    },
+    {
+      "k": 4,
+      "rep": 2,
+      "chunks": 4,
+      "audioSec": 108.78,
+      "inferenceSec": 24.86,
+      "rtfTotal": 0.2285,
+      "charsMean": 460.5,
+      "items": [
+        {
+          "ok": true,
+          "chars": 533,
+          "parts": 2,
+          "durationSec": 32.37,
+          "inferenceSec": 7.034,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r2_00.wav",
+          "text": "To see why the charging delay myth falls apart in practice, you have to understand how commercial freight actually moves across America. Critics often imagine an eighteen wheeler pulling into a crowded highway rest stop and waiting three hours behind family sedans for an open plug. In reality, over eighty percent of regional and national retail freight runs on predictable, repeatable point to point routes between distribution warehouses, ports, and grocery fulfillment centers. These trucks do not wander randomly across the map."
+        },
+        {
+          "ok": true,
+          "chars": 448,
+          "parts": 2,
+          "durationSec": 27.59,
+          "inferenceSec": 6.53,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r2_01.wav",
+          "text": "They operate from depot to depot on strict schedules. When a Tesla Semi backs into a loading dock at a PepsiCo distribution center, the truck plugs into a liquid cooled Megacharger. Operating on the new Megawatt Charging System architecture, these cables deliver one point two megawatts of direct current power. They replenish sixty to seventy percent of the battery pack in just thirty minutes, right while forklifts unload pallets in the trailer."
+        },
+        {
+          "ok": true,
+          "chars": 512,
+          "parts": 2,
+          "durationSec": 28.92,
+          "inferenceSec": 6.995,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r2_02.wav",
+          "text": "By the time the dock doors close, the rig rolls. Even more impressive, fleet operators are discovering that they do not even need megawatt chargers for every single truck in their yard. For regional delivery fleets that return to a home warehouse at the end of an eight or ten hour shift, Tesla engineered a turnkey overnight solution called the Basecharger. A fleet manager can simply plug in twenty or thirty trucks at midnight, soak up cheap off peak power, and wake up to a fully charged fleet every morning."
+        },
+        {
+          "ok": true,
+          "chars": 349,
+          "parts": 1,
+          "durationSec": 19.9,
+          "inferenceSec": 4.301,
+          "path": "scripts\\perf\\results\\tts_chatterbox_en_split380\\k4_r2_03.wav",
+          "text": "That vertical integration locks in stable energy prices for decades. Of course, a revolutionary truck means nothing to the oil industry if it only exists as a small pilot fleet. For the past three years, diesel executives comforted themselves with the belief that Tesla could never mass produce a Class eight commercial tractor at industrial volume."
+        }
+      ]
+    }
+  ]
+}

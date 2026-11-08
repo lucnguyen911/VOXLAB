@@ -62,12 +62,14 @@ class OmniVoiceAdapter(TtsEngineAdapter):
         if device != "cuda" or not cuda_available():
             raise SidecarError("DEVICE_UNAVAILABLE", "OmniVoice requires CUDA (CPU execution not verified)")
 
-        # Enable TF32 for high throughput on modern NVIDIA GPUs (Ampere / Ada / Blackwell)
+        # Enable TF32 for high throughput on modern NVIDIA GPUs (Ampere / Ada / Blackwell).
+        # Keep cudnn.benchmark = False because TTS sequence lengths vary per chunk, and
+        # cuDNN autotuning stalls on every unseen input length.
         if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
             torch.backends.cuda.matmul.allow_tf32 = True
         if hasattr(torch.backends, "cudnn"):
             torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.benchmark = False
 
         self._model = OmniVoice.from_pretrained(model_dir, device_map="cuda:0", dtype=torch.float16)
         self.device = device
