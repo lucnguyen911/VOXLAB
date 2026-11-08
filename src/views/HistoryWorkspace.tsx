@@ -7,19 +7,14 @@ import {
   FileAudio,
   Captions,
   Mic,
-  CheckCircle2,
   AlertTriangle,
   Search,
   X,
-  Play,
   Eye,
-  ChevronDown,
-  ChevronRight,
   Layers,
   FileText,
   Video,
   Clock,
-  AlertCircle,
   FileCode,
 } from "lucide-react";
 import {
@@ -36,46 +31,44 @@ import {
   openHistoryPathInFolder,
 } from "../services/history/historyManager";
 import { ResultPreviewDrawer } from "../components/preview/ResultPreviewDrawer";
-import { useI18n } from "../i18n/context";
+import { BatchFooter } from "../components/batch/BatchFooter";
 
 interface HistoryWorkspaceProps {
   onResumeSession?: (id: string) => void;
   onOpenOutput?: () => void;
 }
 
+const TASK_LABELS: Record<string, string> = {
+  tts: "TTS",
+  dialogue: "Hội thoại",
+  transcription: "Phụ đề",
+  translation: "Dịch",
+  dubbing: "Lồng tiếng",
+};
+
 export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
   onResumeSession: _onResumeSession,
   onOpenOutput,
 }) => {
-  const { t } = useI18n();
-
   // History State
   const [historyItems, setHistoryItems] = useState<UnifiedHistoryItem[]>([]);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [activeFilter, setActiveFilter] = useState<HistoryFilterType>("all");
-  const [expandedJobIds, setExpandedJobIds] = useState<Set<string>>(new Set());
 
   // Slide-over Preview Drawer State
   const [previewDrawerOpen, setPreviewDrawerOpen] = useState<boolean>(false);
   const [activeParentJob, setActiveParentJob] = useState<UnifiedHistoryItem | null>(null);
   const [selectedArtifact, setSelectedArtifact] = useState<HistoryArtifactItem | null>(null);
 
-  // Delete Confirmation Modal
+  // Clear All Confirmation Modal
   const [showClearAllModal, setShowClearAllModal] = useState<boolean>(false);
-  const [itemToDelete, setItemToDelete] = useState<UnifiedHistoryItem | null>(null);
 
   const refreshHistoryFromBackend = async () => {
     setIsRefreshing(true);
     try {
       const hydrated = await loadHistoryFromFileAsync();
       setHistoryItems(hydrated);
-      setExpandedJobIds((prev) => {
-        if (prev.size === 0 && hydrated.length > 0) {
-          return new Set([hydrated[0].id]);
-        }
-        return prev;
-      });
     } finally {
       setIsRefreshing(false);
     }
@@ -85,9 +78,6 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
   useEffect(() => {
     const initial = loadHistoryItems();
     setHistoryItems(initial);
-    if (initial.length > 0) {
-      setExpandedJobIds(new Set([initial[0].id]));
-    }
     void refreshHistoryFromBackend();
 
     const handleUpdated = () => {
@@ -98,19 +88,6 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
       return () => window.removeEventListener("voxlab_history_updated", handleUpdated);
     }
   }, []);
-
-  // Expand / collapse card toggle
-  const toggleExpand = (jobId: string) => {
-    setExpandedJobIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(jobId)) {
-        next.delete(jobId);
-      } else {
-        next.add(jobId);
-      }
-      return next;
-    });
-  };
 
   // Filtered and searched records
   const filteredRecords = useMemo(() => {
@@ -132,13 +109,14 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
 
   // Open Preview Drawer
   const handleOpenPreview = (job: UnifiedHistoryItem, targetArtifact?: HistoryArtifactItem) => {
+    if (job.artifacts.length === 0) return;
     setActiveParentJob(job);
-    const chosen = targetArtifact || job.artifacts.find((a) => a.type === "audio") || job.artifacts[0] || null;
+    const chosen =
+      targetArtifact || job.artifacts.find((a) => a.type === "audio") || job.artifacts[0] || null;
     setSelectedArtifact(chosen);
     setPreviewDrawerOpen(true);
   };
 
-  // Close Preview Drawer
   const handleClosePreview = () => {
     setPreviewDrawerOpen(false);
   };
@@ -155,13 +133,11 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
     }
   };
 
-  // Single record delete
-  const confirmDeleteItem = () => {
-    if (!itemToDelete) return;
-    const updated = deleteHistoryItem(itemToDelete.id, historyItems);
+  // Single record immediate delete (no confirmation modal needed since disk files are untouched)
+  const handleDeleteSingleItem = (jobId: string) => {
+    const updated = deleteHistoryItem(jobId, historyItems);
     setHistoryItems(updated);
-    setItemToDelete(null);
-    if (activeParentJob?.id === itemToDelete.id) {
+    if (activeParentJob?.id === jobId) {
       handleClosePreview();
     }
   };
@@ -178,91 +154,26 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
   const renderSourceIcon = (title: string, category: string) => {
     const ext = title.split(".").pop()?.toLowerCase();
     if (ext === "mp4" || ext === "mkv" || ext === "avi" || ext === "mov") {
-      return <Video className="w-4 h-4 text-sky-400" />;
+      return <Video className="w-4 h-4 text-sky-400 shrink-0" />;
     }
     if (ext === "mp3" || ext === "wav" || ext === "flac" || ext === "m4a") {
-      return <FileAudio className="w-4 h-4 text-emerald-400" />;
+      return <FileAudio className="w-4 h-4 text-emerald-400 shrink-0" />;
     }
-    if (ext === "docx" || ext === "doc") {
-      return <FileText className="w-4 h-4 text-blue-400" />;
+    if (ext === "docx" || ext === "doc" || ext === "txt" || ext === "md") {
+      return <FileText className="w-4 h-4 text-emerald-400 shrink-0" />;
     }
     if (category === "dialogue") {
-      return <Mic className="w-4 h-4 text-indigo-400" />;
+      return <Mic className="w-4 h-4 text-indigo-400 shrink-0" />;
     }
-    return <FileCode className="w-4 h-4 text-amber-400" />;
+    return <FileCode className="w-4 h-4 text-amber-400 shrink-0" />;
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
-      {/* 1. Header with Stats & Actions */}
-      <div className="p-4 border-b border-borderDefault bg-surface1 flex flex-col sm:flex-row sm:items-center justify-between gap-3 flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shadow-2xs">
-            <History className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-textPrimary">{t.history.title}</h2>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-surface2 border border-borderDefault text-textMuted">
-                {historyItems.length} công việc
-              </span>
-            </div>
-            <p className="text-[11px] text-textMuted">
-              Gom lịch sử theo từng công việc & tệp nguồn. Quản lý toàn bộ tệp âm thanh, phụ đề và bản dịch đã commit.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button
-            onClick={() => void refreshHistoryFromBackend()}
-            disabled={isRefreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-borderDefault text-textSecondary hover:text-textPrimary hover:bg-surface2 transition-colors cursor-pointer disabled:opacity-50"
-            title="Kiểm tra lại trạng thái tệp trên ổ đĩa"
-          >
-            <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-accent" : ""}`} />
-            <span>Làm mới</span>
-          </button>
-          <button
-            onClick={() => setShowClearAllModal(true)}
-            disabled={historyItems.length === 0}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors cursor-pointer ${
-              historyItems.length === 0
-                ? "opacity-40 cursor-not-allowed border-borderDefault text-textMuted"
-                : "border-borderDefault text-textMuted hover:text-danger hover:bg-danger/10 hover:border-danger/30"
-            }`}
-            title="Xóa danh sách lịch sử (không xóa tệp trên đĩa)"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>{t.settings.clearHistory}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* 2. Search Box and Filter Pills */}
-      <div className="p-4 border-b border-borderDefault bg-surface1/60 flex flex-col md:flex-row md:items-center justify-between gap-3 flex-shrink-0">
-        {/* Search input */}
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-textMuted" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Tìm theo tên tệp nguồn, công việc hoặc tệp kết quả..."
-            className="w-full pl-8.5 pr-8 py-1.5 text-xs bg-surface2 border border-borderDefault rounded-xl text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-accent transition-colors"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery("")}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-textMuted hover:text-textPrimary"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-
-        {/* 7 Filter Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-background select-none">
+      {/* 1. Unified Compact Top Bar: Filter Tabs + Search + Refresh */}
+      <div className="h-12 px-4 border-b border-borderDefault bg-panel flex items-center justify-between flex-shrink-0 z-10 shadow-xs gap-3">
+        {/* Left: Filter Pills */}
+        <div className="flex items-center gap-1 bg-surface1 p-1 rounded-xl border border-borderDefault overflow-x-auto scrollbar-none">
           {(
             [
               { key: "all", label: "Tất cả", count: filterCounts.all },
@@ -278,17 +189,18 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
             return (
               <button
                 key={filter.key}
+                type="button"
                 onClick={() => setActiveFilter(filter.key)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
                   isActive
-                    ? "bg-accent/15 border-accent text-accent shadow-2xs font-semibold"
-                    : "bg-surface2 border-borderDefault text-textMuted hover:text-textPrimary hover:bg-surface3"
+                    ? "bg-surface3 text-textPrimary shadow-2xs"
+                    : "text-textMuted hover:text-textPrimary hover:bg-surface2/60"
                 }`}
               >
                 <span>{filter.label}</span>
                 <span
                   className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full ${
-                    isActive ? "bg-accent text-slate-950 font-bold" : "bg-surface3 text-textMuted"
+                    isActive ? "bg-accent/20 text-accent font-bold" : "bg-surface2 text-textMuted"
                   }`}
                 >
                   {filter.count}
@@ -297,291 +209,306 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
             );
           })}
         </div>
-      </div>
 
-      {/* 3. Main History List */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-3.5">
-        {filteredRecords.length === 0 ? (
-          <div className="text-center py-20 text-textMuted space-y-3">
-            <div className="w-12 h-12 mx-auto rounded-2xl bg-surface2 border border-borderDefault flex items-center justify-center text-textMuted">
-              <History className="w-6 h-6 opacity-40" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-textSecondary">Không tìm thấy bản ghi lịch sử phù hợp</p>
-              <p className="text-[11px] text-textMuted mt-1">
-                {searchQuery
-                  ? "Thử thay đổi từ khóa tìm kiếm hoặc chọn bộ lọc tác vụ khác."
-                  : "Chưa có công việc nào hoàn tất trong danh mục này."}
-              </p>
-            </div>
+        {/* Right: Search Input + Refresh */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="relative w-56 lg:w-72">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-textMuted" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Tìm tên tệp hoặc công việc..."
+              className="w-full pl-8 pr-7 py-1.5 text-xs bg-surface2 border border-borderDefault rounded-lg text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-accent transition-colors"
+            />
             {searchQuery && (
               <button
-                onClick={() => {
-                  setSearchQuery("");
-                  setActiveFilter("all");
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-surface2 hover:bg-surface3 text-accent border border-accent/30 rounded-lg transition-colors cursor-pointer"
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-textMuted hover:text-textPrimary cursor-pointer"
               >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Đặt lại bộ lọc</span>
+                <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
-        ) : (
-          filteredRecords.map((job) => {
-            const isExpanded = expandedJobIds.has(job.id);
-            const audioArtifacts = job.artifacts.filter((a) => a.type === "audio");
-            const subtitleArtifacts = job.artifacts.filter((a) => a.type === "subtitle");
 
-            return (
-              <div
-                key={job.id}
-                className="bg-surface1 hover:border-accent/40 border border-borderDefault rounded-2xl transition-all shadow-2xs overflow-hidden"
-              >
-                {/* Job Card Header */}
-                <div className="p-3.5 md:p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
-                  <div className="flex items-start md:items-center gap-3">
-                    {/* Expand/Collapse Chevron */}
-                    <button
-                      onClick={() => toggleExpand(job.id)}
-                      className="p-1 text-textMuted hover:text-textPrimary rounded-lg hover:bg-surface2 transition-colors cursor-pointer mt-0.5 md:mt-0"
-                      title={isExpanded ? "Thu gọn danh sách tệp" : "Mở rộng danh sách tệp kết quả"}
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="w-4 h-4" />
-                      ) : (
-                        <ChevronRight className="w-4 h-4" />
-                      )}
-                    </button>
-
-                    {/* Source Media Type Icon */}
-                    <div className="w-9 h-9 rounded-xl bg-surface2 border border-borderDefault flex items-center justify-center flex-shrink-0">
-                      {renderSourceIcon(job.title, job.category)}
-                    </div>
-
-                    {/* Job Title and Metadata */}
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="font-bold text-xs text-textPrimary cursor-pointer hover:text-accent transition-colors" onClick={() => toggleExpand(job.id)}>
-                          {job.title}
-                        </h3>
-
-                        {/* Batch tag */}
-                        {job.isBatch && (
-                          <span className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-md bg-accent/10 border border-accent/30 text-accent font-semibold">
-                            <Layers className="w-3 h-3" />
-                            <span>Hàng loạt</span>
-                          </span>
-                        )}
-
-                        {/* Task badges */}
-                        {job.tasks.map((taskKey) => {
-                          const tagLabels: Record<string, string> = {
-                            tts: "TTS",
-                            dialogue: "Hội thoại",
-                            transcription: "Phụ đề",
-                            translation: "Dịch",
-                            dubbing: "Lồng tiếng",
-                          };
-                          return (
-                            <span
-                              key={taskKey}
-                              className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface2 border border-borderDefault text-textSecondary"
-                            >
-                              {tagLabels[taskKey] || taskKey}
-                            </span>
-                          );
-                        })}
-
-                        {/* Status badge */}
-                        {job.status === "completed" && (
-                          <span className="flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800/50 font-mono font-medium">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
-                            <span>Hoàn tất</span>
-                          </span>
-                        )}
-                        {job.status === "completed_with_warning" && (
-                          <span className="flex items-center gap-1 text-[10px] text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded-full border border-amber-200 dark:border-amber-800/50 font-mono font-semibold">
-                            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                            <span>Cảnh báo</span>
-                          </span>
-                        )}
-                        {job.status === "failed_with_artifact" && (
-                          <span className="flex items-center gap-1 text-[10px] text-rose-800 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/50 px-2 py-0.5 rounded-full border border-rose-200 dark:border-rose-800/50 font-mono font-semibold">
-                            <AlertCircle className="w-3 h-3 text-rose-600 dark:text-rose-400" />
-                            <span>Lỗi (Bảo toàn artifact)</span>
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Subtitle details: Time, Duration, Artifact summary */}
-                      <div className="text-[11px] text-textMuted font-mono flex flex-wrap items-center gap-2">
-                        <span className="flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          <span>{job.createdAt}</span>
-                        </span>
-                        <span>•</span>
-                        {job.duration && (
-                          <>
-                            <span>{job.duration}</span>
-                            <span>•</span>
-                          </>
-                        )}
-                        {job.chunkCount && (
-                          <>
-                            <span>{job.chunkCount} đoạn</span>
-                            <span>•</span>
-                          </>
-                        )}
-                        <span className="text-textSecondary font-semibold">
-                          {job.artifacts.length} kết quả
-                        </span>
-                        {audioArtifacts.length > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface2 text-emerald-700 dark:text-emerald-400 font-medium">
-                            {audioArtifacts.length} Audio
-                          </span>
-                        )}
-                        {subtitleArtifacts.length > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface2 text-amber-800 dark:text-amber-400 font-medium">
-                            {subtitleArtifacts.length} Phụ đề
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Standardized Action Buttons */}
-                  <div className="flex items-center gap-2 flex-shrink-0 ml-7 md:ml-0">
-                    {/* [Xem kết quả] */}
-                    <button
-                      onClick={() => handleOpenPreview(job)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-accent/15 hover:bg-accent/25 text-accent border border-accent/40 rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
-                      title="Xem trước kết quả âm thanh và phụ đề"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>Xem kết quả</span>
-                    </button>
-
-                    {/* [Mở thư mục] */}
-                    <button
-                      onClick={() => {
-                        const existingArt = job.artifacts.find((a) => a.existsOnDisk && a.filePath);
-                        void handleOpenFolder(job.outputDirectory, existingArt?.filePath);
-                      }}
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary border border-borderDefault rounded-xl text-xs transition-colors cursor-pointer"
-                      title="Mở thư mục chứa kết quả xuất trên đĩa"
-                    >
-                      <FolderOpen className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Mở thư mục</span>
-                    </button>
-
-                    {/* [Xóa lịch sử] */}
-                    <button
-                      onClick={() => setItemToDelete(job)}
-                      className="p-1.5 text-textMuted hover:text-danger hover:bg-danger/10 border border-transparent hover:border-danger/30 rounded-xl text-xs transition-colors cursor-pointer"
-                      title="Xóa bản ghi lịch sử này (không xóa tệp trên đĩa)"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Expandable Artifacts List */}
-                {isExpanded && (
-                  <div className="border-t border-borderDefault bg-surface2/30 p-3.5 md:p-4 space-y-3">
-                    {/* Source and Output Path info */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between text-[11px] text-textMuted font-mono gap-1.5 pb-2 border-b border-borderDefault/50">
-                      <div className="truncate max-w-xl">
-                        <span className="text-textSecondary font-semibold">Tệp nguồn: </span>
-                        {job.sourceFilePath || job.title}
-                        {job.sourceFileSize && ` (${job.sourceFileSize})`}
-                      </div>
-                      <div className="truncate max-w-md text-right">
-                        <span className="text-textSecondary font-semibold">Thư mục: </span>
-                        {job.outputDirectory}
-                      </div>
-                    </div>
-
-                    {/* Warning Callout if present */}
-                    {job.statusWarning && (
-                      <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/40 text-amber-900 dark:text-amber-200 text-xs flex items-start gap-2">
-                        <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-                        <div>
-                          <span className="font-semibold text-amber-900 dark:text-amber-100">Lưu ý xử lý: </span>
-                          <span className="text-amber-800 dark:text-amber-200">{job.statusWarning}</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Artifacts Tree */}
-                    <div className="space-y-1.5 font-mono text-xs">
-                      {job.artifacts.map((art, idx) => {
-                        const isLast = idx === job.artifacts.length - 1;
-                        const prefix = isLast ? "└── " : "├── ";
-
-                        return (
-                          <div
-                            key={art.id}
-                            className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2 rounded-xl bg-surface1/70 hover:bg-surface2/80 border border-borderDefault/70 transition-colors"
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              <span className="text-textMuted select-none font-bold">{prefix}</span>
-                              {art.type === "audio" ? (
-                                <FileAudio className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                              ) : art.type === "subtitle" ? (
-                                <Captions className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                              ) : (
-                                <FileText className="w-4 h-4 text-accent flex-shrink-0" />
-                              )}
-                              <span className="font-semibold text-textPrimary truncate">
-                                {art.fileName}
-                              </span>
-                              {art.fileSize && (
-                                <span className="text-[10px] text-textMuted">({art.fileSize})</span>
-                              )}
-                              {art.label && (
-                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface3 text-textSecondary font-sans">
-                                  {art.label}
-                                </span>
-                              )}
-                              {!art.existsOnDisk && (
-                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60 font-sans font-medium">
-                                  Tệp không còn trên đĩa
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="flex items-center gap-2 flex-shrink-0 ml-6 sm:ml-0">
-                              <button
-                                onClick={() => handleOpenPreview(job, art)}
-                                className="flex items-center gap-1 px-2.5 py-1 bg-surface2 hover:bg-surface3 text-textPrimary hover:text-accent border border-borderDefault rounded-lg text-[11px] transition-colors cursor-pointer"
-                              >
-                                {art.type === "audio" ? (
-                                  <>
-                                    <Play className="w-3 h-3 fill-current" />
-                                    <span>Nghe thử</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Eye className="w-3 h-3" />
-                                    <span>Xem phụ đề</span>
-                                  </>
-                                )}
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
+          <button
+            type="button"
+            onClick={() => void refreshHistoryFromBackend()}
+            disabled={isRefreshing}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-borderDefault bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+            title="Kiểm tra lại trạng thái tệp trên ổ đĩa"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-accent" : ""}`} />
+            <span className="hidden sm:inline">Làm mới</span>
+          </button>
+        </div>
       </div>
 
-      {/* 4. Shared Slide-over Preview Drawer */}
+      {/* 2. Center Table Container */}
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-4 py-3">
+        <div className="flex-1 min-h-0 bg-surface1 rounded-xl border border-borderDefault flex flex-col overflow-hidden shadow-xs">
+          <div className="flex-1 overflow-auto">
+            <table className="w-full min-w-[960px] text-left border-collapse table-fixed border-b border-borderDefault">
+              <thead className="sticky top-0 bg-surface2 border-b border-borderDefault z-20 text-[13px] font-bold text-textSecondary">
+                <tr>
+                  {/* Column 1: # */}
+                  <th className="py-2.5 px-3 w-[4%] text-center border-r border-borderDefault">
+                    <div className="flex items-center justify-center min-h-[46px]">#</div>
+                  </th>
+
+                  {/* Column 2: File / Job Name */}
+                  <th className="py-2.5 px-3.5 w-[28%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                    <div className="flex items-center justify-center min-h-[46px]">Tên tệp / Công việc</div>
+                  </th>
+
+                  {/* Column 3: Task Badges */}
+                  <th className="py-2.5 px-3 w-[18%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                    <div className="flex items-center justify-center min-h-[46px]">Loại tác vụ</div>
+                  </th>
+
+                  {/* Column 4: Output Artifacts */}
+                  <th className="py-2.5 px-3 w-[18%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                    <div className="flex items-center justify-center min-h-[46px]">Kết quả xuất</div>
+                  </th>
+
+                  {/* Column 5: Created Time & Duration */}
+                  <th className="py-2.5 px-3 w-[14%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                    <div className="flex items-center justify-center min-h-[46px]">Thời gian</div>
+                  </th>
+
+                  {/* Column 6: Actions */}
+                  <th className="py-2.5 px-2 w-[18%] text-center text-sm font-bold text-textPrimary">
+                    <div className="flex items-center justify-center min-h-[46px]">Thao tác</div>
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-borderDefault text-xs">
+                {filteredRecords.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-16 text-center text-textMuted">
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <History className="w-8 h-8 opacity-35" />
+                        <p className="text-xs font-medium text-textSecondary">
+                          {searchQuery || activeFilter !== "all"
+                            ? "Không tìm thấy bản ghi lịch sử phù hợp với bộ lọc."
+                            : "Chưa có bản ghi lịch sử nào."}
+                        </p>
+                        {(searchQuery || activeFilter !== "all") && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSearchQuery("");
+                              setActiveFilter("all");
+                            }}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs bg-surface2 hover:bg-surface3 text-accent border border-accent/30 rounded-lg transition-colors cursor-pointer mt-1"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Đặt lại bộ lọc</span>
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRecords.map((job, index) => {
+                    const hasArtifacts = job.artifacts.length > 0;
+
+                    return (
+                      <tr key={job.id} className="hover:bg-surface2/50 transition-colors">
+                        {/* Column 1: # */}
+                        <td className="py-3 px-3 text-center text-textMuted font-mono border-r border-borderDefault">
+                          {index + 1}
+                        </td>
+
+                        {/* Column 2: File Name & Output Directory */}
+                        <td className="py-3 px-3.5 border-r border-borderDefault">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {renderSourceIcon(job.title, job.category)}
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className="font-semibold text-textPrimary truncate"
+                                  title={job.title}
+                                >
+                                  {job.title}
+                                </span>
+                                {job.statusWarning && (
+                                  <span title={job.statusWarning}>
+                                    <AlertTriangle className="w-3.5 h-3.5 text-warning shrink-0" />
+                                  </span>
+                                )}
+                              </div>
+                              <div
+                                className="text-[10px] text-textMuted font-mono truncate"
+                                title={job.outputDirectory}
+                              >
+                                {job.sourceFileSize ? `${job.sourceFileSize} • ` : ""}
+                                {job.outputDirectory}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Column 3: Task Badges */}
+                        <td className="py-3 px-3 border-r border-borderDefault">
+                          <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                            {job.isBatch && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 border border-accent/30 text-accent font-semibold">
+                                <Layers className="w-3 h-3" />
+                                <span>Hàng loạt</span>
+                              </span>
+                            )}
+                            {job.tasks.map((taskKey) => (
+                              <span
+                                key={taskKey}
+                                className="px-2 py-0.5 rounded text-[10px] font-semibold bg-surface2 border border-borderDefault text-textSecondary"
+                              >
+                                {TASK_LABELS[taskKey] || taskKey}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+
+                        {/* Column 4: Output Artifacts */}
+                        <td className="py-3 px-3 border-r border-borderDefault">
+                          {hasArtifacts ? (
+                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                              {job.artifacts.map((art) => {
+                                const ext = art.fileName.split(".").pop()?.toLowerCase();
+                                const isAudio = art.type === "audio";
+                                return (
+                                  <button
+                                    key={art.id}
+                                    type="button"
+                                    onClick={() => handleOpenPreview(job, art)}
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors cursor-pointer ${
+                                      !art.existsOnDisk
+                                        ? "bg-amber-500/10 text-amber-300 border-amber-500/30 opacity-75"
+                                        : isAudio
+                                        ? "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border-emerald-500/30"
+                                        : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30"
+                                    }`}
+                                    title={
+                                      art.existsOnDisk
+                                        ? `Nhấn để mở: ${art.fileName}`
+                                        : `Tệp không còn trên ổ đĩa: ${art.fileName}`
+                                    }
+                                  >
+                                    {isAudio ? (
+                                      <FileAudio className="w-3 h-3 shrink-0" />
+                                    ) : (
+                                      <Captions className="w-3 h-3 shrink-0" />
+                                    )}
+                                    <span>
+                                      {isAudio ? "Audio" : "Phụ đề"}
+                                      {ext ? ` (.${ext})` : ""}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="text-center text-[11px] text-textMuted font-mono">
+                              0 tệp
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Column 5: Created Time & Duration */}
+                        <td className="py-3 px-3 border-r border-borderDefault text-center">
+                          <div className="inline-flex items-center gap-1 text-textSecondary font-mono text-[11px]">
+                            <Clock className="w-3 h-3 text-textMuted shrink-0" />
+                            <span>{job.createdAt}</span>
+                          </div>
+                          {(job.duration || job.chunkCount) && (
+                            <div className="text-[10px] text-textMuted font-mono mt-0.5">
+                              {[
+                                job.duration,
+                                job.chunkCount ? `${job.chunkCount} đoạn` : undefined,
+                              ]
+                                .filter(Boolean)
+                                .join(" • ")}
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Column 6: Actions */}
+                        <td className="py-3 px-2 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenPreview(job)}
+                              disabled={!hasArtifacts}
+                              className={`inline-flex items-center gap-1 px-2 py-1 rounded font-semibold border transition-colors whitespace-nowrap ${
+                                hasArtifacts
+                                  ? "bg-accent/15 hover:bg-accent/25 text-accent border-accent/35 cursor-pointer"
+                                  : "bg-surface2 text-textMuted border-borderDefault opacity-45 cursor-not-allowed"
+                              }`}
+                              title={
+                                hasArtifacts
+                                  ? "Xem trước kết quả âm thanh và phụ đề"
+                                  : "Bản ghi này không có tệp kết quả để xem"
+                              }
+                            >
+                              <Eye className="w-3.5 h-3.5 shrink-0" />
+                              <span>Xem</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const existingArt = job.artifacts.find(
+                                  (a) => a.existsOnDisk && a.filePath
+                                );
+                                void handleOpenFolder(job.outputDirectory, existingArt?.filePath);
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer whitespace-nowrap"
+                              title="Mở thư mục chứa kết quả xuất trên ổ đĩa"
+                            >
+                              <FolderOpen className="w-3.5 h-3.5 text-accent shrink-0" />
+                              <span>Mở thư mục</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSingleItem(job.id)}
+                              className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                              title="Xóa bản ghi này khỏi lịch sử (không xóa tệp trên ổ đĩa)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Shared Footer Status Bar */}
+          <BatchFooter
+            totalCount={filteredRecords.length}
+            actions={
+              <button
+                type="button"
+                onClick={() => setShowClearAllModal(true)}
+                disabled={historyItems.length === 0}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-danger/80 hover:text-danger bg-danger/5 hover:bg-danger/10 border border-danger/20 hover:border-danger/30 transition-all cursor-pointer disabled:opacity-40"
+                title="Dọn dẹp toàn bộ danh sách lịch sử (không xóa tệp trên ổ đĩa)"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Dọn dẹp</span>
+              </button>
+            }
+          />
+        </div>
+      </div>
+
+      {/* 3. Shared Slide-over Preview Drawer */}
       {previewDrawerOpen && activeParentJob && (
         <ResultPreviewDrawer
           isOpen={previewDrawerOpen}
@@ -593,7 +520,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
         />
       )}
 
-      {/* 5. Clear All Confirmation Modal */}
+      {/* 4. Clear All Confirmation Modal */}
       {showClearAllModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
           <div className="w-full max-w-md bg-surface1 border border-borderDefault rounded-2xl p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
@@ -603,7 +530,9 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
               </div>
               <div>
                 <h3 className="text-sm font-bold text-textPrimary">Xác nhận xóa toàn bộ lịch sử?</h3>
-                <p className="text-xs text-textMuted">Thao tác này sẽ xóa sạch danh sách hiển thị trong VoxLab.</p>
+                <p className="text-xs text-textMuted">
+                  Thao tác này sẽ dọn sạch danh sách hiển thị trong VoxLab.
+                </p>
               </div>
             </div>
 
@@ -616,52 +545,18 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
 
             <div className="flex items-center justify-end gap-2.5 pt-1">
               <button
+                type="button"
                 onClick={() => setShowClearAllModal(false)}
                 className="px-3.5 py-1.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-xl text-xs font-medium transition-colors cursor-pointer"
               >
                 Hủy
               </button>
               <button
+                type="button"
                 onClick={confirmClearAll}
                 className="px-3.5 py-1.5 bg-danger hover:bg-danger/90 text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-sm"
               >
                 Xác nhận xóa sạch
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 6. Single Item Delete Confirmation Modal */}
-      {itemToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-          <div className="w-full max-w-md bg-surface1 border border-borderDefault rounded-2xl p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-danger/10 border border-danger/30 flex items-center justify-center text-danger flex-shrink-0">
-                <Trash2 className="w-5 h-5" />
-              </div>
-              <div className="truncate">
-                <h3 className="text-sm font-bold text-textPrimary">Xóa bản ghi công việc?</h3>
-                <p className="text-xs text-textMuted font-mono truncate">{itemToDelete.title}</p>
-              </div>
-            </div>
-
-            <p className="text-xs text-textMuted leading-relaxed">
-              Bạn có chắc chắn muốn xóa bản ghi này khỏi danh sách Lịch sử? Các tệp artifact đã xuất trong thư mục đầu ra vẫn được giữ nguyên trên máy tính.
-            </p>
-
-            <div className="flex items-center justify-end gap-2.5 pt-1">
-              <button
-                onClick={() => setItemToDelete(null)}
-                className="px-3.5 py-1.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-xl text-xs font-medium transition-colors cursor-pointer"
-              >
-                Hủy
-              </button>
-              <button
-                onClick={confirmDeleteItem}
-                className="px-3.5 py-1.5 bg-danger hover:bg-danger/90 text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-sm"
-              >
-                Xóa bản ghi
               </button>
             </div>
           </div>
