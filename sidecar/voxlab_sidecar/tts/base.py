@@ -87,6 +87,66 @@ def cuda_available() -> bool:
         return False
 
 
+def configure_cuda_backends() -> None:
+    """Enable TF32 on Ampere/Ada/Blackwell while keeping cudnn.benchmark=False for variable-length TTS."""
+    import torch
+
+    if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+        torch.backends.cuda.matmul.allow_tf32 = True
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = False
+
+
+def trim_process_working_set() -> None:
+    """Run Python GC and trim Windows working set after heavy model load/unload."""
+    import gc
+
+    gc.collect()
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
+        except Exception:
+            pass
+
+
+def cuda_load_summary(dtype: str, sample_rate: int) -> dict[str, Any]:
+    import torch
+
+    vram_mb = int(torch.cuda.memory_allocated(0) // (1024 * 1024)) if torch.cuda.is_available() else 0
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NVIDIA GPU"
+    return {
+        "dtype": dtype,
+        "sampleRate": int(sample_rate),
+        "gpu": gpu_name,
+        "vramMb": vram_mb,
+        "device": "cuda:0",
+    }
+
+
+def apply_clamped_extra(
+    kwargs: dict[str, Any],
+    extra: dict[str, Any],
+    specs: tuple[tuple[str, str | None, type, float | int | None, float | int | None], ...],
+) -> None:
+    """Copy and clamp supported sampling/inference options from `extra` into `kwargs`."""
+    for snake_key, camel_key, cast_type, lo, hi in specs:
+        val = extra.get(snake_key, extra.get(camel_key) if camel_key else None)
+        if val is None:
+            continue
+        if cast_type is bool:
+            kwargs[snake_key] = bool(val)
+        else:
+            num = cast_type(val)
+            if lo is not None:
+                num = max(lo, num)
+            if hi is not None:
+                num = min(hi, num)
+            kwargs[snake_key] = num
+
+
 def release_torch_memory() -> None:
     import gc
 
@@ -98,3 +158,4 @@ def release_torch_memory() -> None:
             torch.cuda.empty_cache()
     except ImportError:
         pass
+    trim_process_working_set()

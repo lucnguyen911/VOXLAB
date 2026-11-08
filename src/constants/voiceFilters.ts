@@ -1265,3 +1265,103 @@ export function getDeterministicAvatarColor(key: string): string {
   return AVATAR_PALETTES[Math.abs(hash) % AVATAR_PALETTES.length];
 }
 
+export function normalizeVietnamese(str: string): string {
+  return str
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .trim();
+}
+
+export function filterLanguageRegistry(query: string): LanguageDefinition[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return LANGUAGE_REGISTRY;
+  return LANGUAGE_REGISTRY.filter((item) => {
+    const codeMatch = item.code.toLowerCase().includes(q);
+    const viMatch = item.labels.vi?.toLowerCase().includes(q);
+    const enMatch = item.labels.en?.toLowerCase().includes(q);
+    const jaMatch = item.labels.ja?.toLowerCase().includes(q);
+    const zhMatch = item.labels.zh?.toLowerCase().includes(q);
+    return Boolean(codeMatch || viMatch || enMatch || jaMatch || zhMatch);
+  });
+}
+
+function matchesSearchToken(candidate: string | null | undefined, normQuery: string, rawQuery: string): boolean {
+  if (!candidate) return false;
+  return candidate.toLowerCase().includes(rawQuery) || normalizeVietnamese(candidate).includes(normQuery);
+}
+
+export function matchesVoiceSearchQuery(voice: VoiceProfile, searchQuery: string, lang: SupportedLang): boolean {
+  const rawQuery = searchQuery.toLowerCase().trim();
+  if (!rawQuery) return true;
+  const normQuery = normalizeVietnamese(searchQuery);
+
+  if (matchesSearchToken(voice.name, normQuery, rawQuery)) return true;
+
+  const secTags = getVoiceSecondaryTags(voice, lang);
+  if (
+    voice.tags.some((tg) => matchesSearchToken(tg, normQuery, rawQuery)) ||
+    secTags.some((tg) => matchesSearchToken(tg, normQuery, rawQuery))
+  ) {
+    return true;
+  }
+
+  const normAcc = normalizeAccent(voice.accent);
+  const accentLabel = normAcc ? getAccentLabel(normAcc, lang) : "";
+  if (matchesSearchToken(voice.accent, normQuery, rawQuery) || matchesSearchToken(accentLabel, normQuery, rawQuery)) {
+    return true;
+  }
+
+  const normSt = normalizeStyle(voice.style || voice.category);
+  const styleLabel = normSt ? getStyleLabel(normSt, lang) : "";
+  if (matchesSearchToken(voice.style, normQuery, rawQuery) || matchesSearchToken(styleLabel, normQuery, rawQuery)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function matchesVoiceAccentFilter(voice: VoiceProfile, selectedAccent: string): boolean {
+  if (selectedAccent === "all") return true;
+  const normSelected = normalizeAccent(selectedAccent);
+  if (normalizeAccent(voice.accent) === normSelected) return true;
+  return Array.isArray(voice.tags) && voice.tags.some((t) => normalizeAccent(t) === normSelected);
+}
+
+export function matchesVoiceStyleFilter(voice: VoiceProfile, selectedStyle: string): boolean {
+  if (selectedStyle === "all") return true;
+  const normSelected = normalizeStyle(selectedStyle);
+  const matchesPrimary =
+    Array.isArray(voice.styles) && voice.styles.length > 0
+      ? voice.styles.some((s) => normalizeStyle(s) === normSelected)
+      : normalizeStyle(voice.style || voice.category) === normSelected;
+  if (matchesPrimary) return true;
+  return Array.isArray(voice.tags) && voice.tags.some((t) => normalizeStyle(t) === normSelected);
+}
+
+export function matchesVoiceGenderFilter(voice: VoiceProfile, selectedGender: string): boolean {
+  if (selectedGender === "all") return true;
+  let voiceGender = voice.gender;
+  if (!voiceGender && Array.isArray(voice.tags)) {
+    if (voice.tags.some((t) => ["nữ", "female", "女性", "女声"].includes(t.toLowerCase().trim()))) {
+      voiceGender = "female";
+    } else if (voice.tags.some((t) => ["nam", "male", "男性", "男声"].includes(t.toLowerCase().trim()))) {
+      voiceGender = "male";
+    }
+  }
+  if (selectedGender === "neutral") {
+    return !voiceGender;
+  }
+  return voiceGender === selectedGender;
+}
+
+export function matchesVoiceAgeFilter(voice: VoiceProfile, selectedAge: string): boolean {
+  if (selectedAge === "all") return true;
+  const normSelected = normalizeAge(selectedAge);
+  if (normalizeAge(voice.ageGroup) === normSelected) return true;
+  return Array.isArray(voice.tags) && voice.tags.some((t) => normalizeAge(t) === normSelected);
+}
+
+

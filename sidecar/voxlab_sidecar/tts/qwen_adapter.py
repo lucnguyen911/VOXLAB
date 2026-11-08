@@ -10,13 +10,37 @@ from typing import Any
 import numpy as np
 
 from ..protocol import SidecarError
-from .base import Capabilities, SynthesisRequest, TtsEngineAdapter, cuda_available, release_torch_memory
+from .base import (
+    Capabilities,
+    SynthesisRequest,
+    TtsEngineAdapter,
+    apply_clamped_extra,
+    configure_cuda_backends,
+    cuda_available,
+    cuda_load_summary,
+    release_torch_memory,
+    trim_process_working_set,
+)
 
 # ISO 639-1 → language names accepted by qwen_tts.
 LANGUAGE_NAMES = {
     "zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean", "de": "German",
     "fr": "French", "ru": "Russian", "pt": "Portuguese", "es": "Spanish", "it": "Italian",
 }
+
+_QWEN_EXTRA_SPECS = (
+    ("temperature", None, float, 0.1, 2.0),
+    ("top_p", "topP", float, 0.1, 1.0),
+    ("top_k", "topK", int, 1, 200),
+    ("repetition_penalty", "repetitionPenalty", float, 1.0, 2.0),
+    ("do_sample", "doSample", bool, None, None),
+    ("subtalker_dosample", "subtalkerDosample", bool, None, None),
+    ("subtalker_top_k", "subtalkerTopK", int, 1, 200),
+    ("subtalker_top_p", "subtalkerTopP", float, 0.1, 1.0),
+    ("subtalker_temperature", "subtalkerTemperature", float, 0.1, 2.0),
+    ("max_new_tokens", "maxNewTokens", int, 256, 8192),
+    ("non_streaming_mode", "nonStreamingMode", bool, None, None),
+)
 
 
 class QwenTtsAdapter(TtsEngineAdapter):
@@ -54,80 +78,23 @@ class QwenTtsAdapter(TtsEngineAdapter):
     def load(self, model_dir: str, device: str) -> dict[str, Any]:
         if device != "cuda" or not cuda_available():
             raise SidecarError("DEVICE_UNAVAILABLE", "Qwen3-TTS requires CUDA (CPU execution not verified)")
-        import gc
-        import os
         import torch
-        if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
-            torch.backends.cuda.matmul.allow_tf32 = True
-        if hasattr(torch.backends, "cudnn"):
-            torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.benchmark = False
         from qwen_tts import Qwen3TTSModel
+
+        configure_cuda_backends()
 
         # flash-attn is optional upstream and not available on Windows; use PyTorch SDPA.
         self._model = Qwen3TTSModel.from_pretrained(
             model_dir, device_map="cuda:0", dtype=torch.bfloat16, attn_implementation="sdpa")
         self.device = device
-
-        gc.collect()
-        if os.name == "nt":
-            try:
-                import ctypes
-                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-            except Exception:
-                pass
-
-        vram_mb = int(torch.cuda.memory_allocated(0) // (1024 * 1024)) if torch.cuda.is_available() else 0
-        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NVIDIA GPU"
-        return {"dtype": "bfloat16", "sampleRate": 24000, "gpu": gpu_name, "vramMb": vram_mb, "device": "cuda:0"}
+        trim_process_working_set()
+        return cuda_load_summary("bfloat16", 24000)
 
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
         language = LANGUAGE_NAMES.get(req.language, "Auto") if req.language else "Auto"
         kwargs: dict[str, Any] = {}
         extra = req.extra or {}
-        temperature = extra.get("temperature")
-        if temperature is not None:
-            kwargs["temperature"] = max(0.1, min(2.0, float(temperature)))
-
-        top_p = extra.get("top_p", extra.get("topP"))
-        if top_p is not None:
-            kwargs["top_p"] = max(0.1, min(1.0, float(top_p)))
-
-        top_k = extra.get("top_k", extra.get("topK"))
-        if top_k is not None:
-            kwargs["top_k"] = max(1, min(200, int(top_k)))
-
-        rep_pen = extra.get("repetition_penalty", extra.get("repetitionPenalty"))
-        if rep_pen is not None:
-            kwargs["repetition_penalty"] = max(1.0, min(2.0, float(rep_pen)))
-
-        do_sample = extra.get("do_sample", extra.get("doSample"))
-        if do_sample is not None:
-            kwargs["do_sample"] = bool(do_sample)
-
-        sub_sample = extra.get("subtalker_dosample", extra.get("subtalkerDosample"))
-        if sub_sample is not None:
-            kwargs["subtalker_dosample"] = bool(sub_sample)
-
-        sub_top_k = extra.get("subtalker_top_k", extra.get("subtalkerTopK"))
-        if sub_top_k is not None:
-            kwargs["subtalker_top_k"] = max(1, min(200, int(sub_top_k)))
-
-        sub_top_p = extra.get("subtalker_top_p", extra.get("subtalkerTopP"))
-        if sub_top_p is not None:
-            kwargs["subtalker_top_p"] = max(0.1, min(1.0, float(sub_top_p)))
-
-        sub_temp = extra.get("subtalker_temperature", extra.get("subtalkerTemperature"))
-        if sub_temp is not None:
-            kwargs["subtalker_temperature"] = max(0.1, min(2.0, float(sub_temp)))
-
-        max_new_tokens = extra.get("max_new_tokens", extra.get("maxNewTokens"))
-        if max_new_tokens is not None:
-            kwargs["max_new_tokens"] = max(256, min(8192, int(max_new_tokens)))
-
-        non_streaming = extra.get("non_streaming_mode", extra.get("nonStreamingMode"))
-        if non_streaming is not None:
-            kwargs["non_streaming_mode"] = bool(non_streaming)
+        apply_clamped_extra(kwargs, extra, _QWEN_EXTRA_SPECS)
 
         x_vec = extra.get("x_vector_only_mode", extra.get("xVectorOnlyMode"))
         x_vector_only_mode = bool(x_vec) if x_vec is not None else False
@@ -146,10 +113,3 @@ class QwenTtsAdapter(TtsEngineAdapter):
         self._model = None
         self.device = None
         release_torch_memory()
-        import os
-        if os.name == "nt":
-            try:
-                import ctypes
-                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-            except Exception:
-                pass

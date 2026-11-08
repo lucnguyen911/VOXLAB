@@ -10,12 +10,6 @@ from ..protocol import Cancelled, SidecarError, log, require
 from ..server import RequestContext
 from .base import Capabilities, SynthesisRequest, TtsEngineAdapter, cuda_available
 
-_BRACKET_CONTROL_RE = re.compile(r"\[[^\[\]]*\]")
-_VI_DIACRITIC_RE = re.compile(
-    r"[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
-    r"ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ]"
-)
-
 _EN_ONES = (
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
     "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
@@ -153,23 +147,16 @@ def _find_version_spans(text: str, lang_code: str) -> list[tuple[int, int, str]]
         if not re.match(r"^\s*[,.;:!?—–\-)\]\"]", tail_text):
             next_word_match = re.match(r"^\s+([A-Za-z\u00C0-\u1EF9/%]+)", tail_text)
             if next_word_match:
-                next_word_raw = next_word_match.group(1)
-                next_word = next_word_raw.lower().strip("/%")
+                next_word = next_word_match.group(1).lower().strip("/%")
                 if next_word in _MEASUREMENT_OR_QUANTITY_FOLLOWERS:
                     continue
-                if (
-                    head.lower() not in _VERSION_HEAD_WORDS
-                    and "." not in ver
-                    and not (head.isupper() or any(c.isupper() for c in head[1:]))
-                ):
-                    continue
-        else:
-            if (
-                head.lower() not in _VERSION_HEAD_WORDS
-                and "." not in ver
-                and not (head.isupper() or any(c.isupper() for c in head[1:]))
-            ):
-                continue
+
+        if (
+            head.lower() not in _VERSION_HEAD_WORDS
+            and "." not in ver
+            and not (head.isupper() or any(c.isupper() for c in head[1:]))
+        ):
+            continue
 
         spoken_ver = _version_to_spoken(ver, lang_code)
         out.append((m.start("ver"), m.end("ver"), spoken_ver))

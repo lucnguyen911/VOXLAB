@@ -21,13 +21,10 @@ import { VoiceProviderBadge } from "../common/VoiceProviderBadge";
 import { HiddenTagsBadge } from "../common/HiddenTagsBadge";
 import {
   ACCENTS_BY_LANGUAGE,
-  LANGUAGE_REGISTRY,
   GENDER_OPTIONS,
   STYLE_OPTIONS,
   AGE_OPTIONS,
   SOURCE_OPTIONS,
-  normalizeAccent,
-  normalizeStyle,
   normalizeAge,
   getLanguageLabel,
   getAccentLabel,
@@ -39,6 +36,12 @@ import {
   getVoiceLanguageInfo,
   getVoiceSecondaryTags,
   computeVisibleTags,
+  filterLanguageRegistry,
+  matchesVoiceSearchQuery,
+  matchesVoiceAccentFilter,
+  matchesVoiceStyleFilter,
+  matchesVoiceGenderFilter,
+  matchesVoiceAgeFilter,
 } from "../../constants/voiceFilters";
 
 interface VoiceSelectionModalProps {
@@ -50,17 +53,6 @@ interface VoiceSelectionModalProps {
   onToggleFavorite?: (voiceId: string) => void;
   onNavigateToClone?: () => void;
   currentModel?: string;
-}
-
-// Normalization helper for Vietnamese diacritic-insensitive search
-function normalizeVietnamese(str: string): string {
-  return str
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/Đ/g, "D")
-    .toLowerCase()
-    .trim();
 }
 
 function parseUsageCount(usage?: string): number {
@@ -105,18 +97,10 @@ export const VoiceSelectionModal: React.FC<VoiceSelectionModalProps> = ({
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [langFilterSearch, setLangFilterSearch] = useState("");
 
-  const filteredVoiceLanguages = useMemo(() => {
-    const q = langFilterSearch.trim().toLowerCase();
-    if (!q) return LANGUAGE_REGISTRY;
-    return LANGUAGE_REGISTRY.filter((item) => {
-      const codeMatch = item.code.toLowerCase().includes(q);
-      const viMatch = item.labels.vi?.toLowerCase().includes(q);
-      const enMatch = item.labels.en?.toLowerCase().includes(q);
-      const jaMatch = item.labels.ja?.toLowerCase().includes(q);
-      const zhMatch = item.labels.zh?.toLowerCase().includes(q);
-      return codeMatch || viMatch || enMatch || jaMatch || zhMatch;
-    });
-  }, [langFilterSearch]);
+  const filteredVoiceLanguages = useMemo(
+    () => filterLanguageRegistry(langFilterSearch),
+    [langFilterSearch]
+  );
 
   // Sorting State
   const [sortOption, setSortOption] = useState<"popular" | "newest" | "name_asc" | "recent">("popular");
@@ -318,60 +302,13 @@ export const VoiceSelectionModal: React.FC<VoiceSelectionModalProps> = ({
       }
 
       // 2. Search query (matches name, canonical tags, accent, category; diacritic-insensitive)
-      if (searchQuery.trim()) {
-        const rawQuery = searchQuery.toLowerCase().trim();
-        const normQuery = normalizeVietnamese(searchQuery);
-
-        const matchesName =
-          voice.name.toLowerCase().includes(rawQuery) ||
-          normalizeVietnamese(voice.name).includes(normQuery);
-
-        const secTags = getVoiceSecondaryTags(voice, lang);
-        const matchesTags =
-          voice.tags.some(
-            (tg) =>
-              tg.toLowerCase().includes(rawQuery) ||
-              normalizeVietnamese(tg).includes(normQuery)
-          ) ||
-          secTags.some(
-            (tg) =>
-              tg.toLowerCase().includes(rawQuery) ||
-              normalizeVietnamese(tg).includes(normQuery)
-          );
-
-        const normAcc = normalizeAccent(voice.accent);
-        const matchesAccent =
-          (voice.accent &&
-            (voice.accent.toLowerCase().includes(rawQuery) ||
-              normalizeVietnamese(voice.accent).includes(normQuery))) ||
-          (normAcc && getAccentLabel(normAcc, lang).toLowerCase().includes(rawQuery));
-
-        const normSt = normalizeStyle(voice.style || voice.category);
-        const matchesStyle =
-          (voice.style &&
-            (voice.style.toLowerCase().includes(rawQuery) ||
-              normalizeVietnamese(voice.style).includes(normQuery))) ||
-          (normSt && getStyleLabel(normSt, lang).toLowerCase().includes(rawQuery));
-
-        if (!matchesName && !matchesTags && !matchesAccent && !matchesStyle) {
-          return false;
-        }
-      }
+      if (!matchesVoiceSearchQuery(voice, searchQuery, lang)) return false;
 
       // 3. Language filter
-      if (selectedLanguage !== "all") {
-        if (!voice.supportedLanguages.includes(selectedLanguage)) return false;
-      }
+      if (selectedLanguage !== "all" && !voice.supportedLanguages.includes(selectedLanguage)) return false;
 
       // 4. Accent filter
-      if (selectedAccent !== "all") {
-        const normSelected = normalizeAccent(selectedAccent);
-        let matches = normalizeAccent(voice.accent) === normSelected;
-        if (!matches && Array.isArray(voice.tags)) {
-          matches = voice.tags.some((t) => normalizeAccent(t) === normSelected);
-        }
-        if (!matches) return false;
-      }
+      if (!matchesVoiceAccentFilter(voice, selectedAccent)) return false;
 
       // 5. Source filter
       if (selectedSource !== "all") {
@@ -397,42 +334,13 @@ export const VoiceSelectionModal: React.FC<VoiceSelectionModalProps> = ({
       }
 
       // 6. Style filter
-      if (selectedStyle !== "all") {
-        const normSelected = normalizeStyle(selectedStyle);
-        let matches = false;
-        if (Array.isArray(voice.styles) && voice.styles.length > 0) {
-          matches = voice.styles.some((s) => normalizeStyle(s) === normSelected);
-        } else {
-          matches = normalizeStyle(voice.style || voice.category) === normSelected;
-        }
-        if (!matches && Array.isArray(voice.tags)) {
-          matches = voice.tags.some((t) => normalizeStyle(t) === normSelected);
-        }
-        if (!matches) return false;
-      }
+      if (!matchesVoiceStyleFilter(voice, selectedStyle)) return false;
 
       // 7. Gender filter
-      if (selectedGender !== "all") {
-        let voiceGender = voice.gender;
-        if (!voiceGender && Array.isArray(voice.tags)) {
-          if (voice.tags.some((t) => ["nữ", "female", "女性", "女声"].includes(t.toLowerCase().trim()))) {
-            voiceGender = "female";
-          } else if (voice.tags.some((t) => ["nam", "male", "男性", "男声"].includes(t.toLowerCase().trim()))) {
-            voiceGender = "male";
-          }
-        }
-        if (voiceGender !== selectedGender) return false;
-      }
+      if (!matchesVoiceGenderFilter(voice, selectedGender)) return false;
 
       // 8. Age filter
-      if (selectedAge !== "all") {
-        const normSelected = normalizeAge(selectedAge);
-        let matches = normalizeAge(voice.ageGroup) === normSelected;
-        if (!matches && Array.isArray(voice.tags)) {
-          matches = voice.tags.some((t) => normalizeAge(t) === normSelected);
-        }
-        if (!matches) return false;
-      }
+      if (!matchesVoiceAgeFilter(voice, selectedAge)) return false;
 
       return true;
     });

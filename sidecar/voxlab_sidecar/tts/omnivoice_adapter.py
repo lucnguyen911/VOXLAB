@@ -7,7 +7,33 @@ import numpy as np
 
 import os
 from ..protocol import SidecarError
-from .base import Capabilities, SynthesisRequest, TtsEngineAdapter, cuda_available, release_torch_memory
+from .base import (
+    Capabilities,
+    SynthesisRequest,
+    TtsEngineAdapter,
+    apply_clamped_extra,
+    configure_cuda_backends,
+    cuda_available,
+    cuda_load_summary,
+    release_torch_memory,
+    trim_process_working_set,
+)
+
+_OMNIVOICE_EXTRA_SPECS = (
+    ("num_step", "numStep", int, 4, 128),
+    ("guidance_scale", "guidanceScale", float, 1.0, 10.0),
+    ("denoise", None, bool, None, None),
+    ("position_temperature", "positionTemperature", float, 0.0, 20.0),
+    ("class_temperature", "classTemperature", float, 0.0, 5.0),
+    ("postprocess_output", "postprocessOutput", bool, None, None),
+    ("t_shift", "tShift", float, 0.01, 5.0),
+    ("layer_penalty_factor", "layerPenaltyFactor", float, 0.0, 20.0),
+    ("preprocess_prompt", "preprocessPrompt", bool, None, None),
+    ("pad_duration", "padDuration", float, 0.0, 2.0),
+    ("fade_duration", "fadeDuration", float, 0.0, 2.0),
+    ("audio_chunk_duration", "audioChunkDuration", float, 5.0, 60.0),
+    ("audio_chunk_threshold", "audioChunkThreshold", float, 10.0, 120.0),
+)
 
 
 def _find_default_sample() -> str | None:
@@ -54,22 +80,13 @@ class OmniVoiceAdapter(TtsEngineAdapter):
         return self._model is not None
 
     def load(self, model_dir: str, device: str) -> dict[str, Any]:
-        import gc
-        import os
         import torch
         from omnivoice import OmniVoice
 
         if device != "cuda" or not cuda_available():
             raise SidecarError("DEVICE_UNAVAILABLE", "OmniVoice requires CUDA (CPU execution not verified)")
 
-        # Enable TF32 for high throughput on modern NVIDIA GPUs (Ampere / Ada / Blackwell).
-        # Keep cudnn.benchmark = False because TTS sequence lengths vary per chunk, and
-        # cuDNN autotuning stalls on every unseen input length.
-        if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
-            torch.backends.cuda.matmul.allow_tf32 = True
-        if hasattr(torch.backends, "cudnn"):
-            torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.benchmark = False
+        configure_cuda_backends()
 
         self._model = OmniVoice.from_pretrained(model_dir, device_map="cuda:0", dtype=torch.float16)
         self.device = device
@@ -80,27 +97,10 @@ class OmniVoiceAdapter(TtsEngineAdapter):
         except Exception:
             pass
 
-        # Trim host RAM to free memory pages allocated during safetensors reading
-        gc.collect()
-        if os.name == "nt":
-            try:
-                import ctypes
-                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-            except Exception:
-                pass
-
-        vram_mb = int(torch.cuda.memory_allocated(0) // (1024 * 1024)) if torch.cuda.is_available() else 0
-        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NVIDIA GPU"
-        return {
-            "dtype": "float16",
-            "sampleRate": int(self._model.sampling_rate),
-            "gpu": gpu_name,
-            "vramMb": vram_mb,
-            "device": "cuda:0",
-        }
+        trim_process_working_set()
+        return cuda_load_summary("float16", int(self._model.sampling_rate))
 
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
-        import os
         import torch
 
         kwargs: dict[str, Any] = {"text": req.text}
@@ -130,37 +130,7 @@ class OmniVoiceAdapter(TtsEngineAdapter):
             kwargs["speed"] = float(req.speed)
 
         extra = req.extra or {}
-        num_step = extra.get("num_step", extra.get("numStep"))
-        if num_step is not None:
-            kwargs["num_step"] = max(4, min(128, int(num_step)))
-
-        guidance_scale = extra.get("guidance_scale", extra.get("guidanceScale"))
-        if guidance_scale is not None:
-            kwargs["guidance_scale"] = max(1.0, min(10.0, float(guidance_scale)))
-
-        denoise = extra.get("denoise")
-        if denoise is not None:
-            kwargs["denoise"] = bool(denoise)
-
-        pos_temp = extra.get("position_temperature", extra.get("positionTemperature"))
-        if pos_temp is not None:
-            kwargs["position_temperature"] = max(0.0, min(20.0, float(pos_temp)))
-
-        cls_temp = extra.get("class_temperature", extra.get("classTemperature"))
-        if cls_temp is not None:
-            kwargs["class_temperature"] = max(0.0, min(5.0, float(cls_temp)))
-
-        postprocess = extra.get("postprocess_output", extra.get("postprocessOutput"))
-        if postprocess is not None:
-            kwargs["postprocess_output"] = bool(postprocess)
-
-        t_shift = extra.get("t_shift", extra.get("tShift"))
-        if t_shift is not None:
-            kwargs["t_shift"] = max(0.01, min(5.0, float(t_shift)))
-
-        lpf = extra.get("layer_penalty_factor", extra.get("layerPenaltyFactor"))
-        if lpf is not None:
-            kwargs["layer_penalty_factor"] = max(0.0, min(20.0, float(lpf)))
+        apply_clamped_extra(kwargs, extra, _OMNIVOICE_EXTRA_SPECS)
 
         dur = extra.get("duration")
         if dur is not None and str(dur).strip() != "" and str(dur).lower() != "auto":
@@ -171,26 +141,6 @@ class OmniVoiceAdapter(TtsEngineAdapter):
             except (ValueError, TypeError):
                 pass
 
-        prep_prompt = extra.get("preprocess_prompt", extra.get("preprocessPrompt"))
-        if prep_prompt is not None:
-            kwargs["preprocess_prompt"] = bool(prep_prompt)
-
-        pad_dur = extra.get("pad_duration", extra.get("padDuration"))
-        if pad_dur is not None:
-            kwargs["pad_duration"] = max(0.0, min(2.0, float(pad_dur)))
-
-        fade_dur = extra.get("fade_duration", extra.get("fadeDuration"))
-        if fade_dur is not None:
-            kwargs["fade_duration"] = max(0.0, min(2.0, float(fade_dur)))
-
-        chunk_dur = extra.get("audio_chunk_duration", extra.get("audioChunkDuration"))
-        if chunk_dur is not None:
-            kwargs["audio_chunk_duration"] = max(5.0, min(60.0, float(chunk_dur)))
-
-        chunk_thresh = extra.get("audio_chunk_threshold", extra.get("audioChunkThreshold"))
-        if chunk_thresh is not None:
-            kwargs["audio_chunk_threshold"] = max(10.0, min(120.0, float(chunk_thresh)))
-
         audios = self._model.generate(**kwargs)
         return np.asarray(audios[0], dtype=np.float32), int(self._model.sampling_rate)
 
@@ -198,10 +148,3 @@ class OmniVoiceAdapter(TtsEngineAdapter):
         self._model = None
         self.device = None
         release_torch_memory()
-        import os
-        if os.name == "nt":
-            try:
-                import ctypes
-                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-            except Exception:
-                pass

@@ -38,6 +38,7 @@ import {
   getVoiceLanguageInfo,
   computeVisibleTags,
   resolveCountryFromLangAndAccent,
+  getDeterministicAvatarColor,
 } from "../constants/voiceFilters";
 import { CountryFlag } from "../components/common/CountryFlag";
 import { HiddenTagsBadge } from "../components/common/HiddenTagsBadge";
@@ -70,26 +71,6 @@ export interface CloneModelDefinition {
   supportsAutoLang: boolean;
   requiresTranscript: boolean;
   supportsNoiseReduction: boolean;
-}
-
-const AVATAR_PALETTES = [
-  "from-pink-500 to-rose-600",
-  "from-teal-500 to-emerald-600",
-  "from-amber-500 to-orange-600",
-  "from-violet-500 to-purple-600",
-  "from-sky-500 to-blue-600",
-  "from-indigo-500 to-cyan-600",
-  "from-emerald-500 to-teal-600",
-  "from-fuchsia-500 to-pink-600",
-];
-
-function getDeterministicAvatarColor(key: string): string {
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = (hash << 5) - hash + key.charCodeAt(i);
-    hash |= 0;
-  }
-  return AVATAR_PALETTES[Math.abs(hash) % AVATAR_PALETTES.length];
 }
 
 const CLONE_MODELS: CloneModelDefinition[] = [

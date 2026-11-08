@@ -18,14 +18,9 @@ import {
 import { VoiceProfile, VoiceSource } from "../types/ui";
 import { useI18n } from "../i18n/context";
 import {
-  normalizeAccent,
-  normalizeCategory,
-  normalizeAge,
-  normalizeStyle,
   getVoiceLanguageInfo,
   getVoiceSecondaryTags,
   computeVisibleTags,
-  LANGUAGE_REGISTRY,
   ACCENTS_BY_LANGUAGE,
   STYLE_OPTIONS,
   GENDER_OPTIONS,
@@ -36,6 +31,12 @@ import {
   getGenderLabel,
   getAgeLabel,
   getDeterministicAvatarColor,
+  filterLanguageRegistry,
+  matchesVoiceSearchQuery,
+  matchesVoiceAccentFilter,
+  matchesVoiceStyleFilter,
+  matchesVoiceGenderFilter,
+  matchesVoiceAgeFilter,
 } from "../constants/voiceFilters";
 import { CountryFlag } from "../components/common/CountryFlag";
 import { VoiceProviderBadge } from "../components/common/VoiceProviderBadge";
@@ -54,16 +55,6 @@ interface VoiceLibraryWorkspaceProps {
   onPlayTrack?: (track: any) => void;
   activePlayingTrackId?: string | null;
   onStopPlaying?: () => void;
-}
-
-function normalizeVietnamese(str: string): string {
-  return str
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/Đ/g, "D")
-    .toLowerCase()
-    .trim();
 }
 
 export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
@@ -95,18 +86,10 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
   const [voiceToTest, setVoiceToTest] = useState<VoiceProfile | null>(null);
   const [langFilterSearch, setLangFilterSearch] = useState("");
 
-  const filteredVoiceLanguages = useMemo(() => {
-    const q = langFilterSearch.trim().toLowerCase();
-    if (!q) return LANGUAGE_REGISTRY;
-    return LANGUAGE_REGISTRY.filter((item) => {
-      const codeMatch = item.code.toLowerCase().includes(q);
-      const viMatch = item.labels.vi?.toLowerCase().includes(q);
-      const enMatch = item.labels.en?.toLowerCase().includes(q);
-      const jaMatch = item.labels.ja?.toLowerCase().includes(q);
-      const zhMatch = item.labels.zh?.toLowerCase().includes(q);
-      return codeMatch || viMatch || enMatch || jaMatch || zhMatch;
-    });
-  }, [langFilterSearch]);
+  const filteredVoiceLanguages = useMemo(
+    () => filterLanguageRegistry(langFilterSearch),
+    [langFilterSearch]
+  );
 
   // Synchronize playingVoiceId when activePlayingTrackId changes from global player
   useEffect(() => {
@@ -148,49 +131,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
   // Filter voices
   const filteredVoices = useMemo(() => {
     return voices.filter((v) => {
-      // Search
-      if (searchQuery.trim()) {
-        const q = normalizeVietnamese(searchQuery);
-        const rawQ = searchQuery.toLowerCase().trim();
-        const nameMatches =
-          normalizeVietnamese(v.name).includes(q) ||
-          v.name.toLowerCase().includes(rawQ);
-        const secTags = getVoiceSecondaryTags(v, lang);
-        const tagsMatches =
-          v.tags.some(
-            (tg) =>
-              normalizeVietnamese(tg).includes(q) ||
-              tg.toLowerCase().includes(rawQ)
-          ) ||
-          secTags.some(
-            (tg) =>
-              normalizeVietnamese(tg).includes(q) ||
-              tg.toLowerCase().includes(rawQ)
-          );
-        const normAcc = normalizeAccent(v.accent);
-        const accentLabel = normAcc ? getAccentLabel(normAcc, lang) : "";
-        const accentMatches =
-          (v.accent
-            ? normalizeVietnamese(v.accent).includes(q) ||
-              v.accent.toLowerCase().includes(rawQ)
-            : false) ||
-          (accentLabel
-            ? normalizeVietnamese(accentLabel).includes(q) ||
-              accentLabel.toLowerCase().includes(rawQ)
-            : false);
-        const normSt = normalizeStyle(v.style || v.category);
-        const styleLabel = normSt ? getStyleLabel(normSt, lang) : "";
-        const styleMatches =
-          (v.style
-            ? normalizeVietnamese(v.style).includes(q) ||
-              v.style.toLowerCase().includes(rawQ)
-            : false) ||
-          (styleLabel
-            ? normalizeVietnamese(styleLabel).includes(q) ||
-              styleLabel.toLowerCase().includes(rawQ)
-            : false);
-        if (!nameMatches && !tagsMatches && !accentMatches && !styleMatches) return false;
-      }
+      if (!matchesVoiceSearchQuery(v, searchQuery, lang)) return false;
 
       // Source
       if (selectedSource !== "all") {
@@ -212,60 +153,11 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
         }
       }
 
-      // Language
       if (selectedLanguage !== "all" && !v.supportedLanguages.includes(selectedLanguage)) return false;
-
-      // Accent
-      if (selectedAccent !== "all") {
-        const normSelected = normalizeAccent(selectedAccent);
-        let matches = normalizeAccent(v.accent) === normSelected;
-        if (!matches && Array.isArray(v.tags)) {
-          matches = v.tags.some((t) => normalizeAccent(t) === normSelected);
-        }
-        if (!matches) return false;
-      }
-
-      // Category / Style (supports multi-style array)
-      if (selectedCategory !== "all") {
-        const normSelected = normalizeCategory(selectedCategory);
-        let matches = false;
-        if (Array.isArray(v.styles) && v.styles.length > 0) {
-          matches = v.styles.some((s) => normalizeCategory(s) === normSelected);
-        } else {
-          matches = normalizeCategory(v.category || v.style) === normSelected;
-        }
-        if (!matches && Array.isArray(v.tags)) {
-          matches = v.tags.some((t) => normalizeCategory(t) === normSelected);
-        }
-        if (!matches) return false;
-      }
-
-      // Gender
-      if (selectedGender !== "all") {
-        let voiceGender = v.gender;
-        if (!voiceGender && Array.isArray(v.tags)) {
-          if (v.tags.some((t) => ["nữ", "female", "女性", "女声"].includes(t.toLowerCase().trim()))) {
-            voiceGender = "female";
-          } else if (v.tags.some((t) => ["nam", "male", "男性", "男声"].includes(t.toLowerCase().trim()))) {
-            voiceGender = "male";
-          }
-        }
-        if (selectedGender === "neutral") {
-          if (voiceGender) return false;
-        } else if (voiceGender !== selectedGender) {
-          return false;
-        }
-      }
-
-      // Age
-      if (selectedAge !== "all") {
-        const normSelected = normalizeAge(selectedAge);
-        let matches = normalizeAge(v.ageGroup) === normSelected;
-        if (!matches && Array.isArray(v.tags)) {
-          matches = v.tags.some((t) => normalizeAge(t) === normSelected);
-        }
-        if (!matches) return false;
-      }
+      if (!matchesVoiceAccentFilter(v, selectedAccent)) return false;
+      if (!matchesVoiceStyleFilter(v, selectedCategory)) return false;
+      if (!matchesVoiceGenderFilter(v, selectedGender)) return false;
+      if (!matchesVoiceAgeFilter(v, selectedAge)) return false;
 
       return true;
     }).sort((a, b) => {

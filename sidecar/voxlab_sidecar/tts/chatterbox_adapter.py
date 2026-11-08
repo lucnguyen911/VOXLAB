@@ -12,9 +12,26 @@ from typing import Any
 import numpy as np
 
 from ..protocol import SidecarError
-from .base import Capabilities, SynthesisRequest, TtsEngineAdapter, cuda_available, release_torch_memory
+from .base import (
+    Capabilities,
+    SynthesisRequest,
+    TtsEngineAdapter,
+    apply_clamped_extra,
+    configure_cuda_backends,
+    cuda_available,
+    cuda_load_summary,
+    release_torch_memory,
+    trim_process_working_set,
+)
 
 MIN_REF_SECONDS = 5.0  # upstream asserts the reference clip is longer than 5 s
+_CHATTERBOX_EXTRA_SPECS = (
+    ("temperature", None, float, 0.1, 2.0),
+    ("top_p", "topP", float, 0.1, 1.0),
+    ("top_k", "topK", int, 10, 2000),
+    ("repetition_penalty", "repetitionPenalty", float, 1.0, 2.0),
+    ("norm_loudness", "normLoudness", bool, None, None),
+)
 # Empirical Phase 11 benchmark: Chatterbox Turbo drops words (MISSING_WORD) on chunks >= 400 chars
 # (0.9% flagged at <400 chars vs 50% at 400-499 chars and 87.5% at 500-599 chars).
 CHATTERBOX_MAX_CHARS_PER_CALL = 380
@@ -124,56 +141,20 @@ class ChatterboxAdapter(TtsEngineAdapter):
     def load(self, model_dir: str, device: str) -> dict[str, Any]:
         if device != "cuda" or not cuda_available():
             raise SidecarError("DEVICE_UNAVAILABLE", "Chatterbox Turbo requires CUDA (CPU execution not verified)")
-        import gc
-        import os
-        import torch
-        if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
-            torch.backends.cuda.matmul.allow_tf32 = True
-        if hasattr(torch.backends, "cudnn"):
-            torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.benchmark = False
+        configure_cuda_backends()
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 
         self._model = ChatterboxTurboTTS.from_local(model_dir, "cuda")
         self.device = device
-
-        gc.collect()
-        if os.name == "nt":
-            try:
-                import ctypes
-                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-            except Exception:
-                pass
-
-        vram_mb = int(torch.cuda.memory_allocated(0) // (1024 * 1024)) if torch.cuda.is_available() else 0
-        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NVIDIA GPU"
-        return {"dtype": "float32", "sampleRate": int(self._model.sr), "gpu": gpu_name, "vramMb": vram_mb, "device": "cuda:0"}
+        trim_process_working_set()
+        return cuda_load_summary("float32", int(self._model.sr))
 
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
         kwargs: dict[str, Any] = {"text": req.text}
         if req.ref_audio_path:
             _check_ref_duration(req.ref_audio_path)
             kwargs["audio_prompt_path"] = req.ref_audio_path
-        extra = req.extra or {}
-        temp = extra.get("temperature")
-        if temp is not None:
-            kwargs["temperature"] = max(0.1, min(2.0, float(temp)))
-
-        top_p = extra.get("top_p", extra.get("topP"))
-        if top_p is not None:
-            kwargs["top_p"] = max(0.1, min(1.0, float(top_p)))
-
-        top_k = extra.get("top_k", extra.get("topK"))
-        if top_k is not None:
-            kwargs["top_k"] = max(10, min(2000, int(top_k)))
-
-        rep_pen = extra.get("repetition_penalty", extra.get("repetitionPenalty"))
-        if rep_pen is not None:
-            kwargs["repetition_penalty"] = max(1.0, min(2.0, float(rep_pen)))
-
-        norm_loudness = extra.get("norm_loudness", extra.get("normLoudness"))
-        if norm_loudness is not None:
-            kwargs["norm_loudness"] = bool(norm_loudness)
+        apply_clamped_extra(kwargs, req.extra or {}, _CHATTERBOX_EXTRA_SPECS)
 
         sr = int(self._model.sr)
         parts = _split_chatterbox_text(req.text, CHATTERBOX_MAX_CHARS_PER_CALL)
@@ -200,13 +181,6 @@ class ChatterboxAdapter(TtsEngineAdapter):
         self._model = None
         self.device = None
         release_torch_memory()
-        import os
-        if os.name == "nt":
-            try:
-                import ctypes
-                ctypes.windll.psapi.EmptyWorkingSet(ctypes.windll.kernel32.GetCurrentProcess())
-            except Exception:
-                pass
 
 
 def _check_ref_duration(path: str) -> None:
