@@ -6,7 +6,6 @@ import {
   RotateCcw,
   Zap,
   FolderOpen,
-  Sliders,
   AlertTriangle,
   Trash2,
 } from "lucide-react";
@@ -20,7 +19,7 @@ export interface FailedJobsTableProps {
   onRegenerate: (jobId: string) => void;
   onReexport: (jobId: string) => void;
   onRetryAll: () => void;
-  onOpenDrawer: (job: BatchJob) => void;
+  onOpenDrawer?: (job: BatchJob) => void;
   onDeleteJob?: (jobId: string) => void;
   onClearFailedJobs?: () => void;
 }
@@ -45,7 +44,6 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
   onRegenerate,
   onReexport,
   onRetryAll,
-  onOpenDrawer,
   onDeleteJob,
   onClearFailedJobs,
 }) => {
@@ -69,7 +67,7 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                 Hành động khôi phục
               </th>
               <th className="py-2.5 px-2 w-[10%] text-center text-sm font-bold text-textPrimary">
-                Tùy chỉnh
+                Thao tác
               </th>
             </tr>
           </thead>
@@ -172,17 +170,9 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                     </div>
                   </td>
 
-                  {/* Drawer Open & Delete Buttons */}
+                  {/* Delete Button */}
                   <td className="py-3 px-2 text-center">
                     <div className="flex items-center justify-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => onOpenDrawer(job)}
-                        className="p-1 rounded text-textMuted hover:text-textPrimary hover:bg-surface2 transition-colors cursor-pointer"
-                        title="Mở cấu hình nâng cao để chỉnh sửa"
-                      >
-                        <Sliders className="w-3.5 h-3.5" />
-                      </button>
                       {onDeleteJob && (
                         <button
                           type="button"
