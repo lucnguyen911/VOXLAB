@@ -3,7 +3,6 @@ import {
   FileText,
   Video,
   FileCode,
-  Sliders,
   Trash2,
 } from "lucide-react";
 import {
@@ -29,11 +28,73 @@ export interface FileTaskMatrixTableProps {
     job: BatchJob,
     task: BatchTaskType
   ) => { isCompatible: boolean; reason?: string };
-  onOpenDrawer: (job: BatchJob) => void;
+  onOpenDrawer?: (job: BatchJob) => void;
   onOpenDialogueVoices?: (job: BatchJob) => void;
   onDeleteJob: (jobId: string) => void;
   onClearAllJobs: () => void;
 }
+
+const renderJobStatusBadge = (job: BatchJob) => {
+  if (job.status === "completed") {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+        Hoàn tất
+      </span>
+    );
+  }
+  if (job.status === "completed_with_warning") {
+    return (
+      <span
+        className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30"
+        title={job.warningMessage || "Hoàn tất kèm cảnh báo"}
+      >
+        Hoàn tất
+      </span>
+    );
+  }
+  if (
+    job.status === "failed" ||
+    job.status === "failed_with_artifact" ||
+    job.status === "cancelled" ||
+    job.status === "interrupted"
+  ) {
+    return (
+      <span
+        className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30"
+        title={job.errorMessage || "Tệp gặp lỗi hoặc bị gián đoạn"}
+      >
+        Lỗi
+      </span>
+    );
+  }
+  if (job.stage === "queued") {
+    if (job.status === "processing") {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-accent/15 text-accent border border-accent/30">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+          <span>Đang chạy</span>
+        </span>
+      );
+    }
+    if (job.status === "paused") {
+      return (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+          Tạm dừng
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-400 border border-sky-500/30">
+        Hàng đợi
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface3 text-textMuted border border-borderDefault">
+      Chờ xử lý
+    </span>
+  );
+};
 
 const renderFileIcon = (fileKind: BatchFileKind) => {
   switch (fileKind) {
@@ -60,7 +121,6 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
   isTaskAllEnabled,
   isTaskSomeEnabled,
   getTaskCompatibility,
-  onOpenDrawer,
   onOpenDialogueVoices,
   onDeleteJob,
   onClearAllJobs,
@@ -127,9 +187,9 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
               {renderTaskHeader("translation", "Dịch")}
               {renderTaskHeader("dubbing", "Lồng tiếng")}
 
-              {/* Column 9: Status / Config */}
+              {/* Column 9: Status */}
               <th className="py-2.5 px-3 w-[10%] text-center border-r border-borderDefault text-xs font-bold text-textPrimary">
-                <div className="flex items-center justify-center min-h-[46px]">Cấu hình</div>
+                <div className="flex items-center justify-center min-h-[46px]">Trạng thái</div>
               </th>
 
               {/* Column 10: Actions */}
@@ -272,30 +332,14 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                     />
                   </td>
 
-                  {/* Column 9: Config Status */}
+                  {/* Column 9: Job Status */}
                   <td className="py-2.5 px-3 text-center border-r border-borderDefault">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                        job.hasCustomConfig
-                          ? "bg-purple-500/10 text-purple-400 border border-purple-500/20"
-                          : "bg-surface3 text-textMuted"
-                      }`}
-                    >
-                      {job.hasCustomConfig ? "Tùy chỉnh riêng" : "Kế thừa chung"}
-                    </span>
+                    {renderJobStatusBadge(job)}
                   </td>
 
-                  {/* Column 10: Row Actions */}
+                  {/* Column 10: Row Actions (Single-file Delete) */}
                   <td className="py-2.5 px-2 text-center">
-                    <div className="flex items-center justify-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => onOpenDrawer(job)}
-                        className="p-1 rounded text-textMuted hover:text-textPrimary hover:bg-surface2 transition-colors cursor-pointer"
-                        title="Tùy chỉnh cấu hình riêng cho tệp này"
-                      >
-                        <Sliders className="w-3.5 h-3.5" />
-                      </button>
+                    <div className="flex items-center justify-center">
                       <button
                         type="button"
                         onClick={() => onDeleteJob(job.id)}

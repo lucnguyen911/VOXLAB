@@ -143,7 +143,7 @@ export const BatchWorkspace: React.FC = () => {
     let list: BatchJob[] = [];
     switch (activeView) {
       case "list":
-        list = jobs.filter((j) => j.stage === "staging");
+        list = [...jobs];
         break;
       case "queued":
         list = jobs.filter((j) => j.stage === "queued" && (j.status === "waiting" || j.status === "processing" || j.status === "paused"));
@@ -164,7 +164,7 @@ export const BatchWorkspace: React.FC = () => {
   // View Counts
   const viewCounts = useMemo(() => {
     return {
-      list: jobs.filter((j) => j.stage === "staging").length,
+      list: jobs.length,
       queued: jobs.filter((j) => j.stage === "queued" && (j.status === "waiting" || j.status === "processing" || j.status === "paused")).length,
       completed: jobs.filter((j) => j.status === "completed" || j.status === "completed_with_warning").length,
       failed: jobs.filter((j) => j.status === "failed" || j.status === "failed_with_artifact" || j.status === "cancelled" || j.status === "interrupted").length,
@@ -442,7 +442,11 @@ export const BatchWorkspace: React.FC = () => {
   // Stage to Queue
   const handleStageToQueue = () => {
     const updated = jobs.map((job) => {
-      if (selectedJobIds.has(job.id) && job.stage === "staging" && job.selectedTasks.length > 0) {
+      if (
+        selectedJobIds.has(job.id) &&
+        job.status !== "processing" &&
+        job.selectedTasks.length > 0
+      ) {
         return {
           ...job,
           stage: "queued" as const,
@@ -668,8 +672,26 @@ export const BatchWorkspace: React.FC = () => {
               }
               onOpenDrawer={setDrawerJob}
               onOpenDialogueVoices={setDialogueVoiceJob}
-              onDeleteJob={(id) => orchestrator.setJobs(jobs.filter((j) => j.id !== id))}
-              onClearAllJobs={() => orchestrator.setJobs([])}
+              onDeleteJob={(id) => {
+                const target = jobs.find((j) => j.id === id);
+                if (target?.status === "processing") {
+                  orchestrator.requestCancel();
+                }
+                orchestrator.setJobs(jobs.filter((j) => j.id !== id));
+                setSelectedJobIds((prev) => {
+                  if (!prev.has(id)) return prev;
+                  const next = new Set(prev);
+                  next.delete(id);
+                  return next;
+                });
+              }}
+              onClearAllJobs={() => {
+                if (jobs.some((j) => j.status === "processing")) {
+                  orchestrator.requestCancel();
+                }
+                orchestrator.setJobs([]);
+                setSelectedJobIds(new Set());
+              }}
             />
           )}
 
