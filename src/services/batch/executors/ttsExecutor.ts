@@ -37,6 +37,7 @@ export interface TtsExecutorOptions {
   textContent?: string;
   onProgress?: (progressPct: number, stageMessage?: string) => void;
   isCancelled?: () => boolean;
+  waitIfPaused?: () => Promise<void>;
   writeFile?: (path: string, content: Uint8Array | string) => Promise<void>;
   checkPathExists?: (path: string) => boolean;
   /** Local AI runtime (sidecar). Required: there is no simulated synthesis. */
@@ -51,7 +52,7 @@ export class TtsExecutor {
     job: BatchJob,
     options: TtsExecutorOptions = {}
   ): Promise<BatchStepResult> {
-    const { onProgress, isCancelled, writeFile, checkPathExists = () => false, ai } = options;
+    const { onProgress, isCancelled, waitIfPaused, writeFile, checkPathExists = () => false, ai } = options;
     const startedAt = Date.now();
 
     onProgress?.(5, "Đang nạp và chuẩn hóa văn bản...");
@@ -182,11 +183,19 @@ export class TtsExecutor {
       }
       const pct = Math.floor(10 + ((i + 1) / totalChunks) * 55);
       onProgress?.(pct, `Đang tạo giọng đọc: đoạn ${i + 1}/${totalChunks}...`);
+      if (i + 1 < totalChunks) {
+        await waitIfPaused?.();
+        if (isCancelled?.()) return cancelled(pct);
+      }
     }
 
     // 4b. Dedicated post-TTS Whisper quality validation pass (avoids TTS <-> ASR GPU model thrashing)
     let retriesUsed = 0;
     if (typeof ai.validateAudioQuality === "function" && sortedChunks.length > 0) {
+      if (sortedChunks.length > 1) {
+        await waitIfPaused?.();
+        if (isCancelled?.()) return cancelled(65);
+      }
       onProgress?.(68, "Đang hậu kiểm chất lượng giọng đọc bằng Whisper...");
       for (let i = 0; i < sortedChunks.length; i++) {
         if (isCancelled?.()) return cancelled(68);
@@ -202,6 +211,10 @@ export class TtsExecutor {
           );
         } catch {
           // Non-blocking: quality check failure must not abort batch synthesis
+        }
+        if (i + 1 < sortedChunks.length) {
+          await waitIfPaused?.();
+          if (isCancelled?.()) return cancelled(68);
         }
       }
 

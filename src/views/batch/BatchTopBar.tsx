@@ -3,6 +3,7 @@ import {
   ListPlus,
   Play,
   Pause,
+  X,
 } from "lucide-react";
 import { BatchWorkspaceView, BatchQueueStatus } from "../../types/batch";
 import { BatchViewTabs } from "./BatchViewTabs";
@@ -23,6 +24,7 @@ export interface BatchTopBarProps {
   onStageToQueue: () => void;
   onStartQueue: () => void;
   onPauseQueue: () => void;
+  onCancelQueue?: () => void;
   onGlobalConfigClick: () => void;
   onStartFromList?: () => void;
 }
@@ -47,6 +49,7 @@ export const BatchTopBar: React.FC<BatchTopBarProps> = ({
   onStageToQueue,
   onStartQueue,
   onPauseQueue,
+  onCancelQueue,
   onGlobalConfigClick: _onGlobalConfigClick,
   onStartFromList,
 }) => {
@@ -128,15 +131,79 @@ export const BatchTopBar: React.FC<BatchTopBarProps> = ({
         ) : activeView === "queued" ? (
           <div className="flex items-center gap-2">
             {queueStatus === "running" ? (
-              <button
-                type="button"
-                onClick={onPauseQueue}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 cursor-pointer active:scale-98"
-                title="Tạm dừng xử lý hàng đợi tại biên an toàn"
-              >
-                <Pause className="w-3.5 h-3.5" />
-                <span>Tạm dừng</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={onPauseQueue}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 cursor-pointer active:scale-98"
+                  title="Tạm dừng xử lý hàng đợi sau khi hoàn tất đoạn hiện tại"
+                >
+                  <Pause className="w-3.5 h-3.5" />
+                  <span>Tạm dừng</span>
+                </button>
+                {onCancelQueue && (
+                  <button
+                    type="button"
+                    onClick={onCancelQueue}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 cursor-pointer active:scale-98"
+                    title="Hủy tệp đang xử lý"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Hủy</span>
+                  </button>
+                )}
+              </>
+            ) : queueStatus === "pausing" ? (
+              <>
+                <button
+                  type="button"
+                  disabled
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap bg-amber-500/15 text-amber-300/80 border border-amber-500/30 cursor-not-allowed opacity-80"
+                  title="Đang hoàn tất đoạn hiện tại để tạm dừng an toàn..."
+                >
+                  <Pause className="w-3.5 h-3.5 animate-pulse" />
+                  <span>Đang tạm dừng...</span>
+                </button>
+                {onCancelQueue && (
+                  <button
+                    type="button"
+                    onClick={onCancelQueue}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 cursor-pointer active:scale-98"
+                    title="Hủy ngay tệp đang xử lý"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Hủy</span>
+                  </button>
+                )}
+              </>
+            ) : queueStatus === "paused" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onStartQueue}
+                  disabled={viewCounts.queued === 0}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap ${
+                    viewCounts.queued === 0
+                      ? "bg-surface3 text-textMuted cursor-not-allowed border border-borderDefault opacity-60"
+                      : "bg-accent hover:bg-accentHover text-slate-950 shadow-accent/20 cursor-pointer active:scale-98"
+                  }`}
+                  title="Tiếp tục xử lý từ đoạn tiếp theo"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Tiếp tục xử lý</span>
+                </button>
+                {onCancelQueue && (
+                  <button
+                    type="button"
+                    onClick={onCancelQueue}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 cursor-pointer active:scale-98"
+                    title="Hủy tệp đang tạm dừng"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Hủy</span>
+                  </button>
+                )}
+              </>
             ) : (
               <button
                 type="button"
@@ -150,7 +217,7 @@ export const BatchTopBar: React.FC<BatchTopBarProps> = ({
                 title="Bắt đầu chạy các tác vụ trong Hàng đợi"
               >
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>{queueStatus === "paused" ? "Tiếp tục xử lý" : "Bắt đầu xử lý"}</span>
+                <span>Bắt đầu xử lý</span>
               </button>
             )}
           </div>

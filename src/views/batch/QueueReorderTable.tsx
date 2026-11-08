@@ -11,11 +11,12 @@ import {
   Lock,
   Trash2,
 } from "lucide-react";
-import { BatchJob, BatchFileKind } from "../../types/batch";
+import { BatchJob, BatchFileKind, BatchQueueStatus } from "../../types/batch";
 import { BatchFooter } from "../../components/batch/BatchFooter";
 
 export interface QueueReorderTableProps {
   jobs: BatchJob[];
+  queueStatus?: BatchQueueStatus;
   onMoveJob: (jobId: string, direction: "up" | "down") => void;
   onPauseJob?: (jobId: string) => void;
   onResumeJob?: (jobId: string) => void;
@@ -38,6 +39,7 @@ const renderFileIcon = (fileKind: BatchFileKind) => {
 
 export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
   jobs,
+  queueStatus,
   onMoveJob,
   onPauseJob,
   onResumeJob,
@@ -45,10 +47,11 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
   onClearQueuedJobs,
 }) => {
   const clearableCount = jobs.filter((j) => j.status !== "processing").length;
-  // Sort: processing job pinned at top, then waiting jobs sorted by queueOrder
+  const isPinnedStatus = (status: string) => status === "processing" || status === "paused";
+  // Sort: processing or paused active job pinned at top, then waiting jobs sorted by queueOrder
   const sortedJobs = [...jobs].sort((a, b) => {
-    if (a.status === "processing") return -1;
-    if (b.status === "processing") return 1;
+    if (isPinnedStatus(a.status) && !isPinnedStatus(b.status)) return -1;
+    if (!isPinnedStatus(a.status) && isPinnedStatus(b.status)) return 1;
     return a.queueOrder - b.queueOrder;
   });
 
@@ -97,6 +100,8 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                   className={`transition-colors ${
                     isProcessing
                       ? "bg-accent/10 border-l-2 border-l-accent"
+                      : isPaused
+                      ? "bg-amber-500/5 border-l-2 border-l-amber-400"
                       : "hover:bg-surface2/50"
                   }`}
                 >
@@ -106,7 +111,12 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                       {isProcessing ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-accent text-slate-950">
                           <Lock className="w-3 h-3" />
-                          <span>Đang chạy</span>
+                          <span>{queueStatus === "pausing" ? "Đang dừng..." : "Đang chạy"}</span>
+                        </span>
+                      ) : isPaused ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          <Pause className="w-3 h-3" />
+                          <span>Tạm dừng</span>
                         </span>
                       ) : (
                         <div className="flex items-center gap-1">
@@ -117,7 +127,7 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                             <button
                               type="button"
                               onClick={() => onMoveJob(job.id, "up")}
-                              disabled={index <= (sortedJobs[0]?.status === "processing" ? 1 : 0)}
+                              disabled={index <= (isPinnedStatus(sortedJobs[0]?.status) ? 1 : 0)}
                               className="p-0.5 rounded hover:bg-surface3 text-textMuted hover:text-textPrimary disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                               title="Tăng thứ tự ưu tiên"
                             >
@@ -208,7 +218,9 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                       <div className="flex items-center justify-between text-[11px]">
                         <span className="text-textSecondary font-medium">
                           {isProcessing
-                            ? "Đang chạy"
+                            ? queueStatus === "pausing"
+                              ? "Đang tạm dừng..."
+                              : "Đang chạy"
                             : isPaused
                             ? "Tạm dừng"
                             : isWaiting
@@ -237,7 +249,7 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                   {/* Column 5: Actions */}
                   <td className="py-3 px-2 text-center">
                     <div className="flex items-center justify-center gap-1.5">
-                      {isProcessing && onPauseJob && (
+                      {isProcessing && onPauseJob && queueStatus !== "pausing" && (
                         <button
                           type="button"
                           onClick={() => onPauseJob(job.id)}

@@ -586,6 +586,7 @@ export const BatchWorkspace: React.FC = () => {
         onStageToQueue={handleStageToQueue}
         onStartQueue={() => orchestrator.startQueue()}
         onPauseQueue={() => orchestrator.requestPause()}
+        onCancelQueue={() => orchestrator.requestCancel()}
         onGlobalConfigClick={() => setIsGlobalModalOpen(true)}
         onStartFromList={handleStartFromList}
       />
@@ -674,7 +675,7 @@ export const BatchWorkspace: React.FC = () => {
               onOpenDialogueVoices={setDialogueVoiceJob}
               onDeleteJob={(id) => {
                 const target = jobs.find((j) => j.id === id);
-                if (target?.status === "processing") {
+                if (target?.status === "processing" || target?.status === "paused") {
                   orchestrator.requestCancel();
                 }
                 orchestrator.setJobs(jobs.filter((j) => j.id !== id));
@@ -686,7 +687,7 @@ export const BatchWorkspace: React.FC = () => {
                 });
               }}
               onClearAllJobs={() => {
-                if (jobs.some((j) => j.status === "processing")) {
+                if (jobs.some((j) => j.status === "processing" || j.status === "paused")) {
                   orchestrator.requestCancel();
                 }
                 orchestrator.setJobs([]);
@@ -698,16 +699,22 @@ export const BatchWorkspace: React.FC = () => {
           {activeView === "queued" && (
             <QueueReorderTable
               jobs={viewJobs}
+              queueStatus={queueStatus}
               onMoveJob={(id, dir) => orchestrator.moveWaitingJob(id, dir)}
+              onPauseJob={() => orchestrator.requestPause()}
+              onResumeJob={() => orchestrator.resumeQueue()}
               onCancelJob={(id) => {
                 const target = jobs.find((j) => j.id === id);
-                if (target?.status === "processing") {
+                if (target?.status === "processing" || target?.status === "paused") {
                   orchestrator.requestCancel();
                   return;
                 }
                 orchestrator.setJobs(jobs.filter((j) => j.id !== id));
               }}
               onClearQueuedJobs={() => {
+                if (jobs.some((j) => j.status === "paused")) {
+                  orchestrator.requestCancel();
+                }
                 orchestrator.setJobs(
                   jobs.filter(
                     (j) =>

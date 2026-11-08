@@ -44,6 +44,7 @@ export interface DialogueExecutorOptions {
   scriptContent?: string;
   onProgress?: (progressPct: number, stageMessage?: string) => void;
   isCancelled?: () => boolean;
+  waitIfPaused?: () => Promise<void>;
   writeFile?: (path: string, content: Uint8Array | string) => Promise<void>;
   checkPathExists?: (path: string) => boolean;
   /** Local AI runtime (sidecar). Required: there is no simulated synthesis. */
@@ -58,7 +59,7 @@ export class DialogueExecutor {
     job: BatchJob,
     options: DialogueExecutorOptions = {}
   ): Promise<BatchStepResult> {
-    const { onProgress, isCancelled, writeFile, checkPathExists = () => false, ai } = options;
+    const { onProgress, isCancelled, waitIfPaused, writeFile, checkPathExists = () => false, ai } = options;
     const startedAt = Date.now();
 
     onProgress?.(5, "Đang phân tích cấu trúc phân vai kịch bản hội thoại...");
@@ -203,13 +204,22 @@ export class DialogueExecutor {
         pct,
         `Đang tạo giọng thoại (${seg.characterName}): lượt ${i + 1}/${totalSegments}...`
       );
+      if (i + 1 < totalSegments) {
+        await waitIfPaused?.();
+        if (isCancelled?.()) return cancelled(pct);
+      }
     }
 
     // 4b. Dedicated post-TTS Whisper quality validation pass (avoids TTS <-> ASR GPU model thrashing)
     let retriesUsed = 0;
     if (typeof ai.validateAudioQuality === "function" && segments.length > 0) {
+      if (segments.length > 1) {
+        await waitIfPaused?.();
+        if (isCancelled?.()) return cancelled(65);
+      }
       onProgress?.(68, "Đang hậu kiểm chất lượng giọng thoại bằng Whisper...");
-      for (const seg of segments) {
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
         if (isCancelled?.()) return cancelled(68);
         try {
           seg.qualityReview = await validateChunkAudioQuality(
@@ -222,6 +232,10 @@ export class DialogueExecutor {
           );
         } catch {
           // Non-blocking: quality check failure must not abort batch synthesis
+        }
+        if (i + 1 < segments.length) {
+          await waitIfPaused?.();
+          if (isCancelled?.()) return cancelled(68);
         }
       }
 

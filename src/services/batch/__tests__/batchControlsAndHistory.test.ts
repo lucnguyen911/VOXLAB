@@ -136,6 +136,110 @@ describe("Batch Controls, Invalidation Graph, 3-Way CTA & History (TASK-11 / AC-
     assert.equal(jobs[1].status, "waiting"); // Job 2 stayed waiting!
   });
 
+  test("Chunk-boundary Pause suspends multi-chunk TTS job after current chunk and Resume continues without restarting", async () => {
+    const multiParagraphText = [
+      "Đoạn văn thứ nhất câu 1. Câu thứ 2 của đoạn một. Câu thứ 3 của đoạn một.",
+      "[PAUSE 1s]",
+      "Đoạn văn thứ hai câu 1. Câu thứ 2 của đoạn hai. Câu thứ 3 của đoạn hai.",
+      "[PAUSE 1s]",
+      "Đoạn văn thứ ba câu 1. Câu thứ 2 của đoạn ba. Câu thứ 3 của đoạn ba.",
+    ].join("\n");
+
+    const ttsJob = createTestJob({
+      id: "job-chunk-pause",
+      fileKind: "text",
+      sourceFileName: "story.txt",
+      sourceFilePath: "D:/Docs/story.txt",
+      selectedTasks: ["tts"],
+      executionSequence: ["tts"],
+      configOverrides: {
+        tts: { model: "omnivoice", voiceId: "omnivoice-auto", speed: 1.0, pitch: 0, volume: 100 },
+      },
+    });
+
+    orchestrator.fileReader = async () => multiParagraphText;
+    orchestrator.fileWriter = async () => {};
+    orchestrator.setJobs([ttsJob]);
+
+    // Pause automatically as soon as chunk 1 finishes (when progress hits >= 20%)
+    const unsub = orchestrator.subscribe((jobs, qStatus) => {
+      const j = jobs[0];
+      if (qStatus === "running" && j?.stepResults.tts?.progressPct && j.stepResults.tts.progressPct >= 20) {
+        orchestrator.requestPause();
+      }
+    });
+
+    const runPromise = orchestrator.startQueue();
+    // Wait a tick for chunk 1 to finish and enter waitIfPaused()
+    await new Promise((r) => setTimeout(r, 25));
+    unsub();
+
+    assert.equal(orchestrator.getQueueStatus(), "paused");
+    assert.equal(orchestrator.getJobs()[0].status, "paused");
+    const synthCallsAtPause = aiBackend.calls.filter((c) => c.method === "tts.synthesize").length;
+    assert.equal(synthCallsAtPause, 1, "Should pause right after chunk 1 without synthesizing chunk 2 yet");
+
+    // Resume queue -> continues from chunk 2
+    await orchestrator.resumeQueue();
+    await runPromise;
+
+    assert.equal(orchestrator.getQueueStatus(), "idle");
+    assert.equal(orchestrator.getJobs()[0].status, "completed");
+    const synthCallsAfterResume = aiBackend.calls.filter((c) => c.method === "tts.synthesize");
+    assert.ok(synthCallsAfterResume.length > 1, "Should synthesize all remaining chunks after resume");
+    const uniqueOutputPaths = new Set(synthCallsAfterResume.map((c) => c.params.outputPath));
+    assert.equal(
+      uniqueOutputPaths.size,
+      synthCallsAfterResume.length,
+      "Each chunk must be synthesized exactly once without repeating chunk 1"
+    );
+  });
+
+  test("Cancel while paused mid-job wakes suspended executor and marks job cancelled", async () => {
+    const multiParagraphText = [
+      "Đoạn văn thứ nhất câu 1. Câu thứ 2 của đoạn một. Câu thứ 3 của đoạn một.",
+      "[PAUSE 1s]",
+      "Đoạn văn thứ hai câu 1. Câu thứ 2 của đoạn hai. Câu thứ 3 của đoạn hai.",
+    ].join("\n");
+
+    const ttsJob = createTestJob({
+      id: "job-pause-cancel",
+      fileKind: "text",
+      sourceFileName: "cancel_me.txt",
+      sourceFilePath: "D:/Docs/cancel_me.txt",
+      selectedTasks: ["tts"],
+      executionSequence: ["tts"],
+      configOverrides: {
+        tts: { model: "omnivoice", voiceId: "omnivoice-auto", speed: 1.0, pitch: 0, volume: 100 },
+      },
+    });
+
+    orchestrator.fileReader = async () => multiParagraphText;
+    orchestrator.fileWriter = async () => {};
+    orchestrator.setJobs([ttsJob]);
+
+    const unsub = orchestrator.subscribe((jobs, qStatus) => {
+      const j = jobs[0];
+      if (qStatus === "running" && j?.stepResults.tts?.progressPct && j.stepResults.tts.progressPct >= 20) {
+        orchestrator.requestPause();
+      }
+    });
+
+    const runPromise = orchestrator.startQueue();
+    await new Promise((r) => setTimeout(r, 25));
+    unsub();
+
+    assert.equal(orchestrator.getQueueStatus(), "paused");
+    assert.equal(orchestrator.getJobs()[0].status, "paused");
+
+    // Cancel while paused
+    orchestrator.requestCancel();
+    await runPromise;
+
+    assert.equal(orchestrator.getQueueStatus(), "idle");
+    assert.equal(orchestrator.getJobs()[0].status, "cancelled");
+  });
+
   test("Emergency Queue Block triggers on ENOSPC or EACCES disk errors", async () => {
     const job = createTestJob({ id: "job-enospc" });
     orchestrator.fileWriter = async () => {

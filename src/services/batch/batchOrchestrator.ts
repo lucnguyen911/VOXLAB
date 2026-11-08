@@ -89,6 +89,7 @@ export class BatchOrchestrator {
   private activeJobId: string | null = null;
   private cancelRequested = false;
   private pauseRequested = false;
+  private pauseResumeResolvers: Array<() => void> = [];
   private listeners = new Set<OrchestratorListener>();
   private globalDefaults: BatchTaskConfigMap = getDefaultTaskConfigMap();
   private globalOutputDefaults: BatchJobOutputSnapshot = loadBatchGlobalOutputSettings();
@@ -236,7 +237,27 @@ export class BatchOrchestrator {
    * Starts processing the queue (Natural Queue Loop).
    */
   async startQueue(): Promise<void> {
-    if (this.queueStatus === "running" || this.queueStatus === "blocked") {
+    if (
+      this.queueStatus === "running" ||
+      this.queueStatus === "pausing" ||
+      this.queueStatus === "blocked"
+    ) {
+      return;
+    }
+
+    // Resume an in-flight job that paused at a chunk boundary inside waitIfPaused()
+    if (this.queueStatus === "paused" && this.pauseResumeResolvers.length > 0) {
+      this.pauseRequested = false;
+      this.cancelRequested = false;
+      this.queueStatus = "running";
+      if (this.activeJobId) {
+        const activeJob = this.jobs.find((j) => j.id === this.activeJobId);
+        if (activeJob && activeJob.status === "paused") {
+          activeJob.status = "processing";
+        }
+      }
+      this.notify();
+      this.wakeUpPausedWaiters();
       return;
     }
 
@@ -245,7 +266,7 @@ export class BatchOrchestrator {
     this.pauseRequested = false;
     this.notify();
 
-    while (this.queueStatus === "running" || this.queueStatus === "pausing") {
+    while (this.queueStatus === "running" || this.queueStatus === "pausing" || this.queueStatus === "paused") {
       if (this.pauseRequested) {
         this.queueStatus = "paused";
         this.pauseRequested = false;
@@ -279,7 +300,45 @@ export class BatchOrchestrator {
    */
   resumeQueue(): void {
     if (this.queueStatus === "paused") {
-      this.startQueue();
+      void this.startQueue();
+    }
+  }
+
+  private wakeUpPausedWaiters(): void {
+    const resolvers = this.pauseResumeResolvers.splice(0);
+    for (const resolve of resolvers) {
+      resolve();
+    }
+  }
+
+  /**
+   * Suspends execution at a safe chunk/segment boundary when pauseRequested is true.
+   */
+  private async waitIfPaused(job: BatchJob, task: BatchTaskType): Promise<void> {
+    if (!this.pauseRequested || this.cancelRequested) {
+      return;
+    }
+
+    this.queueStatus = "paused";
+    job.status = "paused";
+    const step = job.stepResults[task];
+    const previousStageMsg = step?.stageMessage;
+    if (step) {
+      step.stageMessage = "Đã tạm dừng";
+    }
+    this.notify();
+    this.persistIfEnabled();
+
+    await new Promise<void>((resolve) => {
+      this.pauseResumeResolvers.push(resolve);
+    });
+
+    if (!this.cancelRequested) {
+      job.status = "processing";
+      if (step && step.stageMessage === "Đã tạm dừng") {
+        step.stageMessage = previousStageMsg;
+      }
+      this.notify();
     }
   }
 
@@ -310,6 +369,7 @@ export class BatchOrchestrator {
    */
   requestCancel(): void {
     this.cancelRequested = true;
+    this.pauseRequested = false;
     if (this.activeJobId) {
       const activeJob = this.jobs.find((j) => j.id === this.activeJobId);
       if (activeJob) {
@@ -319,7 +379,11 @@ export class BatchOrchestrator {
       this.ai?.cancelActive().catch((err) => {
         console.warn("Không thể hủy tác vụ AI đang chạy:", err);
       });
+    } else if (this.queueStatus === "paused" || this.queueStatus === "pausing") {
+      this.queueStatus = "idle";
+      this.cancelRequested = false;
     }
+    this.wakeUpPausedWaiters();
     this.notify();
   }
 
@@ -430,6 +494,7 @@ export class BatchOrchestrator {
             this.notify();
           },
           isCancelled: () => this.cancelRequested,
+          waitIfPaused: () => this.waitIfPaused(job, task),
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -441,6 +506,19 @@ export class BatchOrchestrator {
           error: msg,
           completedAt: Date.now(),
         };
+      }
+
+      if (stepResult.status === "cancelled" || this.cancelRequested) {
+        job.stepResults[task] = {
+          ...stepResult,
+          status: "cancelled",
+        };
+        job.status = "cancelled";
+        job.isCancelling = false;
+        job.completedAt = Date.now();
+        this.activeJobId = null;
+        this.notify();
+        return;
       }
 
       // Emergency Disk Block detection (ENOSPC / EACCES - AC-13).
@@ -686,9 +764,10 @@ export class BatchOrchestrator {
       lastSubtitleContent: string;
       onProgress: (pct: number, msg?: string) => void;
       isCancelled: () => boolean;
+      waitIfPaused: () => Promise<void>;
     }
   ): Promise<BatchStepResult> {
-    const { lastSubtitleContent, onProgress, isCancelled } = context;
+    const { lastSubtitleContent, onProgress, isCancelled, waitIfPaused } = context;
     const ai = this.ai;
 
     // Refresh the existence snapshot of the output folder so collision
@@ -721,6 +800,7 @@ export class BatchOrchestrator {
           textContent: await readSource(),
           onProgress,
           isCancelled,
+          waitIfPaused,
           writeFile: this.fileWriter,
           checkPathExists: this.pathExists,
           ai,
@@ -732,6 +812,7 @@ export class BatchOrchestrator {
           scriptContent: await readSource(),
           onProgress,
           isCancelled,
+          waitIfPaused,
           writeFile: this.fileWriter,
           checkPathExists: this.pathExists,
           ai,
@@ -764,6 +845,7 @@ export class BatchOrchestrator {
           subtitleContent: await resolveSubtitleInput(),
           onProgress,
           isCancelled,
+          waitIfPaused,
           writeFile: this.fileWriter,
           checkPathExists: this.pathExists,
           ai,
@@ -799,6 +881,7 @@ export class BatchOrchestrator {
    * Reset helper for automated testing.
    */
   _resetForTest(): void {
+    this.wakeUpPausedWaiters();
     this.jobs = [];
     this.queueStatus = "idle";
     this.activeJobId = null;

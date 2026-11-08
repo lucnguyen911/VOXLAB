@@ -51,6 +51,7 @@ export interface DubbingExecutorOptions {
   dubbingMode?: DubbingMode;
   onProgress?: (progressPct: number, stageMessage?: string) => void;
   isCancelled?: () => boolean;
+  waitIfPaused?: () => Promise<void>;
   writeFile?: (path: string, content: Uint8Array | string) => Promise<void>;
   checkPathExists?: (path: string) => boolean;
   /** Local AI runtime (shared TtsEngineAdapter via sidecar). */
@@ -70,6 +71,7 @@ export class DubbingExecutor {
     const {
       onProgress,
       isCancelled,
+      waitIfPaused,
       checkPathExists = () => false,
       ai,
       forceCollisionDangerForTest,
@@ -270,6 +272,10 @@ export class DubbingExecutor {
 
         const pct = Math.floor(20 + ((gIdx + 1) / totalGroups) * 45);
         onProgress?.(pct, `Đang tạo giọng nhóm câu ${gIdx + 1}/${totalGroups}...`);
+        if (gIdx + 1 < totalGroups) {
+          await waitIfPaused?.();
+          if (isCancelled?.()) return cancelled(pct);
+        }
       }
     } else {
       // Mode 1: cue_strict (1:1 per-cue synthesis)
@@ -345,13 +351,22 @@ export class DubbingExecutor {
 
         const pct = Math.floor(20 + ((i + 1) / total) * 45);
         onProgress?.(pct, `Đang tạo giọng đọc câu ${i + 1}/${total}...`);
+        if (i + 1 < total) {
+          await waitIfPaused?.();
+          if (isCancelled?.()) return cancelled(pct);
+        }
       }
     }
 
     // Deferred post-TTS Whisper ASR quality verification pass (prevents TTS<->ASR GPU model thrashing)
     if (typeof ai.validateAudioQuality === "function" && primarySegmentsForQc.length > 0) {
+      if (primarySegmentsForQc.length > 1) {
+        await waitIfPaused?.();
+        if (isCancelled?.()) return cancelled(65);
+      }
       onProgress?.(68, "Đang hậu kiểm chất lượng giọng đọc bằng Whisper...");
-      for (const seg of primarySegmentsForQc) {
+      for (let i = 0; i < primarySegmentsForQc.length; i++) {
+        const seg = primarySegmentsForQc[i];
         if (isCancelled?.()) return cancelled(68);
         try {
           const review = await validateChunkAudioQuality(
@@ -372,6 +387,10 @@ export class DubbingExecutor {
           }
         } catch {
           // Non-blocking: quality check failure must not abort batch synthesis
+        }
+        if (i + 1 < primarySegmentsForQc.length) {
+          await waitIfPaused?.();
+          if (isCancelled?.()) return cancelled(68);
         }
       }
     }
