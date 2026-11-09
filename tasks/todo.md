@@ -19,5 +19,10 @@
 - [x] **SIMP-01**: Hợp nhất logic khởi tạo CUDA, giải phóng working set, tóm tắt VRAM và clamp tham số `extra` vào `sidecar/voxlab_sidecar/tts/base.py` cho cả 3 TTS adapters (`omnivoice`, `chatterbox`, `qwen`) và dọn regex thừa trong `service.py`.
 - [x] **SIMP-02**: Hợp nhất bộ lọc ngôn ngữ/giọng đọc và bảng màu Avatar trùng lặp giữa `VoiceCloneWorkspace.tsx`, `VoiceLibraryWorkspace.tsx` và `VoiceSelectionModal.tsx` về `src/constants/voiceFilters.ts`; loại bỏ hơn 6.800 dòng dead prototype JSX trong `src/views/BatchWorkspacePrototype.tsx` (`2b5717e`).
 
-## 5. Rà Soát Cuối Cùng (`FINAL REVIEW` — Phase 13)
-- [x] **REV-01**: Đối chiếu toàn bộ implementation với `SPEC.md`, `CONSTRAINTS.md`, `tasks/plan.md`, `PERFORMANCE.md` và UI/UX đã duyệt; xác nhận toàn bộ 903 Frontend tests + 222 Python sidecar tests + 35 Rust unit tests + `tsc --noEmit` + `npm run build` đều PASS (`Verdict: READY`).
+## 5. Nâng Cấp Dịch Thuật Phụ Đề, Lồng Tiếng & Hậu Kiểm ASR (Approved Session Enhancements)
+- [x] **DUB-01**: Nâng cấp `edge-tts` `7.3.1` + đồng bộ lệch giờ server (`Sec-MS-GEC`) và sửa triệt để race condition `BUSY` khi bấm Hủy/Chạy lại lồng tiếng từ đầu (`67f3961`, `5c23924`).
+- [x] **DUB-02**: Triển khai cơ chế WSOLA `1.20x` kết hợp **Elastic Ripple Shift** tự động lùi nhẹ câu kế tiếp khi tràn thời lượng ở chế độ đồng bộ video gốc và tự động gom nhịp về mốc gốc tại các khoảng lặng (`dcbf769`).
+- [x] **DUB-03**: Tích hợp bộ lọc QA dịch phụ đề & cơ chế **Gom Repair** từ `Audio-Factory` ([`translationQaAndRepair.ts`](file:///f:/Source%20Code%20Tool/Voxlab/src/services/translation/translationQaAndRepair.ts)), nút 1-click **`Dịch bù X câu sót`**, tối ưu Silero VAD cho giọng đọc TTS + fallback tự động `CUDA -> CPU (int8)` khi tranh chấp VRAM trong ASR hậu kiểm, và minh bạch hóa nút `Nghe nhóm` / thời lượng nhóm trên Bottom Player (`5a42c50`).
+
+## 6. Rà Soát Cuối Cùng (`FINAL REVIEW` — Phase 13)
+- [x] **REV-01**: Đối chiếu toàn bộ implementation với `SPEC.md`, `CONSTRAINTS.md`, `tasks/plan.md`, `PERFORMANCE.md` và UI/UX đã duyệt; xác nhận toàn bộ 913 Frontend tests + 222 Python sidecar tests + 35 Rust unit tests + `tsc --noEmit` + `npm run build` đều PASS (`Verdict: READY`).
