@@ -44,6 +44,25 @@ def _cuda_device_count() -> int:
         return 0
 
 
+def _is_cuda_runtime_error(exc: Exception) -> bool:
+    """Check if exception indicates CUDA / GPU runtime, driver, or VRAM exhaustion failure."""
+    msg = str(exc).lower()
+    keywords = (
+        "cuda", "cublas", "cudnn", "gpu", "driver", "nvcuda", "dll",
+        "out of memory", "out_of_memory", "alloc", "unsupported compute type",
+        "invalid device", "cufft",
+    )
+    return any(k in msg for k in keywords)
+
+
+DEFAULT_TTS_VAD_PARAMETERS: dict[str, Any] = {
+    "threshold": 0.40,
+    "min_speech_duration_ms": 150,
+    "min_silence_duration_ms": 400,
+    "speech_pad_ms": 400,
+}
+
+
 _transcript_cache: dict[str, str] = {}
 
 
@@ -243,7 +262,24 @@ class AsrLifecycleManager:
                     local_files_only=True,
                 )
             except Exception as e:  # noqa: BLE001
-                raise SidecarError("MODEL_LOAD_FAILED", f"{type(e).__name__}: {e}") from e
+                if resolved_device == "cuda" and _is_cuda_runtime_error(e):
+                    log(f"[asr] CUDA model load failed ({e}); falling back to CPU / int8")
+                    try:
+                        self._model = WhisperModel(
+                            target_dir,
+                            device="cpu",
+                            compute_type="int8",
+                            local_files_only=True,
+                        )
+                        resolved_device = "cpu"
+                        resolved_compute = "int8"
+                    except Exception as cpu_err:  # noqa: BLE001
+                        raise SidecarError(
+                            "MODEL_LOAD_FAILED",
+                            f"CUDA load failed ({e}) and CPU fallback failed ({cpu_err})",
+                        ) from cpu_err
+                else:
+                    raise SidecarError("MODEL_LOAD_FAILED", f"{type(e).__name__}: {e}") from e
 
             self._model_dir = target_dir
             self._model_id = target_id

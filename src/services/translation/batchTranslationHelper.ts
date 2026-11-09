@@ -206,12 +206,12 @@ export function buildBatchTranslationPrompt(
   let system: string;
   if (isFreeNarration) {
     system = isCinema
-      ? `You are an elite video scriptwriter and narration adapter. Translate the numbered dialogue/narration units into ${targetLang} with rich, cinematic, and captivating prose suited for documentary and YouTube voiceovers. Do NOT compress or artificially shorten sentences for timing. Prioritize fluent rhythm, natural grammar, idiomatic expressions, consistent pronouns, and preserve all proper nouns, numbers, and key facts. Strict rule: Keep the exact line number format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`
-      : `You are an expert narration translator and script adaptation specialist. Translate the numbered dialogue/narration units into ${targetLang} with complete, natural, and fluent phrasing suited for engaging YouTube narration and voiceover. Do NOT artificially compress sentences for timing. Maintain natural sentence structures, correct idioms, consistent pronouns, and preserve all proper nouns, numbers, and key terminology. Strict rule: Keep the exact line number format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`;
+      ? `You are an elite video scriptwriter and narration adapter. Translate the numbered dialogue/narration units into ${targetLang} with rich, cinematic, and captivating prose suited for documentary and YouTube voiceovers. Do NOT compress or artificially shorten sentences for timing. Prioritize fluent rhythm, natural grammar, idiomatic expressions, consistent pronouns, and preserve all proper nouns, numbers, and key facts. Strict rules: (1) Translate 100% of every item into ${targetLang} — NEVER leave any source sentence or clause untranslated. (2) Keep the exact single-line format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`
+      : `You are an expert narration translator and script adaptation specialist. Translate the numbered dialogue/narration units into ${targetLang} with complete, natural, and fluent phrasing suited for engaging YouTube narration and voiceover. Do NOT artificially compress sentences for timing. Maintain natural sentence structures, correct idioms, consistent pronouns, and preserve all proper nouns, numbers, and key terminology. Strict rules: (1) Translate 100% of every item into ${targetLang} — NEVER leave any source sentence or clause untranslated. (2) Keep the exact single-line format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`;
   } else {
     system = isCinema
-      ? `You are a professional film/video subtitle translator and adaptation specialist. Translate the numbered speech units into ${targetLang}. Adapt each unit to sound natural, punchy, and cinematic when spoken, while fitting comfortably within spoken timing constraints without dropping any critical meaning, proper nouns, numbers, or key terminology. Strict rule: Keep the exact line number format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`
-      : `You are an expert subtitle translator and dubbing specialist. Translate the numbered speech units into ${targetLang} with concise, natural phrasing that matches spoken timing without dropping critical meaning, proper nouns, numbers, or key terminology. Maintain consistent pronouns and tone across the script. Strict rule: Keep the exact line number format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`;
+      ? `You are a professional film/video subtitle translator and adaptation specialist. Translate the numbered speech units into ${targetLang}. Adapt each unit to sound natural, punchy, and cinematic when spoken, while fitting comfortably within spoken timing constraints without dropping any critical meaning, proper nouns, numbers, or key terminology. Strict rules: (1) Translate 100% of every item into ${targetLang} — NEVER copy or leave any source sentence untranslated. (2) Keep the exact single-line format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`
+      : `You are an expert subtitle translator and dubbing specialist. Translate the numbered speech units into ${targetLang} with concise, natural phrasing that matches spoken timing without dropping critical meaning, proper nouns, numbers, or key terminology. Maintain consistent pronouns and tone across the script. Strict rules: (1) Translate 100% of every item into ${targetLang} — NEVER copy or leave any source sentence untranslated. (2) Keep the exact single-line format \`[id] translated text\` on each line with NO markdown formatting, conversational filler, or commentary.`;
   }
 
   const contextBlocks: string[] = [];
@@ -279,22 +279,78 @@ export function parseBatchTranslationResponse(
   // Strip thinking tags (<think>...</think>) and markdown code fences
   const cleaned = stripThinkingTags(rawContent)
     .replace(/^```[a-zA-Z]*\n/gm, "")
-    .replace(/^```$/gm, "");
+    .replace(/^```$/gm, "")
+    .trim();
 
-  // Match lines like: [1] Translation or [1]: Translation or 1. [1] Translation
-  const regex = /^\s*(?:\d+[\.\)]\s*)?\[(\d+)\]\s*:?\s*(.*)$/gm;
-  let match: RegExpExecArray | null;
+  // 1. Primary: Match [id] lines and capture any wrapped continuation lines until the next [id]
+  const lines = cleaned.split(/\r?\n/);
+  const bracketLineRe = /^\s*(?:\d+[\.\)]\s*)?\[(\d+)\]\s*:?\s*(.*)$/;
+  let currentId: number | null = null;
+  let currentParts: string[] = [];
 
-  while ((match = regex.exec(cleaned)) !== null) {
-    const id = parseInt(match[1], 10);
-    const text = match[2].trim();
-    if (!isNaN(id) && text) {
-      result.set(id, text);
+  const flushCurrent = () => {
+    if (currentId !== null && currentParts.length > 0) {
+      const joined = currentParts.join(" ").replace(/\s+/g, " ").trim();
+      if (joined) {
+        result.set(currentId, joined);
+      }
+    }
+    currentId = null;
+    currentParts = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const m = bracketLineRe.exec(line);
+    if (m) {
+      flushCurrent();
+      const parsedId = parseInt(m[1], 10);
+      if (!isNaN(parsedId)) {
+        currentId = parsedId;
+        if (m[2] && m[2].trim()) {
+          currentParts.push(m[2].trim());
+        }
+      }
+    } else if (currentId !== null) {
+      // Ignore accidental commentary headers
+      if (!/^(Note:|Global Video Context|Shared Glossary|Preceding )/i.test(line)) {
+        currentParts.push(line);
+      }
+    }
+  }
+  flushCurrent();
+
+  // 2. JSON Coercion Fallback (inspired by Audio-Factory `_coerce_translation_map`)
+  if (result.size === 0 && (cleaned.startsWith("[") || cleaned.startsWith("{"))) {
+    try {
+      const parsedJson = JSON.parse(cleaned);
+      const arr = Array.isArray(parsedJson)
+        ? parsedJson
+        : Array.isArray(parsedJson?.translations)
+        ? parsedJson.translations
+        : Array.isArray(parsedJson?.items)
+        ? parsedJson.items
+        : null;
+      if (arr) {
+        for (const item of arr) {
+          const id = Number(item?.id ?? item?.cue_id ?? item?.index);
+          const text = String(
+            item?.translation ?? item?.text ?? item?.translated_text ?? ""
+          ).trim();
+          if (!isNaN(id) && text) {
+            result.set(id, text);
+          }
+        }
+      }
+    } catch {
+      // Ignore JSON parse errors and proceed to plain numbered fallback
     }
   }
 
-  // Fallback: If LLM output plain numbered lines like "1. Translation" without brackets
+  // 3. Fallback: If LLM output plain numbered lines like "1. Translation" without brackets
   if (result.size < expectedItems.length / 2) {
+    let match: RegExpExecArray | null;
     const fallbackRegex = /^\s*(\d+)[\.\:]\s*(.*)$/gm;
     while ((match = fallbackRegex.exec(cleaned)) !== null) {
       const id = parseInt(match[1], 10);

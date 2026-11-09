@@ -44,6 +44,12 @@ import {
   GeminiTranslationUnit,
   GeminiTranslationMetrics,
 } from "./geminiTranslationCoordinator";
+import {
+  validateSingleUnitTranslation,
+  sanitizeTranslatedUnitText,
+  findDefectiveSpeechGroups,
+  findUntranslatedCueIndices,
+} from "./translationQaAndRepair";
 
 export class TranslationManager {
   private static instance: TranslationManager;
@@ -60,6 +66,10 @@ export class TranslationManager {
       TranslationManager.instance = new TranslationManager();
     }
     return TranslationManager.instance;
+  }
+
+  registerProvider(provider: TranslationProvider): void {
+    this.builtInProviders.set(provider.id, provider);
   }
 
   getLastSpeechGroups(): DubbingSpeechGroup[] {
@@ -290,8 +300,31 @@ export class TranslationManager {
 
     try {
       const result = await provider.translate(normalizedInput, targetLang, sourceLang, context);
-      if (result && result.trim()) {
-        return normalizeCueTextForSpeech(result);
+      const cleaned = sanitizeTranslatedUnitText(result || "");
+      if (cleaned) {
+        const qaIssues = validateSingleUnitTranslation(
+          normalizedInput,
+          cleaned,
+          targetLang,
+          sourceLang
+        );
+        if (qaIssues.length === 0) {
+          return normalizeCueTextForSpeech(cleaned);
+        }
+
+        // Gom Repair retry: if LLM echoed English source or hallucinated invalid script,
+        // retry once with direct translation context
+        const retryResult = await provider.translate(
+          normalizedInput,
+          targetLang,
+          sourceLang,
+          { ...context, style: "default" }
+        );
+        const retryCleaned = sanitizeTranslatedUnitText(retryResult || "");
+        if (retryCleaned) {
+          return normalizeCueTextForSpeech(retryCleaned);
+        }
+        return normalizeCueTextForSpeech(cleaned);
       }
     } catch (err: any) {
       // HARD INVARIANT (SPEC.md Section 1.1 Rule 2):
@@ -491,6 +524,17 @@ export class TranslationManager {
           const durationSec = Number((cue.endSec - cue.startSec).toFixed(3));
 
           let translatedText = batchResults?.get(cue.index);
+          if (
+            translatedText &&
+            validateSingleUnitTranslation(
+              cue.text,
+              translatedText,
+              targetLang,
+              activeSourceLang
+            ).length > 0
+          ) {
+            translatedText = undefined;
+          }
 
           if (!translatedText || !translatedText.trim()) {
             const context: TranslationContext = {
@@ -620,6 +664,17 @@ export class TranslationManager {
           const groupDurationSec = Number((group.endSec - group.startSec).toFixed(3));
 
           let preTranslatedText = batchResults?.get(gIdx);
+          if (
+            preTranslatedText &&
+            validateSingleUnitTranslation(
+              group.sourceText,
+              preTranslatedText,
+              targetLang,
+              activeSourceLang
+            ).length > 0
+          ) {
+            preTranslatedText = undefined;
+          }
 
           if (groupCues.length === 1) {
             const cue = groupCues[0];
@@ -747,9 +802,21 @@ export class TranslationManager {
             continue;
           }
 
+          const groupHasQaIssues =
+            validateSingleUnitTranslation(
+              group.sourceText,
+              groupTranslated,
+              targetLang,
+              activeSourceLang
+            ).length > 0;
+
           const projection = projectGroupTranslationToCues(groupCues, groupTranslated);
 
-          if (projection.reliable && projection.projectedTexts.length === groupCues.length) {
+          if (
+            !groupHasQaIssues &&
+            projection.reliable &&
+            projection.projectedTexts.length === groupCues.length
+          ) {
             for (let k = 0; k < groupCues.length; k++) {
               const cue = groupCues[k];
               const projectedText = projection.projectedTexts[k];
@@ -1082,7 +1149,46 @@ export class TranslationManager {
         const nextCues = cues.slice(lastPos + 1, lastPos + 4);
 
         let groupTranslated =
-          coordRes.translationsById.get(unitId) || group.sourceText;
+          coordRes.translationsById.get(unitId) || "";
+
+        if (
+          !groupTranslated.trim() ||
+          validateSingleUnitTranslation(
+            group.sourceText,
+            groupTranslated,
+            targetLang,
+            activeSourceLang
+          ).length > 0
+        ) {
+          try {
+            const repairedGroup = await provider.translateWithKeyPool(
+              group.sourceText,
+              targetLang,
+              activeSourceLang,
+              {
+                style: activeStyle,
+                dubbingMode,
+                prevCues,
+                nextCues,
+              },
+              {
+                strict: true,
+                maxAttempts: 2,
+                isPaused: options?.isPaused,
+                isCancelled: options?.isCancelled,
+              }
+            );
+            const cleanedRepaired = sanitizeTranslatedUnitText(repairedGroup || "");
+            if (cleanedRepaired) {
+              groupTranslated = cleanedRepaired;
+            }
+          } catch (repairErr) {
+            console.warn(`Gemini group repair failed for unit #${unitId}:`, repairErr);
+          }
+        }
+        if (!groupTranslated.trim()) {
+          groupTranslated = group.sourceText;
+        }
 
         if (groupCues.length === 1) {
           const cue = groupCues[0];
@@ -1139,12 +1245,21 @@ export class TranslationManager {
         }
 
         // Multi-cue group: project full sentence translation onto constituent cues
+        const groupHasQaIssues =
+          validateSingleUnitTranslation(
+            group.sourceText,
+            groupTranslated,
+            targetLang,
+            activeSourceLang
+          ).length > 0;
+
         const projection = projectGroupTranslationToCues(
           groupCues,
           groupTranslated
         );
 
         if (
+          !groupHasQaIssues &&
           projection.reliable &&
           projection.projectedTexts.length === groupCues.length
         ) {
@@ -1217,10 +1332,13 @@ export class TranslationManager {
           }
 
           const combinedSpeech = joinCueTextsForSpeech(fallbackFragments, true);
+          const effectiveGroupSpeech = groupHasQaIssues
+            ? combinedSpeech
+            : groupTranslated || combinedSpeech;
           updatedGroups.push({
             ...group,
-            translatedText: groupTranslated || combinedSpeech,
-            speechText: groupTranslated || combinedSpeech,
+            translatedText: effectiveGroupSpeech,
+            speechText: effectiveGroupSpeech,
           });
         }
       }
@@ -1437,6 +1555,148 @@ export class TranslationManager {
     }
 
     return outputLines.join("\n");
+  }
+
+  /**
+   * Repairs only the cues/speech-groups that are still untranslated or have QA defects
+   * (inspired by Audio-Factory's `_run_file_gom_repair`), preserving all already-valid
+   * translations in `existingTranslatedCues` and `existingSpeechGroups`.
+   */
+  async repairUntranslatedCues(
+    originalCues: OriginalCue[],
+    existingTranslatedCues: TranslatedCue[],
+    existingSpeechGroups: DubbingSpeechGroup[],
+    targetLang: string,
+    providerId?: string,
+    onProgress?: (done: number, total: number) => void,
+    style?: TranslationStyle,
+    options?: {
+      sourceLang?: string;
+      dubbingMode?: DubbingMode;
+      isPaused?: () => boolean;
+      isCancelled?: () => boolean;
+    }
+  ): Promise<{
+    translatedCues: TranslatedCue[];
+    speechGroups: DubbingSpeechGroup[];
+    repairedCueIndices: number[];
+  }> {
+    const sourceLang = options?.sourceLang || "auto";
+    const groups =
+      existingSpeechGroups && existingSpeechGroups.length > 0
+        ? existingSpeechGroups
+        : planDubbingSpeechGroups(originalCues, existingTranslatedCues);
+
+    const defectiveGroups = findDefectiveSpeechGroups(
+      groups,
+      originalCues,
+      existingTranslatedCues,
+      targetLang,
+      sourceLang
+    );
+
+    if (defectiveGroups.length === 0) {
+      const stillDefectiveCues = findUntranslatedCueIndices(
+        originalCues,
+        existingTranslatedCues,
+        targetLang,
+        sourceLang
+      );
+      if (stillDefectiveCues.length === 0) {
+        return {
+          translatedCues: existingTranslatedCues,
+          speechGroups: groups,
+          repairedCueIndices: [],
+        };
+      }
+    }
+
+    const defectiveCueIdSet = new Set<number>();
+    for (const dg of defectiveGroups) {
+      for (const cid of dg.sourceCueIds) {
+        defectiveCueIdSet.add(cid);
+      }
+    }
+    for (const cid of findUntranslatedCueIndices(
+      originalCues,
+      existingTranslatedCues,
+      targetLang,
+      sourceLang
+    )) {
+      defectiveCueIdSet.add(cid);
+    }
+
+    const subsetOriginalCues = originalCues.filter((c) =>
+      defectiveCueIdSet.has(c.index)
+    );
+    if (subsetOriginalCues.length === 0) {
+      return {
+        translatedCues: existingTranslatedCues,
+        speechGroups: groups,
+        repairedCueIndices: [],
+      };
+    }
+
+    const repairedSubset = await this.translateOriginalCues(
+      subsetOriginalCues,
+      targetLang,
+      providerId,
+      onProgress,
+      style,
+      {
+        sourceLang,
+        dubbingMode: options?.dubbingMode,
+        useSpeechGroups: true,
+        strict: true,
+        isPaused: options?.isPaused,
+        isCancelled: options?.isCancelled,
+      }
+    );
+
+    const repairedByIdx = new Map<number, TranslatedCue>();
+    for (const rc of repairedSubset) {
+      repairedByIdx.set(rc.index, rc);
+    }
+
+    const mergedCues = existingTranslatedCues.map((tc) => {
+      const rep = repairedByIdx.get(tc.index);
+      return rep ? { ...rep, isEdited: false } : tc;
+    });
+
+    const repairedGroupsById = new Map<string, DubbingSpeechGroup>();
+    for (const rg of this.lastSpeechGroups) {
+      repairedGroupsById.set(rg.groupId, rg);
+    }
+
+    const mergedGroups = planDubbingSpeechGroups(originalCues, mergedCues).map(
+      (g) => {
+        const repGrp = repairedGroupsById.get(g.groupId);
+        if (repGrp && repGrp.speechText) {
+          return {
+            ...g,
+            translatedText: repGrp.translatedText,
+            speechText: repGrp.speechText,
+          };
+        }
+        const prevGrp = groups.find((eg) => eg.groupId === g.groupId);
+        if (prevGrp && prevGrp.speechText && !defectiveGroups.some((d) => d.groupId === g.groupId)) {
+          return {
+            ...g,
+            translatedText: prevGrp.translatedText,
+            speechText: prevGrp.speechText,
+          };
+        }
+        return g;
+      }
+    );
+
+    this.lastSpeechGroups = mergedGroups;
+
+    return {
+      translatedCues: mergedCues,
+      speechGroups: mergedGroups,
+      repairedCueIndices: Array.from(defectiveCueIdSet).sort((a, b) => a - b),
+    };
   }
 }
 

@@ -30,6 +30,10 @@ import {
 import { GeminiApiError, GeminiTranslateProvider } from "./providers/gemini";
 import { geminiKeyPool } from "./geminiKeyPool";
 import { redactGeminiKeysFromText } from "./geminiKeyStore";
+import {
+  sanitizeTranslatedUnitText,
+  validateSingleUnitTranslation,
+} from "./translationQaAndRepair";
 
 export interface GeminiTranslationUnit {
   /** Stable global ID across the entire translation job (e.g. 1..N) */
@@ -373,13 +377,22 @@ export class GeminiTranslationCoordinator {
           }
 
           for (const u of pendingUnits) {
-            const translated = attemptRes.translations.get(u.unitId);
-            if (translated && translated.trim().length > 0) {
-              recordUnitCompleted(u.unitId, translated);
+            const rawTranslated = attemptRes.translations.get(u.unitId);
+            const cleaned = sanitizeTranslatedUnitText(rawTranslated || "", u.unitId);
+            if (cleaned.length > 0) {
+              const qaIssues = validateSingleUnitTranslation(
+                u.sourceText,
+                cleaned,
+                options.targetLang,
+                options.sourceLang || "auto"
+              );
+              if (qaIssues.length === 0) {
+                recordUnitCompleted(u.unitId, cleaned);
+              }
             }
           }
 
-          // Filter down to only units that are still missing from `rawTranslatedById`
+          // Filter down to only units that are still missing or failed QA from `rawTranslatedById`
           pendingUnits = pendingUnits.filter((u) => !rawTranslatedById.has(u.unitId));
           lastTaskError = null;
         } catch (err: any) {
@@ -410,10 +423,10 @@ export class GeminiTranslationCoordinator {
         }
       }
 
-      // Targeted single-unit recovery if only 1-2 items were missed by batch formatting
+      // Targeted single-unit Gom Repair if any items were missed or left untranslated in English
       if (
         pendingUnits.length > 0 &&
-        pendingUnits.length <= 3 &&
+        pendingUnits.length <= 12 &&
         !fatalAbortError &&
         !isSessionCancelled() &&
         geminiKeyPool.getUsableKeyCount(provider.apiKey) > 0
@@ -440,8 +453,12 @@ export class GeminiTranslationCoordinator {
                 signal: sessionAbortController.signal,
               }
             );
-            if (singleTrans && singleTrans.trim().length > 0) {
-              recordUnitCompleted(missingUnit.unitId, singleTrans);
+            const cleanedSingle = sanitizeTranslatedUnitText(
+              singleTrans || "",
+              missingUnit.unitId
+            );
+            if (cleanedSingle.length > 0) {
+              recordUnitCompleted(missingUnit.unitId, cleanedSingle);
             }
           } catch (singleErr: any) {
             lastTaskError =

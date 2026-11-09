@@ -50,6 +50,7 @@ import {
   loadTranslationSettings,
   saveTranslationSettings,
 } from "../services/translation";
+import { findUntranslatedCueIndices } from "../services/translation/translationQaAndRepair";
 import { TranslationStyle } from "../services/translation/types";
 import {
   saveDubbingSessionBackup,
@@ -879,12 +880,50 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         return;
       }
 
-      setTranslatedCues(translated);
+      let finalTranslated = translated;
       const managerGroups = translationManager.getLastSpeechGroups();
-      const nextGroups =
+      let nextGroups =
         managerGroups && managerGroups.length > 0
           ? managerGroups
           : planDubbingSpeechGroups(originalCues, translated);
+
+      // Post-translation Global QA & Gom Repair: if any cues remain untranslated in English, auto-repair them
+      const remainingUntranslated = findUntranslatedCueIndices(
+        originalCues,
+        finalTranslated,
+        targetLang,
+        sourceLang
+      );
+      if (
+        remainingUntranslated.length > 0 &&
+        !translationControlRef.current.isCancelled
+      ) {
+        try {
+          const repairRes = await translationManager.repairUntranslatedCues(
+            originalCues,
+            finalTranslated,
+            nextGroups,
+            targetLang,
+            selectedProviderId,
+            undefined,
+            translationStyle,
+            {
+              sourceLang,
+              dubbingMode,
+              isPaused: () => translationControlRef.current.isPaused,
+              isCancelled: () => translationControlRef.current.isCancelled,
+            }
+          );
+          if (!translationControlRef.current.isCancelled) {
+            finalTranslated = repairRes.translatedCues;
+            nextGroups = repairRes.speechGroups;
+          }
+        } catch (repErr) {
+          console.warn("Post-translation Gom Repair warning:", repErr);
+        }
+      }
+
+      setTranslatedCues(finalTranslated);
       setSpeechGroups(nextGroups);
 
       // Invalidate existing audio segments: mark all as needs_generation
@@ -902,6 +941,68 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     } catch (err: any) {
       if (!translationControlRef.current.isCancelled) {
         setErrorMessage(err.message || "Lỗi dịch thuật kịch bản.");
+      }
+    } finally {
+      setIsTranslating(false);
+      setIsTranslationPaused(false);
+      setTranslationProgress(null);
+    }
+  };
+
+  // Targeted Gom Repair for untranslated cues in an existing/restored session
+  const handleRepairUntranslated = async () => {
+    if (!originalCues || originalCues.length === 0 || isTranslating) return;
+
+    setIsTranslating(true);
+    setIsTranslationPaused(false);
+    translationControlRef.current = { isPaused: false, isCancelled: false };
+    setErrorMessage("");
+
+    try {
+      const repairRes = await translationManager.repairUntranslatedCues(
+        originalCues,
+        translatedCues,
+        speechGroups,
+        targetLang,
+        selectedProviderId,
+        (done, total) => {
+          setTranslationProgress({ done, total });
+        },
+        translationStyle,
+        {
+          sourceLang,
+          dubbingMode,
+          isPaused: () => translationControlRef.current.isPaused,
+          isCancelled: () => translationControlRef.current.isCancelled,
+        }
+      );
+
+      if (translationControlRef.current.isCancelled) {
+        return;
+      }
+
+      setTranslatedCues(repairRes.translatedCues);
+      setSpeechGroups(repairRes.speechGroups);
+
+      if (repairRes.repairedCueIndices.length > 0) {
+        const repairedSet = new Set(repairRes.repairedCueIndices);
+        setAudioSegments((prev) => {
+          const next = { ...prev };
+          for (const idx of repairedSet) {
+            if (next[idx]) {
+              next[idx] = {
+                ...next[idx],
+                status: next[idx].audioUrl ? "modified" : "needs_generation",
+                qualityReview: undefined,
+              };
+            }
+          }
+          return next;
+        });
+      }
+    } catch (err: any) {
+      if (!translationControlRef.current.isCancelled) {
+        setErrorMessage(err?.message || "Lỗi dịch bù các câu chưa dịch.");
       }
     } finally {
       setIsTranslating(false);
@@ -2046,24 +2147,46 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     [translatedCues, speechGroups]
   );
 
+  const untranslatedCueIndices = useMemo(
+    () =>
+      hasTranslatedContent
+        ? findUntranslatedCueIndices(originalCues, translatedCues, targetLang, sourceLang)
+        : [],
+    [hasTranslatedContent, originalCues, translatedCues, targetLang, sourceLang]
+  );
+
   // Active Dubbing Preview Track (persists while paused until explicitly closed)
   const activeDubTrack: ActiveAudioTrack | null = useMemo(() => {
     if (activePreviewCueIndex === null) return null;
     const seg = audioSegments[activePreviewCueIndex];
     const audioUrl = seg?.fittedAudioUrl || seg?.audioUrl;
     if (!audioUrl) return null;
+    const isGrouped = Boolean(seg?.groupCueIndices && seg.groupCueIndices.length > 1);
+    const primaryIdx = seg?.primaryCueIndex ?? activePreviewCueIndex;
+    const primarySeg = audioSegments[primaryIdx] ?? seg;
     const orig = originalCues.find((c) => c.index === activePreviewCueIndex);
     const trans = translatedCues.find((c) => c.index === activePreviewCueIndex);
     const voice = voices.find((v) => v.id === (selectedVoiceId || activeVoiceId));
     const dur =
+      primarySeg?.fittedDurationSec ||
+      primarySeg?.rawDurationSec ||
       seg?.fittedDurationSec ||
       seg?.rawDurationSec ||
       (orig ? Math.max(0.1, orig.endSec - orig.startSec) : 4.0);
+    const groupIndices = seg?.groupCueIndices ?? [];
+    const groupLabel =
+      isGrouped && groupIndices.length > 1
+        ? `Nhóm ${groupIndices[0]}–${groupIndices[groupIndices.length - 1]} (Câu ${activePreviewCueIndex}) · Lồng tiếng`
+        : `Câu ${activePreviewCueIndex < 10 ? `0${activePreviewCueIndex}` : activePreviewCueIndex} · Lồng tiếng`;
     return {
       id: `dub_cue_${activePreviewCueIndex}`,
       chunkIndex: activePreviewCueIndex,
-      title: `Câu ${activePreviewCueIndex < 10 ? `0${activePreviewCueIndex}` : activePreviewCueIndex} · Lồng tiếng`,
-      voiceName: seg?.effectiveVoiceSnapshot?.voiceName || voice?.name || "Lồng tiếng",
+      title: groupLabel,
+      voiceName:
+        primarySeg?.effectiveVoiceSnapshot?.voiceName ||
+        seg?.effectiveVoiceSnapshot?.voiceName ||
+        voice?.name ||
+        "Lồng tiếng",
       durationSec: dur,
       audioUrl,
       text: trans?.text || orig?.text,
@@ -2201,8 +2324,13 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
             dubbingMode={dubbingMode}
             playingCueIndex={isPlayingCueAudio ? activePreviewCueIndex : null}
             collidingCount={collidingCuesCount}
+            untranslatedCount={untranslatedCueIndices.length}
+            isTranslating={isTranslating}
             isGeneratingAudio={isGeneratingAudio || isCheckingAsrReadiness}
             onAutoFitAll={handleAutoFitAll}
+            onRepairUntranslated={() => {
+              void handleRepairUntranslated();
+            }}
             onUpdateText={handleUpdateText}
             onUpdateGroupText={handleUpdateGroupText}
             onUpdateFullNarrationScript={handleUpdateFullNarrationScript}

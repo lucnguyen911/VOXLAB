@@ -25,7 +25,9 @@ export interface ReviewGridProps {
   dubbingMode?: DubbingMode;
   playingCueIndex?: number | null;
   collidingCount?: number;
+  untranslatedCount?: number;
   isGeneratingAudio?: boolean;
+  isTranslating?: boolean;
   onUpdateText: (index: number, newText: string) => void;
   onUpdateGroupText?: (groupId: string, newText: string) => void;
   onUpdateFullNarrationScript?: (fullScriptText: string) => void;
@@ -33,6 +35,7 @@ export interface ReviewGridProps {
   onRegenerateAudio?: (index: number) => void;
   onRegenerateErrors?: () => void;
   onRegenerateWarnings?: () => void;
+  onRepairUntranslated?: () => void;
   onAutoFitAll?: () => void;
   onSelectFile?: () => void;
   isDragging?: boolean;
@@ -48,7 +51,9 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
   dubbingMode = "source_sync",
   playingCueIndex,
   collidingCount = 0,
+  untranslatedCount = 0,
   isGeneratingAudio = false,
+  isTranslating = false,
   onUpdateText,
   onUpdateGroupText,
   onUpdateFullNarrationScript,
@@ -56,6 +61,7 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
   onRegenerateAudio,
   onRegenerateErrors,
   onRegenerateWarnings,
+  onRepairUntranslated,
   onAutoFitAll,
   onSelectFile,
   isDragging = false,
@@ -197,6 +203,18 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap">
+            {untranslatedCount > 0 && onRepairUntranslated && (
+              <button
+                type="button"
+                disabled={isTranslating || isGeneratingAudio}
+                onClick={onRepairUntranslated}
+                className="flex items-center gap-1 px-2 py-0.5 bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/35 rounded text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                title="Dịch bù riêng các câu/nhóm câu còn sót tiếng Anh mà không làm ảnh hưởng các câu đã dịch"
+              >
+                <RefreshCw className={`w-3 h-3 ${isTranslating ? "animate-spin" : ""}`} />
+                <span>Dịch bù {untranslatedCount} câu sót</span>
+              </button>
+            )}
             {isFreeNarration && hasAnyTranslatedText && (
               <button
                 type="button"

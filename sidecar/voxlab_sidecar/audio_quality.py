@@ -6857,13 +6857,23 @@ def recover_unaligned_words(
             try:
                 sf.write(tmp_wav_name, slice_audio, sr, subtype="PCM_16")
                 lang_code = None if not language or language == "auto" else language
-                seg_iter, _ = whisper_model.transcribe(
-                    tmp_wav_name,
-                    language=lang_code,
-                    beam_size=5,
-                    word_timestamps=True,
-                    vad_filter=False,
-                )
+                try:
+                    seg_iter, _ = whisper_model.transcribe(
+                        tmp_wav_name,
+                        language=lang_code,
+                        beam_size=5,
+                        word_timestamps=True,
+                        vad_filter=False,
+                        condition_on_previous_text=False,
+                    )
+                except TypeError:
+                    seg_iter, _ = whisper_model.transcribe(
+                        tmp_wav_name,
+                        language=lang_code,
+                        beam_size=5,
+                        word_timestamps=True,
+                        vad_filter=False,
+                    )
                 slice_words = []
                 has_hallucination = False
                 min_prob = 0.80 if is_trailing else 0.70
@@ -7002,7 +7012,13 @@ def validate_audio_quality(
             "asrModelId": model_id or "large-v3-turbo",
         }
 
-    from .asr_engine import resolve_whisper_model_dir, get_shared_whisper_model, AsrLifecycleManager
+    from .asr_engine import (
+        resolve_whisper_model_dir,
+        get_shared_whisper_model,
+        AsrLifecycleManager,
+        DEFAULT_TTS_VAD_PARAMETERS,
+        _is_cuda_runtime_error,
+    )
 
     target_model_dir, canonical_id = resolve_whisper_model_dir(model_id, models_dir)
     if not target_model_dir:
@@ -7043,13 +7059,53 @@ def validate_audio_quality(
 
     try:
         lang_code = None if not eff_language or eff_language == "auto" else eff_language
-        segments_iter, _ = whisper_model.transcribe(
-            audio_path,
-            language=lang_code,
-            beam_size=5,
-            word_timestamps=True,
-            vad_filter=True,
-        )
+
+        def _invoke_whisper_transcribe(model_obj: Any, use_vad: bool) -> Any:
+            try:
+                if use_vad:
+                    return model_obj.transcribe(
+                        audio_path,
+                        language=lang_code,
+                        beam_size=5,
+                        word_timestamps=True,
+                        vad_filter=True,
+                        vad_parameters=dict(DEFAULT_TTS_VAD_PARAMETERS),
+                        condition_on_previous_text=False,
+                    )
+                return model_obj.transcribe(
+                    audio_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=False,
+                    condition_on_previous_text=False,
+                )
+            except TypeError:
+                return model_obj.transcribe(
+                    audio_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=use_vad,
+                )
+
+        try:
+            segments_iter, _ = _invoke_whisper_transcribe(whisper_model, True)
+            segments_iter = list(segments_iter)
+        except Exception as inf_err:
+            if _is_cuda_runtime_error(inf_err):
+                log(f"[audio_quality] CUDA inference error ({inf_err}); switching ASR to CPU / int8")
+                mgr = AsrLifecycleManager.get_instance()
+                whisper_model = mgr.get_or_load(
+                    model_dir_or_id=target_model_dir,
+                    models_dir=models_dir,
+                    device="cpu",
+                    compute_type="int8",
+                )
+                segments_iter, _ = _invoke_whisper_transcribe(whisper_model, True)
+                segments_iter = list(segments_iter)
+            else:
+                raise
 
         detected_words: list[dict[str, Any]] = []
         for seg in segments_iter:
@@ -7066,13 +7122,7 @@ def validate_audio_quality(
         # If detected_words is empty with vad_filter=True, retry once with vad_filter=False
         if not detected_words:
             try:
-                seg_retry, _ = whisper_model.transcribe(
-                    audio_path,
-                    language=lang_code,
-                    beam_size=5,
-                    word_timestamps=True,
-                    vad_filter=False,
-                )
+                seg_retry, _ = _invoke_whisper_transcribe(whisper_model, False)
                 for seg in seg_retry:
                     if seg.words:
                         for w in seg.words:

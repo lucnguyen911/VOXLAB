@@ -70,6 +70,10 @@ export const CueRow: React.FC<CueRowProps> = ({
       audioSegment
   );
   const formattedIndex = String(original.index).padStart(2, "0");
+  const groupLabel =
+    audioSegment?.groupCueIndices && audioSegment.groupCueIndices.length > 1
+      ? `Nhóm ${audioSegment.groupCueIndices[0]}–${audioSegment.groupCueIndices[audioSegment.groupCueIndices.length - 1]}`
+      : null;
 
   // Audio status pill rendering
   const renderAudioStatusBadge = () => {
@@ -319,6 +323,11 @@ export const CueRow: React.FC<CueRowProps> = ({
                 type="button"
                 onClick={() => onPlayAudio?.(original.index)}
                 className="flex items-center gap-1 px-2 py-0.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded text-[10px] font-medium transition-colors cursor-pointer"
+                title={
+                  groupLabel
+                    ? `Phát âm thanh của cả ${groupLabel} (nhóm câu dùng chung 1 file audio liền mạch)`
+                    : "Nghe thử âm thanh câu này"
+                }
               >
                 {isPlaying ? (
                   <>
@@ -328,7 +337,11 @@ export const CueRow: React.FC<CueRowProps> = ({
                 ) : (
                   <>
                     <Play className="w-2.5 h-2.5 text-accent" />
-                    <span>Nghe thử</span>
+                    <span>
+                      {groupLabel && audioSegment.isGroupPrimary === false
+                        ? "Nghe nhóm"
+                        : "Nghe thử"}
+                    </span>
                   </>
                 )}
               </button>
