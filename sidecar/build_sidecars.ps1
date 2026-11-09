@@ -73,7 +73,7 @@ function Resolve-PyArmorCli([string]$VenvScriptsDir, [string]$PythonExe) {
         return $globalCmd.Source
     }
     Write-Host "Installing PyArmor (<10) into venv ($VenvScriptsDir)..." -ForegroundColor Yellow
-    & $PythonExe -m pip install "pyarmor>=8,<10"
+    & $PythonExe -m pip install "pyarmor>=8,<10" | Out-Null
     if (Test-Path $localPyArmor) {
         return $localPyArmor
     }
@@ -213,9 +213,60 @@ foreach ($rt in $Runtimes) {
         Write-Host "[SECURITY OK] All 15 mandatory security/engine modules verified with __pyarmor__ armor." -ForegroundColor Green
     }
 
-    # Bootstrapper ensures package-qualified execution so relative imports and PyArmor runtime load cleanly
+    # Bootstrapper ensures package-qualified execution so relative imports, stdlib modules
+    # required by PyArmor-obfuscated bytecode, and runtime site-packages load cleanly.
+    $venvSitePackages = Join-Path $SidecarRoot "$venvName\Lib\site-packages"
+    $escapedVenvSitePackages = $venvSitePackages.Replace('\', '\\')
     $launcherPath = Join-Path $stageDir "run_voxlab_sidecar.py"
     Set-Content -Path $launcherPath -Encoding UTF8 -Value @(
+        "from __future__ import annotations"
+        "import argparse, asyncio, ctypes, ctypes.wintypes, dataclasses, datetime, difflib"
+        "import email.utils, faulthandler, functools, gc, hashlib, hmac, importlib, importlib.util"
+        "import inspect, io, json, logging, math, msvcrt, os, pathlib, platform, re, shutil"
+        "import ssl, stat, struct, subprocess, sys, tempfile, threading, time, typing"
+        "import unicodedata, urllib.error, urllib.parse, urllib.request, uuid, wave, winreg"
+        ""
+        "if False:"
+        "    import voxlab_sidecar"
+        "    import voxlab_sidecar.__main__"
+        "    import voxlab_sidecar.ipc_auth"
+        "    import voxlab_sidecar.protocol"
+        "    import voxlab_sidecar.server"
+        "    import voxlab_sidecar.stdio"
+        "    import voxlab_sidecar.asr_engine"
+        "    import voxlab_sidecar.audio_ops"
+        "    import voxlab_sidecar.edge_tts_engine"
+        "    import voxlab_sidecar.pronunciation"
+        "    import voxlab_sidecar.number_normalizer"
+        "    import voxlab_sidecar.subtitle_optimizer"
+        "    import voxlab_sidecar.audio_quality"
+        "    import voxlab_sidecar.tts"
+        "    import voxlab_sidecar.tts.base"
+        "    import voxlab_sidecar.tts.service"
+        "    import voxlab_sidecar.tts.omnivoice_adapter"
+        "    import voxlab_sidecar.tts.chatterbox_adapter"
+        "    import voxlab_sidecar.tts.qwen_adapter"
+        ""
+        "def _attach_runtime_site_packages() -> None:"
+        "    exe_dir = os.path.dirname(os.path.abspath(sys.executable))"
+        "    candidates = ["
+        "        os.path.join(exe_dir, 'site-packages'),"
+        "        os.path.join(exe_dir, '_internal', 'site-packages'),"
+        "        os.path.abspath(os.path.join(exe_dir, '..', '$venvName', 'Lib', 'site-packages')),"
+        "        '$escapedVenvSitePackages',"
+        "    ]"
+        "    for sp in candidates:"
+        "        if sp and os.path.isdir(sp) and sp not in sys.path:"
+        "            sys.path.append(sp)"
+        "            for dll_rel in ('torch\\lib', 'ctranslate2', 'libsndfile.dll', '_soundfile_data', 'nvidia\\cublas\\bin', 'nvidia\\cudnn\\bin', 'nvidia\\cuda_runtime\\bin'):"
+        "                dll_dir = os.path.join(sp, dll_rel)"
+        "                if os.path.isdir(dll_dir) and hasattr(os, 'add_dll_directory'):"
+        "                    try:"
+        "                        os.add_dll_directory(dll_dir)"
+        "                    except Exception:"
+        "                        pass"
+        ""
+        "_attach_runtime_site_packages()"
         "from voxlab_sidecar.__main__ import main"
         "if __name__ == '__main__':"
         "    raise SystemExit(main())"
@@ -245,7 +296,25 @@ foreach ($rt in $Runtimes) {
             "--workpath", $workPath,
             "--specpath", $workPath,
             "--paths", $stageDir,
-            "--collect-submodules", "voxlab_sidecar"
+            "--collect-submodules", "voxlab_sidecar",
+            "--exclude-module", "torch",
+            "--exclude-module", "torchaudio",
+            "--exclude-module", "torchvision",
+            "--exclude-module", "scipy",
+            "--exclude-module", "sklearn",
+            "--exclude-module", "librosa",
+            "--exclude-module", "numba",
+            "--exclude-module", "llvmlite",
+            "--exclude-module", "pandas",
+            "--exclude-module", "gradio",
+            "--exclude-module", "fastapi",
+            "--exclude-module", "uvicorn",
+            "--exclude-module", "av",
+            "--exclude-module", "numpy",
+            "--exclude-module", "soundfile",
+            "--exclude-module", "ctranslate2",
+            "--exclude-module", "faster_whisper",
+            "--exclude-module", "onnxruntime"
         ) + $extraPyInstallerArgs + @($launcherPath)
 
         & $pythonExe @pyiArgs

@@ -26,3 +26,8 @@
 
 ## 6. Rà Soát Cuối Cùng (`FINAL REVIEW` — Phase 13)
 - [x] **REV-01**: Đối chiếu toàn bộ implementation với `SPEC.md`, `CONSTRAINTS.md`, `tasks/plan.md`, `PERFORMANCE.md` và UI/UX đã duyệt; xác nhận toàn bộ 913 Frontend tests + 222 Python sidecar tests + 35 Rust unit tests + `tsc --noEmit` + `npm run build` đều PASS (`Verdict: READY`).
+
+
+## 7. Đóng Gói & Phát Hành Production (`/ship` — Phase 14)
+- [x] **SHIP-01**: Hoàn thiện `sidecar/build_sidecars.ps1` và đóng gói toàn bộ 3 Python sidecars (`voxlab-sidecar-core`, `voxlab-sidecar-chatterbox`, `voxlab-sidecar-qwen`) với PyArmor + PyInstaller (`--onedir`, `--noupx`, 0 file `.py` rò rỉ), xác thực Mutual-HMAC `HOST_AUTH_V3.1` / `SIDECAR_ACK_V3.1` và chặn gọi độc lập (`UNAUTHORIZED_HOST`).
+- [x] **SHIP-02**: Cập nhật `src-tauri/tauri.conf.json` (nhúng `target/release/sidecar` vào `bundle.resources` và siết chặt CSP `connect-src`), đồng bộ phiên bản `@tauri-apps/*`, tạo `CHANGELOG.md` và `RELEASE.md`, chạy `npx tauri build` tạo `voxlab.exe`, `VoxLab_0.1.0_x64-setup.exe` (NSIS) và `VoxLab_0.1.0_x64_en-US.msi` (WiX), kiểm chứng first launch, restart, bảo toàn dữ liệu `%APPDATA%\com.voxlab.app` và xử lý thiếu model (`MODEL_NOT_FOUND`) (`SHIP DECISION: GO`).
