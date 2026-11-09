@@ -361,6 +361,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const [isCheckingAsrReadiness, setIsCheckingAsrReadiness] = useState<boolean>(false);
   const pendingGenerationActionRef = useRef<(() => void) | null>(null);
   const inFlightValidationsRef = useRef<Set<string>>(new Set());
+  const isBatchCancelledByUserRef = useRef<boolean>(false);
 
   useEffect(() => {
     const syncAsrModel = () => {
@@ -700,9 +701,16 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   };
 
   // Automatically trigger background quality validation for any ready primary segment whose review is outdated or missing
-  // Deferred when isGeneratingAudio is true so Whisper QC never competes with active TTS synthesis
+  // Deferred when isGeneratingAudio is true or after user explicitly cancels a batch so Whisper QC never competes with active TTS synthesis
   useEffect(() => {
-    if (!isAsrReady || isGeneratingAudio) return;
+    if (
+      !isAsrReady ||
+      isGeneratingAudio ||
+      isBatchCancelledByUserRef.current ||
+      synthesisQueueRef.current !== null
+    ) {
+      return;
+    }
     if (inFlightValidationsRef.current.size > 0) return;
 
     const candidates = Object.values(audioSegments).filter((seg) => {
@@ -1122,6 +1130,11 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
 
   const executeCuesBatchSynthesis = (targetCues: OriginalCue[]) => {
     if (targetCues.length === 0) return;
+    if (synthesisQueueRef.current) {
+      synthesisQueueRef.current.cancel();
+      synthesisQueueRef.current = null;
+    }
+    isBatchCancelledByUserRef.current = false;
     setIsGeneratingAudio(true);
     setIsAudioPaused(false);
     setErrorMessage("");
@@ -1223,6 +1236,59 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       });
     }
 
+    // Reset target segments upfront so stale errors, audio URLs, or voice snapshots from a previous run are cleared
+    const affectedCueIds = new Set<number>();
+    for (const job of jobs) {
+      if (job.speechGroup && job.speechGroup.sourceCueIds.length > 0) {
+        for (const id of job.speechGroup.sourceCueIds) {
+          affectedCueIds.add(id);
+        }
+      } else {
+        affectedCueIds.add(job.originalCue.index);
+      }
+    }
+    if (activePreviewCueIndex !== null && affectedCueIds.has(activePreviewCueIndex)) {
+      setIsPlayingCueAudio(false);
+      setActivePreviewCueIndex(null);
+    }
+    setAudioSegments((prev) => {
+      const next = { ...prev };
+      for (const job of jobs) {
+        const grp = job.speechGroup;
+        const memberIds =
+          grp && grp.sourceCueIds.length > 0
+            ? grp.sourceCueIds
+            : [job.originalCue.index];
+        const primaryId = memberIds[0];
+        for (const id of memberIds) {
+          const origCue = originalCues.find((c) => c.index === id);
+          next[id] = {
+            cueIndex: id,
+            rawDurationSec: 0,
+            targetDurationSec: origCue
+              ? Math.max(0.2, Number((origCue.endSec - origCue.startSec).toFixed(3)))
+              : 0,
+            fittedDurationSec: 0,
+            speedFactor: 1.0,
+            audioStartSec: origCue?.startSec ?? 0,
+            audioEndSec: origCue?.endSec ?? 0,
+            groupId: grp?.groupId,
+            groupCueIndices: grp?.sourceCueIds,
+            isGroupPrimary: id === primaryId,
+            primaryCueIndex: primaryId,
+            status: "needs_generation",
+            errorMessage: undefined,
+            audioUrl: undefined,
+            audioFilePath: undefined,
+            fittedAudioUrl: undefined,
+            effectiveVoiceSnapshot: undefined,
+            qualityReview: undefined,
+          };
+        }
+      }
+      return next;
+    });
+
     setAudioProgress({ done: 0, total: jobs.length });
 
     const expandSegmentUpdate = (
@@ -1266,6 +1332,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 isGroupPrimary: id === cueIndex,
                 primaryCueIndex: cueIndex,
                 status: "generating",
+                errorMessage: undefined,
               };
             }
             return next;
@@ -1306,6 +1373,11 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 }),
                 status: "failed",
                 errorMessage: errMsg,
+                audioUrl: undefined,
+                audioFilePath: undefined,
+                fittedAudioUrl: undefined,
+                effectiveVoiceSnapshot: undefined,
+                qualityReview: undefined,
               };
             }
             return next;
@@ -1427,10 +1499,39 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   };
 
   const handleCancelAudio = () => {
+    isBatchCancelledByUserRef.current = true;
     if (synthesisQueueRef.current) {
       synthesisQueueRef.current.cancel();
       synthesisQueueRef.current = null;
     }
+    void getSharedAiServices()
+      .then((ai) => ai?.cancelActive(300))
+      .catch(() => {});
+    setAudioSegments((prev) => {
+      const next: Record<number, DubAudioSegment> = {};
+      for (const [k, seg] of Object.entries(prev)) {
+        const id = Number(k);
+        if (seg.status === "generating") {
+          next[id] = {
+            ...seg,
+            status: "needs_generation",
+            errorMessage: undefined,
+          };
+        } else if (seg.qualityReview?.status === "checking") {
+          next[id] = {
+            ...seg,
+            qualityReview: {
+              ...seg.qualityReview,
+              status: "unverified",
+              summary: "Đã dừng kiểm tra do hủy tiến trình",
+            },
+          };
+        } else {
+          next[id] = seg;
+        }
+      }
+      return next;
+    });
     setIsGeneratingAudio(false);
     setIsAudioPaused(false);
     setAudioProgress(null);

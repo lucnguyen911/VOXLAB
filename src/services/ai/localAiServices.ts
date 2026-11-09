@@ -201,10 +201,22 @@ export class LocalAiServices {
     const requestId = newRequestId(method.replace(/\W/g, ""));
     this.active = { runtime, requestId };
     try {
-      return await this.backend.request<T>(runtime, method, params, {
-        requestId,
-        onProgress: onProgress ? (p) => onProgress(p.pct, p.stage) : undefined,
-      });
+      const maxBusyRetries = 12;
+      for (let busyAttempt = 0; ; busyAttempt++) {
+        try {
+          return await this.backend.request<T>(runtime, method, params, {
+            requestId,
+            onProgress: onProgress ? (p) => onProgress(p.pct, p.stage) : undefined,
+          });
+        } catch (err) {
+          const aiErr = AiError.from(err);
+          if (aiErr.code === "BUSY" && busyAttempt < maxBusyRetries) {
+            await new Promise((r) => setTimeout(r, Math.min(800, 150 * (busyAttempt + 1))));
+            continue;
+          }
+          throw aiErr;
+        }
+      }
     } finally {
       if (this.active?.requestId === requestId) this.active = null;
     }

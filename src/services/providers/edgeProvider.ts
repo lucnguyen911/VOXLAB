@@ -389,21 +389,40 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       const spokenSample = prepareSpokenText(sampleText, { rules, engine: "edge" }).spokenText;
 
       const { invoke } = await import("@tauri-apps/api/core");
-      const synthResult = await invoke<{
+      let synthResult: {
         outputPath: string;
         durationSec: number;
         sampleRate: number;
         sizeBytes: number;
         format: string;
-      }>("ai_request", {
-        runtime: "core",
-        method: "tts.edge_preview",
-        params: {
-          voice: edgeVoiceName,
-          text: spokenSample,
-          pronunciationRules: rules,
-        },
-      });
+      } | null = null;
+      for (let busyAttempt = 0; ; busyAttempt++) {
+        try {
+          synthResult = await invoke<{
+            outputPath: string;
+            durationSec: number;
+            sampleRate: number;
+            sizeBytes: number;
+            format: string;
+          }>("ai_request", {
+            runtime: "core",
+            method: "tts.edge_preview",
+            params: {
+              voice: edgeVoiceName,
+              text: spokenSample,
+              pronunciationRules: rules,
+            },
+          });
+          break;
+        } catch (err: any) {
+          const msg = String(err?.message || err || "");
+          if ((err?.code === "BUSY" || msg.includes("[BUSY]")) && busyAttempt < 12) {
+            await new Promise((r) => setTimeout(r, Math.min(800, 150 * (busyAttempt + 1))));
+            continue;
+          }
+          throw err;
+        }
+      }
 
       if (!synthResult || !synthResult.outputPath) {
         return {
@@ -451,25 +470,44 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
     const { invoke } = await import("@tauri-apps/api/core");
     options.onProgress?.(10, "connecting");
 
-    const synthResult = await invoke<{
+    let synthResult: {
       outputPath: string;
       durationSec: number;
       sampleRate: number;
       sizeBytes: number;
       format: string;
-    }>("ai_request", {
-      runtime: "core",
-      method: "tts.edge_synthesize",
-      params: {
-        voice: edgeVoiceName,
-        text: spokenText,
-        outputPath: options.outputPath,
-        rate: formatEdgeRate(options.speed),
-        pitch: formatEdgePitch(options.pitch),
-        volume: formatEdgeVolume(options.volume),
-        pronunciationRules: rules,
-      },
-    });
+    } | null = null;
+    for (let busyAttempt = 0; ; busyAttempt++) {
+      try {
+        synthResult = await invoke<{
+          outputPath: string;
+          durationSec: number;
+          sampleRate: number;
+          sizeBytes: number;
+          format: string;
+        }>("ai_request", {
+          runtime: "core",
+          method: "tts.edge_synthesize",
+          params: {
+            voice: edgeVoiceName,
+            text: spokenText,
+            outputPath: options.outputPath,
+            rate: formatEdgeRate(options.speed),
+            pitch: formatEdgePitch(options.pitch),
+            volume: formatEdgeVolume(options.volume),
+            pronunciationRules: rules,
+          },
+        });
+        break;
+      } catch (err: any) {
+        const msg = String(err?.message || err || "");
+        if ((err?.code === "BUSY" || msg.includes("[BUSY]")) && busyAttempt < 12) {
+          await new Promise((r) => setTimeout(r, Math.min(800, 150 * (busyAttempt + 1))));
+          continue;
+        }
+        throw err;
+      }
+    }
 
     if (!synthResult || !synthResult.outputPath) {
       throw new Error("Edge TTS synthesis did not return an output file");

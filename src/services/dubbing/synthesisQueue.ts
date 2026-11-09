@@ -415,6 +415,7 @@ export class DubbingSynthesisQueue {
       this.callbacks.onJobCompleted?.(originalCue.index, segment, speechGroup);
       this.callbacks.onProgress?.(this.completedCount, this.jobs.length);
     } catch (err: any) {
+      if (this.isCancelled() || err?.code === "CANCELLED") return;
       this.callbacks.onJobFailed?.(
         originalCue.index,
         err?.message || "Synthesis error",

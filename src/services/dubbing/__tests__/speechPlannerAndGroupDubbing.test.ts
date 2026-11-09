@@ -454,4 +454,75 @@ describe("Deferred Whisper QC, Partial Edit Invalidation & Master WAV / SRT Inva
     assert.equal(completedSegments[0].groupId, groups[0].groupId);
     assert.deepEqual(completedSegments[0].groupCueIndices, [1, 2]);
   });
+
+  it("ignores CANCELLED errors on cancel() and restarts cleanly from cue #1 without failing on transient sidecar BUSY", async () => {
+    const cues: OriginalCue[] = [
+      { index: 1, startSec: 0.0, endSec: 2.0, text: "First group." },
+      { index: 2, startSec: 2.5, endSec: 4.5, text: "Second group." },
+    ];
+    const trans: TranslatedCue[] = [
+      { index: 1, startSec: 0.0, endSec: 2.0, originalText: cues[0].text, text: "Nhóm một." },
+      { index: 2, startSec: 2.5, endSec: 4.5, originalText: cues[1].text, text: "Nhóm hai." },
+    ];
+    const groups = planDubbingSpeechGroups(cues, trans);
+
+    const failedInCancelledRun: number[] = [];
+    const queue1 = new DubbingSynthesisQueue({
+      onJobFailed: (idx) => failedInCancelledRun.push(idx),
+    });
+
+    queue1.setJobs([
+      {
+        originalCue: cues[0],
+        translatedCue: trans[0],
+        speechGroup: groups[0],
+        voiceId: "edge_vi_namminh",
+        synthesizer: async () => {
+          await new Promise((r) => setTimeout(r, 40));
+          const err: any = new Error("[CANCELLED] cancelled by user");
+          err.code = "CANCELLED";
+          throw err;
+        },
+      },
+    ]);
+    queue1.start();
+    queue1.cancel();
+    await new Promise((r) => setTimeout(r, 70));
+    assert.deepEqual(
+      failedInCancelledRun,
+      [],
+      "Cancelled queue must not mark in-flight job as failed"
+    );
+
+    // Restart from cue #1 with a new voice
+    const completedInNewRun: number[] = [];
+    const failedInNewRun: number[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const queue2 = new DubbingSynthesisQueue({
+        onJobCompleted: (idx) => completedInNewRun.push(idx),
+        onJobFailed: (idx, err) => {
+          failedInNewRun.push(idx);
+          reject(new Error(err));
+        },
+        onQueueFinished: () => resolve(),
+      });
+      queue2.setJobs(
+        groups.map((grp, i) => ({
+          originalCue: cues[i],
+          translatedCue: trans[i],
+          speechGroup: grp,
+          voiceId: "voice_02",
+          synthesizer: async (_text, cueIdx) => ({
+            durationSec: 1.5,
+            outputPath: `scratch/group_${cueIdx}.wav`,
+            blobUrl: `blob:group_${cueIdx}`,
+          }),
+        }))
+      );
+      queue2.start();
+    });
+
+    assert.deepEqual(failedInNewRun, []);
+    assert.deepEqual(completedInNewRun, [1, 2]);
+  });
 });
