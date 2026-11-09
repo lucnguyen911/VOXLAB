@@ -124,6 +124,7 @@ export interface DubAudioSegment {
   groupCueIndices?: number[];// All cue indices covered by this speech group
   isGroupPrimary?: boolean;  // True for the head cue of a speech group (or true in 1:1 mode); false for follower cues
   primaryCueIndex?: number;  // Head cue index where the group audio is anchored on the timeline
+  elasticallyShiftedNext?: boolean; // True when overflow past nextCue.startSec is resolved via elastic ripple shift
 }
 
 /**
@@ -138,9 +139,10 @@ export interface TimingOverflowMetadata {
   cueIndex: number;
   hasOverflow: boolean;          // true if audioEndSec > OriginalCue.endSec
   overflowSec: number;           // audioEndSec - OriginalCue.endSec (positive = overflow)
-  hasCollision: boolean;         // true if audioEndSec > nextOriginalCue.startSec
-  collisionWithIndex?: number;   // index of subsequent cue that overlaps
-  collisionSec: number;          // overlap amount in seconds
+  hasCollision: boolean;         // true if audioEndSec > nextOriginalCue.startSec (unshifted)
+  collisionWithIndex?: number;   // index of subsequent cue that overlaps or was elastically shifted
+  collisionSec: number;          // overlap/shift amount in seconds
+  elasticallyResolved?: boolean; // true if overlap with next cue was resolved via WSOLA + elastic shift
   warningLevel: TimingOverflowWarningLevel;
 }
 

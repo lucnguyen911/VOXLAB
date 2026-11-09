@@ -55,8 +55,9 @@ import {
   saveDubbingSessionBackup,
   loadDubbingSessionBackup,
 } from "../services/dubbing/sessionStorage";
-import { analyzeTimingCollision, canExportMasterWav } from "../services/dubbing/collisionDetector";
+import { analyzeTimingCollision } from "../services/dubbing/collisionDetector";
 import { resolveTimingCollisions, countCollisions } from "../services/dubbing/autoFit";
+import { applyWsolaTimeStretchToWavFile } from "../services/dubbing/timingFit";
 import { mergeMasterAudio } from "../services/dubbing/masterAssembly";
 import {
   DubbingSynthesisQueue,
@@ -348,7 +349,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const [isPlayingCueAudio, setIsPlayingCueAudio] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [restoredNotice, setRestoredNotice] = useState<string>("");
-  const [autoFitEnabled, setAutoFitEnabled] = useState<boolean>(false);
+  const [autoFitEnabled, setAutoFitEnabled] = useState<boolean>(true);
 
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
@@ -1340,7 +1341,11 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         },
         onJobChecking: (cueIndex, segment) => {
           setAudioSegments((prev) => {
-            const next = expandSegmentUpdate(prev, cueIndex, segment);
+            const expanded = expandSegmentUpdate(prev, cueIndex, segment);
+            const next =
+              autoFitEnabled && dubbingMode !== "free_narration"
+                ? resolveTimingCollisions(originalCues, expanded, { elasticShift: true })
+                : expanded;
             const newCollisions = analyzeTimingCollision(originalCues, next, dubbingMode);
             setOverflowAnalysis(newCollisions);
             return next;
@@ -1348,7 +1353,11 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         },
         onJobCompleted: (cueIndex, segment) => {
           setAudioSegments((prev) => {
-            const next = expandSegmentUpdate(prev, cueIndex, segment);
+            const expanded = expandSegmentUpdate(prev, cueIndex, segment);
+            const next =
+              autoFitEnabled && dubbingMode !== "free_narration"
+                ? resolveTimingCollisions(originalCues, expanded, { elasticShift: true })
+                : expanded;
             const newCollisions = analyzeTimingCollision(originalCues, next, dubbingMode);
             setOverflowAnalysis(newCollisions);
             return next;
@@ -1393,7 +1402,9 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           synthesisQueueRef.current = null;
           if (autoFitEnabled && dubbingMode !== "free_narration") {
             setAudioSegments((current) => {
-              const resolved = resolveTimingCollisions(originalCues, current);
+              const resolved = resolveTimingCollisions(originalCues, current, {
+                elasticShift: true,
+              });
               setOverflowAnalysis(
                 analyzeTimingCollision(originalCues, resolved, dubbingMode)
               );
@@ -1642,10 +1653,14 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 originalCues
               )
             : { [primaryCueIndex]: checkingSegment };
-        const updated: Record<number, DubAudioSegment> = {
+        const merged: Record<number, DubAudioSegment> = {
           ...prev,
           ...expanded,
         };
+        const updated =
+          autoFitEnabled && dubbingMode !== "free_narration"
+            ? resolveTimingCollisions(originalCues, merged, { elasticShift: true })
+            : merged;
         setOverflowAnalysis(analyzeTimingCollision(originalCues, updated, dubbingMode));
         return updated;
       });
@@ -1664,10 +1679,16 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 originalCues
               )
             : { [primaryCueIndex]: verifiedSegment };
-        return {
+        const merged = {
           ...prev,
           ...expanded,
         };
+        const updated =
+          autoFitEnabled && dubbingMode !== "free_narration"
+            ? resolveTimingCollisions(originalCues, merged, { elasticShift: true })
+            : merged;
+        setOverflowAnalysis(analyzeTimingCollision(originalCues, updated, dubbingMode));
+        return updated;
       });
     } catch (err: any) {
       setErrorMessage(
@@ -1695,32 +1716,65 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     }
   };
 
-  // One-click Auto-Fit across all colliding cues (capped at 1.20x per SPEC AC-22)
-  // One-click Auto-Fit across all colliding cues (capped at 1.20x per SPEC AC-22)
-  const handleAutoFitAll = () => {
+  // One-click Auto-Fit across all colliding cues (WSOLA <= 1.20x + elastic ripple shift)
+  const handleAutoFitAll = async () => {
     if (originalCues.length === 0 || dubbingMode === "free_narration") return;
-    const resolved = resolveTimingCollisions(originalCues, audioSegments);
+    setAutoFitEnabled(true);
+    const resolved = resolveTimingCollisions(originalCues, audioSegments, {
+      elasticShift: true,
+    });
     const newCollisions = analyzeTimingCollision(originalCues, resolved, dubbingMode);
     setAudioSegments(resolved);
     setOverflowAnalysis(newCollisions);
+
+    // Apply physical WSOLA time-stretch on disk for any primary segment whose speedFactor increased
+    for (const cue of originalCues) {
+      const prevSeg = audioSegments[cue.index];
+      const nextSeg = resolved[cue.index];
+      if (
+        nextSeg &&
+        nextSeg.isGroupPrimary !== false &&
+        nextSeg.audioFilePath &&
+        nextSeg.speedFactor > 1.001 &&
+        Math.abs(nextSeg.speedFactor - (prevSeg?.speedFactor || 1.0)) > 0.005
+      ) {
+        const stretchRes = await applyWsolaTimeStretchToWavFile(
+          nextSeg.audioFilePath,
+          nextSeg.speedFactor
+        );
+        if (stretchRes && stretchRes.isStretched && typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+          try {
+            const stretchedBlob = new Blob([stretchRes.wavBuffer], { type: "audio/wav" });
+            const newUrl = URL.createObjectURL(stretchedBlob);
+            setAudioSegments((curr) => {
+              const target = curr[cue.index];
+              if (!target) return curr;
+              const updated = {
+                ...curr,
+                [cue.index]: {
+                  ...target,
+                  fittedDurationSec: stretchRes.fittedDurationSec,
+                  audioUrl: newUrl,
+                  fittedAudioUrl: newUrl,
+                },
+              };
+              return updated;
+            });
+          } catch {
+            // ignore URL creation in headless env
+          }
+        }
+      }
+    }
   };
 
   // Export Master Audio WAV
   const handleExportMasterWav = async () => {
     if (originalCues.length === 0) return;
 
-    const activeSegments =
-      autoFitEnabled && dubbingMode !== "free_narration"
-        ? resolveTimingCollisions(originalCues, audioSegments)
-        : audioSegments;
-    const activeOverflow =
-      autoFitEnabled && dubbingMode !== "free_narration"
-        ? analyzeTimingCollision(originalCues, activeSegments, dubbingMode)
-        : overflowAnalysis;
-
     const incompleteCues = originalCues.filter(
       (c) =>
-        !activeSegments[c.index] || activeSegments[c.index].status !== "ready"
+        !audioSegments[c.index] || audioSegments[c.index].status !== "ready"
     );
     if (incompleteCues.length > 0) {
       setErrorMessage(
@@ -1732,12 +1786,37 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       return;
     }
 
-    const collisionCheck = canExportMasterWav(activeOverflow, dubbingMode);
-    if (!collisionCheck.allowed) {
-      setErrorMessage(
-        collisionCheck.reason || "Phát hiện nguy cơ đè tiếng (collision_danger)."
-      );
-      return;
+    // Always resolve timing collisions with WSOLA (<=1.20x) + elastic ripple shift in source_sync mode
+    // so Master WAV export never blocks and never produces overlapping speech
+    const activeSegments =
+      dubbingMode !== "free_narration"
+        ? resolveTimingCollisions(originalCues, audioSegments, {
+            elasticShift: true,
+          })
+        : audioSegments;
+    const activeOverflow =
+      dubbingMode !== "free_narration"
+        ? analyzeTimingCollision(originalCues, activeSegments, dubbingMode)
+        : overflowAnalysis;
+
+    // Ensure physical WAV files on disk are stretched if speedFactor increased during export auto-fit
+    if (dubbingMode !== "free_narration") {
+      for (const cue of originalCues) {
+        const prevSeg = audioSegments[cue.index];
+        const nextSeg = activeSegments[cue.index];
+        if (
+          nextSeg &&
+          nextSeg.isGroupPrimary !== false &&
+          nextSeg.audioFilePath &&
+          nextSeg.speedFactor > 1.001 &&
+          Math.abs(nextSeg.speedFactor - (prevSeg?.speedFactor || 1.0)) > 0.005
+        ) {
+          await applyWsolaTimeStretchToWavFile(
+            nextSeg.audioFilePath,
+            nextSeg.speedFactor
+          );
+        }
+      }
     }
 
     try {
@@ -1892,7 +1971,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         audioSegments: activeSegments,
         overflowAnalysis: activeOverflow,
         sampleGetter: (idx) => sampleMap.get(idx) || null,
-        autoResolveCollisions: autoFitEnabled && dubbingMode !== "free_narration",
+        autoResolveCollisions: dubbingMode !== "free_narration",
         mode: dubbingMode,
         pauseBetweenGroupsSec: pauses.period ?? 0.45,
       });
@@ -2894,16 +2973,9 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
               {/* Nút Xuất Master Audio (.WAV) */}
               <button
                 type="button"
-                disabled={
-                  originalCues.length === 0 ||
-                  (dubbingMode === "source_sync" && !autoFitEnabled && hasCollisionDanger)
-                }
+                disabled={originalCues.length === 0}
                 onClick={handleExportMasterWav}
-                className={`w-full py-2 rounded-lg font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 shadow-2xs ${
-                  dubbingMode === "source_sync" && !autoFitEnabled && hasCollisionDanger
-                    ? "bg-red-500/20 text-red-400 border border-red-500/30 cursor-not-allowed"
-                    : "bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                }`}
+                className="w-full py-2 rounded-lg font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 shadow-2xs bg-surface1 hover:bg-surface2 text-textPrimary border border-borderDefault cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 title={
                   dubbingMode === "free_narration"
                     ? "Ghép toàn bộ các đoạn thuyết minh nối tiếp thành file âm thanh Master WAV (44.1kHz 16-bit Mono)"
@@ -2918,20 +2990,11 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
                 </span>
               </button>
 
-              {dubbingMode === "source_sync" && hasCollisionDanger && autoFitEnabled && (
-                <div className="p-2 bg-blue-500/10 border border-blue-500/20 rounded-md text-blue-400 text-[11px] flex items-start gap-1.5">
+              {dubbingMode === "source_sync" && hasCollisionDanger && (
+                <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-amber-400 text-[11px] flex items-start gap-1.5">
                   <Zap className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                   <span>
-                    Sẽ tự động khớp thời lượng cho {collidingCuesCount} câu va chạm khi xuất Master WAV.
-                  </span>
-                </div>
-              )}
-
-              {dubbingMode === "source_sync" && hasCollisionDanger && !autoFitEnabled && (
-                <div className="p-2 bg-red-500/10 border border-red-500/20 rounded-md text-red-400 text-[11px] flex items-start gap-1.5">
-                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                  <span>
-                    Bị chặn xuất Master Audio do có câu thoại bị đè lên mốc bắt đầu của câu kế tiếp (Bật Auto-Fit để tự động xử lý).
+                    Có {collidingCuesCount} câu dài hơn khung gốc. Hệ thống sẽ tự động nén tốc độ (≤1.20x) và dịch lùi đàn hồi để chống đè tiếng khi xuất Master WAV.
                   </span>
                 </div>
               )}

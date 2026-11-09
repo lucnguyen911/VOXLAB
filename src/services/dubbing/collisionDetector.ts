@@ -92,27 +92,41 @@ export function analyzeTimingCollision(
     let hasCollision = false;
     let collisionWithIndex: number | undefined = undefined;
     let collisionSec = 0;
+    let elasticallyResolved = false;
 
     if (nextCue && audioEndSec > nextCue.startSec + 0.001) {
-      hasCollision = true;
       collisionWithIndex = nextCue.index;
       collisionSec = Number((audioEndSec - nextCue.startSec).toFixed(3));
+      const nextSeg = audioSegments[nextCue.index];
+      const nextShiftedPastEnd = Boolean(
+        segment.elasticallyShiftedNext ||
+          (nextSeg &&
+            typeof nextSeg.audioStartSec === "number" &&
+            nextSeg.audioStartSec >= audioEndSec - 0.001)
+      );
+      if (nextShiftedPastEnd) {
+        hasCollision = false;
+        elasticallyResolved = true;
+      } else {
+        hasCollision = true;
+      }
     }
 
     let warningLevel: "none" | "overflow_only" | "collision_danger" = "none";
     if (hasCollision) {
       warningLevel = "collision_danger";
-    } else if (hasOverflow) {
+    } else if (hasOverflow || elasticallyResolved) {
       warningLevel = "overflow_only";
     }
 
     result[cue.index] = {
       cueIndex: cue.index,
-      hasOverflow,
-      overflowSec,
+      hasOverflow: hasOverflow || elasticallyResolved,
+      overflowSec: hasOverflow ? overflowSec : collisionSec,
       hasCollision,
       collisionWithIndex,
       collisionSec,
+      elasticallyResolved,
       warningLevel,
     };
   }

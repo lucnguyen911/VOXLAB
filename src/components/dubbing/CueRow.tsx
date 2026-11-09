@@ -261,10 +261,16 @@ export const CueRow: React.FC<CueRowProps> = ({
                 {overflowMeta.warningLevel === "overflow_only" && (
                   <span
                     className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1"
-                    title={`Âm thanh dài hơn câu ${overflowMeta.overflowSec}s nhưng không chạm câu sau`}
+                    title={
+                      overflowMeta.elasticallyResolved
+                        ? `Đã nén tối đa 1.20x và tự động lùi nhẹ câu #${overflowMeta.collisionWithIndex} (+${overflowMeta.collisionSec}s) để không đè tiếng`
+                        : `Âm thanh dài hơn câu ${overflowMeta.overflowSec}s nhưng không chạm câu sau`
+                    }
                   >
                     <AlertTriangle className="w-3 h-3" />
-                    Tràn +{overflowMeta.overflowSec}s (hợp lệ)
+                    {overflowMeta.elasticallyResolved
+                      ? `Tràn +${overflowMeta.collisionSec}s (Đã tự lùi câu #${overflowMeta.collisionWithIndex})`
+                      : `Tràn +${overflowMeta.overflowSec}s (hợp lệ)`}
                   </span>
                 )}
                 {overflowMeta.warningLevel === "collision_danger" && (

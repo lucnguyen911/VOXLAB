@@ -53,10 +53,10 @@ export function mergeMasterAudio(options: MasterAssemblyOptions): MasterAssembly
 
   const isFreeNarration = mode === "free_narration";
 
-  // 1. Auto-resolve collisions if enabled in source_sync mode
+  // 1. Auto-resolve collisions if enabled in source_sync mode (with elastic ripple shift so >1.20x never blocks export)
   const activeSegments: Record<number, DubAudioSegment> =
     !isFreeNarration && autoResolveCollisions
-      ? resolveTimingCollisions(originalCues, audioSegments)
+      ? resolveTimingCollisions(originalCues, audioSegments, { elasticShift: true })
       : { ...audioSegments };
   const activeOverflow =
     !isFreeNarration && autoResolveCollisions

@@ -596,12 +596,17 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
             cursor += clip.size + gap
         out = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
     else:
+        safety_gap_samples = int(round(0.02 * sr))
         starts = []
-        for i, item in enumerate(inputs):
+        min_next_start = 0
+        for i, (item, clip) in enumerate(zip(inputs, clips)):
             st = item.get("startSec")
             if not isinstance(st, (int, float)) or st < 0:
                 raise SidecarError("INVALID_REQUEST", f"inputs[{i}].startSec must be >= 0 in timeline mode")
-            starts.append(int(round(float(st) * sr)))
+            req_start = int(round(float(st) * sr))
+            actual_start = max(req_start, min_next_start) if i > 0 else req_start
+            starts.append(actual_start)
+            min_next_start = actual_start + clip.size + safety_gap_samples
         end = max(s + c.size for s, c in zip(starts, clips))
         total = params.get("totalDurationSec")
         if isinstance(total, (int, float)) and total > 0:
