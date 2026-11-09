@@ -384,33 +384,17 @@ export function formatMmSsLabel(durationSec?: number): string | undefined {
 
 export function formatHistoryCreatedAt(timestampMs: number): string {
   const d = new Date(timestampMs);
-  const now = new Date();
+  if (Number.isNaN(d.getTime())) {
+    return "";
+  }
+  const dayStr = d.getDate().toString().padStart(2, "0");
+  const monthStr = (d.getMonth() + 1).toString().padStart(2, "0");
+  const yearStr = d.getFullYear();
   const timeStr = `${d.getHours().toString().padStart(2, "0")}:${d
     .getMinutes()
     .toString()
     .padStart(2, "0")}`;
-
-  const isToday =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  if (isToday) {
-    return `Hôm nay, ${timeStr}`;
-  }
-
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  const isYesterday =
-    d.getFullYear() === yesterday.getFullYear() &&
-    d.getMonth() === yesterday.getMonth() &&
-    d.getDate() === yesterday.getDate();
-  if (isYesterday) {
-    return `Hôm qua, ${timeStr}`;
-  }
-
-  const dayStr = d.getDate().toString().padStart(2, "0");
-  const monthStr = (d.getMonth() + 1).toString().padStart(2, "0");
-  return `${dayStr}/${monthStr}/${d.getFullYear()}, ${timeStr}`;
+  return `${dayStr}/${monthStr}/${yearStr} • ${timeStr}`;
 }
 
 function parseSrtTimePartToSec(raw: string): number {
@@ -1249,11 +1233,7 @@ export function syncBatchJobToHistory(job: BatchJobOrHistorical): UnifiedHistory
     }
   }
 
-  const now = new Date();
-  const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now
-    .getMinutes()
-    .toString()
-    .padStart(2, "0")}`;
+  const nowMs = Date.now();
 
   const historyItem: UnifiedHistoryItem = {
     id: histId,
@@ -1263,8 +1243,8 @@ export function syncBatchJobToHistory(job: BatchJobOrHistorical): UnifiedHistory
     category: "batch",
     isBatch: true,
     tasks: [...job.selectedTasks],
-    createdAt: `Hôm nay, ${timeStr}`,
-    timestamp: Date.now(),
+    createdAt: formatHistoryCreatedAt(nowMs),
+    timestamp: nowMs,
     status: job.status as any,
     statusWarning,
     outputDirectory: outputPath,

@@ -14,7 +14,6 @@ import {
   Layers,
   FileText,
   Video,
-  Clock,
   FileCode,
 } from "lucide-react";
 import {
@@ -29,6 +28,7 @@ import {
   clearAllHistory,
   filterHistoryItems,
   openHistoryPathInFolder,
+  formatHistoryCreatedAt,
 } from "../services/history/historyManager";
 import { ResultPreviewDrawer } from "../components/preview/ResultPreviewDrawer";
 import { BatchFooter } from "../components/batch/BatchFooter";
@@ -154,18 +154,18 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
   const renderSourceIcon = (title: string, category: string) => {
     const ext = title.split(".").pop()?.toLowerCase();
     if (ext === "mp4" || ext === "mkv" || ext === "avi" || ext === "mov") {
-      return <Video className="w-4 h-4 text-sky-400 shrink-0" />;
+      return <Video className="w-3.5 h-3.5 text-sky-400 shrink-0" />;
     }
     if (ext === "mp3" || ext === "wav" || ext === "flac" || ext === "m4a") {
-      return <FileAudio className="w-4 h-4 text-emerald-400 shrink-0" />;
+      return <FileAudio className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
     }
     if (ext === "docx" || ext === "doc" || ext === "txt" || ext === "md") {
-      return <FileText className="w-4 h-4 text-emerald-400 shrink-0" />;
+      return <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
     }
     if (category === "dialogue") {
-      return <Mic className="w-4 h-4 text-indigo-400 shrink-0" />;
+      return <Mic className="w-3.5 h-3.5 text-indigo-400 shrink-0" />;
     }
-    return <FileCode className="w-4 h-4 text-amber-400 shrink-0" />;
+    return <FileCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
   };
 
   return (
@@ -258,27 +258,27 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                   </th>
 
                   {/* Column 2: File / Job Name */}
-                  <th className="py-2.5 px-3.5 w-[28%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-3.5 w-[32%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
                     <div className="flex items-center justify-center min-h-[46px]">Tên tệp / Công việc</div>
                   </th>
 
                   {/* Column 3: Task Badges */}
-                  <th className="py-2.5 px-3 w-[18%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-3 w-[15%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
                     <div className="flex items-center justify-center min-h-[46px]">Loại tác vụ</div>
                   </th>
 
                   {/* Column 4: Output Artifacts */}
-                  <th className="py-2.5 px-3 w-[18%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-3 w-[17%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
                     <div className="flex items-center justify-center min-h-[46px]">Kết quả xuất</div>
                   </th>
 
-                  {/* Column 5: Created Time & Duration */}
-                  <th className="py-2.5 px-3 w-[14%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  {/* Column 5: Created Date & Time */}
+                  <th className="py-2.5 px-3 w-[15%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
                     <div className="flex items-center justify-center min-h-[46px]">Thời gian</div>
                   </th>
 
                   {/* Column 6: Actions */}
-                  <th className="py-2.5 px-2 w-[18%] text-center text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-2 w-[17%] text-center text-sm font-bold text-textPrimary">
                     <div className="flex items-center justify-center min-h-[46px]">Thao tác</div>
                   </th>
                 </tr>
@@ -314,20 +314,31 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                 ) : (
                   filteredRecords.map((job, index) => {
                     const hasArtifacts = job.artifacts.length > 0;
+                    const exactDateTime =
+                      (job.timestamp ? formatHistoryCreatedAt(job.timestamp) : "") ||
+                      job.createdAt;
+                    const subTimeMeta = [
+                      job.duration,
+                      job.chunkCount ? `${job.chunkCount} đoạn` : undefined,
+                    ]
+                      .filter(Boolean)
+                      .join(" • ");
 
                     return (
                       <tr key={job.id} className="hover:bg-surface2/50 transition-colors">
                         {/* Column 1: # */}
-                        <td className="py-3 px-3 text-center text-textMuted font-mono border-r border-borderDefault">
+                        <td className="py-3 px-3 align-middle text-center text-textSecondary font-mono font-semibold border-r border-borderDefault">
                           {index + 1}
                         </td>
 
                         {/* Column 2: File Name & Output Directory */}
-                        <td className="py-3 px-3.5 border-r border-borderDefault">
-                          <div className="flex items-center gap-2 min-w-0">
-                            {renderSourceIcon(job.title, job.category)}
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5">
+                        <td className="py-3 px-3.5 align-middle border-r border-borderDefault">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-7 h-7 rounded-lg bg-surface2 border border-borderDefault flex items-center justify-center shrink-0">
+                              {renderSourceIcon(job.title, job.category)}
+                            </div>
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="flex items-center gap-1.5 min-w-0">
                                 <span
                                   className="font-semibold text-textPrimary truncate"
                                   title={job.title}
@@ -341,7 +352,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                                 )}
                               </div>
                               <div
-                                className="text-[10px] text-textMuted font-mono truncate"
+                                className="text-[11px] text-textMuted font-mono truncate"
                                 title={job.outputDirectory}
                               >
                                 {job.sourceFileSize ? `${job.sourceFileSize} • ` : ""}
@@ -352,18 +363,18 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                         </td>
 
                         {/* Column 3: Task Badges */}
-                        <td className="py-3 px-3 border-r border-borderDefault">
+                        <td className="py-3 px-3 align-middle border-r border-borderDefault">
                           <div className="flex items-center justify-center gap-1.5 flex-wrap">
                             {job.isBatch && (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/10 border border-accent/30 text-accent font-semibold">
-                                <Layers className="w-3 h-3" />
+                              <span className="inline-flex items-center justify-center gap-1 h-6 px-2 rounded-md text-[11px] font-semibold bg-accent/10 border border-accent/30 text-accent whitespace-nowrap">
+                                <Layers className="w-3 h-3 shrink-0" />
                                 <span>Hàng loạt</span>
                               </span>
                             )}
                             {job.tasks.map((taskKey) => (
                               <span
                                 key={taskKey}
-                                className="px-2 py-0.5 rounded text-[10px] font-semibold bg-surface2 border border-borderDefault text-textSecondary"
+                                className="inline-flex items-center justify-center h-6 px-2.5 rounded-md text-[11px] font-semibold bg-surface2 border border-borderDefault text-textSecondary whitespace-nowrap"
                               >
                                 {TASK_LABELS[taskKey] || taskKey}
                               </span>
@@ -372,7 +383,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                         </td>
 
                         {/* Column 4: Output Artifacts */}
-                        <td className="py-3 px-3 border-r border-borderDefault">
+                        <td className="py-3 px-3 align-middle border-r border-borderDefault">
                           {hasArtifacts ? (
                             <div className="flex items-center justify-center gap-1.5 flex-wrap">
                               {job.artifacts.map((art) => {
@@ -383,7 +394,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                                     key={art.id}
                                     type="button"
                                     onClick={() => handleOpenPreview(job, art)}
-                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors cursor-pointer ${
+                                    className={`inline-flex items-center justify-center gap-1 h-6 px-2.5 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
                                       !art.existsOnDisk
                                         ? "bg-amber-500/10 text-amber-300 border-amber-500/30 opacity-75"
                                         : isAudio
@@ -410,38 +421,36 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                               })}
                             </div>
                           ) : (
-                            <div className="text-center text-[11px] text-textMuted font-mono">
-                              0 tệp
+                            <div className="flex items-center justify-center">
+                              <span className="inline-flex items-center justify-center h-6 px-2.5 rounded-md text-[11px] font-medium bg-surface2 text-textMuted border border-borderDefault">
+                                Không có tệp
+                              </span>
                             </div>
                           )}
                         </td>
 
-                        {/* Column 5: Created Time & Duration */}
-                        <td className="py-3 px-3 border-r border-borderDefault text-center">
-                          <div className="inline-flex items-center gap-1 text-textSecondary font-mono text-[11px]">
-                            <Clock className="w-3 h-3 text-textMuted shrink-0" />
-                            <span>{job.createdAt}</span>
+                        {/* Column 5: Created Date & Time */}
+                        <td className="py-3 px-3 align-middle border-r border-borderDefault text-center">
+                          <div className="flex flex-col items-center justify-center gap-0.5">
+                            <span className="font-mono font-semibold text-textPrimary text-xs whitespace-nowrap">
+                              {exactDateTime}
+                            </span>
+                            {subTimeMeta && (
+                              <span className="text-[11px] text-textMuted font-mono whitespace-nowrap">
+                                {subTimeMeta}
+                              </span>
+                            )}
                           </div>
-                          {(job.duration || job.chunkCount) && (
-                            <div className="text-[10px] text-textMuted font-mono mt-0.5">
-                              {[
-                                job.duration,
-                                job.chunkCount ? `${job.chunkCount} đoạn` : undefined,
-                              ]
-                                .filter(Boolean)
-                                .join(" • ")}
-                            </div>
-                          )}
                         </td>
 
                         {/* Column 6: Actions */}
-                        <td className="py-3 px-2 text-center">
+                        <td className="py-3 px-2 align-middle text-center">
                           <div className="flex items-center justify-center gap-1.5">
                             <button
                               type="button"
                               onClick={() => handleOpenPreview(job)}
                               disabled={!hasArtifacts}
-                              className={`inline-flex items-center gap-1 px-2 py-1 rounded font-semibold border transition-colors whitespace-nowrap ${
+                              className={`inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-lg text-xs font-semibold border transition-colors whitespace-nowrap ${
                                 hasArtifacts
                                   ? "bg-accent/15 hover:bg-accent/25 text-accent border-accent/35 cursor-pointer"
                                   : "bg-surface2 text-textMuted border-borderDefault opacity-45 cursor-not-allowed"
@@ -464,7 +473,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                                 );
                                 void handleOpenFolder(job.outputDirectory, existingArt?.filePath);
                               }}
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer whitespace-nowrap"
+                              className="inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-lg text-xs font-medium bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer whitespace-nowrap"
                               title="Mở thư mục chứa kết quả xuất trên ổ đĩa"
                             >
                               <FolderOpen className="w-3.5 h-3.5 text-accent shrink-0" />
@@ -474,7 +483,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                             <button
                               type="button"
                               onClick={() => handleDeleteSingleItem(job.id)}
-                              className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-textMuted hover:text-danger hover:bg-danger/10 border border-transparent hover:border-danger/30 transition-colors cursor-pointer shrink-0"
                               title="Xóa bản ghi này khỏi lịch sử (không xóa tệp trên ổ đĩa)"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
