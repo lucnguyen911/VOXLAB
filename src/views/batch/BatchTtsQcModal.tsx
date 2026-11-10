@@ -8,7 +8,6 @@ import {
   AlertCircle,
   Sparkles,
   FileAudio,
-  FileText,
   Layers,
   ChevronDown,
   Clock,
@@ -44,7 +43,6 @@ import { getEngineAdvancedSettings } from "../../services/ai/ttsAdvancedSettings
 import { edgeTtsProvider } from "../../services/providers/edgeProvider";
 import { getEffectiveRules } from "../../services/pronunciation";
 import { computeChunkPausesMs } from "../../services/audio/masterExport";
-import { exportTtsLog } from "../../services/audio/ttsLogExporter";
 import { generateSubtitlesFromChunks } from "../../services/subtitle/pipeline";
 import { exportToSrt, exportToVtt, formatSrtTimestamp } from "../../services/subtitle/exporter";
 import { parseSubtitle } from "../../services/subtitle/parser";
@@ -608,51 +606,6 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
     }
   };
 
-  const handleExportLog = async () => {
-    if (chunks.length === 0) return;
-    try {
-      const ttsSnapshot =
-        job.effectiveConfigSnapshot?.tasks.tts || job.configOverrides.tts;
-      const chunkItems: ChunkItem[] = chunks.map((c) => ({
-        id: c.id,
-        index: c.index,
-        text: c.text,
-        originalText: c.originalText || c.text,
-        status: c.status,
-        durationSec: c.durationSec,
-        pauseAfterMs: "auto",
-        audioUrl: c.audioFilePath,
-        audioFilePath: c.audioFilePath,
-        qualityReview: c.qualityReview,
-        acknowledgedAt: c.acknowledgedAt,
-        acknowledgedAudioSignature: c.acknowledgedAudioSignature,
-      }));
-      const result = await exportTtsLog(chunkItems, {
-        projectTitle: job.sourceFileName,
-        activeModel: ttsSnapshot?.model,
-        activeVoiceId: ttsSnapshot?.voiceId,
-        speed: ttsSnapshot?.speed,
-        pitch: ttsSnapshot?.pitch,
-        volume: ttsSnapshot?.volume,
-        punctuationPauses: ttsSnapshot?.pauses,
-        exportSrt: ttsSnapshot?.exportSrt,
-      });
-      if (result.success && result.filePath) {
-        setStatusBanner({
-          type: "success",
-          message: `Đã xuất log hậu kiểm tại: ${result.filePath}`,
-        });
-      }
-    } catch (err) {
-      setStatusBanner({
-        type: "error",
-        message: `Lỗi xuất log: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      });
-    }
-  };
-
   const handleSaveAndRebuild = async () => {
     setIsPlayingTrack(false);
     setIsRebuildingMaster(true);
@@ -841,7 +794,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
             )}
           </div>
 
-          {/* Right Actions matching TtsWorkspace studio header: Nghe toàn bộ | Xuất log | Ghép & xuất | Đóng */}
+          {/* Right Actions matching TtsWorkspace studio header: Nghe toàn bộ | Ghép & xuất | Đóng */}
           <div className="flex items-center gap-2 flex-shrink-0">
             {masterAudioPath && (
               <button
@@ -866,34 +819,6 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
                     <span>Nghe toàn bộ</span>
                   </>
                 )}
-              </button>
-            )}
-
-            {isVoiceTask && chunks.length > 0 && (
-              <button
-                type="button"
-                onClick={handleExportLog}
-                disabled={isGenerating}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors whitespace-nowrap cursor-pointer bg-surface2 hover:bg-surface3 text-textPrimary hover:text-accent border border-borderDefault hover:border-accent/40"
-                title="Xuất báo cáo chi tiết các đoạn lỗi & cảnh báo hậu kiểm"
-              >
-                <FileText className="w-3.5 h-3.5 text-accent" />
-                <span>Xuất log</span>
-                {(qualityStats.warningCount > 0 ||
-                  qualityStats.errorCount > 0) &&
-                  !isGenerating && (
-                    <span
-                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold leading-none ${
-                        qualityStats.errorCount > 0
-                          ? "bg-danger text-white shadow-2xs"
-                          : "bg-amber-500/20 text-amber-500 border border-amber-500/40"
-                      }`}
-                    >
-                      {qualityStats.errorCount > 0
-                        ? `${qualityStats.errorCount} lỗi`
-                        : `${qualityStats.warningCount} cb`}
-                    </span>
-                  )}
               </button>
             )}
 
