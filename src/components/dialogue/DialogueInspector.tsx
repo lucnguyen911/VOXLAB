@@ -185,6 +185,7 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
               onChange={(e) => onUpdateSettings({ model: e.target.value })}
               className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
             >
+              <option value="Kokoro-82M">Kokoro-82M (Cài sẵn)</option>
               <option value="Omni Voice">Omni Voice</option>
               <option value="Chatterbox Turbo">Chatterbox Turbo</option>
               <option value="Qwen 1.7B">Qwen 1.7B</option>

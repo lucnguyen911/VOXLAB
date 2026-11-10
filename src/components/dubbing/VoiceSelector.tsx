@@ -64,12 +64,11 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
 
   const selectedVoice =
     voices.find((v) => v.id === selectedVoiceId) || voices[0] || {
-      id: "voice_01",
-      name: "Thảo Trinh (Hà Nội)",
+      id: "edge_vi_hoaimy",
+      name: "Hoài My (Edge)",
       gender: "female",
       language: "vi-VN",
-      accent: "Bắc",
-      avatarColor: "from-pink-500 to-rose-600",
+      avatarColor: "from-sky-500 to-blue-600",
     };
 
   return (
@@ -156,6 +155,7 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
           onChange={(e) => onChangeModel?.(e.target.value)}
           className="w-full h-[34px] bg-surface1 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
         >
+          <option value="Kokoro-82M">Kokoro-82M (Cài sẵn)</option>
           <option value="Omni Voice">Omni Voice</option>
           <option value="Chatterbox Turbo">Chatterbox Turbo</option>
           <option value="Qwen 1.7B">Qwen 1.7B</option>

@@ -1289,7 +1289,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           translatedCue: trans,
           speechGroup: group,
           dubbingMode,
-          voiceId: selectedVoiceId || "voice_01",
+          voiceId: selectedVoiceId || "edge_vi_hoaimy",
           nextCue:
             lastOrigArrayIdx >= 0
               ? originalCues[lastOrigArrayIdx + 1]
@@ -1322,7 +1322,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           originalCue: orig,
           translatedCue: trans,
           dubbingMode,
-          voiceId: selectedVoiceId || "voice_01",
+          voiceId: selectedVoiceId || "edge_vi_hoaimy",
           nextCue:
             origArrayIdx >= 0 ? originalCues[origArrayIdx + 1] : undefined,
           autoFit: dubbingMode === "free_narration" ? false : autoFitEnabled,
@@ -1729,7 +1729,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         translatedCue: primaryTrans,
         speechGroup: targetGroup,
         dubbingMode,
-        voiceId: selectedVoiceId || "voice_01",
+        voiceId: selectedVoiceId || "edge_vi_hoaimy",
         nextCue,
         autoFit: dubbingMode === "free_narration" ? false : autoFitEnabled,
         voiceSettings: {

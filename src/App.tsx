@@ -24,7 +24,7 @@ import {
   geminiKeyPool,
 } from "./services/translation";
 import { migratePunctuationPauseDefaults } from "./services/pause/punctuationPause";
-import { MOCK_VOICES, MOCK_CHUNKS } from "./mock/data";
+import { MOCK_VOICES, MOCK_CHUNKS, mergeStoredVoicesWithCatalog } from "./mock/data";
 import { I18nProvider, useI18n } from "./i18n/context";
 import { migrateLegacyVoice } from "./constants/voiceFilters";
 import { LicenseModal } from "./components/modals/LicenseModal";
@@ -114,31 +114,13 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   };
 
   const VOICES_STORAGE_KEY = "voxlab_voices_v1";
-  const REMOVED_DEMO_VOICE_IDS = new Set([
-    "voice_03",
-    "voice_04",
-    "voice_05",
-    "voice_09",
-    "voice_10",
-    "voice_11",
-    "voice_12",
-    "voice_13",
-    "voice_14",
-  ]);
 
   function loadInitialVoices(): VoiceProfile[] {
     try {
       const raw = localStorage.getItem(VOICES_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const cleaned = parsed
-            .filter((v: any) => v && typeof v.id === "string" && !REMOVED_DEMO_VOICE_IDS.has(v.id))
-            .map(migrateLegacyVoice);
-          if (cleaned.length > 0) {
-            return cleaned;
-          }
-        }
+        return mergeStoredVoicesWithCatalog(parsed, migrateLegacyVoice);
       }
     } catch (e) {
       // fallback to mock voices
@@ -148,8 +130,8 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
 
   // Voice State
   const [voices, setVoices] = useState<VoiceProfile[]>(loadInitialVoices);
-  const [activeVoiceId, setActiveVoiceId] = useState<string>("voice_01");
-  const [activeModel, setActiveModel] = useState<string>("Omni Voice");
+  const [activeVoiceId, setActiveVoiceId] = useState<string>("edge_vi_hoaimy");
+  const [activeModel, setActiveModel] = useState<string>("Kokoro-82M");
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
 
   // Reconcile durable cloneVoiceRegistry (voices/clone_voices.json) with UI VoiceProfile state on startup
@@ -196,7 +178,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
 
   const handlePlayChunk = (chunk: ChunkItem) => {
     const voice = voices.find((v) => v.id === (chunk.voiceOverrideId || activeVoiceId));
-    const speakerName = voice?.name || "Thảo Trinh";
+    const speakerName = voice?.name || "Hoài My (Edge)";
 
     if (activeAudioTrack?.id === chunk.id && activeAudioTrack?.audioUrl === chunk.audioUrl) {
       setIsAudioPlaying((prev) => !prev);
@@ -253,6 +235,18 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
 
   const handleSelectActiveVoice = (voiceOrId: VoiceProfile | string) => {
     const id = typeof voiceOrId === "string" ? voiceOrId : voiceOrId.id;
+    const matchedVoice = typeof voiceOrId === "string" ? voices.find((v) => v.id === id) : voiceOrId;
+    if (matchedVoice && !matchedVoice.isOnline) {
+      if (matchedVoice.engine === "kokoro_82m" || id.startsWith("kokoro_")) {
+        setActiveModel("Kokoro-82M");
+      } else if (matchedVoice.engine === "chatterbox_turbo") {
+        setActiveModel("Chatterbox Turbo");
+      } else if (matchedVoice.engine === "qwen_tts_1_7b") {
+        setActiveModel("Qwen TTS 1.7B");
+      } else if (matchedVoice.engine === "omnivoice") {
+        setActiveModel("OmniVoice");
+      }
+    }
     const nowIso = new Date().toISOString();
     setActiveVoiceId(id);
     setVoices((prev) =>
@@ -294,7 +288,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   const handleDeleteVoice = (id: string) => {
     setVoices((prev) => prev.filter((v) => v.id !== id));
     if (activeVoiceId === id) {
-      setActiveVoiceId("voice_01");
+      setActiveVoiceId("edge_vi_hoaimy");
     }
     if (activeAudioTrack?.id === id) {
       handleCloseAudioPlayer();

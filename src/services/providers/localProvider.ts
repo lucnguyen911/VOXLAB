@@ -7,8 +7,8 @@ export class LocalTtsProvider implements TtsProviderAdapter {
   readonly id = "local" as const;
   readonly sourceType = "local" as const;
 
-  // PROV-R-001 / PROV-R-015: Local engines strictly limited to OmniVoice, Chatterbox Turbo, Qwen TTS 1.7B
-  readonly supportedEngines = ["omnivoice", "chatterbox_turbo", "qwen_tts_1_7b"] as const;
+  // PROV-R-001 / PROV-R-015: Local engines include pre-bundled Kokoro-82M + downloadable OmniVoice, Chatterbox Turbo, Qwen TTS 1.7B
+  readonly supportedEngines = ["kokoro_82m", "omnivoice", "chatterbox_turbo", "qwen_tts_1_7b"] as const;
 
   getDisplayName(_lang: SupportedLang): string {
     return "Local";

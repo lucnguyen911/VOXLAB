@@ -412,6 +412,9 @@ export function getEngineAdvancedSettings(
   const snap = snapshot || cachedSettings;
   const id = engineOrModelId.toLowerCase().replace(/_/g, "-");
 
+  if (id.includes("kokoro")) {
+    return {};
+  }
   if (id.includes("chatterbox")) {
     return { ...snap.chatterbox.settings };
   }

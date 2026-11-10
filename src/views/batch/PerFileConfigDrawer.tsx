@@ -31,7 +31,7 @@ import {
 } from "../../types/batch";
 import { DubbingMode, normalizeDubbingMode } from "../../types/dubbing";
 import { VoiceProfile, PunctuationPauses } from "../../types/ui";
-import { MOCK_VOICES } from "../../mock/data";
+import { MOCK_VOICES, mergeStoredVoicesWithCatalog } from "../../mock/data";
 import { useI18n } from "../../i18n/context";
 import {
   loadSubtitleSettings,
@@ -76,9 +76,7 @@ function loadAvailableVoices(): VoiceProfile[] {
     const raw = localStorage.getItem("voxlab_voices_v1");
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map(migrateLegacyVoice);
-      }
+      return mergeStoredVoicesWithCatalog(parsed, migrateLegacyVoice);
     }
   } catch {
     // ignore
@@ -88,12 +86,14 @@ function loadAvailableVoices(): VoiceProfile[] {
 
 function normalizeModelSelectValue(rawModel?: string): string {
   const m = (rawModel || "").toLowerCase();
+  if (m.includes("kokoro")) return "Kokoro-82M";
   if (m.includes("chatterbox")) return "Chatterbox Turbo";
   if (m.includes("qwen")) return "Qwen TTS 1.7B";
   return "OmniVoice";
 }
 
 function mapSelectToSnapshotModel(selectVal: string): string {
+  if (selectVal === "Kokoro-82M" || selectVal.toLowerCase().includes("kokoro")) return "kokoro_82m";
   if (selectVal === "Chatterbox Turbo") return "chatterbox_turbo";
   if (selectVal === "Qwen TTS 1.7B" || selectVal === "Qwen 1.7B") return "qwen_tts_1_7b";
   return "omnivoice";
@@ -101,6 +101,7 @@ function mapSelectToSnapshotModel(selectVal: string): string {
 
 function normalizeDubbingModelSelectValue(rawModel?: string): string {
   const m = (rawModel || "").toLowerCase();
+  if (m.includes("kokoro")) return "Kokoro-82M";
   if (m.includes("chatterbox")) return "Chatterbox Turbo";
   if (m.includes("qwen")) return "Qwen 1.7B";
   return "Omni Voice";
@@ -522,7 +523,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
               voiceId:
                 existingTts?.voiceId && existingTts.voiceId !== "omnivoice-auto"
                   ? existingTts.voiceId
-                  : voices[0]?.id || "voice_01",
+                  : voices[0]?.id || "edge_vi_hoaimy",
               speed: existingTts?.speed ?? storedTts.speed ?? 1.0,
               pitch:
                 typeof existingTts?.pitch === "number" &&
@@ -665,6 +666,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                       }
                       className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
                     >
+                      <option value="Kokoro-82M">Kokoro-82M (Cài sẵn · Nhẹ)</option>
                       <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
                       <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
                       <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>
@@ -1027,6 +1029,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                     }}
                     className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
                   >
+                    <option value="Kokoro-82M">Kokoro-82M (Cài sẵn · Nhẹ)</option>
                     <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
                     <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
                     <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>
@@ -1721,7 +1724,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
             const baseDub = job.effectiveConfigSnapshot?.tasks?.dubbing;
             const currentDub = configOverrides.dubbing || baseDub || {
               ttsModel: "omnivoice",
-              voiceId: storedDub.voiceId || voices[0]?.id || "voice_01",
+              voiceId: storedDub.voiceId || voices[0]?.id || "edge_vi_hoaimy",
               dubbingMode: storedDub.dubbingMode || "source_sync",
               speed: storedDub.speed ?? 1.0,
               pitch: storedDub.pitch ?? 1.0,
@@ -1742,16 +1745,15 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                 ? currentDub.voiceId
                 : baseDub?.voiceId && baseDub.voiceId !== "omnivoice-auto"
                 ? baseDub.voiceId
-                : storedDub.voiceId || voices[0]?.id || "voice_01";
+                : storedDub.voiceId || voices[0]?.id || "edge_vi_hoaimy";
             const selectedVoice =
               voices.find((v) => v.id === rawVoiceId) ||
               voices[0] || {
-                id: "voice_01",
-                name: "Thảo Trinh (Hà Nội)",
+                id: "edge_vi_hoaimy",
+                name: "Hoài My (Edge)",
                 gender: "female",
                 language: "vi-VN",
-                accent: "Bắc",
-                avatarColor: "from-pink-500 to-rose-600",
+                avatarColor: "from-sky-500 to-blue-600",
               };
 
             const selectModelVal = normalizeDubbingModelSelectValue(
@@ -1944,6 +1946,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                     }
                     className="w-full h-[34px] bg-surface1 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
                   >
+                    <option value="Kokoro-82M">Kokoro-82M (Cài sẵn)</option>
                     <option value="Omni Voice">Omni Voice</option>
                     <option value="Chatterbox Turbo">Chatterbox Turbo</option>
                     <option value="Qwen 1.7B">Qwen 1.7B</option>

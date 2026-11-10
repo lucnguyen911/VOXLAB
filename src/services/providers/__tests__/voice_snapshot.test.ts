@@ -27,7 +27,7 @@ describe("Voice Snapshot & Single Source of Truth Tests", () => {
   });
 
   it("returns an immutable frozen object (Object.isFrozen)", () => {
-    const snapshot = createEffectiveVoiceSnapshot("voice_01", MOCK_VOICES, {
+    const snapshot = createEffectiveVoiceSnapshot("kokoro_af_heart", MOCK_VOICES, {
       activeModel: "OmniVoice",
       speed: 1.1,
     });
@@ -89,13 +89,22 @@ describe("Voice Snapshot & Single Source of Truth Tests", () => {
   });
 
   it("configures local voices with local engine and user-selected model", () => {
-    const snapshot = createEffectiveVoiceSnapshot("voice_01", MOCK_VOICES, {
+    const snapshot = createEffectiveVoiceSnapshot("kokoro_af_heart", MOCK_VOICES, {
       activeModel: "OmniVoice",
       speed: 1.0,
     });
     assert.equal(snapshot.provider, "local");
-    assert.equal(snapshot.voiceId, "voice_01");
+    assert.equal(snapshot.voiceId, "kokoro_af_heart");
     assert.equal(snapshot.modelId, "OmniVoice");
     assert.equal(snapshot.engine, "omnivoice");
+
+    const kokoroSnapshot = createEffectiveVoiceSnapshot("kokoro_af_heart", MOCK_VOICES, {
+      activeModel: "Kokoro-82M",
+      speed: 1.0,
+    });
+    assert.equal(kokoroSnapshot.provider, "local");
+    assert.equal(kokoroSnapshot.voiceId, "kokoro_af_heart");
+    assert.equal(kokoroSnapshot.modelId, "Kokoro-82M");
+    assert.equal(kokoroSnapshot.engine, "kokoro_82m");
   });
 });

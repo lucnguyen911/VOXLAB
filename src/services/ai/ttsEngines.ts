@@ -8,16 +8,16 @@
  */
 import { AiRuntime } from "./types";
 
-export type LocalTtsEngineId = "omnivoice" | "chatterbox" | "qwen";
+export type LocalTtsEngineId = "omnivoice" | "chatterbox" | "qwen" | "kokoro";
 export type DevicePreference = "auto" | "cuda" | "cpu";
 
 export interface TtsEngineCapabilities {
   engine: LocalTtsEngineId;
   /** Model id used in VoxLab snapshots / VoiceProfile.engine */
-  voxlabModelId: "omnivoice" | "chatterbox_turbo" | "qwen_tts_1_7b";
+  voxlabModelId: "omnivoice" | "chatterbox_turbo" | "qwen_tts_1_7b" | "kokoro_82m";
   displayName: string;
   runtime: AiRuntime;
-  modelId: string; // folder in the Models directory (src-tauri/src/ai/models.rs)
+  modelId: string; // folder in the Models directory (src-tauri/src/ai/models.rs) or bundled folder
   supportedLanguages: readonly string[]; // ["*"] = language-agnostic multilingual
   supportsVietnamese: boolean;
   supportsVoiceClone: boolean;
@@ -30,9 +30,29 @@ export interface TtsEngineCapabilities {
   modelSizeMb: number;
   requiredVramMb: number | null;
   notes: readonly string[];
+  preBundled?: boolean;
 }
 
 export const TTS_ENGINES: Record<LocalTtsEngineId, TtsEngineCapabilities> = {
+  kokoro: {
+    engine: "kokoro",
+    voxlabModelId: "kokoro_82m",
+    displayName: "Kokoro-82M",
+    runtime: "core",
+    modelId: "kokoro-82m",
+    supportedLanguages: ["en", "ja", "zh", "es", "fr", "it", "pt"],
+    supportsVietnamese: false,
+    supportsVoiceClone: false,
+    referenceAudioRequired: false,
+    referenceTextRequired: false,
+    supportsCUDA: true,
+    supportsCPU: true,
+    supportsSpeed: true,
+    modelSizeMb: 115,
+    requiredVramMb: 250,
+    notes: ["Apache-2.0 pre-bundled local ONNX engine.", "Works out-of-the-box on CPU & GPU without downloading."],
+    preBundled: true,
+  },
   omnivoice: {
     engine: "omnivoice",
     voxlabModelId: "omnivoice",
@@ -100,6 +120,7 @@ export function resolveLocalEngine(model: string | undefined | null): TtsEngineC
     const d = caps.displayName.replace(/[\s_-]+/g, "").toLowerCase();
     const mid = caps.modelId.replace(/[\s_-]+/g, "").toLowerCase();
     if (m === v || m === e || m === d || m === mid) return caps;
+    if (m.includes("kokoro") && (e === "kokoro" || v === "kokoro82m")) return caps;
     if (m.includes("omni") && (e === "omnivoice" || v === "omnivoice")) return caps;
     if (m.includes("chatterbox") && (e === "chatterbox" || v === "chatterboxturbo")) return caps;
     if (m.includes("qwen") && (e === "qwen" || v === "qwentts17b")) return caps;

@@ -49,6 +49,7 @@ $MandatoryProtectedModules = @(
     "tts\base.py",
     "tts\service.py",
     "tts\omnivoice_adapter.py",
+    "tts\kokoro_adapter.py",
     "tts\chatterbox_adapter.py",
     "tts\qwen_adapter.py"
 )
@@ -244,6 +245,7 @@ foreach ($rt in $Runtimes) {
         "    import voxlab_sidecar.tts.base"
         "    import voxlab_sidecar.tts.service"
         "    import voxlab_sidecar.tts.omnivoice_adapter"
+        "    import voxlab_sidecar.tts.kokoro_adapter"
         "    import voxlab_sidecar.tts.chatterbox_adapter"
         "    import voxlab_sidecar.tts.qwen_adapter"
         ""
@@ -328,6 +330,19 @@ foreach ($rt in $Runtimes) {
     $builtExe = Join-Path $ResolvedOutput "$distName\$distName.exe"
     if (-not (Test-Path $builtExe)) {
         throw "Failed to produce expected sidecar executable at $builtExe"
+    }
+
+    if ($rt -eq "core") {
+        $kokoroSrcDir = Join-Path $SidecarRoot "models\kokoro-82m"
+        if (Test-Path (Join-Path $kokoroSrcDir "kokoro-v1.0.int8.onnx")) {
+            $kokoroDstDir = Join-Path $ResolvedOutput "$distName\models\kokoro-82m"
+            Write-Host "==> Bundling pre-installed Kokoro-82M model into $kokoroDstDir..." -ForegroundColor Cyan
+            New-Item -ItemType Directory -Force -Path $kokoroDstDir | Out-Null
+            Copy-Item -Force (Join-Path $kokoroSrcDir "kokoro-v1.0.int8.onnx") (Join-Path $kokoroDstDir "kokoro-v1.0.int8.onnx")
+            Copy-Item -Force (Join-Path $kokoroSrcDir "voices-v1.0.bin") (Join-Path $kokoroDstDir "voices-v1.0.bin")
+        } else {
+            throw "Pre-bundled Kokoro-82M model files missing at $kokoroSrcDir"
+        }
     }
 
     # Audit `_internal` for leaked raw `.py` files under voxlab_sidecar

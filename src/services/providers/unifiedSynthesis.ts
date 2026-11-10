@@ -90,7 +90,7 @@ export async function synthesizeSpeechCore(
       throw new Error("Local AI runtime chưa khởi tạo.");
     }
     const res = await ai.synthesize({
-      model: snapshot.modelId || "omnivoice",
+      model: snapshot.modelId || snapshot.engine || "omnivoice",
       voiceId: snapshot.voiceId,
       text,
       outputPath,

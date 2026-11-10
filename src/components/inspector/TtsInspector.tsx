@@ -390,6 +390,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                 onChange={(e) => onChangeModel(e.target.value)}
                 className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
               >
+                <option value="Kokoro-82M">Kokoro-82M (Cài sẵn · Nhẹ)</option>
                 <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
                 <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
                 <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>

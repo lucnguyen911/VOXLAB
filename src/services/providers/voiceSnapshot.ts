@@ -1,6 +1,7 @@
 import { VoiceProfile, EffectiveVoiceSnapshot } from "../../types/ui";
 import { resolveEdgeVoiceName } from "./edgeProvider";
 import { resolveCloneVoiceReference } from "../ai/cloneVoiceRegistry";
+import { resolveLocalEngine } from "../ai/ttsEngines";
 
 export interface SnapshotCreationOptions {
   activeModel?: string;
@@ -66,19 +67,26 @@ export function createEffectiveVoiceSnapshot(
     }
   }
 
-  const engine = voice.engine || (
+  const resolvedActiveCaps =
+    provider === "local" || provider === "clone"
+      ? resolveLocalEngine(options.activeModel)
+      : null;
+
+  const engine =
     provider === "edge"
       ? "edge_tts"
       : provider === "google_translate"
       ? "gtts"
-      : options.activeModel || "omnivoice"
-  );
+      : resolvedActiveCaps?.voxlabModelId || voice.engine || options.activeModel || "omnivoice";
 
   const snapshot: EffectiveVoiceSnapshot = {
     voiceId: voice.id,
     provider,
     engine,
-    modelId: provider === "local" || provider === "clone" ? options.activeModel : undefined,
+    modelId:
+      provider === "local" || provider === "clone"
+        ? options.activeModel || voice.engine
+        : undefined,
     language: voice.supportedLanguages?.[0],
     voiceName: voice.name,
     speed: options.speed ?? 1.0,

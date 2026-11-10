@@ -609,7 +609,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
   // =========================================================================
   it("SITUATION 11: Dubbing tab configuration synchronizes with DubbingWorkspace stored settings", () => {
     const mockStorage: Record<string, string> = {
-      [DUBBING_VOICE_STORAGE_KEY]: "voice_01",
+      [DUBBING_VOICE_STORAGE_KEY]: "kokoro_af_heart",
       [DUBBING_VOICE_SETTINGS_KEY]: JSON.stringify({
         ttsModel: "Chatterbox Turbo",
         speed: 1.15,
@@ -630,7 +630,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
 
     // Load stored settings via helper
     const stored = loadStoredDubbingSettings();
-    assert.equal(stored.voice, "Thảo Trinh (Hà Nội)", "Voice ID 'voice_01' should resolve to voice name");
+    assert.equal(stored.voice, "Heart (Kokoro Local)", "Voice ID 'kokoro_af_heart' should resolve to voice name");
     assert.equal(stored.ttsModel, "Chatterbox Turbo");
     assert.equal(stored.speed, 1.15);
     assert.equal(stored.pitch, 0.90);

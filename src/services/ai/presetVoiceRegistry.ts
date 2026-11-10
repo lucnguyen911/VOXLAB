@@ -1,7 +1,8 @@
 /**
  * Preset voice registry: authoritative references (audio + transcript) for built-in system voices.
- * Ensures local zero-shot TTS models (OmniVoice, Chatterbox Turbo, Qwen TTS) receive proper conditioning
- * so all synthesized chunks maintain speaker consistency instead of randomizing per chunk.
+ * - Pre-bundled Kokoro-82M voices (`kokoro_*`) use native speaker embeddings inside `voices-v1.0.bin`
+ *   when synthesized with `Kokoro-82M`, and also provide clean 24kHz WAV reference audio + transcripts
+ *   when synthesized with zero-shot clone engines (`OmniVoice`, `Chatterbox Turbo`, `Qwen3-TTS 1.7B`).
  */
 import type { VoiceReference } from "./localAiServices";
 import { resolveCloneVoiceReference } from "./cloneVoiceRegistry";
@@ -12,41 +13,105 @@ export interface PresetVoiceDefinition {
   fileName: string;
   refText: string;
   language: string;
-  engine: "omnivoice" | "chatterbox_turbo" | "qwen_tts_1_7b";
+  engine: "kokoro_82m" | "omnivoice" | "chatterbox_turbo" | "qwen_tts_1_7b";
 }
 
 export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
-  voice_01: {
-    voiceId: "voice_01",
-    name: "Thảo Trinh (Hà Nội)",
-    fileName: "thao_trinh.mp3",
-    refText: "Xin chào, đây là bản nghe thử giọng đọc của Thảo Trinh trên VoxLab.",
-    language: "vi",
-    engine: "omnivoice",
-  },
-  voice_02: {
-    voiceId: "voice_02",
-    name: "Nam Anh (Sài Gòn)",
-    fileName: "nam_anh.mp3",
-    refText: "Xin chào, đây là bản nghe thử giọng đọc của Nam Anh trên VoxLab.",
-    language: "vi",
-    engine: "chatterbox_turbo",
-  },
-  voice_06: {
-    voiceId: "voice_06",
-    name: "Sarah (US Professional)",
-    fileName: "sarah.mp3",
-    refText: "Hello, this is Sarah with a professional voice sample on VoxLab.",
+  kokoro_af_heart: {
+    voiceId: "kokoro_af_heart",
+    name: "Heart (Kokoro Local)",
+    fileName: "kokoro_af_heart.wav",
+    refText: "Hello, I am Heart from Kokoro on VoxLab. My voice is warm, natural, and expressive for storytelling.",
     language: "en",
-    engine: "omnivoice",
+    engine: "kokoro_82m",
   },
-  voice_07: {
-    voiceId: "voice_07",
-    name: "David (UK Documentary)",
-    fileName: "david.mp3",
-    refText: "Hello, this is David with a documentary voice sample on VoxLab.",
+  kokoro_af_bella: {
+    voiceId: "kokoro_af_bella",
+    name: "Bella (Kokoro Local)",
+    fileName: "kokoro_af_bella.wav",
+    refText: "Hi there, this is Bella on VoxLab, bringing a bright and engaging tone to your podcasts and videos.",
     language: "en",
-    engine: "chatterbox_turbo",
+    engine: "kokoro_82m",
+  },
+  kokoro_af_nicole: {
+    voiceId: "kokoro_af_nicole",
+    name: "Nicole (Kokoro Local)",
+    fileName: "kokoro_af_nicole.wav",
+    refText: "Welcome to VoxLab. I am Nicole, delivering a calm, soft, and intimate voice for late-night narration.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_af_sarah: {
+    voiceId: "kokoro_af_sarah",
+    name: "Sarah (Kokoro Local)",
+    fileName: "kokoro_af_sarah.wav",
+    refText: "Hello, this is Sarah with a clear and professional voice sample for presentations and news on VoxLab.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_am_adam: {
+    voiceId: "kokoro_am_adam",
+    name: "Adam (Kokoro Local)",
+    fileName: "kokoro_am_adam.wav",
+    refText: "Hello, I am Adam on VoxLab, offering a resonant and confident American male voice for documentaries.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_am_michael: {
+    voiceId: "kokoro_am_michael",
+    name: "Michael (Kokoro Local)",
+    fileName: "kokoro_am_michael.wav",
+    refText: "Hi, this is Michael from Kokoro on VoxLab, ready for natural conversational dialogue and tutorials.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_am_fenrir: {
+    voiceId: "kokoro_am_fenrir",
+    name: "Fenrir (Kokoro Local)",
+    fileName: "kokoro_am_fenrir.wav",
+    refText: "Greetings from VoxLab. I am Fenrir, providing a deep, dramatic, and commanding voice for trailers.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_am_puck: {
+    voiceId: "kokoro_am_puck",
+    name: "Puck (Kokoro Local)",
+    fileName: "kokoro_am_puck.wav",
+    refText: "Hey everyone, this is Puck on VoxLab! Let us dive right into an energetic and lively story.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_bf_emma: {
+    voiceId: "kokoro_bf_emma",
+    name: "Emma UK (Kokoro Local)",
+    fileName: "kokoro_bf_emma.wav",
+    refText: "Good day, I am Emma on VoxLab, speaking with a refined and articulate British accent for audiobooks.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_bf_isabella: {
+    voiceId: "kokoro_bf_isabella",
+    name: "Isabella UK (Kokoro Local)",
+    fileName: "kokoro_bf_isabella.wav",
+    refText: "Hello, this is Isabella on VoxLab, offering a gentle and poised British voice for classic literature.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_bm_george: {
+    voiceId: "kokoro_bm_george",
+    name: "George UK (Kokoro Local)",
+    fileName: "kokoro_bm_george.wav",
+    refText: "Hello, this is George on VoxLab, delivering a distinguished British documentary and narration voice.",
+    language: "en",
+    engine: "kokoro_82m",
+  },
+  kokoro_bm_lewis: {
+    voiceId: "kokoro_bm_lewis",
+    name: "Lewis UK (Kokoro Local)",
+    fileName: "kokoro_bm_lewis.wav",
+    refText: "Welcome to VoxLab. I am Lewis, bringing a modern and clear British male voice to your projects.",
+    language: "en",
+    engine: "kokoro_82m",
   },
   default_local: {
     voiceId: "default_local",

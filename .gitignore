@@ -34,6 +34,7 @@ __pycache__/
 *.pyc
 sidecar/build/
 sidecar/dist/
+sidecar/models/
 *.safetensors
 
 # Local scratch and temporary work files

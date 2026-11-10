@@ -9,7 +9,7 @@ import {
 import { BatchJob } from "../../types/batch";
 import { DialogueCharacter } from "../../types/dialogue";
 import { VoiceProfile } from "../../types/ui";
-import { MOCK_VOICES } from "../../mock/data";
+import { MOCK_VOICES, mergeStoredVoicesWithCatalog } from "../../mock/data";
 import { useI18n } from "../../i18n/context";
 import { parseDialogueScript, guessGenderFromName } from "../../services/dialogue/parser";
 import { readBatchTextOrDocxFile } from "../../services/batch/batchRuntime";
@@ -29,9 +29,7 @@ function loadAvailableVoices(): VoiceProfile[] {
     const raw = localStorage.getItem("voxlab_voices_v1");
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map(migrateLegacyVoice);
-      }
+      return mergeStoredVoicesWithCatalog(parsed, migrateLegacyVoice);
     }
   } catch {
     // ignore
@@ -41,6 +39,7 @@ function loadAvailableVoices(): VoiceProfile[] {
 
 function normalizeModelSelectValue(rawModel?: string): string {
   const m = (rawModel || "").toLowerCase();
+  if (m.includes("kokoro")) return "Kokoro-82M";
   if (m.includes("chatterbox")) return "Chatterbox Turbo";
   if (m.includes("qwen")) return "Qwen TTS 1.7B";
   return "OmniVoice";
@@ -254,16 +253,15 @@ export const DialogueCharacterVoiceModal: React.FC<
           ) : (
             characters.map((char) => {
               const assignedVoiceId =
-                characterVoices[char.name] || voices[0]?.id || "voice_01";
+                characterVoices[char.name] || voices[0]?.id || "edge_vi_hoaimy";
               const assignedVoice =
                 voices.find((v) => v.id === assignedVoiceId) ||
                 voices[0] || {
-                  id: "voice_01",
-                  name: "Thảo Trinh (Hà Nội)",
+                  id: "edge_vi_hoaimy",
+                  name: "Hoài My (Edge)",
                   gender: "female",
                   language: "vi-VN",
-                  accent: "Bắc",
-                  avatarColor: "from-pink-500 to-rose-600",
+                  avatarColor: "from-sky-500 to-blue-600",
                 };
 
               const langInfo = getVoiceLanguageInfo(assignedVoice, lang);
@@ -391,8 +389,8 @@ export const DialogueCharacterVoiceModal: React.FC<
           voices={voices}
           activeVoiceId={
             pickingCharacterName
-              ? characterVoices[pickingCharacterName] || voices[0]?.id || "voice_01"
-              : voices[0]?.id || "voice_01"
+              ? characterVoices[pickingCharacterName] || voices[0]?.id || "edge_vi_hoaimy"
+              : voices[0]?.id || "edge_vi_hoaimy"
           }
           currentModel={currentModelLabel}
           onSelectVoice={(voice) => {

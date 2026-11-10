@@ -117,7 +117,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   incomingScript,
   onConsumeIncomingScript,
   activeModel = "OmniVoice",
-  activeVoiceId = "voice_01",
+  activeVoiceId = "edge_vi_hoaimy",
   voices = [],
 }) => {
   const { t } = useI18n();

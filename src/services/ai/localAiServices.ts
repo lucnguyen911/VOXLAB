@@ -177,11 +177,11 @@ export class LocalAiServices {
   } {
     const caps = resolveLocalEngine(model);
     if (!caps) {
-      throw new AiError("UNSUPPORTED", `Model "${model}" không phải engine local (OmniVoice / Chatterbox Turbo / Qwen TTS).`);
+      throw new AiError("UNSUPPORTED", `Model "${model}" không phải engine local (Kokoro-82M / OmniVoice / Chatterbox Turbo / Qwen TTS).`);
     }
     const advanced = advancedSettings || getEngineAdvancedSettings(caps.engine);
     const xVectorOnly = Boolean(advanced?.x_vector_only_mode ?? advanced?.xVectorOnlyMode);
-    const ref = this.resolveVoice(voiceId || "");
+    const ref = caps.supportsVoiceClone ? this.resolveVoice(voiceId || "") : null;
     const lang = language || ref?.language || detectTextLanguage(text);
     const check = checkEngineSupport(caps, {
       language: lang,
@@ -258,8 +258,9 @@ export class LocalAiServices {
       outputPath: req.outputPath,
     };
     if (language) params.language = language;
-    if (ref?.refAudioPath) params.refAudioPath = ref.refAudioPath;
-    if (ref?.refText) params.refText = ref.refText;
+    if (req.voiceId) params.voiceId = req.voiceId;
+    if (caps.supportsVoiceClone && ref?.refAudioPath) params.refAudioPath = ref.refAudioPath;
+    if (caps.supportsVoiceClone && ref?.refText) params.refText = ref.refText;
     if (req.speed !== undefined && caps.supportsSpeed) params.speed = req.speed;
     if (req.sampleRate !== undefined) params.sampleRate = req.sampleRate;
 

@@ -325,6 +325,7 @@ class TtsService:
             "subtalker_temperature", "subtalkerTemperature",
             "max_new_tokens", "maxNewTokens",
             "non_streaming_mode", "nonStreamingMode",
+            "voice", "voiceId", "kokoroVoice",
         )
         for k in allowed_direct_keys:
             if k in params and params[k] is not None:

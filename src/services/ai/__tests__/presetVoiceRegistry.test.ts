@@ -12,34 +12,34 @@ describe("Preset Voice Registry & Unified Resolution Suite", () => {
   const TEST_APPDATA = "C:/TestVoxLab/AppData";
   setPresetVoicesAppDataDir(TEST_APPDATA);
 
-  it("resolves Sarah (voice_06) with correct reference audio and authoritative transcript", () => {
-    const ref = resolvePresetVoiceReference("voice_06", TEST_APPDATA);
+  it("resolves Sarah (kokoro_af_sarah) with correct reference audio and authoritative transcript", () => {
+    const ref = resolvePresetVoiceReference("kokoro_af_sarah", TEST_APPDATA);
     assert.ok(ref, "Sarah reference must exist");
-    assert.match(ref.refAudioPath || "", /sarah\.mp3/i);
+    assert.match(ref.refAudioPath || "", /kokoro_af_sarah\.wav/i);
     assert.equal(ref.language, "en");
-    assert.equal(ref.refText, "Hello, this is Sarah with a professional voice sample on VoxLab.");
+    assert.equal(
+      ref.refText,
+      "Hello, this is Sarah with a clear and professional voice sample for presentations and news on VoxLab."
+    );
   });
 
-  it("resolves Thảo Trinh (voice_01) and Nam Anh (voice_02) for Vietnamese", () => {
-    const thaoTrinh = resolvePresetVoiceReference("voice_01", TEST_APPDATA);
-    assert.ok(thaoTrinh, "Thảo Trinh reference must exist");
-    assert.match(thaoTrinh.refAudioPath || "", /thao_trinh\.mp3/i);
-    assert.equal(thaoTrinh.language, "vi");
-    assert.equal(thaoTrinh.refText, "Xin chào, đây là bản nghe thử giọng đọc của Thảo Trinh trên VoxLab.");
+  it("resolves Heart (kokoro_af_heart) and Adam (kokoro_am_adam) for built-in Kokoro voices", () => {
+    const heart = resolvePresetVoiceReference("kokoro_af_heart", TEST_APPDATA);
+    assert.ok(heart, "Heart reference must exist");
+    assert.match(heart.refAudioPath || "", /kokoro_af_heart\.wav/i);
+    assert.equal(heart.language, "en");
 
-    const namAnh = resolvePresetVoiceReference("voice_02", TEST_APPDATA);
-    assert.ok(namAnh, "Nam Anh reference must exist");
-    assert.match(namAnh.refAudioPath || "", /nam_anh\.mp3/i);
-    assert.equal(namAnh.language, "vi");
-    assert.equal(namAnh.refText, "Xin chào, đây là bản nghe thử giọng đọc của Nam Anh trên VoxLab.");
+    const adam = resolvePresetVoiceReference("kokoro_am_adam", TEST_APPDATA);
+    assert.ok(adam, "Adam reference must exist");
+    assert.match(adam.refAudioPath || "", /kokoro_am_adam\.wav/i);
+    assert.equal(adam.language, "en");
   });
 
-  it("resolves David (voice_07) for UK English", () => {
-    const david = resolvePresetVoiceReference("voice_07", TEST_APPDATA);
-    assert.ok(david, "David reference must exist");
-    assert.match(david.refAudioPath || "", /david\.mp3/i);
-    assert.equal(david.language, "en");
-    assert.equal(david.refText, "Hello, this is David with a documentary voice sample on VoxLab.");
+  it("resolves George UK (kokoro_bm_george) for British English", () => {
+    const george = resolvePresetVoiceReference("kokoro_bm_george", TEST_APPDATA);
+    assert.ok(george, "George UK reference must exist");
+    assert.match(george.refAudioPath || "", /kokoro_bm_george\.wav/i);
+    assert.equal(george.language, "en");
   });
 
   it("falls back to default_local when an unknown local voice ID is queried", () => {
@@ -49,7 +49,7 @@ describe("Preset Voice Registry & Unified Resolution Suite", () => {
     assert.equal(fallback.refText, "Xin chào, đây là bản nghe thử giọng đọc mẫu trên VoxLab.");
   });
 
-  it("integrates seamlessly into LocalAiServices.resolveEngine so chunks receive Sarah reference", () => {
+  it("integrates seamlessly into LocalAiServices.resolveEngine for both Kokoro-82M and OmniVoice", () => {
     const mockFs: AiFs = {
       readText: async () => "",
       writeText: async () => {},
@@ -69,16 +69,24 @@ describe("Preset Voice Registry & Unified Resolution Suite", () => {
       (voiceId) => resolveUnifiedVoiceReference(voiceId, TEST_APPDATA)
     );
 
-    const resolved = ai.resolveEngine(
+    // 1. Kokoro-82M resolves without reference audio (uses native voices-v1.0.bin embedding)
+    const kokoroResolved = ai.resolveEngine(
+      "kokoro_82m",
+      "kokoro_af_sarah",
+      "Testing pre-bundled Kokoro-82M synthesis."
+    );
+    assert.equal(kokoroResolved.caps.engine, "kokoro");
+    assert.equal(kokoroResolved.ref, null);
+
+    // 2. OmniVoice resolves with Sarah's WAV reference audio and transcript
+    const omniResolved = ai.resolveEngine(
       "omnivoice",
-      "voice_06",
+      "kokoro_af_sarah",
       "Testing chunk speech consistency with Sarah reference."
     );
-
-    assert.equal(resolved.caps.engine, "omnivoice");
-    assert.ok(resolved.ref, "Voice reference must be populated for Sarah");
-    assert.match(resolved.ref.refAudioPath || "", /sarah\.mp3/i);
-    assert.equal(resolved.ref.refText, "Hello, this is Sarah with a professional voice sample on VoxLab.");
-    assert.equal(resolved.language, "en");
+    assert.equal(omniResolved.caps.engine, "omnivoice");
+    assert.ok(omniResolved.ref, "Voice reference must be populated for Sarah on OmniVoice");
+    assert.match(omniResolved.ref.refAudioPath || "", /kokoro_af_sarah\.wav/i);
+    assert.equal(omniResolved.language, "en");
   });
 });

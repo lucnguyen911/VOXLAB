@@ -7,9 +7,10 @@ from .base import TtsEngineAdapter
 def adapters_for_runtime(runtime: str) -> list[TtsEngineAdapter]:
     # Imports are lazy so a runtime never imports another engine's dependency stack.
     if runtime == "core":
+        from .kokoro_adapter import KokoroAdapter
         from .omnivoice_adapter import OmniVoiceAdapter
 
-        return [OmniVoiceAdapter()]
+        return [OmniVoiceAdapter(), KokoroAdapter()]
     if runtime == "chatterbox":
         from .chatterbox_adapter import ChatterboxAdapter
 
