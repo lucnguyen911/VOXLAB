@@ -31,7 +31,6 @@ import {
   openHistoryPathInFolder,
   formatHistoryCreatedAt,
   resolveHistoryStatusDisplay,
-  formatHistoryArtifactFormats,
 } from "../services/history/historyManager";
 import { ResultPreviewDrawer } from "../components/preview/ResultPreviewDrawer";
 import { BatchFooter } from "../components/batch/BatchFooter";
@@ -326,7 +325,6 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                   filteredRecords.map((job, index) => {
                     const hasArtifacts = job.artifacts.length > 0;
                     const statusDisplay = resolveHistoryStatusDisplay(job);
-                    const formatSummary = formatHistoryArtifactFormats(job.artifacts);
                     const orderedTasks = CANONICAL_TASK_ORDER.filter((t) =>
                       job.tasks.includes(t)
                     );
@@ -349,47 +347,28 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                           {index + 1}
                         </td>
 
-                        {/* Column 2: Name, Batch Tag, Exported Formats & Output Directory */}
+                        {/* Column 2: File Name & Batch Tag */}
                         <td className="py-3 px-3.5 align-middle border-r border-borderDefault">
                           <div className="flex items-center gap-2.5 min-w-0">
                             <div className="w-7 h-7 rounded-lg bg-surface2 border border-borderDefault flex items-center justify-center shrink-0">
                               {renderSourceIcon(job.title, job.category)}
                             </div>
-                            <div className="min-w-0 flex-1 space-y-0.5">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span
-                                  className="font-semibold text-textPrimary truncate"
-                                  title={job.title}
-                                >
-                                  {job.title}
-                                </span>
-                                {job.isBatch && (
-                                  <span
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-accent/10 border border-accent/25 text-accent shrink-0 whitespace-nowrap"
-                                    title="Thực thi từ chế độ Hàng loạt"
-                                  >
-                                    <Layers className="w-2.5 h-2.5 shrink-0" />
-                                    <span>Hàng loạt</span>
-                                  </span>
-                                )}
-                              </div>
-                              <div
-                                className="flex items-center gap-1.5 text-[11px] font-mono min-w-0"
-                                title={job.outputDirectory}
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                              <span
+                                className="font-semibold text-textPrimary truncate"
+                                title={job.title}
                               >
-                                {formatSummary && (
-                                  <>
-                                    <span className="font-semibold text-textSecondary shrink-0">
-                                      {formatSummary}
-                                    </span>
-                                    <span className="text-textMuted shrink-0">•</span>
-                                  </>
-                                )}
-                                <span className="text-textMuted truncate">
-                                  {job.sourceFileSize ? `${job.sourceFileSize} • ` : ""}
-                                  {job.outputDirectory}
+                                {job.title}
+                              </span>
+                              {job.isBatch && (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-accent/10 border border-accent/25 text-accent shrink-0 whitespace-nowrap"
+                                  title="Thực thi từ chế độ Hàng loạt"
+                                >
+                                  <Layers className="w-2.5 h-2.5 shrink-0" />
+                                  <span>Hàng loạt</span>
                                 </span>
-                              </div>
+                              )}
                             </div>
                           </div>
                         </td>
