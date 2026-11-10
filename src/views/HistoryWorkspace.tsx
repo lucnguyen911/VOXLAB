@@ -334,12 +334,6 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                     const exactDateTime =
                       (job.timestamp ? formatHistoryCreatedAt(job.timestamp) : "") ||
                       job.createdAt;
-                    const subTimeMeta = [
-                      job.duration,
-                      job.chunkCount ? `${job.chunkCount} đoạn` : undefined,
-                    ]
-                      .filter(Boolean)
-                      .join(" • ");
 
                     return (
                       <tr
@@ -458,16 +452,9 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
 
                         {/* Column 5: Created Date & Time */}
                         <td className="py-3 px-3 align-middle border-r border-borderDefault text-center">
-                          <div className="flex flex-col items-center justify-center gap-0.5">
-                            <span className="font-mono font-semibold text-textPrimary text-xs whitespace-nowrap">
-                              {exactDateTime}
-                            </span>
-                            {subTimeMeta && (
-                              <span className="text-[11px] text-textMuted font-mono whitespace-nowrap">
-                                {subTimeMeta}
-                              </span>
-                            )}
-                          </div>
+                          <span className="font-mono font-semibold text-textPrimary text-xs whitespace-nowrap">
+                            {exactDateTime}
+                          </span>
                         </td>
 
                         {/* Column 6: Actions */}
