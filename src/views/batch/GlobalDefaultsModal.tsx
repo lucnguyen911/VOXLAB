@@ -1985,11 +1985,6 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
                     <option value="source_sync">Đồng bộ video gốc</option>
                     <option value="free_narration">Thuyết minh tự do</option>
                   </select>
-                  <p className="text-[11px] text-textMuted leading-tight pt-0.5">
-                    {dubbingModeVal === "source_sync"
-                      ? "Giữ nguyên mốc thời gian phụ đề gốc, tự động căn chỉnh tốc độ đọc khớp với hình ảnh video."
-                      : "Gộp và dịch theo câu hoàn chỉnh tự nhiên, đọc liền mạch và tạo phụ đề mới khớp theo giọng đọc."}
-                  </p>
                 </div>
 
                 {/* 2. Chọn giọng */}
