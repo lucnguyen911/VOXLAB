@@ -74,7 +74,7 @@ export function getCloneEngineDurationRules(engine?: string): CloneEngineDuratio
       sweetMinSec: 8.0,
       sweetMaxSec: 15.0,
       maxRecommendedSec: 20.0,
-      badgeLabel: "8s – 15s (tối thiểu 5.5s)",
+      badgeLabel: "8s – 15s",
     };
   }
   if (norm.startsWith("qwen")) {
@@ -84,7 +84,7 @@ export function getCloneEngineDurationRules(engine?: string): CloneEngineDuratio
       sweetMinSec: 6.0,
       sweetMaxSec: 10.0,
       maxRecommendedSec: 15.0,
-      badgeLabel: "6s – 10s (tối đa 15s)",
+      badgeLabel: "6s – 10s",
     };
   }
   return {
@@ -93,7 +93,7 @@ export function getCloneEngineDurationRules(engine?: string): CloneEngineDuratio
     sweetMinSec: 6.0,
     sweetMaxSec: 10.0,
     maxRecommendedSec: 15.0,
-    badgeLabel: "6s – 10s (tối đa 15s)",
+    badgeLabel: "6s – 10s",
   };
 }
 
