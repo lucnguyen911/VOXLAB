@@ -898,6 +898,7 @@ export interface RecordCompletedJobParams {
   tasks: ("tts" | "dialogue" | "transcription" | "translation" | "dubbing")[];
   status?: HistoryItemStatus;
   statusWarning?: string;
+  errorMessage?: string;
   durationSec?: number;
   chunkCount?: number;
   outputDirectory?: string;
@@ -995,6 +996,7 @@ export function recordCompletedJobToHistory(params: RecordCompletedJobParams): U
       timestamp: nowMs,
       status: params.status || existingMatch.status,
       statusWarning: params.statusWarning ?? existingMatch.statusWarning,
+      errorMessage: params.errorMessage ?? existingMatch.errorMessage,
       duration: primaryDurationSec ? formatDurationLabel(primaryDurationSec) : existingMatch.duration,
       chunkCount: params.chunkCount ?? existingMatch.chunkCount,
       outputDirectory: resolvedOutputDir || existingMatch.outputDirectory,
@@ -1017,6 +1019,7 @@ export function recordCompletedJobToHistory(params: RecordCompletedJobParams): U
       timestamp: nowMs,
       status: params.status || "completed",
       statusWarning: params.statusWarning,
+      errorMessage: params.errorMessage,
       duration: primaryDurationSec ? formatDurationLabel(primaryDurationSec) : undefined,
       chunkCount: params.chunkCount,
       outputDirectory: resolvedOutputDir,
@@ -1113,6 +1116,7 @@ export type BatchJobOrHistorical =
       selectedTasks: ("tts" | "dialogue" | "transcription" | "translation" | "dubbing")[];
       status: string;
       statusWarning?: string;
+      errorMessage?: string;
       outputPath?: string;
       runId?: string;
       outputArtifacts?: {
@@ -1122,11 +1126,82 @@ export type BatchJobOrHistorical =
       };
     };
 
+export type HistoryStatusTone = "completed" | "warning" | "error" | "missing";
+
+export interface HistoryStatusDisplay {
+  tone: HistoryStatusTone;
+  label: string;
+  tooltip: string;
+}
+
+export function formatHistoryArtifactFormats(artifacts: HistoryArtifactItem[]): string {
+  const formats: string[] = [];
+  for (const art of artifacts) {
+    const rawExt = (art.format || art.fileName.split(".").pop() || "").trim().toUpperCase();
+    const label = rawExt || (art.type === "audio" ? "AUDIO" : art.type === "subtitle" ? "SRT" : "");
+    if (label && !formats.includes(label)) {
+      formats.push(label);
+    }
+  }
+  return formats.join(", ");
+}
+
+export function resolveHistoryStatusDisplay(job: UnifiedHistoryItem): HistoryStatusDisplay {
+  if (
+    job.status === "failed" ||
+    job.status === "failed_with_artifact" ||
+    job.status === "interrupted"
+  ) {
+    const baseDetail =
+      job.errorMessage ||
+      job.statusWarning ||
+      (job.status === "interrupted"
+        ? "Tác vụ bị gián đoạn trước khi hoàn tất."
+        : "Tác vụ gặp lỗi trong quá trình xử lý.");
+    const partialSuffix =
+      job.status === "failed_with_artifact" && job.artifacts.length > 0
+        ? " (Đã giữ lại tệp kết quả từ bước trước)."
+        : "";
+    return {
+      tone: "error",
+      label: "Lỗi",
+      tooltip: `${baseDetail}${partialSuffix}`,
+    };
+  }
+
+  const missingArts = job.artifacts.filter((a) => !a.existsOnDisk);
+  if (job.artifacts.length === 0 || missingArts.length > 0) {
+    const missingNames = missingArts.map((a) => a.fileName).join(", ");
+    return {
+      tone: "missing",
+      label: "Thiếu tệp",
+      tooltip: missingNames
+        ? `Không tìm thấy tệp trên ổ đĩa: ${missingNames}`
+        : "Không tìm thấy tệp kết quả xuất trên ổ đĩa.",
+    };
+  }
+
+  if (job.status === "completed_with_warning" || Boolean(job.statusWarning)) {
+    return {
+      tone: "warning",
+      label: "Cảnh báo",
+      tooltip: job.statusWarning || "Hoàn tất nhưng có lưu ý cần kiểm tra.",
+    };
+  }
+
+  return {
+    tone: "completed",
+    label: "Hoàn tất",
+    tooltip: "Đã xuất thành công đầy đủ tệp kết quả trên ổ đĩa.",
+  };
+}
+
 export function syncBatchJobToHistory(job: BatchJobOrHistorical): UnifiedHistoryItem | null {
   if (
     job.status !== "completed" &&
     job.status !== "completed_with_warning" &&
-    job.status !== "failed_with_artifact"
+    job.status !== "failed_with_artifact" &&
+    job.status !== "failed"
   ) {
     return null;
   }
@@ -1144,6 +1219,7 @@ export function syncBatchJobToHistory(job: BatchJobOrHistorical): UnifiedHistory
     ? job.outputSnapshot?.resolvedOutputDirectory || "D:/VoxLabOutput/Batch_Export"
     : job.outputPath || "D:/VoxLabOutput/Batch_Export";
   const statusWarning = isFullBatchJob ? job.warningMessage : job.statusWarning;
+  const errorMessage = isFullBatchJob ? job.errorMessage : job.errorMessage;
   const runId = "runId" in job ? job.runId : undefined;
 
   const artifacts: HistoryArtifactItem[] = [];
@@ -1247,6 +1323,7 @@ export function syncBatchJobToHistory(job: BatchJobOrHistorical): UnifiedHistory
     timestamp: nowMs,
     status: job.status as any,
     statusWarning,
+    errorMessage,
     outputDirectory: outputPath,
     artifacts,
     runId,

@@ -599,7 +599,8 @@ export class BatchOrchestrator {
     if (
       job.status === "completed" ||
       job.status === "completed_with_warning" ||
-      job.status === "failed_with_artifact"
+      job.status === "failed_with_artifact" ||
+      job.status === "failed"
     ) {
       try {
         syncBatchJobToHistory(job);

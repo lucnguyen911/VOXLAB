@@ -5,9 +5,10 @@ import {
   RotateCcw,
   Trash2,
   FileAudio,
-  Captions,
   Mic,
   AlertTriangle,
+  AlertCircle,
+  CheckCircle2,
   Search,
   X,
   Eye,
@@ -29,6 +30,8 @@ import {
   filterHistoryItems,
   openHistoryPathInFolder,
   formatHistoryCreatedAt,
+  resolveHistoryStatusDisplay,
+  formatHistoryArtifactFormats,
 } from "../services/history/historyManager";
 import { ResultPreviewDrawer } from "../components/preview/ResultPreviewDrawer";
 import { BatchFooter } from "../components/batch/BatchFooter";
@@ -45,6 +48,14 @@ const TASK_LABELS: Record<string, string> = {
   translation: "Dịch",
   dubbing: "Lồng tiếng",
 };
+
+const CANONICAL_TASK_ORDER: Array<"tts" | "dialogue" | "transcription" | "translation" | "dubbing"> = [
+  "tts",
+  "dialogue",
+  "transcription",
+  "translation",
+  "dubbing",
+];
 
 export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
   onResumeSession: _onResumeSession,
@@ -257,23 +268,23 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                     <div className="flex items-center justify-center min-h-[46px]">#</div>
                   </th>
 
-                  {/* Column 2: File / Job Name */}
-                  <th className="py-2.5 px-3.5 w-[32%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
-                    <div className="flex items-center justify-center min-h-[46px]">Tên tệp / Công việc</div>
+                  {/* Column 2: Name */}
+                  <th className="py-2.5 px-3.5 w-[37%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                    <div className="flex items-center justify-center min-h-[46px]">Tên</div>
                   </th>
 
-                  {/* Column 3: Task Badges */}
-                  <th className="py-2.5 px-3 w-[15%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
-                    <div className="flex items-center justify-center min-h-[46px]">Loại tác vụ</div>
+                  {/* Column 3: Tasks */}
+                  <th className="py-2.5 px-3 w-[16%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                    <div className="flex items-center justify-center min-h-[46px]">Tác vụ</div>
                   </th>
 
-                  {/* Column 4: Output Artifacts */}
-                  <th className="py-2.5 px-3 w-[17%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
-                    <div className="flex items-center justify-center min-h-[46px]">Kết quả xuất</div>
+                  {/* Column 4: Status */}
+                  <th className="py-2.5 px-3 w-[12%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                    <div className="flex items-center justify-center min-h-[46px]">Trạng thái</div>
                   </th>
 
                   {/* Column 5: Created Date & Time */}
-                  <th className="py-2.5 px-3 w-[15%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-3 w-[14%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
                     <div className="flex items-center justify-center min-h-[46px]">Thời gian</div>
                   </th>
 
@@ -314,6 +325,12 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                 ) : (
                   filteredRecords.map((job, index) => {
                     const hasArtifacts = job.artifacts.length > 0;
+                    const statusDisplay = resolveHistoryStatusDisplay(job);
+                    const formatSummary = formatHistoryArtifactFormats(job.artifacts);
+                    const orderedTasks = CANONICAL_TASK_ORDER.filter((t) =>
+                      job.tasks.includes(t)
+                    );
+                    const displayTasks = orderedTasks.length > 0 ? orderedTasks : job.tasks;
                     const exactDateTime =
                       (job.timestamp ? formatHistoryCreatedAt(job.timestamp) : "") ||
                       job.createdAt;
@@ -325,13 +342,20 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                       .join(" • ");
 
                     return (
-                      <tr key={job.id} className="hover:bg-surface2/50 transition-colors">
+                      <tr
+                        key={job.id}
+                        className={`transition-colors ${
+                          statusDisplay.tone === "error"
+                            ? "bg-danger/[0.03] hover:bg-danger/[0.07]"
+                            : "hover:bg-surface2/50"
+                        }`}
+                      >
                         {/* Column 1: # */}
                         <td className="py-3 px-3 align-middle text-center text-textSecondary font-mono font-semibold border-r border-borderDefault">
                           {index + 1}
                         </td>
 
-                        {/* Column 2: File Name & Output Directory */}
+                        {/* Column 2: Name, Batch Tag, Exported Formats & Output Directory */}
                         <td className="py-3 px-3.5 align-middle border-r border-borderDefault">
                           <div className="flex items-center gap-2.5 min-w-0">
                             <div className="w-7 h-7 rounded-lg bg-surface2 border border-borderDefault flex items-center justify-center shrink-0">
@@ -345,33 +369,41 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                                 >
                                   {job.title}
                                 </span>
-                                {job.statusWarning && (
-                                  <span title={job.statusWarning}>
-                                    <AlertTriangle className="w-3.5 h-3.5 text-warning shrink-0" />
+                                {job.isBatch && (
+                                  <span
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-accent/10 border border-accent/25 text-accent shrink-0 whitespace-nowrap"
+                                    title="Thực thi từ chế độ Hàng loạt"
+                                  >
+                                    <Layers className="w-2.5 h-2.5 shrink-0" />
+                                    <span>Hàng loạt</span>
                                   </span>
                                 )}
                               </div>
                               <div
-                                className="text-[11px] text-textMuted font-mono truncate"
+                                className="flex items-center gap-1.5 text-[11px] font-mono min-w-0"
                                 title={job.outputDirectory}
                               >
-                                {job.sourceFileSize ? `${job.sourceFileSize} • ` : ""}
-                                {job.outputDirectory}
+                                {formatSummary && (
+                                  <>
+                                    <span className="font-semibold text-textSecondary shrink-0">
+                                      {formatSummary}
+                                    </span>
+                                    <span className="text-textMuted shrink-0">•</span>
+                                  </>
+                                )}
+                                <span className="text-textMuted truncate">
+                                  {job.sourceFileSize ? `${job.sourceFileSize} • ` : ""}
+                                  {job.outputDirectory}
+                                </span>
                               </div>
                             </div>
                           </div>
                         </td>
 
-                        {/* Column 3: Task Badges */}
+                        {/* Column 3: Tasks (left-aligned inside centered track) */}
                         <td className="py-3 px-3 align-middle border-r border-borderDefault">
-                          <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                            {job.isBatch && (
-                              <span className="inline-flex items-center justify-center gap-1 h-6 px-2 rounded-md text-[11px] font-semibold bg-accent/10 border border-accent/30 text-accent whitespace-nowrap">
-                                <Layers className="w-3 h-3 shrink-0" />
-                                <span>Hàng loạt</span>
-                              </span>
-                            )}
-                            {job.tasks.map((taskKey) => (
+                          <div className="w-[142px] max-w-full mx-auto flex flex-wrap items-center justify-start gap-1.5">
+                            {displayTasks.map((taskKey) => (
                               <span
                                 key={taskKey}
                                 className="inline-flex items-center justify-center h-6 px-2.5 rounded-md text-[11px] font-semibold bg-surface2 border border-borderDefault text-textSecondary whitespace-nowrap"
@@ -382,51 +414,46 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                           </div>
                         </td>
 
-                        {/* Column 4: Output Artifacts */}
-                        <td className="py-3 px-3 align-middle border-r border-borderDefault">
-                          {hasArtifacts ? (
-                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                              {job.artifacts.map((art) => {
-                                const ext = art.fileName.split(".").pop()?.toLowerCase();
-                                const isAudio = art.type === "audio";
-                                return (
-                                  <button
-                                    key={art.id}
-                                    type="button"
-                                    onClick={() => handleOpenPreview(job, art)}
-                                    className={`inline-flex items-center justify-center gap-1 h-6 px-2.5 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
-                                      !art.existsOnDisk
-                                        ? "bg-amber-500/10 text-amber-300 border-amber-500/30 opacity-75"
-                                        : isAudio
-                                        ? "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border-emerald-500/30"
-                                        : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30"
-                                    }`}
-                                    title={
-                                      art.existsOnDisk
-                                        ? `Nhấn để mở: ${art.fileName}`
-                                        : `Tệp không còn trên ổ đĩa: ${art.fileName}`
-                                    }
-                                  >
-                                    {isAudio ? (
-                                      <FileAudio className="w-3 h-3 shrink-0" />
-                                    ) : (
-                                      <Captions className="w-3 h-3 shrink-0" />
-                                    )}
-                                    <span>
-                                      {isAudio ? "Audio" : "Phụ đề"}
-                                      {ext ? ` (.${ext})` : ""}
-                                    </span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-center">
-                              <span className="inline-flex items-center justify-center h-6 px-2.5 rounded-md text-[11px] font-medium bg-surface2 text-textMuted border border-borderDefault">
-                                Không có tệp
+                        {/* Column 4: Status */}
+                        <td className="py-3 px-3 align-middle border-r border-borderDefault text-center">
+                          <div className="flex items-center justify-center">
+                            {statusDisplay.tone === "completed" && (
+                              <span
+                                className="inline-flex items-center justify-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 whitespace-nowrap"
+                                title={statusDisplay.tooltip}
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                <span>{statusDisplay.label}</span>
                               </span>
-                            </div>
-                          )}
+                            )}
+                            {statusDisplay.tone === "warning" && (
+                              <span
+                                className="inline-flex items-center justify-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 whitespace-nowrap"
+                                title={statusDisplay.tooltip}
+                              >
+                                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                <span>{statusDisplay.label}</span>
+                              </span>
+                            )}
+                            {statusDisplay.tone === "error" && (
+                              <span
+                                className="inline-flex items-center justify-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-semibold bg-danger/15 text-danger border border-danger/30 whitespace-nowrap"
+                                title={statusDisplay.tooltip}
+                              >
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                <span>{statusDisplay.label}</span>
+                              </span>
+                            )}
+                            {statusDisplay.tone === "missing" && (
+                              <span
+                                className="inline-flex items-center justify-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-medium bg-surface2 text-textSecondary border border-borderDefault whitespace-nowrap"
+                                title={statusDisplay.tooltip}
+                              >
+                                <AlertTriangle className="w-3.5 h-3.5 text-textMuted shrink-0" />
+                                <span>{statusDisplay.label}</span>
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         {/* Column 5: Created Date & Time */}

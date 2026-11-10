@@ -8,6 +8,8 @@ import {
   recordCompletedJobToHistory,
   parseSubtitleContentToHistoryCues,
   loadHistoryItems,
+  resolveHistoryStatusDisplay,
+  formatHistoryArtifactFormats,
 } from "../../services/history/historyManager";
 
 describe("Gate D: History Workspace — Job-Centric & Filter Specification", () => {
@@ -215,5 +217,40 @@ describe("Gate D: History Workspace — Job-Centric & Filter Specification", () 
     assert.ok(mergedRecord.tasks.includes("translation") && mergedRecord.tasks.includes("dubbing"));
     assert.strictEqual(mergedRecord.status, "completed_with_warning");
     assert.strictEqual(loadHistoryItems()[0].id, mergedRecord.id, "Newest merged record must be at top of history");
+  });
+
+  it("CRITERION 10: Status Column Classification & Failed Batch Sync — Resolves completed, warning, error, and missing states accurately", () => {
+    const completedJob = SAMPLE_UNIFIED_HISTORY.find((item) => item.id === "hist-01")!;
+    const completedStatus = resolveHistoryStatusDisplay(completedJob);
+    assert.strictEqual(completedStatus.tone, "completed");
+    assert.strictEqual(completedStatus.label, "Hoàn tất");
+    assert.strictEqual(formatHistoryArtifactFormats(completedJob.artifacts), "SRT, WAV");
+
+    const warningJob = SAMPLE_UNIFIED_HISTORY.find((item) => item.status === "completed_with_warning")!;
+    const warningStatus = resolveHistoryStatusDisplay(warningJob);
+    assert.strictEqual(warningStatus.tone, "warning");
+    assert.strictEqual(warningStatus.label, "Cảnh báo");
+
+    const missingFileJob = SAMPLE_UNIFIED_HISTORY.find((item) => item.id === "hist-07")!;
+    const missingStatus = resolveHistoryStatusDisplay(missingFileJob);
+    assert.strictEqual(missingStatus.tone, "missing");
+    assert.strictEqual(missingStatus.label, "Thiếu tệp");
+    assert.ok(missingStatus.tooltip.includes("sach_noi_lich_su_am_thanh.mp3"));
+
+    const failedBatch = syncBatchJobToHistory({
+      id: "job-failed-test-100",
+      fileName: "broken_input.docx",
+      filePath: "D:/Docs/broken_input.docx",
+      fileSize: "12.0 KB",
+      selectedTasks: ["tts"],
+      status: "failed",
+      errorMessage: "Không thể trích xuất văn bản từ tệp DOCX bị hỏng.",
+      outputPath: "D:/VoxLabOutput/Batch_Export/broken_input",
+    });
+    assert.ok(failedBatch, "Failed batch job must be recorded in history");
+    const errorStatus = resolveHistoryStatusDisplay(failedBatch);
+    assert.strictEqual(errorStatus.tone, "error");
+    assert.strictEqual(errorStatus.label, "Lỗi");
+    assert.ok(errorStatus.tooltip.includes("DOCX bị hỏng"));
   });
 });

@@ -59,6 +59,7 @@ export interface UnifiedHistoryItem {
   timestamp: number; // Raw epoch for accurate newest-first sorting
   status: HistoryItemStatus;
   statusWarning?: string; // Optional warning explanation
+  errorMessage?: string; // Optional failure reason when status is failed / failed_with_artifact
   duration?: string;
   chunkCount?: number;
   outputDirectory: string;
