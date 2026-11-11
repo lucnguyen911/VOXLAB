@@ -390,11 +390,8 @@ pub async fn download_and_install_update(
             },
         );
 
-        let spawn_res = if is_msi {
-            Command::new("msiexec").arg("/i").arg(&installer_path).spawn()
-        } else {
-            Command::new(&installer_path).spawn()
-        };
+        let (program, args) = build_installer_launch_spec(&installer_path, is_msi);
+        let spawn_res = Command::new(&program).args(&args).spawn();
 
         spawn_res.map_err(|e| format!("Không thể khởi chạy bộ cài đặt cập nhật: {}", e))?;
 
@@ -410,9 +407,63 @@ pub async fn download_and_install_update(
     .map_err(|e| e.to_string())?
 }
 
+/// Builds the OS command and arguments to install an update in-place without interactive
+/// "Already Installed" / uninstall prompts, then automatically relaunch VoxLab (for NSIS).
+pub fn build_installer_launch_spec(
+    installer_path: &Path,
+    is_msi: bool,
+) -> (std::ffi::OsString, Vec<std::ffi::OsString>) {
+    if is_msi {
+        (
+            std::ffi::OsString::from("msiexec"),
+            vec![
+                std::ffi::OsString::from("/i"),
+                installer_path.as_os_str().to_os_string(),
+                std::ffi::OsString::from("/passive"),
+            ],
+        )
+    } else {
+        (
+            installer_path.as_os_str().to_os_string(),
+            vec![
+                std::ffi::OsString::from("/P"),
+                std::ffi::OsString::from("/UPDATE"),
+                std::ffi::OsString::from("/R"),
+            ],
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installer_launch_spec_uses_passive_overwrite_and_relaunch_flags() {
+        let exe_path = Path::new(r"C:\Users\test\AppData\Roaming\com.voxlab.app\scratch\updates\VoxLab_Setup_v1.0.2.exe");
+        let (exe_prog, exe_args) = build_installer_launch_spec(exe_path, false);
+        assert_eq!(exe_prog, exe_path.as_os_str());
+        assert_eq!(
+            exe_args,
+            vec![
+                std::ffi::OsString::from("/P"),
+                std::ffi::OsString::from("/UPDATE"),
+                std::ffi::OsString::from("/R"),
+            ]
+        );
+
+        let msi_path = Path::new(r"C:\Users\test\AppData\Roaming\com.voxlab.app\scratch\updates\VoxLab_Setup_v1.0.2.msi");
+        let (msi_prog, msi_args) = build_installer_launch_spec(msi_path, true);
+        assert_eq!(msi_prog, std::ffi::OsString::from("msiexec"));
+        assert_eq!(
+            msi_args,
+            vec![
+                std::ffi::OsString::from("/i"),
+                msi_path.as_os_str().to_os_string(),
+                std::ffi::OsString::from("/passive"),
+            ]
+        );
+    }
 
     #[test]
     fn semver_comparison_handles_prefixes_and_multidigit_versions() {
