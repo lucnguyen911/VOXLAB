@@ -95,6 +95,47 @@ def system_info(runtime: str, asr, tts: TtsService) -> dict:
     except ImportError:
         info["torch"] = None
         info["cudaAvailable"] = False
+
+    if not info.get("cudaAvailable"):
+        # Lean first-launch bootstrap installs CTranslate2 + CUDA libs before heavy PyTorch engines;
+        # query nvidia-smi / CTranslate2 so GPU name, VRAM, and CUDA readiness report accurately.
+        try:
+            import subprocess
+
+            creationflags = 0x08000000 if os.name == "nt" else 0
+            proc = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=name,memory.total,memory.free",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                creationflags=creationflags,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                first_line = next(
+                    (ln.strip() for ln in proc.stdout.splitlines() if ln.strip()), ""
+                )
+                parts = [p.strip() for p in first_line.split(",")]
+                if parts and parts[0]:
+                    info["gpu"] = parts[0]
+                    info["cudaAvailable"] = True
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        info["vramTotalMb"] = int(parts[1])
+                    if len(parts) >= 3 and parts[2].isdigit():
+                        info["vramFreeMb"] = int(parts[2])
+        except Exception:
+            pass
+        if not info.get("cudaAvailable"):
+            try:
+                from .asr_engine import _cuda_device_count
+
+                if _cuda_device_count() > 0:
+                    info["cudaAvailable"] = True
+            except Exception:
+                pass
     info["asr"] = asr.status() if asr else None
     info["tts"] = tts.status()
     return info

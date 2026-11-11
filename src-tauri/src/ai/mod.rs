@@ -1,3 +1,4 @@
+pub mod fast_dl;
 pub mod installer;
 pub mod models;
 pub mod sidecar;

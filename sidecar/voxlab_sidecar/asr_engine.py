@@ -34,27 +34,36 @@ def _register_cuda_dlls() -> None:
     for sp in list(sys.path):
         if not sp or not os.path.isdir(sp):
             continue
+        candidate_dirs.append(os.path.join(sp, "torch", "lib"))
+
+    for sp in list(sys.path):
+        if not sp or not os.path.isdir(sp):
+            continue
         for rel in (
             os.path.join("nvidia", "cublas", "bin"),
             os.path.join("nvidia", "cudnn", "bin"),
             os.path.join("nvidia", "cuda_runtime", "bin"),
-            os.path.join("torch", "lib"),
         ):
             candidate_dirs.append(os.path.join(sp, rel))
 
     seen: set[str] = set()
+    ordered_dirs: list[str] = []
     for d in candidate_dirs:
         norm = os.path.normcase(os.path.abspath(d))
         if norm in seen or not os.path.isdir(d):
             continue
         seen.add(norm)
+        ordered_dirs.append(d)
         try:
             os.add_dll_directory(d)
         except Exception:  # noqa: BLE001
             pass
-        cur_path = os.environ.get("PATH", "")
-        if d.lower() not in cur_path.lower():
-            os.environ["PATH"] = d + os.pathsep + cur_path
+
+    cur_path = os.environ.get("PATH", "")
+    cur_lower = cur_path.lower()
+    to_prepend = [d for d in ordered_dirs if d.lower() not in cur_lower]
+    if to_prepend:
+        os.environ["PATH"] = os.pathsep.join(to_prepend) + (os.pathsep + cur_path if cur_path else "")
 
 
 def _cuda_device_count() -> int:

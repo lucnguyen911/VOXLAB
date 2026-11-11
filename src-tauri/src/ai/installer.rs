@@ -183,6 +183,7 @@ pub fn build_uv_install_steps(engine: &str, has_nvidia_gpu: bool) -> Result<Vec<
             let label = if has_nvidia_gpu {
                 pkgs.push("nvidia-cublas-cu12".to_string());
                 pkgs.push("nvidia-cudnn-cu12".to_string());
+                pkgs.push("nvidia-cuda-runtime-cu12".to_string());
                 "Đang cài đặt thư viện nhận diện giọng nói Whisper (GPU CUDA)..."
             } else {
                 "Đang cài đặt thư viện nhận diện giọng nói Whisper (CPU)..."
@@ -554,6 +555,8 @@ os.environ.pop("HF_HUB_OFFLINE", None)
 os.environ.pop("TRANSFORMERS_OFFLINE", None)
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = "32"
 
 model_id = sys.argv[1]
 repo_id = sys.argv[2]
@@ -634,7 +637,7 @@ try:
         repo_id=repo_id,
         local_dir=dest_dir,
         allow_patterns=allow_patterns,
-        max_workers=4,
+        max_workers=8,
     )
 finally:
     stop_evt.set()
@@ -847,6 +850,9 @@ where
             speed_mbps: None,
         });
 
+        let hf_xet_cache_dir = app_data_dir.join("scratch").join("hf-xet-cache");
+        let _ = std::fs::create_dir_all(&hf_xet_cache_dir);
+
         let mut dl_cmd = Command::new(&py_exe);
         configure_hidden_command(&mut dl_cmd);
         dl_cmd
@@ -862,6 +868,9 @@ where
             ])
             .env_remove("HF_HUB_OFFLINE")
             .env_remove("TRANSFORMERS_OFFLINE")
+            .env("HF_XET_HIGH_PERFORMANCE", "1")
+            .env("HF_XET_NUM_CONCURRENT_RANGE_GETS", "32")
+            .env("HF_XET_CACHE", &hf_xet_cache_dir)
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8");
 
@@ -970,10 +979,18 @@ where
     let runtimes_root = app_data_dir.join("runtimes");
     let uv_python_dir = runtimes_root.join("_python");
     let uv_cache_dir = app_data_dir.join("scratch").join("uv-cache");
+    let wheelhouse_dir = app_data_dir.join("scratch").join("wheelhouse");
     let target_rt_dir = runtimes_root.join(runtime);
+    let site_packages_dir = if cfg!(windows) {
+        target_rt_dir.join("Lib").join("site-packages")
+    } else {
+        target_rt_dir.join("lib").join("python3.11").join("site-packages")
+    };
     std::fs::create_dir_all(&uv_python_dir)
         .map_err(|e| AiError::new("IO_ERROR", e.to_string()))?;
     std::fs::create_dir_all(&uv_cache_dir)
+        .map_err(|e| AiError::new("IO_ERROR", e.to_string()))?;
+    std::fs::create_dir_all(&wheelhouse_dir)
         .map_err(|e| AiError::new("IO_ERROR", e.to_string()))?;
 
     // Shut down running sidecar for this runtime before mutating its site-packages
@@ -1012,6 +1029,8 @@ where
             .env("UV_PYTHON_INSTALL_DIR", &uv_python_dir)
             .env("UV_CACHE_DIR", &uv_cache_dir)
             .env("UV_HTTP_TIMEOUT", "180")
+            .env("UV_CONCURRENT_DOWNLOADS", "16")
+            .env("UV_CONCURRENT_INSTALLS", "8")
             .env("PYTHONUTF8", "1");
 
         let venv_child = venv_cmd.spawn().map_err(|e| {
@@ -1042,13 +1061,84 @@ where
             speed_mbps: None,
         });
 
+        // Pre-fetch large wheels (>= 16 MB, e.g. torch+cu128 ~3.3 GB, cudnn ~664 MB, cublas ~528 MB)
+        // via 8-16 parallel HTTP Range streams into `wheelhouse_dir` with live MB/s progress.
+        let mut did_prefetch = false;
+        let prefetch_ceil = step_base + (step_ceil - step_base) * 0.78;
+        if !step.no_deps {
+            let model_id_str = job_model_id.to_string();
+            let prefetch_res = crate::ai::fast_dl::prefetch_large_wheels_for_step(
+                &uv_bin,
+                &rt_python,
+                &site_packages_dir,
+                &uv_python_dir,
+                &uv_cache_dir,
+                &wheelhouse_dir,
+                step.index_url.as_deref(),
+                step.no_deps,
+                &step.packages,
+                cancelled,
+                current_pid,
+                |p| {
+                    did_prefetch = true;
+                    let dl_mb = p.batch_downloaded_bytes as f64 / 1_048_576.0;
+                    let tot_mb = p.batch_total_bytes as f64 / 1_048_576.0;
+                    let ratio = (p.batch_downloaded_bytes as f64
+                        / p.batch_total_bytes.max(1) as f64)
+                        .clamp(0.0, 1.0);
+                    let cur_pct = step_base + (prefetch_ceil - step_base) * ratio;
+                    let pkg_badge = if p.pkg_total > 1 {
+                        format!("{} ({}/{})", p.pkg_name, p.pkg_index, p.pkg_total)
+                    } else {
+                        p.pkg_name
+                    };
+                    let msg = if p.speed_mbps > 0.05 {
+                        format!(
+                            "Đang tải đa luồng ({} luồng) {}: {:.0} / {:.0} MB ({:.1} MB/s)",
+                            p.streams, pkg_badge, dl_mb, tot_mb, p.speed_mbps
+                        )
+                    } else {
+                        format!(
+                            "Đang tải đa luồng ({} luồng) {}: {:.0} / {:.0} MB",
+                            p.streams, pkg_badge, dl_mb, tot_mb
+                        )
+                    };
+                    emit(ModelInstallProgressEvent {
+                        model_id: model_id_str.clone(),
+                        status: "installing".to_string(),
+                        stage: "runtime".to_string(),
+                        pct: (cur_pct.max(3.0) * 10.0).round() / 10.0,
+                        message: msg,
+                        downloaded_mb: Some((dl_mb * 10.0).round() / 10.0),
+                        total_mb: Some((tot_mb * 10.0).round() / 10.0),
+                        speed_mbps: if p.speed_mbps > 0.05 {
+                            Some((p.speed_mbps * 100.0).round() / 100.0)
+                        } else {
+                            None
+                        },
+                    });
+                },
+            );
+            if matches!(prefetch_res, Err(crate::ai::fast_dl::FastDlError::Cancelled)) {
+                return Err(AiError::new("CANCELLED", "Đã hủy cài đặt mô hình."));
+            }
+        }
+
+        let uv_step_base = if did_prefetch {
+            prefetch_ceil
+        } else {
+            step_base
+        };
+
         let mut pip_cmd = Command::new(&uv_bin);
         configure_hidden_command(&mut pip_cmd);
         pip_cmd
             .arg("pip")
             .arg("install")
             .arg("--python")
-            .arg(&rt_python);
+            .arg(&rt_python)
+            .arg("--find-links")
+            .arg(&wheelhouse_dir);
         if let Some(idx_url) = &step.index_url {
             pip_cmd.arg("--index-url").arg(idx_url);
         }
@@ -1062,6 +1152,8 @@ where
             .env("UV_PYTHON_INSTALL_DIR", &uv_python_dir)
             .env("UV_CACHE_DIR", &uv_cache_dir)
             .env("UV_HTTP_TIMEOUT", "300")
+            .env("UV_CONCURRENT_DOWNLOADS", "16")
+            .env("UV_CONCURRENT_INSTALLS", "8")
             .env("PYTHONUTF8", "1");
 
         let pip_child = pip_cmd.spawn().map_err(|e| {
@@ -1076,8 +1168,8 @@ where
         let base_label = step.label.clone();
         run_monitored_child(pip_child, cancelled, current_pid, |line| {
             line_counter += 1;
-            let progress_ratio = (1.0 - (-0.06 * line_counter as f64).exp()).clamp(0.05, 0.94);
-            let cur_pct = step_base + (step_ceil - step_base) * progress_ratio;
+            let progress_ratio = (1.0 - (-0.06 * line_counter as f64).exp()).clamp(0.05, 0.96);
+            let cur_pct = uv_step_base + (step_ceil - uv_step_base) * progress_ratio;
             let detail = if line.starts_with("Prepared ")
                 || line.starts_with("Installed ")
                 || line.starts_with("Audited ")
@@ -1122,20 +1214,17 @@ where
     Ok(())
 }
 
-/// Returns `(engine, runtime)` bootstrap targets required on first launch so all hardware-supported
-/// AI engines have their Python/CUDA/CPU libraries configured before the user enters the studio.
-pub fn required_bootstrap_targets(has_nvidia_gpu: bool) -> Vec<(&'static str, &'static str)> {
-    if has_nvidia_gpu {
-        // Note: "omnivoice" in "core" installs BOTH `faster-whisper` + `ctranslate2` AND
-        // `torch==2.8.0+cu128` + `omnivoice`, covering all 4 Whisper ASR models + OmniVoice.
-        vec![
-            ("omnivoice", "core"),
-            ("chatterbox", "chatterbox"),
-            ("qwen", "qwen"),
-        ]
-    } else {
-        vec![("faster-whisper", "core")]
-    }
+/// Returns `(engine, runtime)` bootstrap targets required on first launch.
+///
+/// Strategy (Option A — Fast Studio Entry):
+/// First launch only bootstraps the lean `core` Whisper + audio DSP runtime (`faster-whisper` +
+/// `ctranslate2` + NVIDIA CUDA `cublas`/`cudnn` on GPU, or lightweight CPU runtime on non-NVIDIA PCs).
+/// Built-in Kokoro-82M & Online TTS work immediately, and heavy 3.3 GB PyTorch CUDA runtimes
+/// (`omnivoice`, `chatterbox`, `qwen`) are installed automatically on-demand via 16-stream
+/// segmented downloading only when the user chooses to install one of those optional Clone models
+/// in Settings -> Models (sharing `wheelhouse` & `uv-cache` across all 3 runtimes).
+pub fn required_bootstrap_targets(_has_nvidia_gpu: bool) -> Vec<(&'static str, &'static str)> {
+    vec![("faster-whisper", "core")]
 }
 
 pub fn check_bootstrap_status_with_hw(
@@ -1145,17 +1234,8 @@ pub fn check_bootstrap_status_with_hw(
 ) -> RuntimeBootstrapStatus {
     let mut missing = Vec::new();
     for (engine, runtime) in required_bootstrap_targets(hw.has_nvidia_gpu) {
-        let mut ok =
+        let ok =
             models::is_engine_runtime_installed(engine, runtime, app_data_dir, dev_sidecar_root);
-        if ok && engine == "omnivoice" && runtime == "core" {
-            // Also guarantee faster-whisper is present inside `core`
-            ok = models::is_engine_runtime_installed(
-                "faster-whisper",
-                "core",
-                app_data_dir,
-                dev_sidecar_root,
-            );
-        }
         if !ok {
             missing.push(runtime.to_string());
         }
@@ -1220,45 +1300,26 @@ where
         let targets: Vec<(&'static str, &'static str)> = required_bootstrap_targets(hw.has_nvidia_gpu)
             .into_iter()
             .filter(|(engine, runtime)| {
-                let mut ok = models::is_engine_runtime_installed(
+                !models::is_engine_runtime_installed(
                     engine,
                     runtime,
                     Some(app_data_dir),
                     dev_sidecar_root,
-                );
-                if ok && *engine == "omnivoice" && *runtime == "core" {
-                    ok = models::is_engine_runtime_installed(
-                        "faster-whisper",
-                        "core",
-                        Some(app_data_dir),
-                        dev_sidecar_root,
-                    );
-                }
-                !ok
+                )
             })
             .collect();
 
         let total_targets = targets.len().max(1);
         for (t_idx, (engine, runtime)) in targets.iter().enumerate() {
-            // Core downloads PyTorch (~60% of total time on fresh GPU install); subsequent runtimes hardlink from uv-cache quickly
-            let (span_start, span_end) = if total_targets == 3 {
-                match t_idx {
-                    0 => (2.0, 62.0),
-                    1 => (62.0, 80.0),
-                    _ => (80.0, 96.0),
-                }
-            } else {
-                let s = 2.0 + 94.0 * (t_idx as f64 / total_targets as f64);
-                let e = 2.0 + 94.0 * ((t_idx + 1) as f64 / total_targets as f64);
-                (s, e)
-            };
+            let s = 2.0 + 95.0 * (t_idx as f64 / total_targets as f64);
+            let e = 2.0 + 95.0 * ((t_idx + 1) as f64 / total_targets as f64);
 
             install_engine_runtime_only(
                 BOOTSTRAP_JOB_ID,
                 engine,
                 runtime,
                 hw.has_nvidia_gpu,
-                (span_start, span_end),
+                (s, e),
                 app_data_dir,
                 dev_sidecar_root,
                 sidecar_mgr,
@@ -1268,28 +1329,19 @@ where
             )?;
         }
 
-        // Prune compressed wheel archives from uv-cache to reclaim disk space while preserving NTFS hardlinks
-        if let Ok(uv_bin) = resolve_uv_binary(dev_sidecar_root) {
-            let uv_cache_dir = app_data_dir.join("scratch").join("uv-cache");
-            if uv_cache_dir.is_dir() {
-                emit(ModelInstallProgressEvent {
-                    model_id: BOOTSTRAP_JOB_ID.to_string(),
-                    status: "installing".to_string(),
-                    stage: "verifying".to_string(),
-                    pct: 98.0,
-                    message: "Đang tối ưu bộ nhớ đệm và hoàn tất cấu hình...".to_string(),
-                    downloaded_mb: None,
-                    total_mb: None,
-                    speed_mbps: None,
-                });
-                let mut prune_cmd = Command::new(uv_bin);
-                configure_hidden_command(&mut prune_cmd);
-                let _ = prune_cmd
-                    .args(["cache", "prune", "--ci"])
-                    .env("UV_CACHE_DIR", &uv_cache_dir)
-                    .status();
-            }
-        }
+        // Preserve `scratch/uv-cache` and `scratch/wheelhouse` so subsequent on-demand engine
+        // installs (OmniVoice, Chatterbox, Qwen3-TTS) reuse already-extracted wheels via NTFS
+        // hardlinks in seconds. Users can clear `scratch/` anytime via Settings -> General -> Cache.
+        emit(ModelInstallProgressEvent {
+            model_id: BOOTSTRAP_JOB_ID.to_string(),
+            status: "installing".to_string(),
+            stage: "verifying".to_string(),
+            pct: 98.0,
+            message: "Đang kiểm tra và hoàn tất cấu hình thư viện nền tảng...".to_string(),
+            downloaded_mb: None,
+            total_mb: None,
+            speed_mbps: None,
+        });
 
         let final_status = check_bootstrap_status_with_hw(&hw, Some(app_data_dir), dev_sidecar_root);
         if !final_status.ready {
@@ -1465,33 +1517,25 @@ mod tests {
             mode: "cpu".to_string(),
         };
 
-        // Fresh customer PC: not ready
+        // Fresh customer PC: both GPU and CPU require only lean `core` (`faster_whisper`) on first launch
         let st_gpu_0 = check_bootstrap_status_with_hw(&gpu_hw, Some(&tmp), None);
         assert!(!st_gpu_0.ready);
-        assert_eq!(st_gpu_0.missing_runtimes, vec!["core", "chatterbox", "qwen"]);
+        assert_eq!(st_gpu_0.missing_runtimes, vec!["core"]);
 
         let st_cpu_0 = check_bootstrap_status_with_hw(&cpu_hw, Some(&tmp), None);
         assert!(!st_cpu_0.ready);
         assert_eq!(st_cpu_0.missing_runtimes, vec!["core"]);
 
-        // Install only faster_whisper -> CPU PC becomes ready, GPU PC still needs omnivoice + chatterbox + qwen
+        // Installing `faster_whisper` into `core` makes BOTH CPU and GPU PCs ready immediately
+        // (heavy PyTorch Clone TTS runtimes install on-demand when the user selects a model in Settings)
         std::fs::create_dir_all(tmp.join("runtimes/core/Lib/site-packages/faster_whisper")).unwrap();
         let st_cpu_1 = check_bootstrap_status_with_hw(&cpu_hw, Some(&tmp), None);
         assert!(st_cpu_1.ready);
         assert!(st_cpu_1.missing_runtimes.is_empty());
 
         let st_gpu_1 = check_bootstrap_status_with_hw(&gpu_hw, Some(&tmp), None);
-        assert!(!st_gpu_1.ready);
-        assert_eq!(st_gpu_1.missing_runtimes, vec!["core", "chatterbox", "qwen"]);
-
-        // Install omnivoice, chatterbox, qwen markers -> GPU PC becomes 100% ready
-        std::fs::create_dir_all(tmp.join("runtimes/core/Lib/site-packages/omnivoice")).unwrap();
-        std::fs::create_dir_all(tmp.join("runtimes/chatterbox/Lib/site-packages/chatterbox")).unwrap();
-        std::fs::create_dir_all(tmp.join("runtimes/qwen/Lib/site-packages/qwen_tts")).unwrap();
-
-        let st_gpu_2 = check_bootstrap_status_with_hw(&gpu_hw, Some(&tmp), None);
-        assert!(st_gpu_2.ready);
-        assert!(st_gpu_2.missing_runtimes.is_empty());
+        assert!(st_gpu_1.ready);
+        assert!(st_gpu_1.missing_runtimes.is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -865,10 +865,17 @@ function LicenseStartupGate() {
                   <span className="inline-flex items-center gap-2 text-textPrimary font-medium min-w-0">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-accent shrink-0" />
                     <span className="truncate">
-                      {bootstrapProgress?.message || "Đang tải và cấu hình các thư viện cần thiết..."}
+                      {bootstrapProgress?.message || "Đang tải và cấu hình các thư viện nền tảng..."}
                     </span>
                   </span>
-                  <span className="font-mono font-bold text-accent shrink-0">{pct}%</span>
+                  <div className="inline-flex items-center gap-2 shrink-0">
+                    {bootstrapProgress?.speedMbps != null && bootstrapProgress.speedMbps > 0.05 && (
+                      <span className="px-1.5 py-0.5 rounded bg-accent/15 border border-accent/25 font-mono text-[11px] font-semibold text-accent">
+                        {bootstrapProgress.speedMbps.toFixed(1)} MB/s
+                      </span>
+                    )}
+                    <span className="font-mono font-bold text-accent">{pct}%</span>
+                  </div>
                 </div>
                 <div className="w-full h-2 bg-surface3 rounded-full overflow-hidden">
                   <div
@@ -876,11 +883,19 @@ function LicenseStartupGate() {
                     style={{ width: `${pct}%` }}
                   />
                 </div>
+                {bootstrapProgress?.downloadedMb != null && bootstrapProgress?.totalMb != null && bootstrapProgress.totalMb > 0 && (
+                  <div className="flex items-center justify-between text-[11px] font-mono text-textMuted">
+                    <span>Tải đa luồng song song</span>
+                    <span>
+                      {bootstrapProgress.downloadedMb.toFixed(0)} / {bootstrapProgress.totalMb.toFixed(0)} MB
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
             <div className="px-3.5 py-2.5 rounded-lg bg-accent/[0.06] border border-accent/20 text-[11px] text-textSecondary leading-relaxed">
-              Quá trình cấu hình thư viện chỉ diễn ra <strong className="text-textPrimary">một lần duy nhất</strong> khi mở ứng dụng lần đầu. Các mô hình AI dung lượng lớn (Whisper, OmniVoice, Chatterbox, Qwen3-TTS) sẽ không tự động tải mà do bạn chủ động tải thủ công trong mục <strong className="text-textPrimary">Cài đặt → Mô hình</strong>.
+              Hệ thống chỉ thiết lập <strong className="text-textPrimary">bộ thư viện nền tảng cốt lõi</strong> (tải đa luồng tốc độ cao, một lần duy nhất) để mở ứng dụng nhanh nhất. Các mô hình AI dung lượng lớn (Whisper, OmniVoice, Chatterbox, Qwen3-TTS) cùng thư viện chuyên biệt sẽ tự động tải khi bạn chọn trong mục <strong className="text-textPrimary">Cài đặt → Mô hình</strong>.
             </div>
 
             <div className="flex items-center justify-end gap-2.5 pt-1">

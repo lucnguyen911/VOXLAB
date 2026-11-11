@@ -1775,9 +1775,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                   </div>
                   <div className="flex items-center gap-2">
                     {modelsList.some(
-                      (m) =>
-                        m.runtimeInstalled === false &&
-                        (!m.requiresCuda || hardwareInfo.cudaAvailable)
+                      (m) => !m.requiresCuda && m.runtimeInstalled === false
                     ) && (
                       <button
                         type="button"
@@ -1786,7 +1784,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                         className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/15 hover:bg-accent text-accent hover:text-white rounded-lg border border-accent/30 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
                       >
                         <Download className="w-3 h-3" />
-                        <span>Cấu hình thư viện AI</span>
+                        <span>Cấu hình thư viện nền tảng</span>
                       </button>
                     )}
                     <button
@@ -1811,6 +1809,11 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                         </span>
                       </span>
                       <div className="flex items-center gap-2 shrink-0">
+                        {installProgress?.speedMbps != null && installProgress.speedMbps > 0.05 && (
+                          <span className="px-1.5 py-0.5 rounded bg-accent/15 border border-accent/25 font-mono text-[10px] font-semibold text-accent">
+                            {installProgress.speedMbps.toFixed(1)} MB/s
+                          </span>
+                        )}
                         <span className="font-mono text-accent font-semibold">
                           {Math.max(1, Math.min(100, Math.round(installProgress?.pct ?? 2)))}%
                         </span>
@@ -1970,9 +1973,16 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                                         <span className="text-textSecondary truncate">
                                           {installProgress?.message || "Đang xử lý cài đặt..."}
                                         </span>
-                                        <span className="font-mono text-accent font-semibold shrink-0">
-                                          {pct}%
-                                        </span>
+                                        <div className="inline-flex items-center gap-2 shrink-0">
+                                          {installProgress?.speedMbps != null && installProgress.speedMbps > 0.05 && (
+                                            <span className="px-1.5 py-0.5 rounded bg-accent/15 border border-accent/25 font-mono text-[10px] font-semibold text-accent">
+                                              {installProgress.speedMbps.toFixed(1)} MB/s
+                                            </span>
+                                          )}
+                                          <span className="font-mono text-accent font-semibold">
+                                            {pct}%
+                                          </span>
+                                        </div>
                                       </div>
                                       <div className="w-full h-1.5 bg-surface3 rounded-full overflow-hidden">
                                         <div
