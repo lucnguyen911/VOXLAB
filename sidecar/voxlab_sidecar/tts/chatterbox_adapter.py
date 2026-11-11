@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 from ..protocol import SidecarError
 from .base import (
@@ -83,6 +84,8 @@ def _split_chatterbox_text(text: str, max_chars: int = CHATTERBOX_MAX_CHARS_PER_
 
 
 def _trim_piece_edges(x: np.ndarray, sr: int, thr_db: float = -42.0, keep_ms: int = 30) -> np.ndarray:
+    import numpy as np
+
     hop = max(1, int(0.01 * sr))
     n = len(x) // hop
     if n == 0:
@@ -150,6 +153,8 @@ class ChatterboxAdapter(TtsEngineAdapter):
         return cuda_load_summary("float32", int(self._model.sr))
 
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
+        import numpy as np
+
         kwargs: dict[str, Any] = {"text": req.text}
         if req.ref_audio_path:
             _check_ref_duration(req.ref_audio_path)

@@ -142,6 +142,8 @@ COMMON_EQUIVALENTS: dict[str, set[str]] = {
     "plain": {"plain", "plane"},
     "plains": {"plains", "planes"},
     "main": {"main", "mane"},
+    "hour": {"hour", "our"},
+    "hours": {"hours", "ours"},
     # Physical unit abbreviations
     "kg": {"kg", "kilogram", "kilograms", "kilo", "kilos"},
     "km": {"km", "kilometer", "kilometers", "kilometre", "kilometres"},
@@ -2257,6 +2259,91 @@ def _collapse_acronym_letter_spans(
     return out_spans
 
 
+_LETTER_MULTIPLIERS: dict[str, int] = {
+    "double": 2,
+    "triple": 3,
+    "quadruple": 4,
+}
+
+
+def _collapse_multiplied_letter_spans(
+    spans: list[Any],
+    raw_tokens: list[str],
+    delimiters: list[str] | None = None,
+    counterpart_clean: set[str] | None = None,
+) -> list[Any]:
+    """Normalizes spelled-out multiplied letter expressions (e.g. 'Triple A' / 'Triple-A' -> 'aaa',
+    'Double A' -> 'aa', 'Triple B' -> 'bbb', 'Double U' -> 'w') into canonical spans so ASR acronym
+    formatting ('AAA', 'AA', 'BBB') aligns cleanly without false missing-word warnings.
+    """
+    from .number_normalizer import NormalizedSpan
+
+    if not spans:
+        return spans
+
+    out: list[Any] = []
+    idx = 0
+    n_spans = len(spans)
+    punct_strip = " .,!?;:—–-…()[]\"'“”„«»¿¡"
+
+    while idx < n_spans:
+        sp = spans[idx]
+        if not sp.is_number and (sp.orig_end - sp.orig_start) == 1 and sp.orig_start < len(raw_tokens):
+            raw_tok = str(raw_tokens[sp.orig_start]).strip(punct_strip)
+            # Single hyphenated token like 'Triple-A' or 'Double-B'
+            m_hyph = re.fullmatch(r"(double|triple|quadruple)-([A-Za-z])", raw_tok, flags=re.IGNORECASE)
+            if m_hyph:
+                mult_str, let_raw = m_hyph.group(1).lower(), m_hyph.group(2)
+                let_c = let_raw.lower()
+                canon = "w" if (mult_str == "double" and let_c == "u") else (let_c * _LETTER_MULTIPLIERS[mult_str])
+                if let_c not in ("a", "i") or let_raw.isupper() or raw_tok[0].isupper() or (
+                    counterpart_clean is not None and canon in counterpart_clean
+                ):
+                    out.append(NormalizedSpan(canon, sp.orig_start, sp.orig_end, False))
+                    idx += 1
+                    continue
+
+            c_mult = clean_word(raw_tok)
+            if (
+                c_mult in _LETTER_MULTIPLIERS
+                and (idx + 1) < n_spans
+                and not spans[idx + 1].is_number
+                and (spans[idx + 1].orig_end - spans[idx + 1].orig_start) == 1
+                and spans[idx + 1].orig_start == sp.orig_start + 1
+                and spans[idx + 1].orig_start < len(raw_tokens)
+            ):
+                next_orig = spans[idx + 1].orig_start
+                has_punct = (
+                    delimiters is not None
+                    and next_orig < len(delimiters)
+                    and has_punctuation_boundary(delimiters[next_orig], str(raw_tokens[next_orig]))
+                )
+                if not has_punct:
+                    next_raw = str(raw_tokens[next_orig]).strip(punct_strip)
+                    next_c = clean_word(next_raw)
+                    if c_mult == "double" and next_c in ("u", "you"):
+                        if next_raw[:1].isupper() or raw_tok[:1].isupper() or (
+                            counterpart_clean is not None and "w" in counterpart_clean
+                        ):
+                            out.append(NormalizedSpan("w", sp.orig_start, spans[idx + 1].orig_end, False))
+                            idx += 2
+                            continue
+                    elif len(next_c) == 1 and next_c.isalpha():
+                        canon = next_c * _LETTER_MULTIPLIERS[c_mult]
+                        # Guard lowercase verb + article ('can triple a company') unless ASR produced 'aaa'
+                        if next_c not in ("a", "i") or next_raw[:1].isupper() or raw_tok[:1].isupper() or (
+                            counterpart_clean is not None and canon in counterpart_clean
+                        ):
+                            out.append(NormalizedSpan(canon, sp.orig_start, spans[idx + 1].orig_end, False))
+                            idx += 2
+                            continue
+
+        out.append(sp)
+        idx += 1
+
+    return out
+
+
 def _evaluate_pronunciation_entry(
     pm: dict[str, Any],
     asr_words: list[dict[str, Any]],
@@ -3839,11 +3926,22 @@ EN_PHRASE_HEAD_WORDS = frozenset({
     "of", "to", "for", "with", "from", "by", "into", "onto", "at", "in", "on", "about", "between", "among",
     "through", "across", "toward", "towards", "without", "within", "during", "against", "per", "via", "than",
     "below", "above", "under", "beneath", "beyond", "inside", "outside", "behind", "near",
+    "after", "before", "since", "until", "over", "around", "upon", "despite", "including", "throughout",
+    "amid", "amidst", "unto",
     # auxiliaries / modals / copulas
     "will", "would", "can", "could", "should", "shall", "may", "might", "must",
     "is", "are", "was", "were", "be", "been", "being", "am", "has", "have", "had", "does", "did",
     # negation and coordinators (a pause belongs before 'and', never right after it)
     "not", "and", "or",
+})
+_EN_NP_PP_HEAD_WORDS = frozenset({
+    "the", "a", "an", "my", "your", "our", "their", "its", "his", "her", "this", "these", "those",
+    "every", "each", "another",
+    "of", "to", "for", "with", "from", "by", "into", "onto", "at", "in", "on", "about", "between", "among",
+    "through", "across", "toward", "towards", "without", "within", "during", "against", "per", "via",
+    "below", "above", "under", "beneath", "beyond", "inside", "outside", "behind", "near",
+    "after", "before", "since", "until", "over", "around", "upon", "despite", "including", "throughout",
+    "amid", "amidst", "unto",
 })
 VI_PHRASE_HEAD_WORDS = frozenset({
     # prepositions / relational words
@@ -3854,8 +3952,8 @@ VI_PHRASE_HEAD_WORDS = frozenset({
     # tense, aspect, modality, negation, degree
     "đã", "đang", "sẽ", "vừa", "mới", "sắp", "không", "chưa", "chẳng", "đừng", "hãy", "rất",
     "được", "bị", "phải", "cần", "muốn", "định", "có",
-    # copula / coordinator
-    "là", "và", "hoặc",
+    # copula / coordinator / complementizer (pause belongs before 'rằng', never right after it)
+    "là", "và", "hoặc", "rằng",
     # motion / light verbs that take an immediate complement ("đi chợ", "ra ngoài", "làm việc")
     "đi", "ra", "lên", "xuống", "sang", "làm",
 })
@@ -3866,6 +3964,8 @@ _PREPOSITION_OPENERS = frozenset({
     "of", "to", "for", "with", "from", "by", "into", "onto", "at", "in", "on", "about", "between",
     "among", "through", "across", "toward", "towards", "without", "within", "during", "against",
     "per", "via", "below", "above", "under", "beneath", "beyond", "inside", "outside", "behind", "near",
+    "after", "before", "since", "until", "over", "around", "upon", "despite", "including", "throughout",
+    "amid", "amidst", "unto",
     "của", "cho", "với", "ở", "tại", "từ", "đến", "tới", "về", "trong", "ngoài", "trên", "dưới",
     "bằng", "theo", "vào", "sau", "trước", "giữa", "qua",
 })
@@ -3914,6 +4014,8 @@ def _boundary_silence_run_sec(
     frame_sec = hop / sample_rate
     touch_lo = (end1 - 0.06 - win_start) / frame_sec
     touch_hi = (start2 + 0.06 - win_start) / frame_sec
+    touch_hi_shifted = (start2 + 0.16 - win_start) / frame_sec
+    w2_end_frame = min(len(silent), max(0, int(round((end2 + 0.05 - win_start) / frame_sec))))
     voiced_before = np.cumsum(~silent)
     best = 0
     k = 0
@@ -3926,8 +4028,13 @@ def _boundary_silence_run_sec(
         while k < n and silent[k]:
             k += 1
         spoke_first_word = run_start > 0 and voiced_before[run_start - 1] >= 4
-        if spoke_first_word and run_start <= touch_hi and k - 1 >= touch_lo:
-            best = max(best, k - run_start)
+        if spoke_first_word and k - 1 >= touch_lo:
+            if run_start <= touch_hi:
+                best = max(best, k - run_start)
+            elif run_start <= touch_hi_shifted and k < w2_end_frame:
+                voiced_after_in_w2 = int(voiced_before[w2_end_frame - 1] - voiced_before[k - 1])
+                if voiced_after_in_w2 >= 5:
+                    best = max(best, k - run_start)
     return round((best - 1) * hop / sample_rate + frame / sample_rate, 3) if best else 0.0
 
 
@@ -3935,6 +4042,195 @@ def _is_numeric_scope_word(word: str) -> bool:
     """Numbers, number words and currency/scale words: number reading is outside the QC scope."""
     w = clean_word(word)
     return bool(w) and (bool(re.search(r"\d", w)) or w in NUMERIC_SCOPE_WORDS)
+
+
+_NON_HEAD_NOUN_ADVERBS_AND_PARTICLES = frozenset({
+    "down", "up", "out", "off", "away", "back", "together", "apart", "alone",
+    "just", "even", "only", "still", "already", "almost", "quite", "rather", "enough", "indeed",
+    "ago", "aside", "ahead", "aloud", "alike", "ever", "never", "often", "always", "soon",
+    "once", "twice", "too", "yet", "far",
+})
+_PER_UNIT_MODIFIERS = frozenset({
+    "kilowatt", "megawatt", "gigawatt", "terawatt", "milliwatt",
+    "square", "cubic", "metric", "nautical", "fiscal", "calendar",
+    "working", "business", "single", "individual", "average", "additional", "extra",
+})
+_NON_PARTICIPLE_ING_WORDS = frozenset({
+    "during", "including", "according", "regarding", "concerning", "following", "pending",
+    "nothing", "something", "everything", "anything",
+    "morning", "evening", "ceiling", "building", "wedding", "meeting", "warning", "painting",
+    "clothing", "housing", "funding", "pricing", "shipping", "parking", "landing", "opening",
+    "ending", "beginning", "setting", "feeling", "lightning", "engineering", "manufacturing",
+    "marketing", "computing", "banking", "mining", "farming", "training", "testing",
+    "cooling", "heating", "charging", "steering", "braking", "wiring", "casting", "coating",
+})
+_ZERO_THAT_COMPLEMENT_HEADS = frozenset({
+    "show", "shows", "showed", "showing", "prove", "proves", "proved", "proving",
+    "reveal", "reveals", "revealed", "revealing", "confirm", "confirms", "confirmed", "confirming",
+    "indicate", "indicates", "indicated", "indicating", "demonstrate", "demonstrates", "demonstrated", "demonstrating",
+    "suggest", "suggests", "suggested", "suggesting", "mean", "means", "meant", "meaning",
+    "ensure", "ensures", "ensured", "ensuring", "claim", "claims", "claimed", "claiming",
+    "state", "states", "stated", "stating", "say", "says", "said", "saying",
+    "know", "knows", "knew", "knowing", "believe", "believes", "believed", "believing",
+    "assume", "assumes", "assumed", "assuming", "find", "finds", "found", "finding",
+    "see", "sees", "saw", "seeing", "hear", "hears", "heard", "hearing",
+    "notice", "notices", "noticed", "noticing", "realize", "realizes", "realized", "realizing",
+    "discover", "discovers", "discovered", "discovering", "estimate", "estimates", "estimated", "estimating",
+    "predict", "predicts", "predicted", "predicting", "expect", "expects", "expected", "expecting",
+    "think", "thinks", "thought", "thinking", "feel", "feels", "felt",
+})
+_PREVERBAL_ADVERBS = frozenset({
+    "already", "still", "never", "always", "often", "also", "soon", "now", "just", "only", "even",
+    "actually", "currently", "typically", "usually", "normally", "routinely", "quietly",
+    "simply", "merely", "nearly", "almost", "barely", "hardly", "rarely",
+})
+
+
+def _is_focus_adjunct_opener(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    right_idx: int,
+) -> bool:
+    """True when a focus adverb ('just', 'even', 'only', 'simply', 'merely') introduces a post-nominal
+    or post-clause participial / infinitival / prepositional adjunct (e.g. '...per mile | just owning a car').
+    """
+    if right_idx < 0 or right_idx + 1 >= len(src_clean):
+        return False
+    rw = src_clean[right_idx]
+    if rw not in ("just", "even", "only", "simply", "merely"):
+        return False
+    if has_punctuation_boundary(delimiters[right_idx + 1], source_words[right_idx + 1]):
+        return False
+    nxt = src_clean[right_idx + 1]
+    if not nxt:
+        return False
+    if nxt == "to" or nxt in PHRASE_OPENER_WORDS:
+        return True
+    if len(nxt) >= 5 and nxt.endswith("ing") and nxt not in _NON_PARTICIPLE_ING_WORDS:
+        return True
+    return False
+
+
+def _is_tight_np_pp_modifier_pair(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    idx: int,
+) -> bool:
+    """True for tight [Det/Prep] + AttributiveModifier + HeadNoun groups (e.g. 'at industrial | scale')
+    that must be read as a single breath unit, while excluding plural subjects, verbs, clauses, and openers.
+    """
+    if idx < 1 or idx + 1 >= len(src_clean):
+        return False
+    prev_w = src_clean[idx - 1]
+    left = src_clean[idx]
+    right = src_clean[idx + 1]
+    if prev_w not in _EN_NP_PP_HEAD_WORDS:
+        return False
+    if has_punctuation_boundary(delimiters[idx], source_words[idx]):
+        return False
+    if _is_numeric_scope_word(prev_w) or _is_numeric_scope_word(left) or _is_numeric_scope_word(right):
+        return False
+    # After 'per', a bare unit noun ('per mile', 'per year', 'per hour') already closes the PP;
+    # only multi-word unit modifiers ('per kilowatt | hour', 'per square | foot') chain into the next noun.
+    if prev_w == "per" and left not in _PER_UNIT_MODIFIERS:
+        return False
+    raw_left = source_words[idx].strip(" ,.;:!?\"'()")
+    raw_right = source_words[idx + 1].strip(" ,.;:!?\"'()")
+    if (raw_left and raw_left[0].isupper()) or (raw_right and raw_right[0].isupper()):
+        return False
+    if left in (
+        ENTITY_NON_PROPER_HEADS
+        | COMMON_FINITE_VERBS_AND_AUX
+        | CONSTITUENT_INITIAL_FUNCTION_WORDS
+        | PHRASE_OPENER_WORDS
+    ):
+        return False
+    if (len(left) >= 5 and left.endswith("ing")) or (
+        left.endswith("s") and not left.endswith(("ss", "ous", "is", "us"))
+    ):
+        return False
+    if right in (
+        ENTITY_NON_PROPER_HEADS
+        | CONSTITUENT_INITIAL_FUNCTION_WORDS
+        | COMMON_FINITE_VERBS_AND_AUX
+        | PHRASE_OPENER_WORDS
+        | _NON_HEAD_NOUN_ADVERBS_AND_PARTICLES
+    ):
+        return False
+    if len(right) >= 5 and right.endswith(("ing", "ed", "ly")):
+        return False
+    return True
+
+
+def _is_participle_complement_pair(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    idx: int,
+) -> bool:
+    """True when a verbal '-ing' participle/gerund is split from its immediate NP determiner complement
+    (e.g. 'data showing | the average American', 'just owning | a personal car').
+    """
+    if idx < 0 or idx + 1 >= len(src_clean):
+        return False
+    left = src_clean[idx]
+    right = src_clean[idx + 1]
+    if len(left) < 5 or not left.endswith("ing") or left in _NON_PARTICIPLE_ING_WORDS:
+        return False
+    # Exclude nominal '-ing' preceded by a determiner/possessive (e.g. 'the showing', 'his writing')
+    if idx > 0 and not has_punctuation_boundary(delimiters[idx], source_words[idx]):
+        if src_clean[idx - 1] in DET_AND_POSSESSIVE_SET:
+            return False
+    return right in (DET_AND_POSSESSIVE_SET - {"that"})
+
+
+def _is_zero_that_embedded_subject_predicate_split(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    idx: int,
+) -> bool:
+    """True when an unpunctuated pause cuts off a short embedded subject (1-4 words) from its predicate
+    inside a zero-'that' complement clause (e.g. 'showing the average American | already spends...'),
+    creating a garden-path break where the embedded subject sounds like a closed direct object.
+    """
+    if idx < 1 or idx + 1 >= len(src_clean):
+        return False
+    right = src_clean[idx + 1]
+
+    def _looks_like_finite_verb(tok: str) -> bool:
+        if not tok:
+            return False
+        if tok in COMMON_FINITE_VERBS_AND_AUX:
+            return True
+        return len(tok) >= 4 and tok.endswith("s") and not tok.endswith(("ss", "ous", "is", "us"))
+
+    predicate_starts = _looks_like_finite_verb(right) or (
+        (right in _PREVERBAL_ADVERBS or (len(right) >= 5 and right.endswith("ly")))
+        and idx + 2 < len(src_clean)
+        and not has_punctuation_boundary(delimiters[idx + 2], source_words[idx + 2])
+        and _looks_like_finite_verb(src_clean[idx + 2])
+    )
+    if not predicate_starts:
+        return False
+
+    complementizers = {
+        "that", "which", "who", "whom", "whose", "what", "where", "when", "whether", "if", "how", "why",
+    }
+    for k in range(idx, max(0, idx - 4), -1):
+        if has_punctuation_boundary(delimiters[k], source_words[k]):
+            return False
+        tok_k = src_clean[k]
+        if tok_k in complementizers or tok_k in MODAL_AND_AUX_VERBS:
+            return False
+        # Do not cross an earlier finite verb inside the candidate subject span
+        if k < idx and tok_k in LEXICAL_FINITE_VERBS and (k == 0 or src_clean[k - 1] not in DET_AND_POSSESSIVE_SET):
+            return False
+        if src_clean[k - 1] in _ZERO_THAT_COMPLEMENT_HEADS:
+            return True
+    return False
 
 
 def detect_phrase_internal_pauses(
@@ -3947,51 +4243,108 @@ def detect_phrase_internal_pauses(
 ) -> list[dict[str, Any]]:
     """Flags silences that split a word group which must be read together (head word + its complement).
 
-    Only word pairs that Whisper recognized exactly as in the script are evaluated, so alignment noise around
-    numbers, abbreviations or misread words never produces a pause warning. Silence is measured on the waveform.
+    Uses canonical number and multiplied-letter span alignment ('thirty' == '30', 'Triple A' == 'AAA')
+    so phrase boundaries adjacent to normalized spans remain aligned, while never flagging pauses inside
+    numbers themselves. Silence is measured directly on the waveform.
     """
     if audio_data is None or sample_rate <= 0 or not text or not asr_words:
         return []
     source_words, delimiters = tokenize_text_with_delimiters(text)
     src_clean = [clean_word(w) for w in source_words]
-    asr_clean = [clean_word(str(w.get("word", ""))) for w in asr_words]
+    asr_raw = [str(w.get("word", "")) for w in asr_words]
+    asr_clean = [clean_word(w) for w in asr_raw]
+    eff_lang = resolve_script_language(text, None)
+    src_spans = _collapse_multiplied_letter_spans(
+        collapse_number_tokens(source_words, eff_lang, delimiters=delimiters),
+        source_words,
+        delimiters=delimiters,
+        counterpart_clean=set(asr_clean),
+    )
+    asr_spans = _collapse_multiplied_letter_spans(
+        collapse_number_tokens(asr_raw, eff_lang),
+        asr_raw,
+        counterpart_clean=set(src_clean),
+    )
     eff_speed = max(0.5, float(speed or 1.0))
     threshold = max(0.22, min_pause_sec / eff_speed)
 
     issues: list[dict[str, Any]] = []
-    matcher = difflib.SequenceMatcher(None, src_clean, asr_clean, autojunk=False)
+    matcher = difflib.SequenceMatcher(
+        None,
+        [s.canonical for s in src_spans],
+        [a.canonical for a in asr_spans],
+        autojunk=False,
+    )
+    candidate_boundaries: list[tuple[int, int, bool, bool]] = []
     for block in matcher.get_matching_blocks():
-        for off in range(block.size - 1):
-            i, j = block.a + off, block.b + off
-            left, right = src_clean[i], src_clean[i + 1]
-            if not left or not right or left not in PHRASE_HEAD_WORDS or right in PHRASE_OPENER_WORDS:
-                continue
-            if has_punctuation_boundary(delimiters[i + 1], source_words[i + 1]):
-                continue
-            if _is_numeric_scope_word(left) or _is_numeric_scope_word(right):
-                continue
-            w1, w2 = asr_words[j], asr_words[j + 1]
-            if min(float(w1.get("probability", 1.0)), float(w2.get("probability", 1.0))) < 0.50:
-                continue
-            s1, e1 = float(w1.get("startSec", 0.0)), float(w1.get("endSec", 0.0))
-            s2, e2 = float(w2.get("startSec", 0.0)), float(w2.get("endSec", 0.0))
-            silence = _boundary_silence_run_sec(audio_data, sample_rate, s1, e1, s2, e2)
-            if silence < threshold:
-                continue
-            raw_left = source_words[i].strip(" ,.;:!?\"'()")
-            raw_right = source_words[i + 1].strip(" ,.;:!?\"'()")
-            issues.append({
-                "severity": "warning",
-                "code": "ABNORMAL_PAUSE",
-                "message": (
-                    f'Ngắt nghỉ bất thường giữa "{raw_left} {raw_right}" ({silence:.2f}s) — cụm này cần đọc liền '
-                    f"— khoảng {format_timestamp(e1)}. Vui lòng nghe lại."
-                ),
-                "words": [left, right],
-                "timeRange": [round(e1, 3), round(max(e1, s2), 3)],
-                "pauseContext": "phrase_internal",
-                "evidence": f"silence={silence:.3f}s threshold={threshold:.2f}s head={left}",
-            })
+        for off in range(block.size):
+            s_cur = src_spans[block.a + off]
+            a_cur = asr_spans[block.b + off]
+            s_len = s_cur.orig_end - s_cur.orig_start
+            a_len = a_cur.orig_end - a_cur.orig_start
+            if not s_cur.is_number and not a_cur.is_number and s_len >= 2 and s_len == a_len:
+                for sub in range(s_len - 1):
+                    candidate_boundaries.append((s_cur.orig_start + sub, a_cur.orig_start + sub, False, False))
+            if off + 1 < block.size:
+                s_right = src_spans[block.a + off + 1]
+                a_right = asr_spans[block.b + off + 1]
+                i_b = s_cur.orig_end - 1
+                j_b = a_cur.orig_end - 1
+                if s_right.orig_start == i_b + 1 and a_right.orig_start == j_b + 1:
+                    candidate_boundaries.append((i_b, j_b, s_cur.is_number, s_right.is_number))
+
+    for i, j, left_is_num, right_is_num in candidate_boundaries:
+        left, right = src_clean[i], src_clean[i + 1]
+        if not left or not right or right in PHRASE_OPENER_WORDS:
+            continue
+        if _is_focus_adjunct_opener(source_words, src_clean, delimiters, i + 1):
+            continue
+        if has_punctuation_boundary(delimiters[i + 1], source_words[i + 1]):
+            continue
+        if left_is_num or right_is_num or _is_numeric_scope_word(left) or _is_numeric_scope_word(right):
+            continue
+        is_head_pair = left in PHRASE_HEAD_WORDS
+        is_mod_noun_pair = (not is_head_pair) and _is_tight_np_pp_modifier_pair(
+            source_words, src_clean, delimiters, i
+        )
+        is_part_comp_pair = (not is_head_pair and not is_mod_noun_pair) and _is_participle_complement_pair(
+            source_words, src_clean, delimiters, i
+        )
+        is_embedded_subj_split = (
+            not is_head_pair and not is_mod_noun_pair and not is_part_comp_pair
+        ) and _is_zero_that_embedded_subject_predicate_split(source_words, src_clean, delimiters, i)
+        if not (is_head_pair or is_mod_noun_pair or is_part_comp_pair or is_embedded_subj_split):
+            continue
+        w1, w2 = asr_words[j], asr_words[j + 1]
+        if min(float(w1.get("probability", 1.0)), float(w2.get("probability", 1.0))) < 0.50:
+            continue
+        s1, e1 = float(w1.get("startSec", 0.0)), float(w1.get("endSec", 0.0))
+        s2, e2 = float(w2.get("startSec", 0.0)), float(w2.get("endSec", 0.0))
+        silence = _boundary_silence_run_sec(audio_data, sample_rate, s1, e1, s2, e2)
+        if silence < threshold:
+            continue
+        raw_left = source_words[i].strip(" ,.;:!?\"'()")
+        raw_right = source_words[i + 1].strip(" ,.;:!?\"'()")
+        if is_head_pair:
+            head_tag = left
+        elif is_mod_noun_pair:
+            head_tag = f"{src_clean[i - 1]}+{left}"
+        elif is_part_comp_pair:
+            head_tag = f"participle:{left}"
+        else:
+            head_tag = f"embedded_subj:{left}"
+        issues.append({
+            "severity": "warning",
+            "code": "ABNORMAL_PAUSE",
+            "message": (
+                f'Ngắt nghỉ bất thường giữa "{raw_left} {raw_right}" ({silence:.2f}s) — cụm này cần đọc liền '
+                f"— khoảng {format_timestamp(e1)}. Vui lòng nghe lại."
+            ),
+            "words": [left, right],
+            "timeRange": [round(e1, 3), round(max(e1, s2), 3)],
+            "pauseContext": "phrase_internal",
+            "evidence": f"silence={silence:.3f}s threshold={threshold:.2f}s head={head_tag}",
+        })
     return issues
 
 
@@ -4202,10 +4555,17 @@ def analyze_word_alignment_issues(
     source_words_clean = [clean_word(w) for w in source_words]
     asr_words_clean = [clean_word(w.get("word", "")) for w in asr_words]
 
-    # Normalize compound and digit number expressions into canonical spans
+    # Normalize compound and digit number expressions + multiplied-letter expressions ('Triple A' == 'AAA')
+    asr_raw_tokens = [str(w.get("word", "")) for w in asr_words]
     src_spans = collapse_number_tokens(source_words, language, delimiters=delimiters)
-    asr_spans = collapse_number_tokens([w.get("word", "") for w in asr_words], language)
+    src_spans = _collapse_multiplied_letter_spans(
+        src_spans, source_words, delimiters=delimiters, counterpart_clean=set(asr_words_clean)
+    )
+    asr_spans = collapse_number_tokens(asr_raw_tokens, language)
     asr_spans = _collapse_acronym_letter_spans(asr_spans, asr_words, eff_pron_mapping)
+    asr_spans = _collapse_multiplied_letter_spans(
+        asr_spans, asr_raw_tokens, counterpart_clean=set(source_words_clean)
+    )
     src_canonical = [s.canonical for s in src_spans]
     asr_canonical = [a.canonical for a in asr_spans]
 
@@ -5953,12 +6313,19 @@ def detect_acoustic_stutter(
 
     equal_asr_indices: set[int] = set()
     if text_words and asr_words_clean:
-        s_tokens = [s.canonical for s in collapse_number_tokens(text.split(), language)]
-        a_tokens = [a.canonical for a in collapse_number_tokens([w.get("word", "") for w in (asr_words or [])], language)]
-        matcher = difflib.SequenceMatcher(None, s_tokens, a_tokens)
+        raw_split = text.split()
+        raw_asr = [str(w.get("word", "")) for w in (asr_words or [])]
+        s_sp = _collapse_multiplied_letter_spans(
+            collapse_number_tokens(raw_split, language), raw_split, counterpart_clean=set(asr_words_clean)
+        )
+        a_sp = _collapse_multiplied_letter_spans(
+            collapse_number_tokens(raw_asr, language), raw_asr, counterpart_clean=set(text_words)
+        )
+        matcher = difflib.SequenceMatcher(None, [s.canonical for s in s_sp], [a.canonical for a in a_sp])
         for tag, s_i1, s_i2, a_j1, a_j2 in matcher.get_opcodes():
             if tag == "equal":
-                equal_asr_indices.update(range(a_j1, a_j2))
+                for a_item in a_sp[a_j1:a_j2]:
+                    equal_asr_indices.update(range(a_item.orig_start, a_item.orig_end))
 
     intentional_repeats = set()
     for idx in range(len(text_words) - 1):
@@ -6518,6 +6885,443 @@ def detect_acoustic_stutter(
             })
 
     return issues
+
+
+def verify_whisper_smoothed_stutters(
+    text: str,
+    asr_words: list[dict[str, Any]],
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    whisper_model: Any | None,
+    language: str | None = None,
+    slice_budget: list[int] | None = None,
+    secondary_reasons: list[str] | None = None,
+    pronunciation_mapping: list[dict[str, Any]] | None = None,
+    pronunciation_rules: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Two-tier stutter & garble verifier for words that full-sentence Whisper auto-corrected via LM context.
+
+    Tier 1 (Waveform Acoustic Gate):
+      - Trigger A: Intra-word / onset syllable restart where a matched word contains >= expected_syl + 1
+        voiced bursts separated by a deep silence dip (e.g. 'The da— day' smoothed to 'The day').
+      - Trigger B: Matched content word (len >= 4) with low confidence (< 0.55) or moderate confidence (< 0.80)
+        paired with abnormal stretching or an internal glottal voice cut (e.g. 'Test-la-ts' smoothed to "Tesla's").
+    Tier 2 (Isolated Context-Free Whisper Verification):
+      - Extracts only the active speech span of the candidate word (padded with clean digital silence so
+        surrounding sentence context cannot bias Whisper's decoder) and confirms SUSPECTED_STUTTER only when
+        isolated ASR hears a syllable stutter/repeat or a non-equivalent garble.
+    """
+    if (
+        whisper_model is None
+        or audio_data is None
+        or audio_data.size == 0
+        or sample_rate <= 0
+        or not text
+        or not asr_words
+    ):
+        return []
+    if slice_budget is not None and slice_budget[0] <= 0:
+        return []
+
+    mono = np.ascontiguousarray(audio_data, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    total_dur = mono.size / float(sample_rate)
+
+    source_words, _, source_char_spans = tokenize_text_with_spans(text)
+    source_words_clean = [clean_word(w) for w in source_words]
+    asr_words_clean = [clean_word(str(w.get("word", ""))) for w in asr_words]
+    if not source_words_clean or not asr_words_clean:
+        return []
+
+    intentional_repeats: set[str] = set()
+    for idx in range(len(source_words_clean) - 1):
+        if source_words_clean[idx] and source_words_clean[idx] == source_words_clean[idx + 1]:
+            intentional_repeats.add(source_words_clean[idx])
+
+    eff_pron_mapping: list[dict[str, Any]] = []
+    if pronunciation_mapping is not None:
+        eff_pron_mapping = list(pronunciation_mapping)
+    elif text.strip():
+        from .tts.service import prepare_spoken_text_for_tts
+        prep = prepare_spoken_text_for_tts(text, language=language, custom_rules=pronunciation_rules)
+        eff_pron_mapping = list(prep.get("pronunciationMapping", []))
+
+    pm_covered_src: set[int] = set()
+    for pm in eff_pron_mapping:
+        if pm.get("mode") not in ("letter_by_letter", "custom"):
+            continue
+        m_start = int(pm.get("startIndex", -1))
+        m_end = int(pm.get("endIndex", -1))
+        for idx, (ws, we) in enumerate(source_char_spans):
+            if ws < m_end and we > m_start:
+                pm_covered_src.add(idx)
+
+    matched_pairs: list[tuple[int, int]] = []
+    matcher = difflib.SequenceMatcher(None, source_words_clean, asr_words_clean, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for off in range(i2 - i1):
+                matched_pairs.append((i1 + off, j1 + off))
+        elif tag == "replace" and (i2 - i1) == (j2 - j1):
+            for off in range(i2 - i1):
+                sw_c, aw_c = source_words_clean[i1 + off], asr_words_clean[j1 + off]
+                if sw_c and aw_c and are_words_equivalent(sw_c, aw_c):
+                    matched_pairs.append((i1 + off, j1 + off))
+
+    # Precompute 25ms/10ms global RMS frames for burst similarity checks
+    frame_len = max(1, int(round(0.025 * sample_rate)))
+    hop_len = max(1, int(round(0.010 * sample_rate)))
+    if mono.size < frame_len * 2:
+        return []
+    num_frames = 1 + (mono.size - frame_len) // hop_len
+    frame_view = np.lib.stride_tricks.sliding_window_view(mono, frame_len)[::hop_len][:num_frames]
+    rms_frames = np.sqrt(np.mean(np.square(frame_view, dtype=np.float32), axis=1)).astype(np.float32)
+    global_peak_rms = float(np.max(rms_frames)) if rms_frames.size > 0 else 0.0
+    if global_peak_rms < 0.02:
+        return []
+    speech_thresh = max(0.015, global_peak_rms * 0.20)
+
+    def _burst_spec_and_formant(st_sample: int, en_sample: int) -> tuple[float, np.ndarray, np.ndarray]:
+        chunk = mono[max(0, st_sample):min(mono.size, en_sample)]
+        zcr_val = float(np.mean(np.abs(np.diff(np.signbit(chunk))))) if chunk.size > 1 else 0.0
+        if chunk.size < 64:
+            return zcr_val, np.zeros(32, dtype=np.float32), np.zeros(24, dtype=np.float32)
+        fft_mag = np.abs(np.fft.rfft(chunk * np.hanning(chunk.size)))
+        if fft_mag.size >= 32:
+            sub_len = fft_mag.size // 32
+            spec = np.array([np.mean(fft_mag[k * sub_len:(k + 1) * sub_len]) for k in range(32)], dtype=np.float32)
+        else:
+            spec = np.pad(fft_mag.astype(np.float32), (0, 32 - fft_mag.size))
+        s_norm = float(np.linalg.norm(spec))
+        spec = spec / s_norm if s_norm > 1e-6 else spec
+
+        freqs = np.fft.rfftfreq(chunk.size, d=1.0 / sample_rate)
+        f_mask = (freqs >= 240.0) & (freqs <= 4200.0)
+        f_mag = np.log1p(fft_mag[f_mask] * 50.0) if np.any(f_mask) else np.log1p(fft_mag)
+        if f_mag.size >= 24:
+            edges = np.linspace(0, f_mag.size, 25, dtype=int)
+            f_vec = np.array([np.mean(f_mag[edges[k]:edges[k + 1]]) for k in range(24)], dtype=np.float32)
+        else:
+            f_vec = np.pad(f_mag.astype(np.float32), (0, max(0, 24 - f_mag.size)))[:24]
+        f_vec = f_vec - float(np.mean(f_vec)) * 0.85
+        f_norm = float(np.linalg.norm(f_vec))
+        f_vec = f_vec / f_norm if f_norm > 1e-6 else f_vec
+        return zcr_val, spec, f_vec
+
+    # Tier 1: Collect acoustic anomaly candidates
+    candidates: list[dict[str, Any]] = []
+    for src_idx, asr_idx in matched_pairs:
+        sw = source_words_clean[src_idx]
+        aw = asr_words_clean[asr_idx]
+        if (
+            not sw
+            or len(sw) < 3
+            or sw in WEAK_CLITIC_ARTICLES
+            or sw in intentional_repeats
+            or src_idx in pm_covered_src
+            or _is_numeric_scope_word(sw)
+            or _is_numeric_scope_word(aw)
+        ):
+            continue
+        w_obj = asr_words[asr_idx]
+        if str(w_obj.get("word", "")).strip().startswith("-"):
+            continue
+        w_st = float(w_obj.get("startSec", 0.0))
+        w_en = float(w_obj.get("endSec", w_st))
+        w_dur = w_en - w_st
+        if w_dur <= 0.12:
+            continue
+        w_prob = float(w_obj.get("probability", 1.0))
+        expected_syl = _estimate_expected_syllables(sw)
+
+        # Locate active speech onset/offset inside [max(prev_en, w_st - 0.03), min(next_st - 0.01, w_en + 0.12)]
+        prev_en = float(asr_words[asr_idx - 1].get("endSec", 0.0)) if asr_idx > 0 else 0.0
+        next_st = (
+            float(asr_words[asr_idx + 1].get("startSec", total_dur)) - 0.01
+            if (asr_idx + 1) < len(asr_words)
+            else total_dur
+        )
+        search_t0 = max(0.0, max(prev_en, w_st - 0.03))
+        search_t1 = min(total_dur, min(max(w_en, next_st), w_en + 0.12))
+        f0 = max(0, int(round(search_t0 * sample_rate / hop_len)))
+        f1 = min(num_frames, int(round(search_t1 * sample_rate / hop_len)))
+        if f1 - f0 < 6:
+            continue
+
+        local_rms = rms_frames[f0:f1]
+        local_zcr = np.mean(np.abs(np.diff(np.signbit(frame_view[f0:f1]), axis=1)), axis=1)
+        local_peak = float(np.max(local_rms))
+        if local_peak < 0.015:
+            continue
+        active_mask = (local_rms >= max(0.014, local_peak * 0.18)) | ((local_rms >= 0.008) & (local_zcr >= 0.24))
+        active_idx = np.where(active_mask)[0]
+        if active_idx.size == 0:
+            continue
+        speech_onset = (f0 + int(active_idx[0])) * hop_len / float(sample_rate)
+        speech_offset = min(total_dur, ((f0 + int(active_idx[-1])) * hop_len + frame_len) / float(sample_rate))
+        active_span_dur = max(0.0, speech_offset - speech_onset)
+
+        # Trigger A: Double-burst voiced syllable restart inside the word span
+        trigger_a = False
+        best_burst_meta = ""
+        if active_span_dur >= (0.20 * expected_syl + 0.22):
+            local_bursts: list[dict[str, Any]] = []
+            in_b = False
+            b_st_i = f0
+            for fi in range(f0, f1):
+                if rms_frames[fi] >= speech_thresh:
+                    if not in_b:
+                        in_b = True
+                        b_st_i = fi
+                elif in_b:
+                    in_b = False
+                    bdur = (fi - b_st_i) * hop_len / float(sample_rate)
+                    if 0.04 <= bdur <= 0.36:
+                        z_v, sp_v, fm_v = _burst_spec_and_formant(b_st_i * hop_len, fi * hop_len + frame_len)
+                        if z_v < 0.22:
+                            local_bursts.append({
+                                "start_idx": b_st_i,
+                                "end_idx": fi,
+                                "peak_rms": float(np.max(rms_frames[b_st_i:fi])),
+                                "spec": sp_v,
+                                "formant": fm_v,
+                            })
+            if in_b:
+                bdur = (f1 - b_st_i) * hop_len / float(sample_rate)
+                if 0.04 <= bdur <= 0.36:
+                    z_v, sp_v, fm_v = _burst_spec_and_formant(b_st_i * hop_len, f1 * hop_len + frame_len)
+                    if z_v < 0.22:
+                        local_bursts.append({
+                            "start_idx": b_st_i,
+                            "end_idx": f1,
+                            "peak_rms": float(np.max(rms_frames[b_st_i:f1])),
+                            "spec": sp_v,
+                            "formant": fm_v,
+                        })
+            if len(local_bursts) >= expected_syl + 1:
+                for bi in range(len(local_bursts) - 1):
+                    lb1, lb2 = local_bursts[bi], local_bursts[bi + 1]
+                    val_sec = (lb2["start_idx"] - lb1["end_idx"]) * hop_len / float(sample_rate)
+                    if not (0.015 <= val_sec <= 0.28):
+                        continue
+                    gap_r = rms_frames[lb1["end_idx"]:lb2["start_idx"]]
+                    if gap_r.size == 0:
+                        continue
+                    min_gap = float(np.min(gap_r))
+                    min_pk = min(lb1["peak_rms"], lb2["peak_rms"])
+                    cos_s = float(np.dot(lb1["spec"], lb2["spec"]))
+                    f_s = float(np.dot(lb1["formant"], lb2["formant"]))
+                    if min_gap <= 0.18 * min_pk and cos_s >= 0.90 and f_s >= 0.86:
+                        trigger_a = True
+                        best_burst_meta = f"double_burst cos={cos_s:.2f} formant={f_s:.2f} valley={val_sec:.2f}s"
+                        break
+
+        # Trigger B: Low/moderate-confidence stretched or glottal-cut content word
+        trigger_b = False
+        vcut_sec = 0.0
+        if len(sw) >= 4 and not trigger_a:
+            if w_prob < 0.55:
+                trigger_b = True
+            elif w_prob < 0.80:
+                vcut_sec = _voice_cut_sec(mono, sample_rate, speech_onset + 0.05, speech_offset - 0.03, threshold=0.004)
+                if (
+                    active_span_dur >= max(0.56, 0.28 * expected_syl + 0.10)
+                    or w_dur >= max(0.72, 0.34 * expected_syl + 0.24)
+                    or vcut_sec >= 0.045
+                ):
+                    trigger_b = True
+
+        if trigger_a or trigger_b:
+            candidates.append({
+                "priority": (0 if trigger_a else 1, w_prob),
+                "src_idx": src_idx,
+                "asr_idx": asr_idx,
+                "sw": sw,
+                "w_st": w_st,
+                "w_en": w_en,
+                "w_prob": w_prob,
+                "speech_onset": speech_onset,
+                "speech_offset": speech_offset,
+                "expected_syl": expected_syl,
+                "trigger_a": trigger_a,
+                "meta": best_burst_meta if trigger_a else f"stretched_or_cut prob={w_prob:.2f} vcut={vcut_sec:.3f}s",
+            })
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda c: c["priority"])
+    verified_issues: list[dict[str, Any]] = []
+    lang_code = None if not language or language == "auto" else language
+
+    import tempfile
+    import soundfile as sf
+
+    for cand in candidates:
+        if slice_budget is not None and slice_budget[0] <= 0:
+            break
+        src_idx = cand["src_idx"]
+        sw = cand["sw"]
+        speech_onset = float(cand["speech_onset"])
+        speech_offset = float(cand["speech_offset"])
+        w_en = float(cand["w_en"])
+        t_clip0 = max(0.0, speech_onset - 0.06)
+        t_clip1 = min(total_dur, max(w_en, speech_offset) + 0.12)
+        s0 = max(0, int(round(t_clip0 * sample_rate)))
+        s1 = min(mono.size, int(round(t_clip1 * sample_rate)))
+        if s1 - s0 < int(0.15 * sample_rate):
+            continue
+
+        pad = np.zeros(int(0.18 * sample_rate), dtype=np.float32)
+        isolated_clip = np.concatenate([pad, mono[s0:s1], pad])
+
+        if slice_budget is not None:
+            slice_budget[0] -= 1
+        if secondary_reasons is not None:
+            secondary_reasons.append(f"stutter_slice:{sw}")
+
+        fd, tmp_slice_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        slice_words: list[tuple[str, str, float]] = []
+        try:
+            sf.write(tmp_slice_path, isolated_clip, sample_rate, subtype="PCM_16")
+            try:
+                seg_iter, _ = whisper_model.transcribe(
+                    tmp_slice_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=False,
+                    condition_on_previous_text=False,
+                )
+            except TypeError:
+                seg_iter, _ = whisper_model.transcribe(
+                    tmp_slice_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=False,
+                )
+            slice_words = [
+                (str(w.word).strip(), clean_word(str(w.word)), float(getattr(w, "probability", 0.8)))
+                for seg in seg_iter
+                for w in (getattr(seg, "words", None) or [])
+                if getattr(w, "word", None) and clean_word(str(w.word))
+            ]
+        except Exception:
+            continue
+        finally:
+            if os.path.exists(tmp_slice_path):
+                try:
+                    os.remove(tmp_slice_path)
+                except Exception:
+                    pass
+
+        if not slice_words:
+            continue
+
+        prev_src = source_words_clean[src_idx - 1] if src_idx > 0 else ""
+        next_src = source_words_clean[src_idx + 1] if (src_idx + 1) < len(source_words_clean) else ""
+
+        def _is_neighbor_bleed(tok_c: str, neighbor_c: str) -> bool:
+            if not neighbor_c or not tok_c:
+                return False
+            if are_words_equivalent(tok_c, neighbor_c) or _is_minor_word_variant(tok_c, neighbor_c):
+                return True
+            if _is_numeric_scope_word(neighbor_c) and _is_numeric_scope_word(tok_c):
+                return True
+            return False
+
+        # Trim edge neighbor bleed tokens (e.g. trailing '20' from preceding '2020')
+        trimmed_slice = list(slice_words)
+        if len(trimmed_slice) >= 2 and _is_neighbor_bleed(trimmed_slice[0][1], prev_src):
+            trimmed_slice = trimmed_slice[1:]
+        if len(trimmed_slice) >= 2 and _is_neighbor_bleed(trimmed_slice[-1][1], next_src):
+            trimmed_slice = trimmed_slice[:-1]
+        if not trimmed_slice:
+            continue
+
+        # Step 1: Explicit syllable restart / duplicate inside the isolated slice (e.g. 'Da -day', 'day day')
+        confirmed_stutter = False
+        for idx_s in range(len(trimmed_slice) - 1):
+            raw_a, cln_a, _ = trimmed_slice[idx_s]
+            raw_b, cln_b, _ = trimmed_slice[idx_s + 1]
+            if cln_a == cln_b:
+                confirmed_stutter = True
+                break
+            if len(cln_a) >= 2 and sw.startswith(cln_a) and (
+                are_words_equivalent(sw, cln_b) or raw_b.startswith("-")
+            ):
+                confirmed_stutter = True
+                break
+            if len(cln_b) >= 2 and sw.endswith(cln_b) and are_words_equivalent(sw, cln_a):
+                confirmed_stutter = True
+                break
+        if (
+            not confirmed_stutter
+            and cand["trigger_a"]
+            and cand["expected_syl"] == 1
+            and len(trimmed_slice) >= 2
+            and any(are_words_equivalent(sw, c_tok) for _, c_tok, _ in trimmed_slice)
+        ):
+            confirmed_stutter = True
+
+        # Step 2: Clear candidate if isolated slice cleanly recognizes the target word without stutter
+        if not confirmed_stutter:
+            joined_clean = "".join(c_tok for _, c_tok, _ in trimmed_slice)
+            if len(trimmed_slice) >= 2 and (
+                are_words_equivalent(sw, joined_clean) or _is_minor_word_variant(sw, joined_clean)
+            ):
+                continue
+            matched_cleanly = False
+            for _, cln_cand, p_cand in trimmed_slice:
+                if p_cand < 0.20:
+                    continue
+                if (
+                    are_words_equivalent(sw, cln_cand)
+                    or _is_minor_word_variant(sw, cln_cand)
+                    or phonetic_key(sw) == phonetic_key(cln_cand)
+                    or cln_cand in (sw + "s", sw + "d", sw + "ed")
+                    or sw in (cln_cand + "s", cln_cand + "d", cln_cand + "ed")
+                    or (prev_src and cln_cand == prev_src + sw)
+                    or (next_src and cln_cand == sw + next_src)
+                ):
+                    matched_cleanly = True
+                    break
+            if matched_cleanly:
+                continue
+
+            # Step 3: Isolated slice heard a non-equivalent garble / multi-word distortion (e.g. 'test lists' for "Tesla's")
+            max_slice_prob = max(p_c for _, _, p_c in trimmed_slice)
+            if max_slice_prob < 0.30:
+                continue
+
+        obs_phrase = " ".join(
+            re.sub(r"^[^\w\u00C0-\u1EF9-]+|[^\w\u00C0-\u1EF9]+$", "", r_tok) or c_tok
+            for r_tok, c_tok, _ in trimmed_slice
+        ).strip()
+        src_display = source_words[src_idx].strip(" ,.;:!?\"'()") or sw
+        t_issue_start = round(speech_onset, 3)
+        t_issue_end = round(max(w_en, speech_offset), 3)
+        ts = format_timestamp(t_issue_start)
+        verified_issues.append({
+            "severity": "warning",
+            "code": "SUSPECTED_STUTTER",
+            "message": (
+                f'Nghi vấn vấp âm hoặc phát âm méo tại từ "{src_display}" '
+                f'(tách riêng nghe thành "{obs_phrase}") — khoảng {ts}. Vui lòng nghe lại.'
+            ),
+            "words": [sw],
+            "timeRange": [t_issue_start, t_issue_end],
+            "sourceExcerpt": src_display,
+            "asrRawExcerpt": obs_phrase,
+            "asrNormalizedExcerpt": " ".join(c_tok for _, c_tok, _ in trimmed_slice),
+            "tokenSource": "secondary_slice_asr",
+            "evidence": f"{cand['meta']}; isolated_asr='{obs_phrase}'",
+        })
+
+    return verified_issues
 
 
 
@@ -7164,7 +7968,11 @@ def validate_audio_quality(
                 "asrModelId": active_model_id,
             }
 
-        shared_slice_budget = [CORE_SECONDARY_SLICE_CHECKS]
+        dynamic_core_budget = max(
+            CORE_SECONDARY_SLICE_CHECKS + 1,
+            min(5, 1 + int(np.ceil(max(1.0, dur) / 10.0))),
+        )
+        shared_slice_budget = [dynamic_core_budget]
         shared_secondary_reasons: list[str] = []
 
         # Reuse waveform loaded during validate_audio_file (zero redundant disk reads)
@@ -7216,10 +8024,8 @@ def validate_audio_quality(
             core_scope=True,
         )
         t_align_ms = round((time.perf_counter() - t_align0) * 1000.0, 2)
-        metrics["secondaryWhisperCalls"] = max(0, CORE_SECONDARY_SLICE_CHECKS - int(shared_slice_budget[0]))
-        metrics["secondaryWhisperReasons"] = list(shared_secondary_reasons)
 
-        # Step 3: Acoustic Stutter Check (waveform + ASR corroboration)
+        # Step 3: Acoustic Stutter Check (waveform + ASR corroboration + isolated slice verification)
         t_stut0 = time.perf_counter()
         if data_wave is not None and sr_wave > 0:
             try:
@@ -7235,7 +8041,25 @@ def validate_audio_quality(
                 alignment_issues.extend(acoustic_stutters)
             except Exception as st_err:
                 log(f"[audio_quality] Acoustic stutter check error: {st_err}")
+            try:
+                smoothed_stutters = verify_whisper_smoothed_stutters(
+                    text=text,
+                    asr_words=detected_words,
+                    audio_data=data_wave,
+                    sample_rate=sr_wave,
+                    whisper_model=whisper_model,
+                    language=eff_language,
+                    slice_budget=shared_slice_budget,
+                    secondary_reasons=shared_secondary_reasons,
+                    pronunciation_mapping=pronunciation_mapping,
+                    pronunciation_rules=pronunciation_rules,
+                )
+                alignment_issues.extend(smoothed_stutters)
+            except Exception as sm_err:
+                log(f"[audio_quality] Smoothed stutter slice check error: {sm_err}")
         t_stut_ms = round((time.perf_counter() - t_stut0) * 1000.0, 2)
+        metrics["secondaryWhisperCalls"] = max(0, dynamic_core_budget - int(shared_slice_budget[0]))
+        metrics["secondaryWhisperReasons"] = list(shared_secondary_reasons)
 
         # Intra-word pause / broken-syllable detection is outside the core defect scope (v3.5.0) and is skipped.
         # The legacy prosody analyzer's pause findings are discarded here by the core-scope reduction.

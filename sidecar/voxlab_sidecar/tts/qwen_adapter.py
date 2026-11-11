@@ -5,9 +5,10 @@ zero-shot voice cloning, so a reference clip and its transcript are mandatory.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 from ..protocol import SidecarError
 from .base import (
@@ -91,6 +92,8 @@ class QwenTtsAdapter(TtsEngineAdapter):
         return cuda_load_summary("bfloat16", 24000)
 
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
+        import numpy as np
+
         language = LANGUAGE_NAMES.get(req.language, "Auto") if req.language else "Auto"
         kwargs: dict[str, Any] = {}
         extra = req.extra or {}

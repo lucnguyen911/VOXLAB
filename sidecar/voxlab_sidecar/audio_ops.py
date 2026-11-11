@@ -32,13 +32,27 @@ def _read_mono(path: str) -> tuple[np.ndarray, int]:
     return data.mean(axis=1), int(sr)
 
 
+def _resample_numpy_fallback(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
+    if sr_from == sr_to or x.size == 0:
+        return x.astype(np.float32, copy=False)
+    n_out = max(1, int(round(x.shape[0] * float(sr_to) / float(sr_from))))
+    if x.shape[0] == 1:
+        return np.repeat(x.astype(np.float32), n_out)
+    t_old = np.linspace(0.0, 1.0, num=x.shape[0], endpoint=False, dtype=np.float64)
+    t_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False, dtype=np.float64)
+    return np.interp(t_new, t_old, x).astype(np.float32)
+
+
 def _resample(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
     if sr_from == sr_to or x.size == 0:
         return x
-    from scipy.signal import resample_poly
+    try:
+        from scipy.signal import resample_poly
 
-    g = math.gcd(sr_from, sr_to)
-    return resample_poly(x, sr_to // g, sr_from // g).astype(np.float32)
+        g = math.gcd(sr_from, sr_to)
+        return resample_poly(x, sr_to // g, sr_from // g).astype(np.float32)
+    except ImportError:
+        return _resample_numpy_fallback(x, sr_from, sr_to)
 
 
 def apply_clarity_time_stretch(audio: np.ndarray, sr: int, rate: float = 0.95) -> np.ndarray:

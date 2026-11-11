@@ -61,9 +61,21 @@ def system_info(runtime: str, asr, tts: TtsService) -> dict:
 
             m = _MEM()
             m.dwLength = ctypes.sizeof(_MEM)
+            usable_mb = 0
             if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
-                info["ramTotalMb"] = int(m.ullTotalPhys // (1024 * 1024))
+                usable_mb = int(m.ullTotalPhys // (1024 * 1024))
+                info["ramUsableMb"] = usable_mb
+                info["ramTotalMb"] = usable_mb
                 info["ramFreeMb"] = int(m.ullAvailPhys // (1024 * 1024))
+
+            installed_kb = ctypes.c_ulonglong(0)
+            if ctypes.windll.kernel32.GetPhysicallyInstalledSystemMemory(
+                ctypes.byref(installed_kb)
+            ):
+                installed_mb = int(installed_kb.value // 1024)
+                if installed_mb >= usable_mb and installed_mb > 0:
+                    info["ramInstalledMb"] = installed_mb
+                    info["ramTotalMb"] = installed_mb
     except Exception:
         pass
 

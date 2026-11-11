@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   evaluateRecommendedAsrModel,
+  formatInstalledRamGb,
   HardwareProfile,
 } from "../hardwareRecommendation";
 
@@ -92,5 +93,13 @@ describe("Hardware-based ASR Recommendation Suite", () => {
       vramTotalMb: 2999,
     };
     assert.equal(evaluateRecommendedAsrModel(boundaryLow).recommendedModel, "small");
+  });
+
+  it("normalizes OS usable RAM (after BIOS/iGPU/NPU Hardware Reserved) to physical installed RAM GB", () => {
+    assert.equal(formatInstalledRamGb(32768), 32);
+    assert.equal(formatInstalledRamGb(31850), 32); // 31.1 GB usable on 32 GB Intel Core Ultra PC
+    assert.equal(formatInstalledRamGb(15900), 16); // 15.5 GB usable on 16 GB PC
+    assert.equal(formatInstalledRamGb(7900), 8);   // 7.7 GB usable on 8 GB PC
+    assert.equal(formatInstalledRamGb(65536), 64);
   });
 });

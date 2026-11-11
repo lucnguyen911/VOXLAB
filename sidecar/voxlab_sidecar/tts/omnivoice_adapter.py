@@ -1,11 +1,12 @@
 """OmniVoice adapter (k2-fsa/OmniVoice). Runtime: `core`."""
 from __future__ import annotations
 
-from typing import Any
-
-import numpy as np
-
 import os
+import sys
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np
 from ..protocol import SidecarError
 from .base import (
     Capabilities,
@@ -42,6 +43,11 @@ def _find_default_sample() -> str | None:
         p = os.path.join(appdata, "com.voxlab.app", "voices", "samples", "default_local.mp3")
         if os.path.isfile(p):
             return p
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        frozen_p = os.path.join(exe_dir, "models", "default_local.mp3")
+        if os.path.isfile(frozen_p):
+            return frozen_p
     base = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "public", "audio", "samples", "default_local.mp3")
     )
@@ -101,6 +107,7 @@ class OmniVoiceAdapter(TtsEngineAdapter):
         return cuda_load_summary("float16", int(self._model.sampling_rate))
 
     def synthesize(self, req: SynthesisRequest) -> tuple[np.ndarray, int]:
+        import numpy as np
         import torch
 
         kwargs: dict[str, Any] = {"text": req.text}

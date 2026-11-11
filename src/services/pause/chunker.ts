@@ -4,9 +4,42 @@ import { buildRuleRegex, getEffectiveRules, PronunciationRule } from "../pronunc
 
 export interface SmartChunkOptions {
   targetSentences?: number; // default: 3
-  hardMaxChars?: number;    // default: 600
+  softMaxChars?: number;    // optional multi-sentence merge budget (spoken-char estimate, keeps chunks <30s)
+  hardMaxChars?: number;    // default: 600 (single-sentence emergency split limit)
   pronunciationRules?: PronunciationRule[];
   projectId?: string;
+}
+
+/**
+ * Adaptive TTS chunking preset tuned for neural TTS prosody & OmniVoice's 30s acoustic window:
+ * - Groups up to 4 short sentences together so cross-sentence context & emotion flow naturally.
+ * - Caps multi-sentence merging at ~340 spoken characters (~20-24s audio, safely <30s) so long
+ *   sentences automatically form 1-2 sentence chunks without hidden internal comma-splitting.
+ * - Preserves single sentences up to 600 chars intact unless an emergency clause split is required.
+ */
+export const TTS_SMART_CHUNK_OPTIONS: Readonly<SmartChunkOptions> = {
+  targetSentences: 4,
+  softMaxChars: 340,
+  hardMaxChars: 600,
+};
+
+/**
+ * Estimates spoken character length so numeric/currency/symbol-heavy sentences
+ * (e.g. "$58", "2020", "4680", "13.5%") are budgeted closer to their actual spoken duration.
+ */
+export function estimateSpokenCharLength(text: string): number {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+
+  let extraChars = 0;
+  for (const ch of trimmed) {
+    if (ch >= "0" && ch <= "9") {
+      extraChars += 4;
+    } else if (ch === "$" || ch === "€" || ch === "£" || ch === "¥" || ch === "₫" || ch === "%") {
+      extraChars += 7;
+    }
+  }
+  return trimmed.length + extraChars;
 }
 
 /**
@@ -246,30 +279,36 @@ export function splitParagraphIntoSentences(paragraph: string): string[] {
  */
 export function calculateBalancedSentenceCounts(totalSentences: number, target = 3): number[] {
   if (totalSentences <= 0) return [];
+  if (target <= 1) return Array(totalSentences).fill(1);
   if (totalSentences <= target) return [totalSentences];
 
+  const fullCount = Math.floor(totalSentences / target);
   const remainder = totalSentences % target;
   if (remainder === 0) {
-    return Array(totalSentences / target).fill(target);
+    return Array(fullCount).fill(target);
   }
-  if (remainder === 2) {
-    const threeCount = Math.floor(totalSentences / target);
-    return [...Array(threeCount).fill(target), 2];
+  if (target === 2) {
+    return [...Array(fullCount).fill(2), 1];
   }
-  // remainder === 1: partition tail into two 2-sentence chunks (e.g. 4 -> [2, 2], 7 -> [3, 2, 2])
-  const threeCount = Math.floor(totalSentences / target) - 1;
-  return [...Array(threeCount).fill(target), 2, 2];
+  if (remainder >= 2) {
+    return [...Array(fullCount).fill(target), remainder];
+  }
+  // remainder === 1 (target >= 3): borrow 1 sentence from the preceding group so no singleton tail exists
+  // e.g. target=3: 4 -> [2, 2], 7 -> [3, 2, 2]; target=4: 5 -> [3, 2], 9 -> [4, 3, 2]
+  return [...Array(fullCount - 1).fill(target), target - 1, 2];
 }
 
 /**
  * Groups sentences belonging to the same paragraph / pause segment into smart chunks.
- * Target: ~3 sentences per chunk with balanced tail chunking (avoids single-sentence tail when safe).
- * Hard max: 600 characters per chunk (higher priority than target count).
+ * Target: ~3-4 sentences per chunk with balanced tail chunking (avoids single-sentence tail when safe).
+ * Soft max (optional): multi-sentence merge budget in spoken characters (~340 chars -> <25s audio).
+ * Hard max: 600 characters per chunk for single-sentence emergency splitting.
  */
 export function groupSentencesIntoChunks(
   sentences: string[],
   targetSentences = 3,
-  hardMax = 600
+  hardMax = 600,
+  softMax?: number
 ): string[] {
   // 1. Pre-split any individual sentence longer than hardMax
   const flatSentences: string[] = [];
@@ -283,7 +322,12 @@ export function groupSentencesIntoChunks(
 
   if (flatSentences.length === 0) return [];
 
-  // Helper to test if a planned partition is valid under hardMax
+  const hasSoftBudget = typeof softMax === "number" && softMax > 0;
+  const mergeBudget = hasSoftBudget ? Math.min(softMax, hardMax) : hardMax;
+  const measureMergeLen = (text: string): number =>
+    hasSoftBudget ? estimateSpokenCharLength(text) : text.length;
+
+  // Helper to test if a planned partition is valid under hardMax and multi-sentence softMax
   const tryPartition = (counts: number[]): string[] | null => {
     const result: string[] = [];
     let idx = 0;
@@ -292,6 +336,9 @@ export function groupSentencesIntoChunks(
       const text = group.join(" ");
       if (text.length > hardMax) {
         return null; // Exceeds hardMax
+      }
+      if (count > 1 && measureMergeLen(text) > mergeBudget) {
+        return null; // Multi-sentence group exceeds safe spoken duration budget
       }
       result.push(text);
       idx += count;
@@ -306,18 +353,17 @@ export function groupSentencesIntoChunks(
     return balancedResult;
   }
 
-  // 3. Fallback: Dynamic greedy grouping when balanced distribution exceeds hardMax
+  // 3. Fallback: Dynamic greedy grouping when balanced distribution exceeds mergeBudget / hardMax
   const chunks: string[] = [];
   let currentGroup: string[] = [];
-  let currentLen = 0;
 
   for (const sent of flatSentences) {
-    const sentLen = sent.length;
+    const candidateText = currentGroup.length > 0 ? `${currentGroup.join(" ")} ${sent}` : sent;
 
-    // Check if adding this sentence to currentGroup would exceed hardMax
+    // Check if adding this sentence to currentGroup would exceed mergeBudget or hardMax
     const wouldExceedMax =
       currentGroup.length > 0 &&
-      currentLen + 1 + sentLen > hardMax;
+      (candidateText.length > hardMax || measureMergeLen(candidateText) > mergeBudget);
 
     const reachedTarget = currentGroup.length >= targetSentences;
 
@@ -325,12 +371,10 @@ export function groupSentencesIntoChunks(
       if (currentGroup.length > 0) {
         chunks.push(currentGroup.join(" "));
         currentGroup = [];
-        currentLen = 0;
       }
     }
 
     currentGroup.push(sent);
-    currentLen = currentGroup.join(" ").length;
   }
 
   if (currentGroup.length > 0) {
@@ -353,7 +397,12 @@ export function groupSentencesIntoChunks(
       const newPrevText = newPrevSentences.join(" ");
       const newLastText = newLastSentences.join(" ");
 
-      if (newPrevText.length <= hardMax && newLastText.length <= hardMax) {
+      const withinHardMax = newPrevText.length <= hardMax && newLastText.length <= hardMax;
+      const withinSoftBudget =
+        (!hasSoftBudget || newPrevSentences.length <= 1 || measureMergeLen(newPrevText) <= mergeBudget) &&
+        (!hasSoftBudget || newLastSentences.length <= 1 || measureMergeLen(newLastText) <= mergeBudget);
+
+      if (withinHardMax && withinSoftBudget) {
         chunks[chunks.length - 2] = newPrevText;
         chunks[chunks.length - 1] = newLastText;
       }
@@ -368,12 +417,13 @@ export function groupSentencesIntoChunks(
  * Replaces old 1-sentence = 1-chunk behavior with multi-sentence chunking.
  *
  * Rules:
- * 1. Target: ~3 sentences per chunk.
- * 2. Hard max: 600 characters per chunk.
- * 3. Boundary priority:
+ * 1. Target: ~3-4 sentences per chunk (configurable via options.targetSentences).
+ * 2. Soft max (optional): ~340 spoken chars for multi-sentence merging to stay safely <30s audio.
+ * 3. Hard max: 600 characters per chunk for single-sentence emergency splitting.
+ * 4. Boundary priority:
  *    Manual Pause (hard) -> Section / structural break -> Paragraph boundary (\n\n) -> Sentence (. ! ?) -> Clause (; :) -> Comma -> Whitespace.
- * 4. Manual Pause tokens [PAUSE {ms}ms] act as unconditional hard boundaries.
- * 5. Deterministic, pure, no text loss or duplication.
+ * 5. Manual Pause tokens [PAUSE {ms}ms] act as unconditional hard boundaries.
+ * 6. Deterministic, pure, no text loss or duplication.
  */
 export function smartChunkScript(
   script: string,
@@ -383,6 +433,7 @@ export function smartChunkScript(
   if (!trimmed) return [];
 
   const targetSentences = options?.targetSentences ?? 3;
+  const softMaxChars = options?.softMaxChars;
   const hardMaxChars = options?.hardMaxChars ?? 600;
 
   // Step 1: Split on Manual Pause tokens (HARD BOUNDARY)
@@ -419,11 +470,12 @@ export function smartChunkScript(
         // Step 3: Split paragraph into sentences
         const sentences = splitParagraphIntoSentences(para);
 
-        // Step 4: Group sentences into smart chunks (~3 sentences, max 600 chars)
+        // Step 4: Group sentences into smart chunks
         const groupedChunks = groupSentencesIntoChunks(
           sentences,
           targetSentences,
-          hardMaxChars
+          hardMaxChars,
+          softMaxChars
         );
 
         for (const chunkText of groupedChunks) {
@@ -456,11 +508,14 @@ export function smartChunkScript(
 
 /**
  * Backward-compatible entrypoint used across the application.
- * Fully backed by the new Smart Chunking engine.
+ * Fully backed by the Smart Chunking engine; accepts optional preset overrides (e.g. TTS_SMART_CHUNK_OPTIONS).
  */
-export function splitScriptWithPauses(script: string): ChunkItem[] {
+export function splitScriptWithPauses(script: string, options?: SmartChunkOptions): ChunkItem[] {
   return smartChunkScript(script, {
-    targetSentences: 3,
-    hardMaxChars: 600,
+    targetSentences: options?.targetSentences ?? 3,
+    softMaxChars: options?.softMaxChars,
+    hardMaxChars: options?.hardMaxChars ?? 600,
+    pronunciationRules: options?.pronunciationRules,
+    projectId: options?.projectId,
   });
 }

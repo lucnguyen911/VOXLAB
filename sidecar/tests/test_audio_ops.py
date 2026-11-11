@@ -220,6 +220,20 @@ class AudioOpsTest(unittest.TestCase):
         self.assertGreater(float(np.max(np.abs(out[: int(0.8 * sr)]))), 0.34)
         self.assertGreater(float(np.max(np.abs(out[-int(0.8 * sr) :]))), 0.34)
 
+    def test_resample_numpy_fallback_when_scipy_missing(self):
+        from unittest import mock
+
+        sr_in, sr_out = 24000, 44100
+        t = np.arange(sr_in, dtype=np.float32) / sr_in
+        sine = (0.5 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+        with mock.patch.dict(sys.modules, {"scipy": None, "scipy.signal": None}):
+            y = audio_ops._resample(sine, sr_in, sr_out)
+        self.assertEqual(y.dtype, np.float32)
+        self.assertEqual(len(y), sr_out)
+        spectrum = np.abs(np.fft.rfft(y))
+        peak_hz = np.argmax(spectrum) * sr_out / (2 * (len(spectrum) - 1))
+        self.assertAlmostEqual(peak_hz, 440.0, delta=2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

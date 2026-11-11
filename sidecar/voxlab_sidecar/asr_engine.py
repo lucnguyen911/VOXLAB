@@ -17,21 +17,44 @@ _cuda_dlls_registered = False
 
 
 def _register_cuda_dlls() -> None:
-    """CTranslate2 lazily LoadLibrary()s cublas64_12/cuDNN 9, which ship only inside torch/lib in this
-    runtime. Without this, ASR on CUDA only worked if something had imported torch earlier."""
+    """CTranslate2 lazily LoadLibrary()s cublas64_12/cuDNN 9, which ship inside torch/lib or
+    nvidia/{cublas,cudnn,cuda_runtime}/bin in the runtime site-packages."""
     global _cuda_dlls_registered
     if _cuda_dlls_registered or os.name != "nt":
         return
     _cuda_dlls_registered = True
     import importlib.util
+    import sys
 
+    candidate_dirs: list[str] = []
     spec = importlib.util.find_spec("torch")
-    if spec is None or not spec.origin:
-        return
-    lib_dir = os.path.join(os.path.dirname(spec.origin), "lib")
-    if os.path.isfile(os.path.join(lib_dir, "cublas64_12.dll")):
-        os.add_dll_directory(lib_dir)
-        os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
+    if spec is not None and spec.origin:
+        candidate_dirs.append(os.path.join(os.path.dirname(spec.origin), "lib"))
+
+    for sp in list(sys.path):
+        if not sp or not os.path.isdir(sp):
+            continue
+        for rel in (
+            os.path.join("nvidia", "cublas", "bin"),
+            os.path.join("nvidia", "cudnn", "bin"),
+            os.path.join("nvidia", "cuda_runtime", "bin"),
+            os.path.join("torch", "lib"),
+        ):
+            candidate_dirs.append(os.path.join(sp, rel))
+
+    seen: set[str] = set()
+    for d in candidate_dirs:
+        norm = os.path.normcase(os.path.abspath(d))
+        if norm in seen or not os.path.isdir(d):
+            continue
+        seen.add(norm)
+        try:
+            os.add_dll_directory(d)
+        except Exception:  # noqa: BLE001
+            pass
+        cur_path = os.environ.get("PATH", "")
+        if d.lower() not in cur_path.lower():
+            os.environ["PATH"] = d + os.pathsep + cur_path
 
 
 def _cuda_device_count() -> int:

@@ -30,6 +30,27 @@ export interface RecommendationResult {
   tier: "strong" | "medium" | "weak";
 }
 
+const STANDARD_RAM_TIERS_GB = [4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256] as const;
+
+/**
+ * Normalizes reported RAM in MB into physical installed RAM in GB.
+ * Even when OS APIs report usable RAM (after ~0.4–1.4 GB BIOS/iGPU/NPU Hardware Reserved),
+ * snaps cleanly to the matching physical DDR tier (e.g. 31.1 GB usable -> 32 GB).
+ */
+export function formatInstalledRamGb(ramTotalMb: number): number {
+  if (!Number.isFinite(ramTotalMb) || ramTotalMb <= 0) {
+    return 0;
+  }
+  const rawGb = ramTotalMb / 1024;
+  for (const tier of STANDARD_RAM_TIERS_GB) {
+    const maxReservedGb = tier >= 16 ? 1.5 : 1.0;
+    if (rawGb >= tier - maxReservedGb && rawGb <= tier + 0.25) {
+      return tier;
+    }
+  }
+  return Math.max(1, Math.round(rawGb));
+}
+
 /**
  * Evaluates hardware profile and determines recommended ASR model.
  * Deterministic and purely functional for robust unit testing.
@@ -69,7 +90,7 @@ export function evaluateRecommendedAsrModel(profile: HardwareProfile): Recommend
   // 2. CPU-only evaluation
   const cores = profile.cpuCores || 4;
   const ramMb = profile.ramTotalMb || 8192;
-  const ramGb = Math.round(ramMb / 1024);
+  const ramGb = formatInstalledRamGb(ramMb);
 
   // Good multi-core CPU with >= 16GB RAM
   if (cores >= 8 && ramMb >= 15000) {

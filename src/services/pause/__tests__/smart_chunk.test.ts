@@ -4,6 +4,8 @@ import {
   splitScriptWithPauses,
   splitLongSentence,
   calculateBalancedSentenceCounts,
+  estimateSpokenCharLength,
+  TTS_SMART_CHUNK_OPTIONS,
 } from "../chunker";
 import {
   BatchConcurrencyQueue,
@@ -784,5 +786,60 @@ describe("Queue Race Condition & Hardening Tests (QR1 - QR10)", () => {
     assert.equal(resAmbig.leadingArtifactAction, "kept_with_warning");
     assert.equal(resAmbig.cutStartSample, 0);
     assert.ok(resAmbig.leadingArtifactWarning);
+  });
+});
+
+describe("Adaptive TTS Smart Chunking Preset (<30s Audio Safety)", () => {
+  it("AD1: groups 4 short sentences into 1 chunk to preserve emotional & narrative context", () => {
+    const script =
+      "It happened overnight. Nobody saw the warning signs. By morning, the entire market had shifted. Legacy automakers were left scrambling for answers.";
+    const chunks = splitScriptWithPauses(script, TTS_SMART_CHUNK_OPTIONS);
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0].text, script);
+  });
+
+  it("AD2: splits long multi-clause sentences (e.g. 38s Battery Day script) into <30s 1-2 sentence chunks", () => {
+    const s1 =
+      "With Tesla's secret $58 per kilowatt-hour dry battery machine now roaring at industrial scale, the era of predatory dealership battery bills is officially dead.";
+    const s2 =
+      "To grasp the sheer violence of the industrial shockwave now ripping from Austin to Detroit, you have to understand what Tesla just pulled off behind closed doors.";
+    const s3 =
+      "For six straight years after Tesla's 2020 Battery Day presentation, smug television pundits and rival executives mocked the 4680 cell as a humiliating failure.";
+    const script = `${s1} ${s2} ${s3}`;
+
+    const chunks = splitScriptWithPauses(script, TTS_SMART_CHUNK_OPTIONS);
+    assert.equal(chunks.length, 2);
+    assert.equal(chunks[0].text, `${s1} ${s2}`);
+    assert.equal(chunks[1].text, s3);
+    for (const chunk of chunks) {
+      assert.ok(
+        estimateSpokenCharLength(chunk.text) <= (TTS_SMART_CHUNK_OPTIONS.softMaxChars ?? 340),
+        `Expected spoken length <= 340, got ${estimateSpokenCharLength(chunk.text)}`
+      );
+    }
+  });
+
+  it("AD3: keeps a single 400-char sentence intact without mid-sentence splitting while isolating it from neighbors", () => {
+    const longSingle =
+      "While legacy automakers continued pouring tens of billions of dollars into sprawling wet-slurry electrode factories that required massive toxic solvent recovery towers and football-field-sized industrial drying ovens, a small determined engineering team quietly perfected a solvent-free dry cathode roller capable of slashing factory footprint and total energy consumption in half.";
+    const shortFollow = "Nobody on Wall Street believed the numbers at first.";
+    assert.ok(longSingle.length > 340 && longSingle.length <= 600);
+
+    const chunks = splitScriptWithPauses(`${longSingle} ${shortFollow}`, TTS_SMART_CHUNK_OPTIONS);
+    assert.equal(chunks.length, 2);
+    assert.equal(chunks[0].text, longSingle);
+    assert.equal(chunks[1].text, shortFollow);
+  });
+
+  it("AD4: generalizes balanced sentence counts cleanly for targetSentences = 4 without singleton tails", () => {
+    assert.deepEqual(calculateBalancedSentenceCounts(1, 4), [1]);
+    assert.deepEqual(calculateBalancedSentenceCounts(2, 4), [2]);
+    assert.deepEqual(calculateBalancedSentenceCounts(3, 4), [3]);
+    assert.deepEqual(calculateBalancedSentenceCounts(4, 4), [4]);
+    assert.deepEqual(calculateBalancedSentenceCounts(5, 4), [3, 2]);
+    assert.deepEqual(calculateBalancedSentenceCounts(6, 4), [4, 2]);
+    assert.deepEqual(calculateBalancedSentenceCounts(7, 4), [4, 3]);
+    assert.deepEqual(calculateBalancedSentenceCounts(8, 4), [4, 4]);
+    assert.deepEqual(calculateBalancedSentenceCounts(9, 4), [4, 3, 2]);
   });
 });

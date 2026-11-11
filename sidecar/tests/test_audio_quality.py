@@ -3680,6 +3680,218 @@ class AudioQualityTest(unittest.TestCase):
         core = audio_quality._reduce_to_core_defects(issues, bad_words)
         self.assertEqual([i.get("pauseContext") for i in core], ["misplaced_pause"])
 
+    def test_v380_phrase_internal_pause_temporal_prepositions_and_tight_modifier_noun(self):
+        # 1. Temporal preposition 'after | Tesla's' must not be split
+        text_after = "For six straight years after Tesla's presentation."
+        bad_after, sr, words_after = self._phrase_audio(
+            [("For", 0.20, 0.0), ("six", 0.25, 0.0), ("straight", 0.25, 0.0), ("years", 0.25, 0.0),
+             ("after", 0.22, 0.39), ("Tesla's", 0.35, 0.0), ("presentation.", 0.45, 0.0)]
+        )
+        issues_after = audio_quality.detect_phrase_internal_pauses(text_after, words_after, bad_after, sr)
+        self.assertEqual([i["words"] for i in issues_after], [["after", "teslas"]])
+
+        # 2. Tight PP modifier+noun 'at industrial | scale' with Whisper boundary shifted 0.12s early
+        text_mod = "Machines are roaring at industrial scale today."
+        bad_mod, sr, words_mod = self._phrase_audio(
+            [("Machines", 0.30, 0.0), ("are", 0.15, 0.0), ("roaring", 0.30, 0.0), ("at", 0.15, 0.0),
+             ("industrial", 0.36, 0.32), ("scale", 0.32, 0.0), ("today.", 0.30, 0.0)]
+        )
+        # Simulate Whisper placing the 'industrial'/'scale' boundary 120ms before the actual silence starts
+        ind_idx = next(idx for idx, w in enumerate(words_mod) if "industrial" in w["word"])
+        true_end = words_mod[ind_idx]["endSec"]
+        words_mod[ind_idx]["endSec"] = round(true_end - 0.12, 3)
+        words_mod[ind_idx + 1]["startSec"] = round(true_end - 0.12, 3)
+        issues_mod = audio_quality.detect_phrase_internal_pauses(text_mod, words_mod, bad_mod, sr)
+        self.assertEqual([i["words"] for i in issues_mod], [["industrial", "scale"]])
+
+        # 3. Natural phrasing pauses must NOT be flagged:
+        #    - 'pulled off | behind closed doors' (pause before preposition opener 'behind')
+        #    - 'and rival executives | mocked the cell' (pause between plural subject and finite verb)
+        text_ok1 = "Tesla just pulled off behind closed doors."
+        ok1_audio, sr, ok1_words = self._phrase_audio(
+            [("Tesla", 0.28, 0.0), ("just", 0.20, 0.0), ("pulled", 0.25, 0.0), ("off", 0.22, 0.41),
+             ("behind", 0.25, 0.0), ("closed", 0.25, 0.0), ("doors.", 0.30, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text_ok1, ok1_words, ok1_audio, sr), [])
+
+        text_ok2 = "Pundits and rival executives mocked the cell."
+        ok2_audio, sr, ok2_words = self._phrase_audio(
+            [("Pundits", 0.30, 0.0), ("and", 0.15, 0.0), ("rival", 0.25, 0.0), ("executives", 0.38, 0.49),
+             ("mocked", 0.28, 0.0), ("the", 0.14, 0.0), ("cell.", 0.28, 0.0)]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text_ok2, ok2_words, ok2_audio, sr), [])
+
+    def test_v380_verify_whisper_smoothed_stutters_catches_double_burst_and_garble_without_fp(self):
+        sr = 16000
+
+        class _FakeWord:
+            def __init__(self, word: str, probability: float):
+                self.word = word
+                self.probability = probability
+
+        class _FakeSeg:
+            def __init__(self, words):
+                self.words = words
+
+        class _QueuedSliceWhisper:
+            def __init__(self, responses):
+                self._responses = list(responses)
+                self.calls = 0
+
+            def transcribe(self, *_args, **_kwargs):
+                words = self._responses[self.calls] if self.calls < len(self._responses) else []
+                self.calls += 1
+                return [_FakeSeg([_FakeWord(w, p) for w, p in words])], None
+
+        # Case A: Single-syllable double-burst stutter ('The da— day' smoothed by full-sentence ASR to 'day')
+        t_burst1 = np.arange(int(0.12 * sr)) / sr
+        t_burst2 = np.arange(int(0.22 * sr)) / sr
+        harmonic1 = (0.28 * np.sin(2 * np.pi * 220.0 * t_burst1) + 0.14 * np.sin(2 * np.pi * 660.0 * t_burst1)).astype(np.float32)
+        harmonic2 = (0.30 * np.sin(2 * np.pi * 220.0 * t_burst2) + 0.15 * np.sin(2 * np.pi * 660.0 * t_burst2)).astype(np.float32)
+        wave_a = np.concatenate([
+            np.zeros(int(0.10 * sr), dtype=np.float32),
+            0.22 * np.sin(2 * np.pi * 180.0 * (np.arange(int(0.16 * sr)) / sr)).astype(np.float32),  # 'The'
+            np.zeros(int(0.04 * sr), dtype=np.float32),
+            harmonic1,  # 'da-'
+            np.zeros(int(0.16 * sr), dtype=np.float32),  # stutter valley
+            harmonic2,  # 'day'
+            np.zeros(int(0.04 * sr), dtype=np.float32),
+            0.22 * np.sin(2 * np.pi * 200.0 * (np.arange(int(0.30 * sr)) / sr)).astype(np.float32),  # 'expires'
+            np.zeros(int(0.15 * sr), dtype=np.float32),
+        ])
+        asr_a = [
+            {"word": " The", "startSec": 0.10, "endSec": 0.26, "probability": 0.99},
+            {"word": " day", "startSec": 0.30, "endSec": 0.80, "probability": 0.91},
+            {"word": " expires.", "startSec": 0.84, "endSec": 1.14, "probability": 0.99},
+        ]
+        model_a = _QueuedSliceWhisper([[(" Da", 0.27), ("-day", 0.53)]])
+        issues_a = audio_quality.verify_whisper_smoothed_stutters(
+            "The day expires.", asr_a, wave_a, sr, model_a, language="en", slice_budget=[3]
+        )
+        self.assertEqual(len(issues_a), 1, issues_a)
+        self.assertEqual(issues_a[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(issues_a[0]["words"], ["day"])
+
+        # Case B: Moderate-confidence glottal-cut garble ("Tesla's" -> "test lists") flagged,
+        # while low-confidence clean word ("Battery" after "2020" -> neighbor bleed "20" + "battery") is cleared!
+        tone_ok = lambda dur, f: (0.25 * np.sin(2 * np.pi * f * (np.arange(int(dur * sr)) / sr))).astype(np.float32)
+        tesla_part1 = tone_ok(0.26, 210.0)
+        tesla_cut = np.zeros(int(0.09 * sr), dtype=np.float32)  # 90ms glottal cut inside word
+        tesla_part2 = tone_ok(0.28, 240.0)
+        wave_b = np.concatenate([
+            np.zeros(int(0.10 * sr), dtype=np.float32),
+            tone_ok(0.22, 180.0),                         # 'after' [0.10..0.32]
+            np.zeros(int(0.05 * sr), dtype=np.float32),
+            tesla_part1, tesla_cut, tesla_part2,          # "Tesla's" [0.37..1.00]
+            np.zeros(int(0.04 * sr), dtype=np.float32),
+            tone_ok(0.36, 195.0),                         # '2020' [1.04..1.40]
+            np.zeros(int(0.03 * sr), dtype=np.float32),
+            tone_ok(0.42, 215.0),                         # 'Battery' [1.43..1.85]
+            np.zeros(int(0.04 * sr), dtype=np.float32),
+            tone_ok(0.28, 185.0),                         # 'Day.' [1.89..2.17]
+            np.zeros(int(0.15 * sr), dtype=np.float32),
+        ])
+        asr_b = [
+            {"word": " after", "startSec": 0.10, "endSec": 0.32, "probability": 0.98},
+            {"word": " Tesla's", "startSec": 0.37, "endSec": 1.00, "probability": 0.73},
+            {"word": " 2020", "startSec": 1.04, "endSec": 1.40, "probability": 0.97},
+            {"word": " Battery", "startSec": 1.43, "endSec": 1.85, "probability": 0.13},
+            {"word": " Day.", "startSec": 1.89, "endSec": 2.17, "probability": 0.99},
+        ]
+        # Candidate priority sorts by (trigger_a, probability), so 'Battery' (p=0.13) runs first, then "Tesla's" (p=0.73)
+        model_b = _QueuedSliceWhisper([
+            [(" 20", 0.91), (" battery", 0.75)],
+            [(" test", 0.62), (" lists", 0.78)],
+        ])
+        issues_b = audio_quality.verify_whisper_smoothed_stutters(
+            "after Tesla's 2020 Battery Day.", asr_b, wave_b, sr, model_b, language="en", slice_budget=[4]
+        )
+        self.assertEqual(model_b.calls, 2)
+        self.assertEqual([i["words"] for i in issues_b], [["teslas"]])
+
+    def test_v390_triple_a_acronym_and_embedded_clause_pause_precision(self):
+        # 1. 'Triple A' in script vs 'AAA' in Whisper ASR must align cleanly with zero false MISSING_WORD
+        text = (
+            "Compare thirty cents a mile against Triple A data showing "
+            "the average American already spends over seventy five cents per mile "
+            "just owning a personal car."
+        )
+        audio, sr, asr_words = self._phrase_audio([
+            ("Compare", 0.32, 0.0),
+            ("30", 0.25, 0.0),
+            ("cents", 0.25, 0.0),
+            ("a", 0.12, 0.0),
+            ("mile", 0.25, 0.0),
+            ("against", 0.28, 0.0),
+            ("AAA", 0.32, 0.0),
+            ("data", 0.30, 0.0),
+            ("showing", 0.30, 0.37),   # awkward mid-clause break #1: 'showing | the'
+            ("the", 0.14, 0.0),
+            ("average", 0.30, 0.0),
+            ("American", 0.36, 0.44),  # awkward embedded-clause subject-predicate break #2: 'American | already'
+            ("already", 0.32, 0.0),
+            ("spends", 0.30, 0.0),
+            ("over", 0.25, 0.0),
+            ("75", 0.32, 0.0),
+            ("cents", 0.28, 0.0),
+            ("per", 0.18, 0.0),
+            ("mile", 0.28, 0.38),      # natural post-clause breath before 'just owning a personal car' -> NOT flagged
+            ("just", 0.26, 0.0),
+            ("owning", 0.28, 0.0),
+            ("a", 0.12, 0.0),
+            ("personal", 0.30, 0.0),
+            ("car.", 0.32, 0.0),
+        ])
+        align_issues = audio_quality.analyze_word_alignment_issues(
+            text, asr_words, language="en", audio_data=audio, sample_rate=sr, core_scope=True
+        )
+        core_issues = audio_quality._reduce_to_core_defects(align_issues, asr_words)
+        self.assertEqual(
+            [i for i in core_issues if i["code"] == "MISSING_WORD"],
+            [],
+            f"Triple A vs AAA should not trigger MISSING_WORD: {core_issues}",
+        )
+
+        # 2. Phrase-internal pause check must catch BOTH 'showing | the' and 'American | already'
+        #    while NOT falsely flagging 'mile | just'
+        pause_issues = audio_quality.detect_phrase_internal_pauses(text, asr_words, audio, sr)
+        self.assertEqual(
+            [i["words"] for i in pause_issues],
+            [["showing", "the"], ["american", "already"]],
+            f"Expected exact awkward pauses without 'mile just' false positive: {pause_issues}",
+        )
+
+        # 3. Guard: 'per kilowatt | hour' (true multi-word unit) MUST still be caught,
+        #    hyphenated 'Triple-A' <-> 'AAA' and reverse 'AAA' <-> 'Triple A' align cleanly,
+        #    and Vietnamese 'rằng | người' complementizer split is caught.
+        unit_text = "Batteries cost fifty dollars per kilowatt hour today."
+        unit_audio, sr, unit_words = self._phrase_audio([
+            ("Batteries", 0.30, 0.0), ("cost", 0.25, 0.0), ("50", 0.25, 0.0), ("dollars", 0.28, 0.0),
+            ("per", 0.16, 0.0), ("kilowatt", 0.32, 0.36), ("hour", 0.28, 0.0), ("today.", 0.30, 0.0),
+        ])
+        unit_pauses = audio_quality.detect_phrase_internal_pauses(unit_text, unit_words, unit_audio, sr)
+        self.assertEqual([i["words"] for i in unit_pauses], [["kilowatt", "hour"]])
+
+        hyph_audio, sr, hyph_asr = self._phrase_audio([
+            ("New", 0.22, 0.0), ("AAA", 0.30, 0.0), ("ratings", 0.30, 0.0),
+        ])
+        hyph_issues = audio_quality._reduce_to_core_defects(
+            audio_quality.analyze_word_alignment_issues(
+                "New Triple-A ratings", hyph_asr, language="en", audio_data=hyph_audio, sample_rate=sr, core_scope=True
+            ),
+            hyph_asr,
+        )
+        self.assertEqual(hyph_issues, [])
+
+        vi_text = "Báo cáo cho thấy rằng người dùng rất hài lòng."
+        vi_audio, sr, vi_words = self._phrase_audio([
+            ("Báo", 0.22, 0.0), ("cáo", 0.22, 0.0), ("cho", 0.20, 0.0), ("thấy", 0.24, 0.0),
+            ("rằng", 0.22, 0.38), ("người", 0.24, 0.0), ("dùng", 0.24, 0.0),
+            ("rất", 0.20, 0.0), ("hài", 0.22, 0.0), ("lòng.", 0.26, 0.0),
+        ])
+        vi_pauses = audio_quality.detect_phrase_internal_pauses(vi_text, vi_words, vi_audio, sr)
+        self.assertEqual([i["words"] for i in vi_pauses], [["rằng", "người"]])
+
 
 if __name__ == "__main__":
     unittest.main()

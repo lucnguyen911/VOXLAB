@@ -160,6 +160,41 @@ function Find-SignTool {
     return $null
 }
 
+function Ensure-BundledUv([string]$ToolsSrcDir, [string]$OutputRootDir, [string]$ScratchBuildDir) {
+    New-Item -ItemType Directory -Force -Path $ToolsSrcDir | Out-Null
+    $cachedUv = Join-Path $ToolsSrcDir "uv.exe"
+    if (-not (Test-Path $cachedUv)) {
+        Write-Host "==> Downloading standalone uv.exe (x86_64-pc-windows-msvc) for zero-Python client runtime installer..." -ForegroundColor Cyan
+        New-Item -ItemType Directory -Force -Path $ScratchBuildDir | Out-Null
+        $zipPath = Join-Path $ScratchBuildDir "uv-win-x64.zip"
+        $extractDir = Join-Path $ScratchBuildDir "uv-extract"
+        if (Test-Path $extractDir) {
+            Remove-Item -Recurse -Force $extractDir
+        }
+        $uvUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
+        Invoke-WebRequest -Uri $uvUrl -OutFile $zipPath -UseBasicParsing
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+        $foundUv = Get-ChildItem -Path $extractDir -Filter "uv.exe" -Recurse | Select-Object -First 1
+        if (-not $foundUv) {
+            throw "Failed to locate uv.exe inside downloaded archive from $uvUrl"
+        }
+        Copy-Item -Force $foundUv.FullName $cachedUv
+        Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force $extractDir -ErrorAction SilentlyContinue
+    }
+    $outToolsDir = Join-Path $OutputRootDir "tools"
+    New-Item -ItemType Directory -Force -Path $outToolsDir | Out-Null
+    $dstUv = Join-Path $outToolsDir "uv.exe"
+    Copy-Item -Force $cachedUv $dstUv
+    & $dstUv --version | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bundled uv.exe smoke check failed at $dstUv"
+    }
+    Write-Host "[OK] Bundled standalone uv.exe ready at $dstUv" -ForegroundColor Green
+}
+
+Ensure-BundledUv -ToolsSrcDir (Join-Path $SidecarRoot "tools") -OutputRootDir $ResolvedOutput -ScratchBuildDir (Join-Path $SidecarRoot "build")
+
 foreach ($rt in $Runtimes) {
     if (-not $RuntimeMap.ContainsKey($rt)) {
         throw "Unknown runtime '$rt'. Valid runtimes: core, chatterbox, qwen"
@@ -216,10 +251,25 @@ foreach ($rt in $Runtimes) {
 
     # Bootstrapper ensures package-qualified execution so relative imports, stdlib modules
     # required by PyArmor-obfuscated bytecode, and runtime site-packages load cleanly.
-    $venvSitePackages = Join-Path $SidecarRoot "$venvName\Lib\site-packages"
-    $escapedVenvSitePackages = $venvSitePackages.Replace('\', '\\')
+    $coreStaticImports = if ($rt -eq "core") {
+        @(
+            "    import numpy"
+            "    import soundfile"
+            "    import onnxruntime"
+            "    import kokoro_onnx"
+            "    import espeakng_loader"
+            "    import phonemizer"
+            "    import lameenc"
+            "    import edge_tts"
+            "    import certifi"
+            "    import huggingface_hub"
+            "    import tqdm"
+        )
+    } else {
+        @()
+    }
     $launcherPath = Join-Path $stageDir "run_voxlab_sidecar.py"
-    Set-Content -Path $launcherPath -Encoding UTF8 -Value @(
+    Set-Content -Path $launcherPath -Encoding UTF8 -Value (@(
         "from __future__ import annotations"
         "import argparse, asyncio, ctypes, ctypes.wintypes, dataclasses, datetime, difflib"
         "import email.utils, faulthandler, functools, gc, hashlib, hmac, importlib, importlib.util"
@@ -248,33 +298,56 @@ foreach ($rt in $Runtimes) {
         "    import voxlab_sidecar.tts.kokoro_adapter"
         "    import voxlab_sidecar.tts.chatterbox_adapter"
         "    import voxlab_sidecar.tts.qwen_adapter"
+    ) + $coreStaticImports + @(
+        ""
+        "def _register_sp_dlls(sp: str) -> None:"
+        "    dll_rels = ("
+        "        'torch\\lib', 'ctranslate2', '_soundfile_data',"
+        "        'nvidia\\cublas\\bin', 'nvidia\\cudnn\\bin', 'nvidia\\cuda_runtime\\bin',"
+        "        'nvidia\\cufft\\bin', 'nvidia\\curand\\bin', 'nvidia\\cusolver\\bin',"
+        "        'nvidia\\cusparse\\bin', 'nvidia\\nvjitlink\\bin',"
+        "    )"
+        "    for dll_rel in dll_rels:"
+        "        dll_dir = os.path.join(sp, dll_rel)"
+        "        if os.path.isdir(dll_dir):"
+        "            if hasattr(os, 'add_dll_directory'):"
+        "                try:"
+        "                    os.add_dll_directory(dll_dir)"
+        "                except Exception:"
+        "                    pass"
+        "            cur_path = os.environ.get('PATH', '')"
+        "            if dll_dir.lower() not in cur_path.lower():"
+        "                os.environ['PATH'] = dll_dir + os.pathsep + cur_path"
         ""
         "def _attach_runtime_site_packages() -> None:"
+        "    if os.environ.get('VOXLAB_ISOLATED_SMOKE_TEST') == '1':"
+        "        return"
+        "    appdata = os.environ.get('APPDATA', '')"
+        "    user_rt_sp = os.path.join(appdata, 'com.voxlab.app', 'runtimes', '$rt', 'Lib', 'site-packages') if appdata else ''"
+        "    if user_rt_sp and os.path.isdir(user_rt_sp):"
+        "        if user_rt_sp not in sys.path:"
+        "            sys.path.append(user_rt_sp)"
+        "        _register_sp_dlls(user_rt_sp)"
+        "        return"
         "    exe_dir = os.path.dirname(os.path.abspath(sys.executable))"
         "    candidates = ["
         "        os.path.join(exe_dir, 'site-packages'),"
         "        os.path.join(exe_dir, '_internal', 'site-packages'),"
         "        os.path.abspath(os.path.join(exe_dir, '..', '$venvName', 'Lib', 'site-packages')),"
-        "        '$escapedVenvSitePackages',"
         "    ]"
         "    for sp in candidates:"
         "        if sp and os.path.isdir(sp) and sp not in sys.path:"
         "            sys.path.append(sp)"
-        "            for dll_rel in ('torch\\lib', 'ctranslate2', 'libsndfile.dll', '_soundfile_data', 'nvidia\\cublas\\bin', 'nvidia\\cudnn\\bin', 'nvidia\\cuda_runtime\\bin'):"
-        "                dll_dir = os.path.join(sp, dll_rel)"
-        "                if os.path.isdir(dll_dir) and hasattr(os, 'add_dll_directory'):"
-        "                    try:"
-        "                        os.add_dll_directory(dll_dir)"
-        "                    except Exception:"
-        "                        pass"
+        "            _register_sp_dlls(sp)"
         ""
         "_attach_runtime_site_packages()"
         "from voxlab_sidecar.__main__ import main"
         "if __name__ == '__main__':"
         "    raise SystemExit(main())"
-    )
+    ))
 
     $distName = "voxlab-sidecar-$rt"
+    Get-Process -Name $distName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     $workPath = Join-Path $SidecarRoot "build\pyinstaller-$rt"
     if (Test-Path $workPath) {
         Remove-Item -Recurse -Force $workPath
@@ -287,6 +360,31 @@ foreach ($rt in $Runtimes) {
         $env:PATH = "$venvScripts;$sysRoot\System32;$sysRoot;$sysRoot\System32\Wbem;$sysRoot\System32\WindowsPowerShell\v1.0"
 
         Write-Host "==> Building $distName (--onedir, UPX disabled) into $ResolvedOutput..." -ForegroundColor Cyan
+        $runtimeSpecificArgs = if ($rt -eq "core") {
+            @(
+                "--collect-all", "soundfile",
+                "--collect-all", "kokoro_onnx",
+                "--collect-all", "espeakng_loader",
+                "--collect-all", "phonemizer",
+                "--collect-all", "certifi",
+                "--hidden-import", "lameenc",
+                "--hidden-import", "edge_tts",
+                "--hidden-import", "huggingface_hub",
+                "--hidden-import", "tqdm"
+            )
+        } else {
+            @(
+                "--exclude-module", "numpy",
+                "--exclude-module", "soundfile",
+                "--exclude-module", "onnxruntime",
+                "--exclude-module", "kokoro_onnx",
+                "--exclude-module", "espeakng_loader",
+                "--exclude-module", "phonemizer",
+                "--exclude-module", "lameenc",
+                "--exclude-module", "edge_tts",
+                "--exclude-module", "huggingface_hub"
+            )
+        }
         $pyiArgs = @(
             "-m", "PyInstaller",
             "--noconfirm",
@@ -312,12 +410,18 @@ foreach ($rt in $Runtimes) {
             "--exclude-module", "fastapi",
             "--exclude-module", "uvicorn",
             "--exclude-module", "av",
-            "--exclude-module", "numpy",
-            "--exclude-module", "soundfile",
             "--exclude-module", "ctranslate2",
             "--exclude-module", "faster_whisper",
-            "--exclude-module", "onnxruntime"
-        ) + $extraPyInstallerArgs + @($launcherPath)
+            "--exclude-module", "transformers",
+            "--exclude-module", "diffusers",
+            "--exclude-module", "accelerate",
+            "--exclude-module", "omnivoice",
+            "--exclude-module", "chatterbox",
+            "--exclude-module", "qwen_tts",
+            "--exclude-module", "matplotlib",
+            "--exclude-module", "IPython",
+            "--exclude-module", "pytest"
+        ) + $runtimeSpecificArgs + $extraPyInstallerArgs + @($launcherPath)
 
         & $pythonExe @pyiArgs
         if ($LASTEXITCODE -ne 0) {
@@ -334,14 +438,26 @@ foreach ($rt in $Runtimes) {
 
     if ($rt -eq "core") {
         $kokoroSrcDir = Join-Path $SidecarRoot "models\kokoro-82m"
-        if (Test-Path (Join-Path $kokoroSrcDir "kokoro-v1.0.int8.onnx")) {
-            $kokoroDstDir = Join-Path $ResolvedOutput "$distName\models\kokoro-82m"
-            Write-Host "==> Bundling pre-installed Kokoro-82M model into $kokoroDstDir..." -ForegroundColor Cyan
-            New-Item -ItemType Directory -Force -Path $kokoroDstDir | Out-Null
-            Copy-Item -Force (Join-Path $kokoroSrcDir "kokoro-v1.0.int8.onnx") (Join-Path $kokoroDstDir "kokoro-v1.0.int8.onnx")
-            Copy-Item -Force (Join-Path $kokoroSrcDir "voices-v1.0.bin") (Join-Path $kokoroDstDir "voices-v1.0.bin")
-        } else {
-            throw "Pre-bundled Kokoro-82M model files missing at $kokoroSrcDir"
+        $kokoroModelFile = Join-Path $kokoroSrcDir "kokoro-v1.0.int8.onnx"
+        $kokoroVoicesFile = Join-Path $kokoroSrcDir "voices-v1.0.bin"
+        if (-not ((Test-Path $kokoroModelFile) -and (Test-Path $kokoroVoicesFile))) {
+            Write-Host "==> Downloading pre-bundled Apache-2.0 Kokoro-82M model files into $kokoroSrcDir..." -ForegroundColor Cyan
+            New-Item -ItemType Directory -Force -Path $kokoroSrcDir | Out-Null
+            if (-not (Test-Path $kokoroModelFile)) {
+                Invoke-WebRequest -Uri "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx" -OutFile $kokoroModelFile -UseBasicParsing
+            }
+            if (-not (Test-Path $kokoroVoicesFile)) {
+                Invoke-WebRequest -Uri "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" -OutFile $kokoroVoicesFile -UseBasicParsing
+            }
+        }
+        $kokoroDstDir = Join-Path $ResolvedOutput "$distName\models\kokoro-82m"
+        Write-Host "==> Bundling pre-installed Kokoro-82M model into $kokoroDstDir..." -ForegroundColor Cyan
+        New-Item -ItemType Directory -Force -Path $kokoroDstDir | Out-Null
+        Copy-Item -Force $kokoroModelFile (Join-Path $kokoroDstDir "kokoro-v1.0.int8.onnx")
+        Copy-Item -Force $kokoroVoicesFile (Join-Path $kokoroDstDir "voices-v1.0.bin")
+        $defaultSampleSrc = Join-Path $SidecarRoot "..\public\audio\samples\default_local.mp3"
+        if (Test-Path $defaultSampleSrc) {
+            Copy-Item -Force $defaultSampleSrc (Join-Path $ResolvedOutput "$distName\models\default_local.mp3")
         }
     }
 
@@ -384,4 +500,5 @@ foreach ($rt in $Runtimes) {
     Write-Host "[OK] $builtExe hardened and ready." -ForegroundColor Green
 }
 
+Remove-Item -Force (Join-Path $SidecarRoot "pyarmor.bug.log"), "pyarmor.bug.log" -ErrorAction SilentlyContinue
 Write-Host "`nAll available sidecar runtimes built in: $ResolvedOutput" -ForegroundColor Green
