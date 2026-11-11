@@ -147,6 +147,9 @@ export const TRANSLATION_TARGET_LANGUAGES: LanguageItem[] = [
   ...ALL_STANDARD_LANGUAGES,
 ];
 
+import { LANGUAGE_REGISTRY } from "../../constants/voiceFilters";
+import { SupportedLang } from "../../i18n/translations";
+
 /**
  * Source languages available for Subtitle Translation (includes 'auto' detect).
  */
@@ -208,6 +211,14 @@ export function getLocalizedLanguageName(
   const specialMatch = SPECIAL_LANGUAGE_NAMES[code] || SPECIAL_LANGUAGE_NAMES[code.toLowerCase()];
   if (specialMatch && specialMatch[targetUiLang]) {
     return specialMatch[targetUiLang];
+  }
+
+  // Check VoxLab curated LANGUAGE_REGISTRY labels (synchronized with UI language: vi, en, ja, zh)
+  const registryMatch =
+    LANGUAGE_REGISTRY.find((l) => l.code === code) ||
+    LANGUAGE_REGISTRY.find((l) => l.code.toLowerCase() === code.toLowerCase());
+  if (registryMatch && registryMatch.labels[targetUiLang as SupportedLang]) {
+    return registryMatch.labels[targetUiLang as SupportedLang];
   }
 
   // Use standard Intl.DisplayNames

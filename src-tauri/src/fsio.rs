@@ -127,6 +127,77 @@ pub fn fs_scratch_dir(app: tauri::AppHandle, name: String) -> Result<String, Str
     Ok(dir.to_string_lossy().to_string())
 }
 
+fn dir_size_bytes_excluding(path: &Path, exclude_dir_name: Option<&str>) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        if let Some(ex) = exclude_dir_name {
+            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(ex) {
+                continue;
+            }
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            total = total.saturating_add(dir_size_bytes_excluding(&entry.path(), None));
+        } else {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    total
+}
+
+fn dir_size_bytes(path: &Path) -> u64 {
+    dir_size_bytes_excluding(path, None)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageStats {
+    pub app_data_path: String,
+    pub app_data_bytes: u64,
+    pub scratch_path: String,
+    pub scratch_bytes: u64,
+}
+
+#[tauri::command]
+pub fn fs_storage_stats(app: tauri::AppHandle) -> Result<StorageStats, String> {
+    use tauri::Manager;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&app_data_dir);
+    let scratch_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("scratch");
+    let _ = std::fs::create_dir_all(&scratch_dir);
+    let scratch_bytes = dir_size_bytes(&scratch_dir);
+    // Exclude "models" directory since AI models have their own dedicated storage tab.
+    let app_data_only_bytes = dir_size_bytes_excluding(&app_data_dir, Some("models"));
+    let total_bytes = if scratch_dir.starts_with(&app_data_dir) {
+        app_data_only_bytes
+    } else {
+        app_data_only_bytes.saturating_add(scratch_bytes)
+    };
+    Ok(StorageStats {
+        app_data_path: app_data_dir.to_string_lossy().to_string(),
+        app_data_bytes: total_bytes,
+        scratch_path: scratch_dir.to_string_lossy().to_string(),
+        scratch_bytes,
+    })
+}
+
+#[tauri::command]
+pub fn fs_clear_scratch(app: tauri::AppHandle) -> Result<u64, String> {
+    use tauri::Manager;
+    let scratch_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("scratch");
+    let freed = dir_size_bytes(&scratch_dir);
+    if scratch_dir.exists() {
+        let _ = std::fs::remove_dir_all(&scratch_dir);
+    }
+    std::fs::create_dir_all(&scratch_dir).map_err(|e| e.to_string())?;
+    Ok(freed)
+}
+
 #[tauri::command]
 pub async fn fs_read_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     let p = absolute(&path)?;

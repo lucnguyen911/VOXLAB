@@ -33,6 +33,7 @@ import {
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
+import { listCloneVoices } from "../../ai/cloneVoiceRegistry";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 import { getEffectiveRules } from "../../pronunciation";
 import {
@@ -135,6 +136,14 @@ export class DialogueExecutor {
       return fail(15, "Local AI runtime chưa sẵn sàng (sidecar không khả dụng) — không thể tạo giọng thoại thật.");
     }
 
+    const resolveVoiceBoundModel = (vId: string): string => {
+      if (vId.startsWith("kokoro_") || /^[ab][fm]_[a-z0-9_]+$/i.test(vId)) {
+        return "kokoro_82m";
+      }
+      const cloneEngine = listCloneVoices().find((v) => v.id === vId)?.engine;
+      return cloneEngine || model;
+    };
+
     // 4. Synthesize character audio segments (validate every voice first: no silent fallback)
     const segments: DialogueSegment[] = parseResult.segments;
     const totalSegments = segments.length;
@@ -144,15 +153,12 @@ export class DialogueExecutor {
       const isOnlineVoice = vId.includes("Neural") || vId.startsWith("edge_") || vId.startsWith("google_");
       if (!isOnlineVoice) {
         try {
-          ai.resolveEngine(model, seg.voiceId, seg.cleanText);
+          ai.resolveEngine(resolveVoiceBoundModel(vId), seg.voiceId, seg.cleanText);
         } catch (e) {
           return fail(15, `Nhân vật "${seg.characterName}": ${AiError.from(e).message}`);
         }
       }
     }
-
-    // Freeze advanced settings snapshot for the entire batch task (Invariant D)
-    const jobAdvancedSettings = getEngineAdvancedSettings(model);
 
     const scratchScope = `dlg-${job.id}`.replace(/[^\w-]/g, "_");
     const segmentPaths: string[] = [];
@@ -162,6 +168,8 @@ export class DialogueExecutor {
       try {
         const vId = String(seg.voiceId || defaultVoice);
         const isOnline = vId.includes("Neural") || vId.startsWith("edge_");
+        const segModel = resolveVoiceBoundModel(vId);
+        const segAdvancedSettings = getEngineAdvancedSettings(segModel);
         const outputPath = await ai.scratchPath(
           scratchScope,
           `turn_${String(i + 1).padStart(4, "0")}.${isOnline ? "mp3" : "wav"}`
@@ -178,12 +186,12 @@ export class DialogueExecutor {
           });
         } else {
           r = await ai.synthesize({
-            model,
+            model: segModel,
             voiceId: vId,
             text: seg.cleanText,
             outputPath,
             ...(speed !== undefined ? { speed } : {}),
-            advancedSettings: jobAdvancedSettings,
+            advancedSettings: segAdvancedSettings,
             pronunciationRules: effectiveRules,
             projectId: "dialogue",
           });
@@ -296,13 +304,14 @@ export class DialogueExecutor {
                     : {}),
                 });
               } else {
+                const retrySegModel = resolveVoiceBoundModel(vId);
                 r = await ai.synthesize({
-                  model,
+                  model: retrySegModel,
                   voiceId: vId,
                   text: seg.cleanText,
                   outputPath: retryOutputPath,
                   ...(speed !== undefined ? { speed } : {}),
-                  advancedSettings: jobAdvancedSettings,
+                  advancedSettings: getEngineAdvancedSettings(retrySegModel),
                   pronunciationRules: effectiveRules,
                   projectId: "dialogue",
                 });

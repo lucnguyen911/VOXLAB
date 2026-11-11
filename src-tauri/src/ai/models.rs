@@ -25,6 +25,9 @@ pub struct ModelStatus {
     pub spec: ModelSpec,
     pub path: String,
     pub installed: bool,
+    pub weights_installed: bool,
+    pub runtime_installed: bool,
+    pub requires_cuda: bool,
     pub missing_files: Vec<String>,
     pub size_on_disk_mb: u64,
 }
@@ -128,7 +131,110 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
+pub fn engine_marker_package<'a>(engine: &'a str) -> &'a str {
+    match engine {
+        "faster-whisper" => "faster_whisper",
+        "omnivoice" => "omnivoice",
+        "chatterbox" => "chatterbox",
+        "qwen" => "qwen_tts",
+        _ => engine,
+    }
+}
+
+pub fn engine_requires_cuda(engine: &str) -> bool {
+    matches!(engine, "omnivoice" | "chatterbox" | "qwen")
+}
+
+fn runtime_venv_name(runtime: &str) -> &'static str {
+    match runtime {
+        "core" => ".venv",
+        "chatterbox" => ".venv-chatterbox",
+        "qwen" => ".venv-qwen",
+        _ => ".venv",
+    }
+}
+
+pub fn is_engine_runtime_installed(
+    engine: &str,
+    runtime: &str,
+    app_data_dir: Option<&Path>,
+    dev_sidecar_root: Option<&Path>,
+) -> bool {
+    let marker = engine_marker_package(engine);
+    let mut sp_candidates = Vec::new();
+
+    if let Some(app_data) = app_data_dir {
+        sp_candidates.push(
+            app_data
+                .join("runtimes")
+                .join(runtime)
+                .join("Lib")
+                .join("site-packages"),
+        );
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let stem = format!("voxlab-sidecar-{}", runtime);
+            sp_candidates.push(exe_dir.join("sidecar").join(&stem).join("site-packages"));
+            sp_candidates.push(
+                exe_dir
+                    .join("sidecar")
+                    .join(&stem)
+                    .join("_internal")
+                    .join("site-packages"),
+            );
+            sp_candidates.push(
+                exe_dir
+                    .join("resources")
+                    .join("sidecar")
+                    .join(&stem)
+                    .join("site-packages"),
+            );
+            sp_candidates.push(
+                exe_dir
+                    .join("sidecar")
+                    .join(runtime_venv_name(runtime))
+                    .join("Lib")
+                    .join("site-packages"),
+            );
+        }
+    }
+
+    if let Some(dev_root) = dev_sidecar_root {
+        sp_candidates.push(
+            dev_root
+                .join(runtime_venv_name(runtime))
+                .join("Lib")
+                .join("site-packages"),
+        );
+    }
+
+    sp_candidates.into_iter().any(|sp| {
+        let pkg_dir = sp.join(marker);
+        let pkg_file = sp.join(format!("{}.py", marker));
+        pkg_dir.is_dir() || pkg_file.is_file()
+    })
+}
+
 pub fn scan(models_dir: &Path) -> Vec<ModelStatus> {
+    scan_inner(models_dir, None, None, false)
+}
+
+pub fn scan_with_runtime(
+    models_dir: &Path,
+    app_data_dir: Option<&Path>,
+    dev_sidecar_root: Option<&Path>,
+) -> Vec<ModelStatus> {
+    scan_inner(models_dir, app_data_dir, dev_sidecar_root, true)
+}
+
+fn scan_inner(
+    models_dir: &Path,
+    app_data_dir: Option<&Path>,
+    dev_sidecar_root: Option<&Path>,
+    check_runtime: bool,
+) -> Vec<ModelStatus> {
     MODELS
         .iter()
         .map(|spec| {
@@ -145,10 +251,19 @@ pub fn scan(models_dir: &Path) -> Vec<ModelStatus> {
                 })
                 .map(|f| f.to_string())
                 .collect();
+            let weights_installed = missing.is_empty();
+            let runtime_installed = if check_runtime {
+                is_engine_runtime_installed(spec.engine, spec.runtime, app_data_dir, dev_sidecar_root)
+            } else {
+                true
+            };
             ModelStatus {
                 spec: spec.clone(),
                 path: dir.to_string_lossy().to_string(),
-                installed: missing.is_empty(),
+                installed: weights_installed && runtime_installed,
+                weights_installed,
+                runtime_installed,
+                requires_cuda: engine_requires_cuda(spec.engine),
                 size_on_disk_mb: if dir.is_dir() { dir_size(&dir) / (1024 * 1024) } else { 0 },
                 missing_files: missing,
             }

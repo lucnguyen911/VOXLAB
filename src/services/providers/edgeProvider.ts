@@ -186,7 +186,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
     const catalog: VoiceProfile[] = [
       {
         id: "edge_vi_hoaimy",
-        name: "Hoài My (Edge)",
+        name: "Hoài My",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -210,7 +210,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_vi_namminh",
-        name: "Nam Minh (Edge)",
+        name: "Nam Minh",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -234,7 +234,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_jenny",
-        name: "Jenny (Edge)",
+        name: "Jenny",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -258,7 +258,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_guy",
-        name: "Guy (Edge)",
+        name: "Guy",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -282,7 +282,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_sonia",
-        name: "Sonia (Edge)",
+        name: "Sonia",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -306,7 +306,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_es_elvira",
-        name: "Elvira (Edge)",
+        name: "Elvira",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -330,7 +330,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_fr_denise",
-        name: "Denise (Edge)",
+        name: "Denise",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -354,7 +354,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_de_katja",
-        name: "Katja (Edge)",
+        name: "Katja",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -378,7 +378,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_ja_nanami",
-        name: "Nanami (Edge)",
+        name: "Nanami",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -402,7 +402,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_zh_xiaoxiao",
-        name: "Xiaoxiao (Edge)",
+        name: "Xiaoxiao",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -426,7 +426,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_ava_multi",
-        name: "Ava Multilingual (Edge)",
+        name: "Ava",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -450,7 +450,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_andrew_multi",
-        name: "Andrew Multilingual (Edge)",
+        name: "Andrew",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -474,7 +474,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_emma_multi",
-        name: "Emma Multilingual (Edge)",
+        name: "Emma",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -498,7 +498,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_brian_multi",
-        name: "Brian Multilingual (Edge)",
+        name: "Brian",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -522,7 +522,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_aria",
-        name: "Aria (Edge)",
+        name: "Aria",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -546,7 +546,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_christopher",
-        name: "Christopher (Edge)",
+        name: "Christopher",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -570,7 +570,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_roger",
-        name: "Roger (Edge)",
+        name: "Roger",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -594,7 +594,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_ryan",
-        name: "Ryan (Edge)",
+        name: "Ryan",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -618,7 +618,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_en_libby",
-        name: "Libby (Edge)",
+        name: "Libby",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -642,7 +642,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_fr_vivienne_multi",
-        name: "Vivienne Multilingual (Edge)",
+        name: "Vivienne",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -666,7 +666,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_fr_remy_multi",
-        name: "Remy Multilingual (Edge)",
+        name: "Remy",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -690,7 +690,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_de_seraphina_multi",
-        name: "Seraphina Multilingual (Edge)",
+        name: "Seraphina",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -714,7 +714,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_de_florian_multi",
-        name: "Florian Multilingual (Edge)",
+        name: "Florian",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -738,7 +738,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_zh_yunxi",
-        name: "Yunxi (Edge)",
+        name: "Yunxi",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -762,7 +762,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_zh_xiaoyi",
-        name: "Xiaoyi (Edge)",
+        name: "Xiaoyi",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -786,7 +786,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_ja_keita",
-        name: "Keita (Edge)",
+        name: "Keita",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -810,7 +810,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_ko_sunhi",
-        name: "SunHi (Edge)",
+        name: "SunHi",
         source: "edge",
         origin: "system",
         sourceType: "online",
@@ -834,7 +834,7 @@ export class EdgeTtsProvider implements TtsProviderAdapter {
       },
       {
         id: "edge_ko_injoon",
-        name: "InJoon (Edge)",
+        name: "InJoon",
         source: "edge",
         origin: "system",
         sourceType: "online",

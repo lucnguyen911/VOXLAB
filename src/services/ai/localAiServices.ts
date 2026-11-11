@@ -37,6 +37,7 @@ export interface VoiceReference {
   refAudioPath: string;
   refText?: string;
   language?: string;
+  engine?: string;
 }
 
 /** Returns the clone reference for a voice id, or null for an engine's built-in/default voice. */
@@ -175,13 +176,20 @@ export class LocalAiServices {
     ref: VoiceReference | null;
     language?: string;
   } {
-    const caps = resolveLocalEngine(model);
+    const resolvedRef = this.resolveVoice(voiceId || "");
+    const isKokoroVoiceId =
+      typeof voiceId === "string" &&
+      (voiceId.startsWith("kokoro_") || /^[ab][fm]_[a-z0-9_]+$/i.test(voiceId));
+    const voiceBoundEngine = isKokoroVoiceId ? "kokoro_82m" : resolvedRef?.engine;
+    const caps =
+      resolveLocalEngine(model) ||
+      (voiceBoundEngine ? resolveLocalEngine(voiceBoundEngine) : null);
     if (!caps) {
       throw new AiError("UNSUPPORTED", `Model "${model}" không phải engine local (Kokoro-82M / OmniVoice / Chatterbox Turbo / Qwen TTS).`);
     }
     const advanced = advancedSettings || getEngineAdvancedSettings(caps.engine);
     const xVectorOnly = Boolean(advanced?.x_vector_only_mode ?? advanced?.xVectorOnlyMode);
-    const ref = caps.supportsVoiceClone ? this.resolveVoice(voiceId || "") : null;
+    const ref = caps.supportsVoiceClone ? resolvedRef : null;
     const lang = language || ref?.language || detectTextLanguage(text);
     const check = checkEngineSupport(caps, {
       language: lang,

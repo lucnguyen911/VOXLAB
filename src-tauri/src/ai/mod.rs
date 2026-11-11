@@ -1,3 +1,4 @@
+pub mod installer;
 pub mod models;
 pub mod sidecar;
 
@@ -132,9 +133,112 @@ pub fn ai_scan_models(
     app: AppHandle,
     models_dir: Option<String>,
 ) -> Result<Vec<models::ModelStatus>, AiError> {
+    let app_data = app.path().app_data_dir().ok();
+    let dev_root = sidecar_root();
     let dir = match models_dir {
         Some(d) if !d.trim().is_empty() => PathBuf::from(d),
         _ => PathBuf::from(ai_models_dir(app)?),
     };
-    Ok(models::scan(&dir))
+    Ok(models::scan_with_runtime(
+        &dir,
+        app_data.as_deref(),
+        dev_root.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub fn ai_hardware_info() -> installer::HardwareAcceleratorInfo {
+    installer::detect_hardware_accelerator()
+}
+
+#[tauri::command]
+pub async fn ai_install_model(
+    app: AppHandle,
+    state: State<'_, AiState>,
+    model_id: String,
+    models_dir: Option<String>,
+) -> Result<models::ModelStatus, AiError> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AiError::new("INTERNAL", e.to_string()))?;
+    crate::security::SecurityService::require_commercial_access_if_enabled(
+        &app_data,
+        "ai.install_model",
+    )
+    .map_err(|msg| AiError::new("LICENSE_REQUIRED", msg))?;
+
+    let spec = installer::find_model_spec(model_id.trim())?;
+    let target_models_dir = match models_dir {
+        Some(d) if !d.trim().is_empty() => PathBuf::from(d),
+        _ => PathBuf::from(ai_models_dir(app.clone())?),
+    };
+    let dev_root = sidecar_root();
+    let mgr = state.0.clone();
+    let emit_handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        installer::install_model_blocking(
+            spec,
+            &target_models_dir,
+            &app_data,
+            dev_root.as_deref(),
+            &mgr,
+            move |ev| {
+                let _ = emit_handle.emit("ai://model-install-progress", ev);
+            },
+        )
+    })
+    .await
+    .map_err(|e| AiError::new("INTERNAL", e.to_string()))?
+}
+
+#[tauri::command]
+pub fn ai_cancel_model_install(model_id: Option<String>) -> Result<bool, AiError> {
+    installer::cancel_active_install(model_id.as_deref())
+}
+
+#[tauri::command]
+pub fn ai_bootstrap_status(app: AppHandle) -> Result<installer::RuntimeBootstrapStatus, AiError> {
+    let app_data = app.path().app_data_dir().ok();
+    let dev_root = sidecar_root();
+    Ok(installer::check_bootstrap_status(
+        app_data.as_deref(),
+        dev_root.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub async fn ai_bootstrap_runtimes(
+    app: AppHandle,
+    state: State<'_, AiState>,
+) -> Result<installer::RuntimeBootstrapStatus, AiError> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AiError::new("INTERNAL", e.to_string()))?;
+    crate::security::SecurityService::require_commercial_access_if_enabled(
+        &app_data,
+        "ai.bootstrap_runtimes",
+    )
+    .map_err(|msg| AiError::new("LICENSE_REQUIRED", msg))?;
+
+    let target_models_dir = PathBuf::from(ai_models_dir(app.clone())?);
+    let dev_root = sidecar_root();
+    let mgr = state.0.clone();
+    let emit_handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        installer::bootstrap_runtimes_blocking(
+            &app_data,
+            &target_models_dir,
+            dev_root.as_deref(),
+            &mgr,
+            move |ev| {
+                let _ = emit_handle.emit("ai://model-install-progress", ev);
+            },
+        )
+    })
+    .await
+    .map_err(|e| AiError::new("INTERNAL", e.to_string()))?
 }

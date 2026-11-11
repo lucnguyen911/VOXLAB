@@ -40,6 +40,7 @@ import {
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
+import { listCloneVoices } from "../../ai/cloneVoiceRegistry";
 import { getEffectiveRules } from "../../pronunciation";
 import {
   validateChunkAudioQuality,
@@ -160,8 +161,15 @@ export class DubbingExecutor {
       return fail(20, "Local AI runtime chưa sẵn sàng (sidecar không khả dụng) — không thể lồng tiếng thật.");
     }
 
-    const model = dubSnapshot?.ttsModel || "";
     const voiceId = dubSnapshot?.voiceId || "";
+    const cloneBoundEngine = listCloneVoices().find((v) => v.id === voiceId)?.engine;
+    const isKokoroVoice =
+      typeof voiceId === "string" &&
+      (voiceId.startsWith("kokoro_") || /^[ab][fm]_[a-z0-9_]+$/i.test(voiceId));
+    const model =
+      (isKokoroVoice ? "kokoro_82m" : cloneBoundEngine) ||
+      dubSnapshot?.ttsModel ||
+      "";
     const speed =
       dubSnapshot?.speed && dubSnapshot.speed !== 1 ? dubSnapshot.speed : undefined;
     const effectiveRules = getEffectiveRules("dubbing");

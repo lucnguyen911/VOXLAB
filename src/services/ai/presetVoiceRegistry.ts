@@ -19,7 +19,7 @@ export interface PresetVoiceDefinition {
 export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   kokoro_af_heart: {
     voiceId: "kokoro_af_heart",
-    name: "Heart (Kokoro Local)",
+    name: "Heart",
     fileName: "kokoro_af_heart.wav",
     refText: "Hello, I am Heart from Kokoro on VoxLab. My voice is warm, natural, and expressive for storytelling.",
     language: "en",
@@ -27,7 +27,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_af_bella: {
     voiceId: "kokoro_af_bella",
-    name: "Bella (Kokoro Local)",
+    name: "Bella",
     fileName: "kokoro_af_bella.wav",
     refText: "Hi there, this is Bella on VoxLab, bringing a bright and engaging tone to your podcasts and videos.",
     language: "en",
@@ -35,7 +35,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_af_nicole: {
     voiceId: "kokoro_af_nicole",
-    name: "Nicole (Kokoro Local)",
+    name: "Nicole",
     fileName: "kokoro_af_nicole.wav",
     refText: "Welcome to VoxLab. I am Nicole, delivering a calm, soft, and intimate voice for late-night narration.",
     language: "en",
@@ -43,7 +43,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_af_sarah: {
     voiceId: "kokoro_af_sarah",
-    name: "Sarah (Kokoro Local)",
+    name: "Sarah",
     fileName: "kokoro_af_sarah.wav",
     refText: "Hello, this is Sarah with a clear and professional voice sample for presentations and news on VoxLab.",
     language: "en",
@@ -51,7 +51,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_am_adam: {
     voiceId: "kokoro_am_adam",
-    name: "Adam (Kokoro Local)",
+    name: "Adam",
     fileName: "kokoro_am_adam.wav",
     refText: "Hello, I am Adam on VoxLab, offering a resonant and confident American male voice for documentaries.",
     language: "en",
@@ -59,7 +59,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_am_michael: {
     voiceId: "kokoro_am_michael",
-    name: "Michael (Kokoro Local)",
+    name: "Michael",
     fileName: "kokoro_am_michael.wav",
     refText: "Hi, this is Michael from Kokoro on VoxLab, ready for natural conversational dialogue and tutorials.",
     language: "en",
@@ -67,7 +67,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_am_fenrir: {
     voiceId: "kokoro_am_fenrir",
-    name: "Fenrir (Kokoro Local)",
+    name: "Fenrir",
     fileName: "kokoro_am_fenrir.wav",
     refText: "Greetings from VoxLab. I am Fenrir, providing a deep, dramatic, and commanding voice for trailers.",
     language: "en",
@@ -75,7 +75,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_am_puck: {
     voiceId: "kokoro_am_puck",
-    name: "Puck (Kokoro Local)",
+    name: "Puck",
     fileName: "kokoro_am_puck.wav",
     refText: "Hey everyone, this is Puck on VoxLab! Let us dive right into an energetic and lively story.",
     language: "en",
@@ -83,7 +83,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_bf_emma: {
     voiceId: "kokoro_bf_emma",
-    name: "Emma UK (Kokoro Local)",
+    name: "Emma",
     fileName: "kokoro_bf_emma.wav",
     refText: "Good day, I am Emma on VoxLab, speaking with a refined and articulate British accent for audiobooks.",
     language: "en",
@@ -91,7 +91,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_bf_isabella: {
     voiceId: "kokoro_bf_isabella",
-    name: "Isabella UK (Kokoro Local)",
+    name: "Isabella",
     fileName: "kokoro_bf_isabella.wav",
     refText: "Hello, this is Isabella on VoxLab, offering a gentle and poised British voice for classic literature.",
     language: "en",
@@ -99,7 +99,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_bm_george: {
     voiceId: "kokoro_bm_george",
-    name: "George UK (Kokoro Local)",
+    name: "George",
     fileName: "kokoro_bm_george.wav",
     refText: "Hello, this is George on VoxLab, delivering a distinguished British documentary and narration voice.",
     language: "en",
@@ -107,7 +107,7 @@ export const PRESET_VOICE_DEFINITIONS: Record<string, PresetVoiceDefinition> = {
   },
   kokoro_bm_lewis: {
     voiceId: "kokoro_bm_lewis",
-    name: "Lewis UK (Kokoro Local)",
+    name: "Lewis",
     fileName: "kokoro_bm_lewis.wav",
     refText: "Welcome to VoxLab. I am Lewis, bringing a modern and clear British male voice to your projects.",
     language: "en",

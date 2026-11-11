@@ -119,8 +119,28 @@ export interface ModelStatus {
   requiredFiles: string[];
   path: string;
   installed: boolean;
+  weightsInstalled?: boolean;
+  runtimeInstalled?: boolean;
+  requiresCuda?: boolean;
   missingFiles: string[];
   sizeOnDiskMb: number;
+}
+
+export interface HardwareAcceleratorInfo {
+  hasNvidiaGpu: boolean;
+  gpuName: string | null;
+  mode: "cuda" | "cpu";
+}
+
+export interface ModelInstallProgressEvent {
+  modelId: string;
+  status: "installing" | "completed" | "cancelled" | "error";
+  stage: "preparing" | "runtime" | "weights" | "verifying" | "done";
+  pct: number;
+  message: string;
+  downloadedMb?: number | null;
+  totalMb?: number | null;
+  speedMbps?: number | null;
 }
 
 export async function scanAiModels(modelsDir?: string): Promise<ModelStatus[]> {
@@ -131,4 +151,76 @@ export async function scanAiModels(modelsDir?: string): Promise<ModelStatus[]> {
     console.error("ai_scan_models failed:", e);
     return [];
   }
+}
+
+export async function getAiHardwareInfo(): Promise<HardwareAcceleratorInfo> {
+  if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) {
+    return { hasNvidiaGpu: false, gpuName: null, mode: "cpu" };
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<HardwareAcceleratorInfo>("ai_hardware_info");
+  } catch {
+    return { hasNvidiaGpu: false, gpuName: null, mode: "cpu" };
+  }
+}
+
+export async function installAiModel(modelId: string, modelsDir?: string): Promise<ModelStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke<ModelStatus>("ai_install_model", {
+    modelId,
+    modelsDir: modelsDir || null,
+  });
+}
+
+export async function cancelAiModelInstall(modelId?: string): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<boolean>("ai_cancel_model_install", {
+      modelId: modelId || null,
+    });
+  } catch {
+    return false;
+  }
+}
+
+export const BOOTSTRAP_JOB_ID = "__bootstrap__";
+
+export interface RuntimeBootstrapStatus {
+  ready: boolean;
+  hasNvidiaGpu: boolean;
+  gpuName: string | null;
+  missingRuntimes: string[];
+}
+
+export async function getAiBootstrapStatus(): Promise<RuntimeBootstrapStatus> {
+  if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) {
+    return { ready: true, hasNvidiaGpu: false, gpuName: null, missingRuntimes: [] };
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<RuntimeBootstrapStatus>("ai_bootstrap_status");
+  } catch {
+    return { ready: true, hasNvidiaGpu: false, gpuName: null, missingRuntimes: [] };
+  }
+}
+
+export async function bootstrapAiRuntimes(): Promise<RuntimeBootstrapStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return await invoke<RuntimeBootstrapStatus>("ai_bootstrap_runtimes");
+}
+
+export async function onModelInstallProgress(
+  handler: (event: ModelInstallProgressEvent) => void
+): Promise<() => void> {
+  if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<ModelInstallProgressEvent>("ai://model-install-progress", (ev) => {
+    if (ev && ev.payload) {
+      handler(ev.payload);
+    }
+  });
+  return unlisten;
 }

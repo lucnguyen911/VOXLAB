@@ -157,6 +157,7 @@ export async function reconcileCloneVoicesWithProfiles(
     return {
       ...p,
       name: p.name || entry.name,
+      engine: p.engine || entry.engine || "omnivoice",
       provider: p.provider === ("clone" as any) || !p.provider ? "local" : p.provider,
       sourceType: p.sourceType === ("clone" as any) || !p.sourceType ? "local" : p.sourceType,
       sampleAudioPath: entry.refAudioPath || p.sampleAudioPath,
@@ -210,5 +211,10 @@ export async function reconcileCloneVoicesWithProfiles(
 export function resolveCloneVoiceReference(voiceId: string): VoiceReference | null {
   const v = cache.find((e) => e.id === voiceId);
   if (!v) return null;
-  return { refAudioPath: v.refAudioPath, refText: v.refText || undefined, language: v.language };
+  return {
+    refAudioPath: v.refAudioPath,
+    refText: v.refText || undefined,
+    language: v.language,
+    engine: v.engine,
+  };
 }

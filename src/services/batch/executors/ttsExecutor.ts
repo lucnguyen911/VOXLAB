@@ -14,7 +14,7 @@
 import { BatchJob, BatchStepResult, BatchTtsSnapshot, BatchQcChunkItem } from "../../../types/batch";
 import { ChunkItem } from "../../../types/ui";
 import { normalizeText, getDefaultEnabledGroupIds } from "../../normalizer/engine";
-import { splitScriptWithPauses } from "../../pause/chunker";
+import { splitScriptWithPauses, TTS_SMART_CHUNK_OPTIONS } from "../../pause/chunker";
 import { computeChunkPausesMs } from "../../audio/masterExport";
 import { generateSubtitlesFromChunks } from "../../subtitle/pipeline";
 import { exportToSrt, exportToVtt } from "../../subtitle/exporter";
@@ -26,6 +26,7 @@ import {
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
+import { listCloneVoices } from "../../ai/cloneVoiceRegistry";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 import { getEffectiveRules } from "../../pronunciation";
 import {
@@ -82,13 +83,17 @@ export class TtsExecutor {
       };
     }
 
-    // 2. Normalization (safe text cleanup; spoken pronunciation rules are applied strictly at TTS synthesis time so subtitles keep source_text)
-    const normResult = normalizeText(rawText, getDefaultEnabledGroupIds());
-    const normalizedText = normResult.normalizedText;
+    // 2. Normalization (safe text cleanup; preserve explicit \n\n paragraph boundaries for Smart Chunking)
+    const enabledGroupIds = getDefaultEnabledGroupIds();
+    const normalizedText = rawText
+      .split(/\r?\n\s*\r?\n/)
+      .map((para) => normalizeText(para, enabledGroupIds).normalizedText.trim())
+      .filter((para) => para.length > 0)
+      .join("\n\n");
     const effectiveRules = getEffectiveRules();
 
     // 3. Smart Chunking with pauses
-    const chunks: ChunkItem[] = splitScriptWithPauses(normalizedText);
+    const chunks: ChunkItem[] = splitScriptWithPauses(normalizedText, TTS_SMART_CHUNK_OPTIONS);
     if (chunks.length === 0) {
       return {
         task: "tts",
@@ -125,8 +130,15 @@ export class TtsExecutor {
     if (!ai) {
       return fail(10, "Local AI runtime chưa sẵn sàng (sidecar không khả dụng) — không thể tạo giọng đọc thật.");
     }
-    const model = ttsSnapshot?.model || "";
     const voiceId = ttsSnapshot?.voiceId || "";
+    const cloneBoundEngine = listCloneVoices().find((v) => v.id === voiceId)?.engine;
+    const isKokoroVoice =
+      typeof voiceId === "string" &&
+      (voiceId.startsWith("kokoro_") || /^[ab][fm]_[a-z0-9_]+$/i.test(voiceId));
+    const model =
+      (isKokoroVoice ? "kokoro_82m" : cloneBoundEngine) ||
+      ttsSnapshot?.model ||
+      "";
     const speed = ttsSnapshot?.speed && ttsSnapshot.speed !== 1 ? ttsSnapshot.speed : undefined;
     const isOnlineVoice =
       typeof voiceId === "string" &&
