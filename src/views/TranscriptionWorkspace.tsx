@@ -55,7 +55,6 @@ import {
   probeWavHeaderFast,
   readAudioFileBlobUrl,
   reloadAiRuntimeSettings,
-  showPathInFolder,
   tauriAiFs,
 } from "../services/batch/batchRuntime";
 import { syncAsrModelToAiRuntime } from "../services/ai/aiRuntimeSettings";
@@ -1126,7 +1125,6 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
               },
             ],
           });
-          await showPathInFolder(savePath).catch(() => {});
         }
         return;
       } catch {

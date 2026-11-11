@@ -28,7 +28,7 @@ import {
   generateDialogueSrt,
   downloadTextFile,
 } from "../services/dialogue/srtExporter";
-import { downloadAudioBlob, generateMasterSrtWithAsr } from "../services/audio/masterExport";
+import { downloadAudioBlob } from "../services/audio/masterExport";
 import { loadSubtitleSettings } from "../services/subtitle";
 import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import { DialogueEditor } from "../components/dialogue/DialogueEditor";
@@ -44,7 +44,11 @@ import { sanitizePunctuationPauses } from "../services/pause/punctuationPause";
 import { createEffectiveVoiceSnapshot } from "../services/providers";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getEffectiveRules, prepareSpokenText } from "../services/pronunciation";
-import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
+import {
+  concatPcmWavsFast,
+  getSharedAiServices,
+  readAudioFileBlobUrl,
+} from "../services/batch/batchRuntime";
 import { MOCK_VOICES } from "../mock/data";
 import {
   QUALITY_VALIDATOR_VERSION,
@@ -963,37 +967,34 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       const plan = calculateDialogueTimeline(readySegs, settings);
       const ai = await getSharedAiServices();
 
-      if (chosenPath && ai) {
+      if (chosenPath && (ai || !chosenPath.toLowerCase().endsWith(".mp3"))) {
         const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
         let exportedSrtPath: string | null = null;
         let exportedSrtContent: string | undefined;
-        await ai.assemble({
-          inputs: readySegs.map((seg, i) => ({
-            path: seg.audioFilePath!,
-            gapAfterMs: Math.round((plan.timeline[i]?.pauseAfterSec ?? 0) * 1000),
-          })),
-          outputPath: chosenPath,
-          format: isMp3 ? "mp3" : "wav",
-          mode: "sequential",
-        });
+        const concatInputs = readySegs.map((seg, i) => ({
+          path: seg.audioFilePath!,
+          gapAfterMs: Math.round((plan.timeline[i]?.pauseAfterSec ?? 0) * 1000),
+        }));
+        const fastWav = !isMp3 ? await concatPcmWavsFast(concatInputs, chosenPath) : null;
+        if (!fastWav) {
+          if (!ai) {
+            throw new Error("Dịch vụ xử lý âm thanh cục bộ chưa sẵn sàng.");
+          }
+          await ai.assemble({
+            inputs: concatInputs,
+            outputPath: chosenPath,
+            format: isMp3 ? "mp3" : "wav",
+            mode: "sequential",
+          });
+        }
 
         if (settings.exportSrt) {
           try {
             const subtitleSettings = loadSubtitleSettings();
-            const srtRes = await generateMasterSrtWithAsr({
-              audioPath: chosenPath,
-              scriptText: readySegs.map((s) => s.cleanText || s.rawText).join(" "),
+            const srt = generateDialogueSrt(plan.timeline, {
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
-              ai,
             });
-            const srt =
-              srtRes.srt && srtRes.srt.trim().length > 0
-                ? srtRes.srt
-                : generateDialogueSrt(plan.timeline, {
-                    aspectRatio: subtitleSettings.aspectRatio,
-                    maxLines: subtitleSettings.maxLines,
-                  });
             const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
             exportedSrtPath = srtPath;
             exportedSrtContent = srt;
@@ -1008,14 +1009,13 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         }
 
         try {
-          const { invoke } = await import("@tauri-apps/api/core");
           const exportFileName = chosenPath.split(/[\\/]/).pop() || "VoxLab_HoiThoai_Master.wav";
           recordCompletedJobToHistory({
             title: exportFileName,
             category: "dialogue",
             isBatch: false,
             tasks: exportedSrtPath ? ["dialogue", "transcription"] : ["dialogue"],
-            durationSec: plan.totalDurationSec,
+            durationSec: fastWav?.durationSec ?? plan.totalDurationSec,
             chunkCount: readySegs.length,
             artifacts: [
               {
@@ -1023,7 +1023,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
                 type: "audio",
                 task: "dialogue",
                 label: `Audio Hội thoại Phân vai (${characters.length} nhân vật)`,
-                audioDurationSec: plan.totalDurationSec,
+                audioDurationSec: fastWav?.durationSec ?? plan.totalDurationSec,
               },
               ...(exportedSrtPath
                 ? [
@@ -1039,9 +1039,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
                 : []),
             ],
           });
-          await invoke("fs_show_in_folder", { path: chosenPath });
-        } catch (folderErr) {
-          console.warn("Could not reveal file in folder:", folderErr);
+        } catch (histErr) {
+          console.warn("Could not record dialogue export to history:", histErr);
         }
 
         alert(`Đã xuất file âm thanh hội thoại thành công:\n${chosenPath}`);

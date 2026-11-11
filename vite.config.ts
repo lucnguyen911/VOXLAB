@@ -36,6 +36,7 @@ function voxlabProductionObfuscator(): Plugin {
         stringArrayCallsTransformThreshold: 0.75,
         forceTransformStrings: [
           "ai_",
+          "fs_",
           "license",
           "update",
           "sidecar",

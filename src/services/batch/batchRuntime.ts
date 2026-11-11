@@ -229,3 +229,41 @@ export async function probeWavHeaderFast(filePath: string): Promise<{
 export async function showPathInFolder(filePath: string): Promise<void> {
   await invoke<void>("fs_show_in_folder", { path: filePath });
 }
+
+export interface WavConcatSegment {
+  index: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+}
+
+export interface WavConcatResult {
+  outputPath: string;
+  sampleRate: number;
+  durationSec: number;
+  segments: WavConcatSegment[];
+}
+
+/**
+ * Fast-path native Rust PCM_16 mono WAV stitcher (<5ms, zero Python IPC / queue contention).
+ * Returns `null` when running outside Tauri or when inputs are non-WAV / mixed sample rates.
+ */
+export async function concatPcmWavsFast(
+  inputs: Array<{ path: string; gapAfterMs?: number }>,
+  outputPath: string
+): Promise<WavConcatResult | null> {
+  if (!isTauriRuntime() || !outputPath.toLowerCase().endsWith(".wav") || inputs.length === 0) {
+    return null;
+  }
+  try {
+    return await invoke<WavConcatResult | null>("fs_concat_pcm_wavs", {
+      inputs: inputs.map((item) => ({
+        path: normalizeLocalFilePath(item.path),
+        gapAfterMs: item.gapAfterMs ?? 0,
+      })),
+      outputPath: normalizeLocalFilePath(outputPath),
+    });
+  } catch {
+    return null;
+  }
+}

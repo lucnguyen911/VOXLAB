@@ -1009,27 +1009,7 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
               <div className="space-y-1.5">
                 <div className="grid grid-cols-2 gap-2.5">
                   <div className="space-y-1.5 min-w-0">
-                    <div className="flex items-center justify-between gap-1">
-                      <label className="block text-textSecondary font-medium">Model</label>
-                      {installedModels.length > 0 && (
-                        isCloneModelInstalled(currentModel) ? (
-                          <span className="text-[10px] font-semibold text-emerald-500">
-                            {lang === "vi" ? "Đã cài" : "Installed"}
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              window.dispatchEvent(new CustomEvent("voxlab_open_settings_models"))
-                            }
-                            className="text-[10px] font-semibold text-amber-500 hover:underline cursor-pointer"
-                            title="Mở Cài đặt → Mô hình để tải mô hình này"
-                          >
-                            {lang === "vi" ? "Chưa cài · Tải →" : "Install →"}
-                          </button>
-                        )
-                      )}
-                    </div>
+                    <label className="block text-textSecondary font-medium">Model</label>
                     <select
                       value={selectedModelId}
                       onChange={(e) => setSelectedModelId(e.target.value)}

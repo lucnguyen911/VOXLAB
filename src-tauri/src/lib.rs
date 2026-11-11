@@ -352,6 +352,7 @@ pub fn run() {
             fsio::fs_clear_scratch,
             fsio::fs_read_bytes,
             fsio::fs_probe_wav_header,
+            fsio::fs_concat_pcm_wavs,
             fsio::fs_show_in_folder
         ])
         .build(tauri::generate_context!())

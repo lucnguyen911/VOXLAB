@@ -1083,7 +1083,6 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
               },
             ],
           });
-          await invoke("fs_show_in_folder", { path: chosenPath }).catch(() => {});
         } catch (err) {
           console.warn("Could not save translated SRT via Tauri:", err);
         }
@@ -1139,7 +1138,6 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
               },
             ],
           });
-          await invoke("fs_show_in_folder", { path: chosenPath }).catch(() => {});
         } catch (err) {
           console.warn("Could not save translated TXT via Tauri:", err);
         }
@@ -1213,7 +1211,6 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
               },
             ],
           });
-          await invoke("fs_show_in_folder", { path: chosenPath }).catch(() => {});
         } catch (err) {
           console.warn("Could not save aligned SRT via Tauri:", err);
         }
@@ -1994,13 +1991,6 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         if (autoFitEnabled && dubbingMode !== "free_narration") {
           setAudioSegments(activeSegments);
           setOverflowAnalysis(activeOverflow);
-        }
-
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("fs_show_in_folder", { path: chosenPath });
-        } catch (folderErr) {
-          console.warn("Could not reveal file in folder:", folderErr);
         }
 
         const voiceProfile = voices.find((v) => v.id === selectedVoiceId);

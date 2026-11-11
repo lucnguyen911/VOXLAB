@@ -81,7 +81,8 @@ export function buildSpeechUnitsFromChunks(
         );
         const effectivePauseMs = calculateEffectiveSilenceGapMs(
           targetPauseMs,
-          chunk.trailingSilenceMs ?? 0
+          chunk.trailingSilenceMs ?? 0,
+          sorted[i + 1]?.leadingSilenceMs ?? 0
         );
         pauseSec = effectivePauseMs / 1000;
       } else if (typeof chunk.pauseAfterMs === "number" && chunk.pauseAfterMs > 0) {

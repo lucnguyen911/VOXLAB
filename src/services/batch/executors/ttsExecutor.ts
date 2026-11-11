@@ -25,6 +25,7 @@ import {
 } from "../outputResolver";
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
+import { concatPcmWavsFast } from "../batchRuntime";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { listCloneVoices } from "../../ai/cloneVoiceRegistry";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
@@ -337,16 +338,29 @@ export class TtsExecutor {
 
     const outputArtifactPaths: string[] = [];
 
-    // 6. Assemble master from the real chunk audio (sidecar writes atomically; MP3 = real LAME encode)
+    // 6. Assemble master from the real chunk audio (fast native Rust WAV concat or sidecar MP3 LAME encode)
+    let fastWavSegments: Array<{ durationSec: number }> | undefined;
     if (audioResolution.action !== "skip") {
       onProgress?.(75, "Đang ghép nối tệp âm thanh Master...");
       const pauses = computeChunkPausesMs(sortedChunks, ttsSnapshot?.pauses);
+      const concatInputs = sortedChunks.map((c, i) => ({
+        path: c.audioUrl as string,
+        gapAfterMs: pauses[i],
+      }));
       try {
-        await ai.assemble({
-          inputs: sortedChunks.map((c, i) => ({ path: c.audioUrl as string, gapAfterMs: pauses[i] })),
-          outputPath: audioResolution.resolvedPath,
-          format: targetAudioFormat,
-        });
+        const fastWav =
+          targetAudioFormat === "wav"
+            ? await concatPcmWavsFast(concatInputs, audioResolution.resolvedPath)
+            : null;
+        if (fastWav) {
+          fastWavSegments = fastWav.segments;
+        } else {
+          await ai.assemble({
+            inputs: concatInputs,
+            outputPath: audioResolution.resolvedPath,
+            format: targetAudioFormat,
+          });
+        }
       } catch (e) {
         const err = AiError.from(e);
         if (err.code === "CANCELLED") return cancelled(75);
@@ -355,42 +369,30 @@ export class TtsExecutor {
       outputArtifactPaths.push(audioResolution.resolvedPath);
     }
 
-    // 7. YouTube Cinematic Subtitle alignment (ASR word-timestamps on Master Audio with chunk-clause fallback)
+    // 7. Instant synchronized subtitle generation directly from synthesized chunk durations
     const needsSubtitle =
       job.selectedTasks.includes("transcription") ||
       Boolean(ttsSnapshot?.exportSrt) ||
       (job.effectiveConfigSnapshot?.tasks.tts?.sentencePauseMs !== undefined);
 
     if (needsSubtitle) {
-      onProgress?.(88, "Đang nhận dạng & tối ưu phụ đề YouTube từ Master Audio...");
+      onProgress?.(88, "Đang xuất phụ đề đồng bộ...");
       const transSnapshot =
         job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
       const subFormat = job.outputSnapshot?.outputSubtitleFormat || "srt";
-      let subContent = "";
-      if (subFormat === "srt" && audioResolution.action !== "skip" && typeof ai.generateMasterSubtitles === "function") {
-        try {
-          const masterSub = await ai.generateMasterSubtitles({
-            audioPath: audioResolution.resolvedPath,
-            scriptText: sortedChunks.map((c) => c.text || c.originalText).join("\n"),
-            chunkCount: sortedChunks.length,
-            ...(transSnapshot?.aspectRatio ? { aspectRatio: transSnapshot.aspectRatio } : {}),
-            ...(transSnapshot?.maxLines ? { maxLines: transSnapshot.maxLines } : {}),
-            ...(transSnapshot?.whisperModel ? { asrModelId: transSnapshot.whisperModel } : {}),
-            ...(transSnapshot?.audioLanguage ? { language: transSnapshot.audioLanguage } : {}),
-            ...(transSnapshot?.speechSpeed ? { speechSpeed: transSnapshot.speechSpeed } : {}),
-          });
-          if (masterSub?.srt?.trim()) {
-            subContent = masterSub.srt;
-          }
-        } catch {
-          // Graceful fallback when mock backend does not implement subtitle.generate_srt
-        }
-      }
-      if (!subContent) {
-        const subtitleCues = generateSubtitlesFromChunks(chunks);
-        subContent =
-          subFormat === "vtt" ? exportToVtt(subtitleCues) : exportToSrt(subtitleCues);
-      }
+      const timedChunks = fastWavSegments
+        ? sortedChunks.map((c, idx) => ({
+            ...c,
+            durationSec: fastWavSegments?.[idx]?.durationSec ?? c.durationSec,
+          }))
+        : sortedChunks;
+      const subtitleCues = generateSubtitlesFromChunks(timedChunks, {
+        punctuationPauses: ttsSnapshot?.pauses,
+        ...(transSnapshot?.aspectRatio ? { aspectRatio: transSnapshot.aspectRatio } : {}),
+        ...(transSnapshot?.maxLines ? { maxLines: transSnapshot.maxLines } : {}),
+      });
+      const subContent =
+        subFormat === "vtt" ? exportToVtt(subtitleCues) : exportToSrt(subtitleCues);
 
       const subResolution = resolveArtifactPath({
         outputDir,

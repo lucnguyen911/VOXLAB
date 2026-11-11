@@ -32,6 +32,7 @@ import {
 } from "../outputResolver";
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
+import { concatPcmWavsFast } from "../batchRuntime";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { listCloneVoices } from "../../ai/cloneVoiceRegistry";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
@@ -389,15 +390,22 @@ export class DialogueExecutor {
 
     if (audioResolution.action !== "skip") {
       onProgress?.(75, "Đang ghép nối âm thanh hội thoại đa nhân vật...");
+      const concatInputs = assembly.timeline.map((entry, i) => ({
+        path: segmentPaths[i],
+        gapAfterMs: Math.round(entry.pauseAfterSec * 1000),
+      }));
       try {
-        await ai.assemble({
-          inputs: assembly.timeline.map((entry, i) => ({
-            path: segmentPaths[i],
-            gapAfterMs: Math.round(entry.pauseAfterSec * 1000),
-          })),
-          outputPath: audioResolution.resolvedPath,
-          format: targetAudioFormat,
-        });
+        const fastWav =
+          targetAudioFormat === "wav"
+            ? await concatPcmWavsFast(concatInputs, audioResolution.resolvedPath)
+            : null;
+        if (!fastWav) {
+          await ai.assemble({
+            inputs: concatInputs,
+            outputPath: audioResolution.resolvedPath,
+            format: targetAudioFormat,
+          });
+        }
       } catch (e) {
         const err = AiError.from(e);
         if (err.code === "CANCELLED") return cancelled(75);

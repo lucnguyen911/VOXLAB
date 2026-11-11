@@ -31,7 +31,6 @@ import {
   assembleMasterAudioAsync,
   downloadAudioBlob,
   generateSrtFromChunks,
-  generateMasterSrtWithAsr,
   downloadTextBlob,
   computeChunkPausesMs,
 } from "../services/audio/masterExport";
@@ -41,6 +40,7 @@ import { recordCompletedJobToHistory } from "../services/history/historyManager"
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import {
+  concatPcmWavsFast,
   getSharedAiServices,
 } from "../services/batch/batchRuntime";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
@@ -57,7 +57,6 @@ import { getEffectiveRules } from "../services/pronunciation";
 import {
   checkAsrReadiness,
   applyAsrModelSwitch,
-  getFriendlyAsrName,
   type AsrReadinessResult,
 } from "../services/ai/asrReadiness";
 import { AsrReadinessModal } from "../components/modals/AsrReadinessModal";
@@ -1263,66 +1262,67 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       const ai = await getSharedAiServices();
       const allHaveDiskPaths = sortedChunks.every((c) => !!c.audioFilePath);
 
-      // 2. High-performance on-disk assembly via Python sidecar if in desktop Tauri
-      if (chosenPath && ai && allHaveDiskPaths) {
+      // 2. High-performance native assembly on Tauri desktop (<10ms for PCM WAVs)
+      if (chosenPath && allHaveDiskPaths) {
         const isMp3 = chosenPath.toLowerCase().endsWith(".mp3");
-        setProgressStage("Đang ghép Master Audio...");
+        setProgressStage("Đang xuất tệp âm thanh...");
         let exportedSrtPath: string | null = null;
         let exportedSrtContent: string | undefined;
-        await ai.assemble({
-          inputs: sortedChunks.map((c, i) => ({
-            path: c.audioFilePath!,
-            gapAfterMs: chunkPausesMs[i] || 0,
-          })),
-          outputPath: chosenPath,
-          format: isMp3 ? "mp3" : "wav",
-          mode: "sequential",
-        });
+
+        const concatInputs = sortedChunks.map((c, i) => ({
+          path: c.audioFilePath!,
+          gapAfterMs: chunkPausesMs[i] || 0,
+        }));
+
+        const fastWav = !isMp3 ? await concatPcmWavsFast(concatInputs, chosenPath) : null;
+        if (!fastWav) {
+          if (!ai) {
+            throw new Error("Dịch vụ xử lý âm thanh cục bộ chưa sẵn sàng.");
+          }
+          await ai.assemble({
+            inputs: concatInputs,
+            outputPath: chosenPath,
+            format: isMp3 ? "mp3" : "wav",
+            mode: "sequential",
+          });
+        }
 
         if (exportSrt) {
           try {
             const subtitleSettings = loadSubtitleSettings();
-            setProgressStage(
-              `Đang nhận dạng & căn chỉnh phụ đề bằng ${getFriendlyAsrName(subtitleSettings.whisperModel)}...`
-            );
-            const srtRes = await generateMasterSrtWithAsr({
-              audioPath: chosenPath,
-              chunks,
-              scriptText: sortedChunks.map((c) => c.text || c.originalText).join("\n"),
+            const timedChunks = fastWav?.segments
+              ? sortedChunks.map((c, idx) => ({
+                  ...c,
+                  durationSec: fastWav.segments[idx]?.durationSec ?? c.durationSec,
+                }))
+              : sortedChunks;
+            const srtContent = generateSrtFromChunks(timedChunks, {
+              punctuationPauses: ttsSettings.pauses,
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
-              punctuationPauses: ttsSettings.pauses,
-              ai,
-              onProgress: (_pct, stage) => {
-                if (stage === "optimizing_youtube_subtitles") {
-                  setProgressStage("Đang tối ưu phụ đề YouTube...");
-                }
-              },
+              optimize: true,
             });
             const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
             const { invoke } = await import("@tauri-apps/api/core");
             await invoke("fs_write_text", {
               path: srtPath,
-              content: srtRes.srt,
+              content: srtContent,
             });
             exportedSrtPath = srtPath;
-            exportedSrtContent = srtRes.srt;
-            setProgressStage("Hoàn tất xuất WAV + SRT");
+            exportedSrtContent = srtContent;
           } catch (err: any) {
             console.error("SRT export error:", err);
-          } finally {
-            setTimeout(() => setProgressStage(""), 1200);
           }
-        } else {
-          setProgressStage("");
         }
+        setProgressStage("");
 
         try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          const totalDurSec = sortedChunks.reduce(
-            (acc, c, i) => acc + (c.durationSec || 0) + (chunkPausesMs[i] || 0) / 1000,
-            0
-          );
+          const totalDurSec =
+            fastWav?.durationSec ??
+            sortedChunks.reduce(
+              (acc, c, i) => acc + (c.durationSec || 0) + (chunkPausesMs[i] || 0) / 1000,
+              0
+            );
           const activeVoiceObj = voices.find((v) => v.id === activeVoiceId);
           const exportFileName = chosenPath.split(/[\\/]/).pop() || `${safeTitle}.wav`;
           recordCompletedJobToHistory({
@@ -1354,9 +1354,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 : []),
             ],
           });
-          await invoke("fs_show_in_folder", { path: chosenPath });
-        } catch (folderErr) {
-          console.warn("Could not reveal file in folder:", folderErr);
+        } catch (histErr) {
+          console.warn("Could not record exported job to history:", histErr);
         }
 
         alert(
