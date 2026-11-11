@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Offline grace period aligned with Audio-Factory Security v3: 3 days.
 pub const DEFAULT_OFFLINE_GRACE_DAYS: u64 = 3;
-pub const APP_VERSION: &str = "0.1.0";
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LicenseSummary {

@@ -2,6 +2,22 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.0] — 2026-11-11 (Commercial General Availability Release)
+
+### Added
+- **Zero-Python Client AI Runtime Bootstrap & Manual Model Installer**:
+  - Bundled standalone `uv.exe` (`sidecar/build_sidecars.ps1`) and Rust installer orchestrator (`src-tauri/src/ai/installer.rs`) that automatically detects NVIDIA CUDA vs. CPU hardware and provisions isolated Python AI runtimes (`faster-whisper`, `omnivoice`, `chatterbox_turbo`, `qwen_tts_1_7b`) on first launch without requiring system Python/Git/CUDA Toolkit on client PCs.
+  - Added manual model download & cancellation controls in **Cài đặt → Mô hình** while pre-bundling Apache-2.0 **Kokoro-82M** (`int8` ONNX) + **Edge-TTS** out of the box.
+- **Tactile Luxury Studio Design System & Frameless Unified Header**:
+  - Upgraded the entire UI (`src/App.css`, `TopBar`, `Sidebar`, `TtsInspector`, `SettingsWorkspace`, `BottomAudioPlayer`) with a 4-tier 3D tactile hardware button system, 4-layer warm Travertine/Porcelain & Obsidian surface elevation, recessed input wells, and unified frameless Windows 11 studio titlebar controls.
+  - Bundled offline variable multilingual technical typography (`Inter Variable` + `JetBrains Mono Variable` with Vietnamese diacritic optimization) and high-contrast Golden Pulse `V` application icons.
+- **Prosodic & Syntactic TTS Quality Validation (`v3.8`)**:
+  - Added ASR acronym/initialism expansion alignment (`Triple A` ↔ `AAA`) to eliminate false-positive missing-word alerts, clause-break acoustic pause detection before conjunctions/complementizers, and tighter compound-noun / preposition-NP cohesion thresholds (`sidecar/voxlab_sidecar/audio_quality.py`).
+
+### Fixed
+- **Accurate Installed Physical RAM Reporting**:
+  - Queried SMBIOS physical memory sticks via Win32 `GetPhysicallyInstalledSystemMemory` (`sidecar/voxlab_sidecar/__main__.py`) and normalized DDR capacity tiers (`formatInstalledRamGb` in `src/services/ai/hardwareRecommendation.ts`) so BIOS/iGPU/NPU Hardware Reserved memory no longer causes `32 GB` PCs to display `31 GB`.
+
 ## [0.1.0] — 2026-11-10 (Commercial Production Release — Security v3.1 & Acoustic Cohesion v3)
 
 ### Added

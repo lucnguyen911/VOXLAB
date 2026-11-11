@@ -1,7 +1,7 @@
 # Kế Hoạch Phát Hành, Kiểm Định Production & Phục Hồi Sự Cố (`RELEASE.md`)
 
 **Sản phẩm**: VoxLab Desktop (`com.voxlab.app`)  
-**Phiên bản**: `0.1.0` (Security v3.1 & Acoustic Cohesion v3)  
+**Phiên bản**: `1.0.0` (Commercial GA — Zero-Python AI Bootstrap, Security v3.1 & Acoustic Cohesion v3.8)  
 **Nền tảng mục tiêu**: Windows 10 / 11 64-bit (`x86_64-pc-windows-msvc`)  
 
 ---
@@ -17,8 +17,8 @@
    - `src-tauri/target/release/sidecar/voxlab-sidecar-qwen/voxlab-sidecar-qwen.exe` (Qwen3-TTS 1.7B).
    - Toàn bộ 15 module bảo mật/giao thức/engine bắt buộc đều được mã hóa bằng **PyArmor** và yêu cầu bắt tay xác thực 2 chiều `HMAC-SHA256` (`system.authenticate`) với tiến trình cha `voxlab.exe`.
 3. **Bộ cài đặt phân phối Windows (Installers)**:
-   - **NSIS Setup**: `src-tauri/target/release/bundle/nsis/VoxLab_0.1.0_x64-setup.exe`
-   - **WiX MSI**: `src-tauri/target/release/bundle/msi/VoxLab_0.1.0_x64_en-US.msi`
+   - **NSIS Setup**: `src-tauri/target/release/bundle/nsis/VoxLab_1.0.0_x64-setup.exe`
+   - **WiX MSI**: `src-tauri/target/release/bundle/msi/VoxLab_1.0.0_x64_en-US.msi`
 
 ---
 
