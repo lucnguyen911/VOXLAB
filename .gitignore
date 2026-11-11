@@ -31,12 +31,13 @@ sidecar/.venv/
 sidecar/.venv-chatterbox/
 sidecar/.venv-qwen/
 __pycache__/
+.pytest_cache/
 *.pyc
 sidecar/build/
 sidecar/dist/
 sidecar/models/
+sidecar/tools/
 *.safetensors
 
 # Local scratch and temporary work files
 scratch/
-start_app.bat
