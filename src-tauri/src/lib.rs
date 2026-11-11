@@ -289,6 +289,7 @@ async fn native_http_request(
 }
 
 pub mod ai;
+pub mod updater;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -336,6 +337,9 @@ pub fn run() {
             ai::ai_cancel_model_install,
             ai::ai_bootstrap_status,
             ai::ai_bootstrap_runtimes,
+            updater::check_app_update,
+            updater::download_and_install_update,
+            updater::cancel_app_update_download,
             fsio::fs_write_text,
             fsio::fs_write_bytes,
             fsio::fs_read_text,

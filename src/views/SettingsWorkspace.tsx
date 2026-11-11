@@ -53,13 +53,17 @@ import {
   cancelAiModelInstall,
   onModelInstallProgress,
   bootstrapAiRuntimes,
+  normalizeWhisperModelId,
   BOOTSTRAP_JOB_ID,
   type ModelStatus,
   type ModelInstallProgressEvent,
 } from "../services/ai/aiRuntimeSettings";
+import { applyAsrModelSwitch } from "../services/ai/asrReadiness";
+import { loadSubtitleSettings } from "../services/subtitle/profiles";
 import { showPathInFolder, reloadAiRuntimeSettings } from "../services/batch/batchRuntime";
 import { formatInstalledRamGb } from "../services/ai/hardwareRecommendation";
 import { AdvancedTtsSettingsPanel } from "../components/settings/AdvancedTtsSettingsPanel";
+import { checkAppUpdate, triggerAppUpdateModal } from "../services/updater/updaterService";
 
 export interface SettingsWorkspaceProps {
   onOpenMigrationModal?: (oldPath: string, newPath: string) => void;
@@ -738,14 +742,16 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     message: string;
   } | null>(null);
 
-  const handleScanModels = async (dirOverride?: string) => {
+  const handleScanModels = async (dirOverride?: string): Promise<ModelStatus[]> => {
     setIsScanningModels(true);
     try {
       const targetDir = dirOverride ?? modelsDir;
       const models = await scanAiModels(targetDir);
       setModelsList(models);
+      return models;
     } catch (e) {
       console.error("Scan models error:", e);
+      return [];
     } finally {
       setIsScanningModels(false);
     }
@@ -764,7 +770,19 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     });
     try {
       await installAiModel(model.id, modelsDir || undefined);
-      await handleScanModels();
+      const refreshedModels = await handleScanModels();
+      if (model.kind === "asr" || model.engine === "faster-whisper") {
+        const currentCanonical = normalizeWhisperModelId(loadSubtitleSettings().whisperModel);
+        const currentInstalled = refreshedModels.some(
+          (m) =>
+            (m.kind === "asr" || m.engine === "faster-whisper") &&
+            normalizeWhisperModelId(m.id) === currentCanonical &&
+            m.installed
+        );
+        if (!currentInstalled) {
+          await applyAsrModelSwitch(normalizeWhisperModelId(model.id));
+        }
+      }
       await fetchRealStorageStats();
       await fetchRealHardwareInfo();
       setModelInstallNotice({
@@ -1022,10 +1040,40 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   const [licenseInfo, setLicenseInfo] = useState<LicenseSummary | null>(null);
   const [isLicenseModalOpen, setIsLicenseModalOpen] = useState(false);
   const [isVerifyingLicense, setIsVerifyingLicense] = useState(false);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [currentAppVersion, setCurrentAppVersion] = useState("1.0.0");
   const [licenseToast, setLicenseToast] = useState<{
     type: "success" | "error";
     message: string;
   } | null>(null);
+
+  const handleCheckForUpdates = async () => {
+    if (isCheckingUpdate) return;
+    setIsCheckingUpdate(true);
+    try {
+      const res = await checkAppUpdate();
+      if (res.currentVersion) {
+        setCurrentAppVersion(res.currentVersion);
+      }
+      if (res.updateAvailable) {
+        triggerAppUpdateModal(res);
+      } else {
+        setLicenseToast({
+          type: "success",
+          message: `Phiên bản VoxLab hiện tại (V${res.currentVersion || currentAppVersion}) là bản mới nhất.`,
+        });
+        setTimeout(() => setLicenseToast(null), 3500);
+      }
+    } catch (err: any) {
+      setLicenseToast({
+        type: "error",
+        message: err?.message || String(err || "Không thể kết nối máy chủ cập nhật."),
+      });
+      setTimeout(() => setLicenseToast(null), 4000);
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   useEffect(() => {
     let unlistenInstall: (() => void) | null = null;
@@ -2023,23 +2071,18 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                       className="w-10 h-10 rounded-xl shadow-md shadow-accent/25 object-cover shrink-0 select-none"
                     />
                     <div className="font-bold text-base text-textPrimary tracking-tight">
-                      VoxLab - V1.0.0
+                      VoxLab - V{currentAppVersion}
                     </div>
                   </div>
 
                   <button
                     type="button"
-                    onClick={() => {
-                      setLicenseToast({
-                        type: "success",
-                        message: "Phiên bản VoxLab hiện tại (V1.0.0) là bản mới nhất.",
-                      });
-                      setTimeout(() => setLicenseToast(null), 3000);
-                    }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-accent rounded-lg border border-accent/30 text-xs font-medium transition-colors cursor-pointer"
+                    disabled={isCheckingUpdate}
+                    onClick={() => void handleCheckForUpdates()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-accent rounded-lg border border-accent/30 text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Kiểm tra cập nhật</span>
+                    <RefreshCw className={`w-3.5 h-3.5 ${isCheckingUpdate ? "animate-spin" : ""}`} />
+                    <span>{isCheckingUpdate ? "Đang kiểm tra..." : "Kiểm tra cập nhật"}</span>
                   </button>
                 </div>
 

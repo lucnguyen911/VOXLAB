@@ -43,6 +43,13 @@ import {
   type ModelInstallProgressEvent,
   type RuntimeBootstrapStatus,
 } from "./services/ai/aiRuntimeSettings";
+import { resolveLocalEngine } from "./services/ai/ttsEngines";
+import { AppUpdateModal } from "./components/modals/AppUpdateModal";
+import {
+  checkAppUpdate,
+  OPEN_APP_UPDATE_MODAL_EVENT,
+  type UpdateCheckResult,
+} from "./services/updater/updaterService";
 import { AlertCircle, CheckCircle2, Cpu, Loader2, RefreshCw, ShieldCheck, X } from "lucide-react";
 
 // Run synchronous migrations before components mount and read localStorage
@@ -217,6 +224,38 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   const [migrationNewPath, setMigrationNewPath] = useState("");
   const [exportValidationOpen, setExportValidationOpen] = useState(false);
   const [invalidChunksForExport, setInvalidChunksForExport] = useState<ChunkItem[]>([]);
+  const [appUpdateInfo, setAppUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [appUpdateModalOpen, setAppUpdateModalOpen] = useState(false);
+
+  // Automatic silent update check on startup + manual modal trigger listener
+  useEffect(() => {
+    let cancelled = false;
+    checkAppUpdate()
+      .then((res) => {
+        if (!cancelled && res.updateAvailable) {
+          setAppUpdateInfo(res);
+          setAppUpdateModalOpen(true);
+        }
+      })
+      .catch(() => {});
+
+    const handleOpenUpdate = (e: Event) => {
+      const custom = e as CustomEvent<UpdateCheckResult>;
+      if (custom.detail && custom.detail.updateAvailable) {
+        setAppUpdateInfo(custom.detail);
+        setAppUpdateModalOpen(true);
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener(OPEN_APP_UPDATE_MODAL_EVENT, handleOpenUpdate);
+    }
+    return () => {
+      cancelled = true;
+      if (typeof window !== "undefined") {
+        window.removeEventListener(OPEN_APP_UPDATE_MODAL_EVENT, handleOpenUpdate);
+      }
+    };
+  }, []);
 
   // Check if current setup uses an online service
   const currentVoice = voices.find((v) => v.id === activeVoiceId);
@@ -245,12 +284,14 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   const handleSelectActiveVoice = (voiceOrId: VoiceProfile | string) => {
     const id = typeof voiceOrId === "string" ? voiceOrId : voiceOrId.id;
     const matchedVoice = typeof voiceOrId === "string" ? voices.find((v) => v.id === id) : voiceOrId;
-    if (matchedVoice && !matchedVoice.isOnline) {
-      if (matchedVoice.engine === "kokoro_82m" || id.startsWith("kokoro_")) {
+    if (matchedVoice) {
+      if (matchedVoice.isOnline) {
+        setActiveModel("Online Cloud");
+      } else if (matchedVoice.engine === "kokoro_82m" || id.startsWith("kokoro_")) {
         setActiveModel("Kokoro-82M");
-      } else if (matchedVoice.engine === "chatterbox_turbo") {
+      } else if (matchedVoice.engine === "chatterbox_turbo" || matchedVoice.engine === "chatterbox") {
         setActiveModel("Chatterbox Turbo");
-      } else if (matchedVoice.engine === "qwen_tts_1_7b") {
+      } else if (matchedVoice.engine === "qwen_tts_1_7b" || matchedVoice.engine === "qwen") {
         setActiveModel("Qwen TTS 1.7B");
       } else if (matchedVoice.engine === "omnivoice") {
         setActiveModel("OmniVoice");
@@ -261,6 +302,27 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
     setVoices((prev) =>
       prev.map((v) => (v.id === id ? { ...v, lastUsedAt: nowIso } : v))
     );
+  };
+
+  const handleChangeActiveModel = (nextModel: string) => {
+    setActiveModel(nextModel);
+    const activeVoice = voices.find((v) => v.id === activeVoiceId);
+    if (
+      activeVoice &&
+      !activeVoice.isOnline &&
+      (activeVoice.origin === "clone" ||
+        activeVoice.source === "local_clone" ||
+        activeVoice.id.startsWith("clone_"))
+    ) {
+      const caps = resolveLocalEngine(nextModel);
+      if (caps && caps.supportsVoiceClone && activeVoice.engine !== caps.voxlabModelId) {
+        handleUpdateVoice({
+          ...activeVoice,
+          engine: caps.voxlabModelId,
+          modelCompatibility: [nextModel],
+        });
+      }
+    }
   };
 
   const handleSelectVoiceForTts = (voice: VoiceProfile) => {
@@ -346,9 +408,20 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
         handleSelectWorkspace(custom.detail);
       }
     };
+    const handleOpenSettingsModels = () => {
+      setSettingsInitialGroup("models");
+      setActiveWorkspace("settings");
+      try {
+        localStorage.setItem("voxlab_active_workspace", "settings");
+      } catch {}
+    };
     if (typeof window !== "undefined") {
       window.addEventListener("voxlab_navigate_workspace", handleNav);
-      return () => window.removeEventListener("voxlab_navigate_workspace", handleNav);
+      window.addEventListener("voxlab_open_settings_models", handleOpenSettingsModels);
+      return () => {
+        window.removeEventListener("voxlab_navigate_workspace", handleNav);
+        window.removeEventListener("voxlab_open_settings_models", handleOpenSettingsModels);
+      };
     }
   }, []);
 
@@ -433,7 +506,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
                       activeVoiceId={activeVoiceId}
                       onChangeActiveVoice={handleSelectActiveVoice}
                       activeModel={activeModel}
-                      onChangeModel={(m) => setActiveModel(m)}
+                      onChangeModel={handleChangeActiveModel}
                       isOpen={inspectorOpen}
                       onToggle={() => setInspectorOpen(!inspectorOpen)}
                       inspectorWidth={inspectorWidth}
@@ -597,6 +670,17 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
           setActiveWorkspace("clone");
         }}
         currentModel={activeModel}
+      />
+
+      {/* App Auto-Update Modal (Audio Factory MMO-TOOL-Manager standard) */}
+      <AppUpdateModal
+        isOpen={appUpdateModalOpen}
+        updateInfo={appUpdateInfo}
+        onClose={() => {
+          if (!appUpdateInfo?.isForced) {
+            setAppUpdateModalOpen(false);
+          }
+        }}
       />
 
       {/* Global Toast Notification */}

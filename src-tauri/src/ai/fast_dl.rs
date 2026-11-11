@@ -772,6 +772,148 @@ where
     Ok(())
 }
 
+/// Downloads a single large file (such as a signed NSIS/MSI application update package) using
+/// multi-stream HTTP `Range` acceleration when supported by the server (e.g. GitHub Releases / S3 / CDN),
+/// with automatic single-stream fallback and mandatory SHA-256 verification when `expected_sha256` is provided.
+pub fn download_file_accelerated<F>(
+    url: &str,
+    dest_path: &Path,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+    cancelled: &AtomicBool,
+    mut on_progress: F,
+) -> Result<u64, FastDlError>
+where
+    F: FnMut(u64, u64, f64) + Send,
+{
+    if cancelled.load(Ordering::SeqCst) {
+        return Err(FastDlError::Cancelled);
+    }
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| FastDlError::Io(e.to_string()))?;
+    }
+
+    let clean_sha = expected_sha256
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+
+    // Reuse already-downloaded file if size + SHA-256 match
+    if let (Some(ref sha), Ok(meta)) = (&clean_sha, std::fs::metadata(dest_path)) {
+        if expected_size.map(|sz| sz == 0 || meta.len() == sz).unwrap_or(true) && meta.len() > 0 {
+            if let Ok(existing_hash) = compute_file_sha256(dest_path, cancelled) {
+                if existing_hash.eq_ignore_ascii_case(sha) {
+                    on_progress(meta.len(), meta.len(), 0.0);
+                    return Ok(meta.len());
+                }
+            }
+        }
+    }
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(15))
+        .timeout_read(Duration::from_secs(60))
+        .max_idle_connections(16)
+        .max_idle_connections_per_host(16)
+        .build();
+
+    if let Ok(probe) = probe_range_support(&agent, url) {
+        let total = if probe.total_size > 0 {
+            probe.total_size
+        } else {
+            expected_size.unwrap_or(0)
+        };
+        if probe.supports_range && total >= 4 * 1024 * 1024 {
+            let workers = if total >= 120 * 1024 * 1024 { 12 } else { 8 };
+            download_url_segmented_with_options(
+                &agent,
+                &probe.final_url,
+                dest_path,
+                total,
+                clean_sha.as_deref(),
+                DEFAULT_CHUNK_BYTES,
+                workers,
+                cancelled,
+                |done, mbps| on_progress(done, total, mbps),
+            )?;
+            return Ok(total);
+        }
+    }
+
+    // Fallback: single-stream download with real-time throughput and SHA-256 verification
+    let resp = agent
+        .get(url)
+        .set("User-Agent", "VoxLab-Updater/1.0")
+        .call()
+        .map_err(|e| FastDlError::Network(e.to_string()))?;
+
+    let content_len = resp
+        .header("Content-Length")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .or(expected_size)
+        .unwrap_or(0);
+
+    let tmp_path = dest_path.with_extension("download.part");
+    let mut out = File::create(&tmp_path).map_err(|e| FastDlError::Io(e.to_string()))?;
+    let mut reader = resp.into_reader();
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut downloaded = 0u64;
+    let mut last_emit = Instant::now();
+    let mut last_bytes = 0u64;
+    let mut smoothed_mbps = 0.0f64;
+
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(FastDlError::Cancelled);
+        }
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| FastDlError::Network(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut out, &buf[..n])
+            .map_err(|e| FastDlError::Io(e.to_string()))?;
+        hasher.update(&buf[..n]);
+        downloaded += n as u64;
+
+        let dt = last_emit.elapsed().as_secs_f64();
+        if dt >= 0.25 {
+            let inst_mbps = ((downloaded.saturating_sub(last_bytes)) as f64 / (1024.0 * 1024.0)) / dt;
+            smoothed_mbps = if smoothed_mbps <= 0.01 {
+                inst_mbps
+            } else {
+                smoothed_mbps * 0.65 + inst_mbps * 0.35
+            };
+            last_bytes = downloaded;
+            last_emit = Instant::now();
+            on_progress(downloaded, content_len, smoothed_mbps);
+        }
+    }
+
+    let _ = out.sync_data();
+    drop(out);
+
+    if let Some(expected_hash) = clean_sha {
+        let actual_hash = format!("{:x}", hasher.finalize());
+        if !actual_hash.eq_ignore_ascii_case(&expected_hash) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(FastDlError::HashMismatch {
+                expected: expected_hash,
+                actual: actual_hash,
+            });
+        }
+    }
+
+    if dest_path.exists() {
+        let _ = std::fs::remove_file(dest_path);
+    }
+    std::fs::rename(&tmp_path, dest_path).map_err(|e| FastDlError::Io(e.to_string()))?;
+    on_progress(downloaded, downloaded.max(content_len), 0.0);
+    Ok(downloaded)
+}
+
 trait PathSuffixExt {
     fn with_name_suffix(&self, suffix: &str) -> PathBuf;
 }
