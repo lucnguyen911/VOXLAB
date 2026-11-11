@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Key, Check, AlertCircle, X, Loader2, LogOut, ShieldCheck } from "lucide-react";
+import { Key, Check, AlertCircle, X, Loader2, LogOut } from "lucide-react";
 import { LicenseService, LicenseSummary } from "../../services/license/licenseService";
 
 interface LicenseModalProps {
@@ -98,17 +98,27 @@ export const LicenseModal: React.FC<LicenseModalProps> = ({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center p-4 ${
-        mandatory ? "bg-bgCanvas" : "bg-black/75 backdrop-blur-xs"
-      }`}
+      className={`${
+        mandatory
+          ? "flex-1 w-full bg-background"
+          : "fixed inset-0 z-50 bg-black/75 backdrop-blur-xs"
+      } flex items-center justify-center p-4`}
     >
       <div className="bg-surface1 border border-borderDefault rounded-2xl w-full max-w-md shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="p-4 border-b border-borderDefault flex items-center justify-between bg-surface2/40">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shrink-0">
-              {mandatory ? <ShieldCheck className="w-5 h-5" /> : <Key className="w-4 h-4" />}
-            </div>
+            {mandatory ? (
+              <img
+                src="/app-icon.png?v=2"
+                alt="VoxLab"
+                className="w-10 h-10 rounded-xl shadow-md shadow-accent/25 object-cover shrink-0 select-none"
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shrink-0">
+                <Key className="w-4 h-4" />
+              </div>
+            )}
             <div>
               <h3 className="font-extrabold text-sm tracking-wide text-textPrimary">
                 {mandatory ? "VOXLAB PREMIUM" : "Đổi Key Bản Quyền"}

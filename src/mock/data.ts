@@ -1,4 +1,4 @@
-import { ChunkItem, VoiceProfile, TranscriptionSegment, SessionHistoryItem, TtsAudioConfig } from "../types/ui";
+import { VoiceProfile, TtsAudioConfig } from "../types/ui";
 import { providerRegistry } from "../services/providers";
 
 export const DEFAULT_TTS_CONFIG: TtsAudioConfig = {
@@ -18,7 +18,7 @@ export const DEFAULT_TTS_CONFIG: TtsAudioConfig = {
 const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   {
     id: "kokoro_af_heart",
-    name: "Heart (Kokoro Local)",
+    name: "Heart",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -44,7 +44,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_af_bella",
-    name: "Bella (Kokoro Local)",
+    name: "Bella",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -70,7 +70,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_af_nicole",
-    name: "Nicole (Kokoro Local)",
+    name: "Nicole",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -96,7 +96,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_af_sarah",
-    name: "Sarah (Kokoro Local)",
+    name: "Sarah",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -122,7 +122,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_am_adam",
-    name: "Adam (Kokoro Local)",
+    name: "Adam",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -148,7 +148,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_am_michael",
-    name: "Michael (Kokoro Local)",
+    name: "Michael",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -174,7 +174,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_am_fenrir",
-    name: "Fenrir (Kokoro Local)",
+    name: "Fenrir",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -200,7 +200,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_am_puck",
-    name: "Puck (Kokoro Local)",
+    name: "Puck",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -226,7 +226,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_bf_emma",
-    name: "Emma UK (Kokoro Local)",
+    name: "Emma",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -252,7 +252,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_bf_isabella",
-    name: "Isabella UK (Kokoro Local)",
+    name: "Isabella",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -278,7 +278,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_bm_george",
-    name: "George UK (Kokoro Local)",
+    name: "George",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -304,7 +304,7 @@ const BASE_LOCAL_AND_CLONE_VOICES: VoiceProfile[] = [
   },
   {
     id: "kokoro_bm_lewis",
-    name: "Lewis UK (Kokoro Local)",
+    name: "Lewis",
     source: "local",
     origin: "system",
     sourceType: "local",
@@ -406,162 +406,3 @@ Với sự bùng nổ của các mô hình học sâu tại phiên bản v2.0, v
 Hệ thống có thể xử lý chính xác các số thập phân như 3.14 hay mốc thời gian 10:30 mà không hề bị ngắt quãng.
 Đồng thời, với tỷ lệ khung hình 16:9 và tốc độ truyền tải 127.0.0.1, công nghệ này mở ra cánh cửa mới cho các nhà sáng tạo nội dung độc lập trên toàn thế giới.`;
 
-export const MOCK_CHUNKS: ChunkItem[] = [
-  {
-    id: "chunk_01",
-    index: 1,
-    text: "Chào mừng quý thính giả đến với kênh kiến thức công nghệ VoxLab.",
-    originalText: "Chào mừng quý thính giả đến với kênh kiến thức công nghệ VoxLab.",
-    status: "ready",
-    durationSec: 4.2,
-    pauseAfterMs: "auto",
-  },
-  {
-    id: "chunk_02",
-    index: 2,
-    text: "Trong tập podcast ngày hôm nay, chúng ta sẽ cùng khám phá một chủ đề vô cùng hấp dẫn: Tương lai của Trí tuệ Nhân tạo trong việc sản xuất nội dung âm thanh dài tập.",
-    originalText: "Trong tập podcast ngày hôm nay, chúng ta sẽ cùng khám phá một chủ đề vô cùng hấp dẫn: Tương lai của Trí tuệ Nhân tạo trong việc sản xuất nội dung âm thanh dài tập.",
-    status: "ready",
-    durationSec: 9.6,
-    pauseAfterMs: "auto",
-    qualityReview: {
-      status: "warning",
-      summary: "Phát hiện khoảng ngắt có thể bất thường giữa 'podcast' và 'ngày' (0.58s)",
-      checkedAt: Date.now(),
-      text: "Trong tập podcast ngày hôm nay, chúng ta sẽ cùng khám phá một chủ đề vô cùng hấp dẫn: Tương lai của Trí tuệ Nhân tạo trong việc sản xuất nội dung âm thanh dài tập.",
-      issues: [
-        {
-          code: "ABNORMAL_PAUSE",
-          severity: "warning",
-          message: "Phát hiện khoảng ngắt có thể bất thường giữa 'podcast' và 'ngày' (0.58s). Vui lòng nghe lại đoạn này.",
-          words: ["podcast", "ngày"],
-          timeRange: [1.2, 1.78],
-        },
-      ],
-    },
-  },
-  {
-    id: "chunk_03",
-    index: 3,
-    text: "Với sự bùng nổ của các mô hình học sâu tại phiên bản v2.0, việc tạo ra giọng nói tự nhiên, giàu cảm xúc đã không còn là đặc quyền của các phòng thu chuyên nghiệp.",
-    originalText: "Với sự bùng nổ của các mô hình học sâu tại phiên bản v2.0, việc tạo ra giọng nói tự nhiên, giàu cảm xúc đã không còn là đặc quyền của các phòng thu chuyên nghiệp.",
-    status: "failed",
-    durationSec: 0.1,
-    pauseAfterMs: "auto",
-    errorMessage: "Thời lượng âm thanh quá ngắn (< 0.2s)",
-    qualityReview: {
-      status: "error",
-      summary: "Thời lượng âm thanh quá ngắn (< 0.2s)",
-      checkedAt: Date.now(),
-      text: "Với sự bùng nổ của các mô hình học sâu tại phiên bản v2.0, việc tạo ra giọng nói tự nhiên, giàu cảm xúc đã không còn là đặc quyền của các phòng thu chuyên nghiệp.",
-      issues: [
-        {
-          code: "DURATION_TOO_SHORT",
-          severity: "error",
-          message: "Thời lượng âm thanh quá ngắn (< 0.2s)",
-        },
-      ],
-    },
-  },
-  {
-    id: "chunk_04",
-    index: 4,
-    text: "Hệ thống có thể xử lý chính xác các số thập phân như 3.14 hay mốc thời gian 10:30 mà không hề bị ngắt quãng.",
-    originalText: "Hệ thống có thể xử lý chính xác các số thập phân như 3.14 hay mốc thời gian 10:30 mà không hề bị ngắt quãng.",
-    status: "ready",
-    durationSec: 5.1,
-    pauseAfterMs: "auto",
-  },
-  {
-    id: "chunk_05",
-    index: 5,
-    text: "Đồng thời, với tỷ lệ khung hình 16:9 và tốc độ truyền tải 127.0.0.1, công nghệ này mở ra cánh cửa mới cho các nhà sáng tạo nội dung độc lập trên toàn thế giới.",
-    originalText: "Đồng thời, với tỷ lệ khung hình 16:9 và tốc độ truyền tải 127.0.0.1, công nghệ này mở ra cánh cửa mới cho các nhà sáng tạo nội dung độc lập trên toàn thế giới.",
-    status: "pending",
-    pauseAfterMs: "auto",
-  },
-  {
-    id: "chunk_06",
-    index: 6,
-    text: "Hãy cùng chúng tôi lắng nghe và cảm nhận từng cung bậc cảm xúc của công nghệ giọng nói thế hệ mới.",
-    originalText: "Hãy cùng chúng tôi lắng nghe và cảm nhận từng cung bậc cảm xúc của công nghệ giọng nói thế hệ mới.",
-    status: "pending",
-    pauseAfterMs: "auto",
-  },
-  {
-    id: "chunk_07",
-    index: 7,
-    text: "Xin cảm ơn sự quan tâm theo dõi của quý vị và hẹn gặp lại trong các tập tiếp theo!",
-    originalText: "Xin cảm ơn sự quan tâm theo dõi của quý vị và hẹn gặp lại trong các tập tiếp theo!",
-    status: "pending",
-    pauseAfterMs: "auto",
-  },
-];
-
-export const MOCK_TRANSCRIPTION_SEGMENTS: TranscriptionSegment[] = [
-  {
-    id: "seg_01",
-    start: "00:00:00",
-    end: "00:00:03",
-    startSec: 0,
-    endSec: 3.4,
-    text: "Chào mọi người đã quay trở lại với series sản xuất nội dung âm thanh VoxLab.",
-  },
-  {
-    id: "seg_02",
-    start: "00:00:03",
-    end: "00:00:08",
-    startSec: 3.5,
-    endSec: 8.2,
-    text: "Hôm nay chúng ta sẽ thử nghiệm mô hình nhận diện giọng nói faster-whisper trên hệ thống.",
-  },
-  {
-    id: "seg_03",
-    start: "00:00:08",
-    end: "00:00:13",
-    startSec: 8.3,
-    endSec: 13.8,
-    text: "Tốc độ xử lý đạt trên 15x thời gian thực với độ chính xác cao đối với tiếng Việt có dấu.",
-  },
-  {
-    id: "seg_04",
-    start: "00:00:13",
-    end: "00:00:18",
-    startSec: 13.9,
-    endSec: 18.5,
-    text: "Sau khi bóc băng xong, bạn có thể bấm nút Chuyển sang TTS để lồng tiếng lại ngay lập tức.",
-  },
-];
-
-export const MOCK_HISTORY: SessionHistoryItem[] = [
-  {
-    id: "sess_104",
-    title: "Kịch bản Podcast Công nghệ Tập 12",
-    type: "TTS",
-    createdAt: "Hôm nay, 14:32",
-    chunkCount: 24,
-    duration: "4 phút 18 giây",
-    outputPath: "D:/VoxLabOutput/Podcast_Ep12.wav",
-    status: "completed",
-  },
-  {
-    id: "sess_103",
-    title: "Bóc băng Hội thảo Trí tuệ Nhân tạo",
-    type: "ASR",
-    createdAt: "Hôm qua, 09:15",
-    chunkCount: 86,
-    duration: "18 phút 40 giây",
-    outputPath: "D:/VoxLabOutput/Seminar_AI.srt",
-    status: "completed",
-  },
-  {
-    id: "sess_102",
-    title: "Đọc Sách Nói: Chương 3 Lịch sử Âm thanh",
-    type: "TTS",
-    createdAt: "02/09/2026, 21:00",
-    chunkCount: 42,
-    duration: "9 phút 10 giây",
-    outputPath: "D:/VoxLabOutput/Audiobook_Ch3.mp3",
-    status: "interrupted",
-  },
-];

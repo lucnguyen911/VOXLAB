@@ -12,7 +12,6 @@ import {
   Search,
   X,
   Eye,
-  Layers,
   FileText,
   Video,
   FileCode,
@@ -192,7 +191,6 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
               { key: "transcription", label: "Phụ đề", count: filterCounts.transcription },
               { key: "translation", label: "Dịch", count: filterCounts.translation },
               { key: "dubbing", label: "Lồng tiếng", count: filterCounts.dubbing },
-              { key: "batch", label: "Hàng loạt", count: filterCounts.batch },
             ] as const
           ).map((filter) => {
             const isActive = activeFilter === filter.key;
@@ -347,7 +345,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                           {index + 1}
                         </td>
 
-                        {/* Column 2: File Name & Batch Tag */}
+                        {/* Column 2: File Name */}
                         <td className="py-3 px-3.5 align-middle border-r border-borderDefault">
                           <div className="flex items-center gap-2.5 min-w-0">
                             <div className="w-7 h-7 rounded-lg bg-surface2 border border-borderDefault flex items-center justify-center shrink-0">
@@ -360,15 +358,6 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                               >
                                 {job.title}
                               </span>
-                              {job.isBatch && (
-                                <span
-                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-accent/10 border border-accent/25 text-accent shrink-0 whitespace-nowrap"
-                                  title="Thực thi từ chế độ Hàng loạt"
-                                >
-                                  <Layers className="w-2.5 h-2.5 shrink-0" />
-                                  <span>Hàng loạt</span>
-                                </span>
-                              )}
                             </div>
                           </div>
                         </td>

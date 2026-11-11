@@ -543,13 +543,9 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
 
             const activeVoice =
               voices.find((v) => v.id === ttsCfg.voiceId) || voices[0];
-            const isOnlineVoice = Boolean(
-              activeVoice?.isOnline ||
-                activeVoice?.provider === "edge" ||
-                activeVoice?.provider === "google_translate" ||
-                activeVoice?.provider === "openai"
+            const selectedModelLabel = normalizeModelSelectValue(
+              activeVoice?.engine || ttsCfg.model
             );
-            const selectedModelLabel = normalizeModelSelectValue(ttsCfg.model);
             const pauses: PunctuationPauses = ttsCfg.pauses;
 
             const updateTts = (patch: Partial<typeof ttsCfg>) => {
@@ -634,43 +630,6 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                         <ChevronRight className="w-3.5 h-3.5" />
                       </div>
                     </div>
-                  )}
-                </div>
-
-                {/* 2. MODEL */}
-                <div className="space-y-1.5 pt-0.5">
-                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-                    {t.inspector.model}
-                  </label>
-                  {isOnlineVoice ? (
-                    <div className="w-full h-[34px] bg-surface2/70 border border-borderDefault rounded-lg px-2.5 flex items-center justify-between text-xs text-textPrimary">
-                      <div className="flex items-center gap-2 truncate">
-                        <span className="w-2 h-2 rounded-full bg-sky-400" />
-                        <span className="font-medium truncate">
-                          {activeVoice?.provider === "edge"
-                            ? "Microsoft Edge Neural (Cloud API)"
-                            : activeVoice?.provider === "google_translate"
-                            ? "Google Cloud TTS (API v1)"
-                            : "OpenAI Audio TTS"}
-                        </span>
-                      </div>
-                      <span className="text-[10px] text-textMuted uppercase font-mono tracking-wider ml-2 flex-shrink-0">
-                        Online
-                      </span>
-                    </div>
-                  ) : (
-                    <select
-                      value={selectedModelLabel}
-                      onChange={(e) =>
-                        updateTts({ model: mapSelectToSnapshotModel(e.target.value) })
-                      }
-                      className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
-                    >
-                      <option value="Kokoro-82M">Kokoro-82M (Cài sẵn · Nhẹ)</option>
-                      <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
-                      <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
-                      <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>
-                    </select>
                   )}
                 </div>
 
@@ -948,7 +907,6 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                     : 0.70));
 
             const dlgModel = currentDialogue.model || baseDialogue?.model || "omnivoice";
-            const selectedModelLabel = normalizeModelSelectValue(dlgModel);
             const speedVal =
               typeof currentDialogue.speed === "number"
                 ? currentDialogue.speed
@@ -1016,28 +974,6 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
 
             return (
               <div className="space-y-4">
-                {/* 1. MODEL */}
-                <div className="space-y-1.5">
-                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-                    {t.inspector.model}
-                  </label>
-                  <select
-                    value={selectedModelLabel}
-                    onChange={(e) => {
-                      const mapped = mapSelectToSnapshotModel(e.target.value);
-                      updateDialogue({ model: mapped });
-                    }}
-                    className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
-                  >
-                    <option value="Kokoro-82M">Kokoro-82M (Cài sẵn · Nhẹ)</option>
-                    <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
-                    <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
-                    <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>
-                  </select>
-                </div>
-
-                <div className="border-t border-borderDefault/60 pt-1" />
-
                 {/* 2. CÀI ĐẶT */}
                 <div className="space-y-3.5">
                   <div className="flex items-center justify-between pb-0.5">
@@ -1750,7 +1686,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
               voices.find((v) => v.id === rawVoiceId) ||
               voices[0] || {
                 id: "edge_vi_hoaimy",
-                name: "Hoài My (Edge)",
+                name: "Hoài My",
                 gender: "female",
                 language: "vi-VN",
                 avatarColor: "from-sky-500 to-blue-600",
@@ -1930,27 +1866,6 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                       <ChevronRight className="w-3.5 h-3.5" />
                     </div>
                   </div>
-                </div>
-
-                {/* 3. Model Đọc */}
-                <div className="space-y-1.5">
-                  <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-                    {lang === "en" ? "Reading Model" : "Model Đọc"}
-                  </label>
-                  <select
-                    value={selectModelVal}
-                    onChange={(e) =>
-                      updateDubbing({
-                        ttsModel: mapSelectToSnapshotModel(e.target.value),
-                      })
-                    }
-                    className="w-full h-[34px] bg-surface1 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
-                  >
-                    <option value="Kokoro-82M">Kokoro-82M (Cài sẵn)</option>
-                    <option value="Omni Voice">Omni Voice</option>
-                    <option value="Chatterbox Turbo">Chatterbox Turbo</option>
-                    <option value="Qwen 1.7B">Qwen 1.7B</option>
-                  </select>
                 </div>
 
                 {/* 4. Cài đặt (Tốc độ, Cao độ, Âm lượng) với Đặt lại */}

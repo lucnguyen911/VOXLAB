@@ -24,7 +24,7 @@ import {
   geminiKeyPool,
 } from "./services/translation";
 import { migratePunctuationPauseDefaults } from "./services/pause/punctuationPause";
-import { MOCK_VOICES, MOCK_CHUNKS, mergeStoredVoicesWithCatalog } from "./mock/data";
+import { MOCK_VOICES, mergeStoredVoicesWithCatalog } from "./mock/data";
 import { I18nProvider, useI18n } from "./i18n/context";
 import { migrateLegacyVoice } from "./constants/voiceFilters";
 import { LicenseModal } from "./components/modals/LicenseModal";
@@ -34,7 +34,16 @@ import {
   updateCloneVoiceMetadata,
   removeCloneVoice,
 } from "./services/ai/cloneVoiceRegistry";
-import { CheckCircle2, Loader2, ShieldCheck, X } from "lucide-react";
+import {
+  BOOTSTRAP_JOB_ID,
+  getAiBootstrapStatus,
+  bootstrapAiRuntimes,
+  cancelAiModelInstall,
+  onModelInstallProgress,
+  type ModelInstallProgressEvent,
+  type RuntimeBootstrapStatus,
+} from "./services/ai/aiRuntimeSettings";
+import { AlertCircle, CheckCircle2, Cpu, Loader2, RefreshCw, ShieldCheck, X } from "lucide-react";
 
 // Run synchronous migrations before components mount and read localStorage
 migratePunctuationPauseDefaults();
@@ -159,14 +168,14 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   }, [voices]);
 
   // TTS State
-  const [selectedChunk, setSelectedChunk] = useState<ChunkItem | null>(MOCK_CHUNKS[0]);
+  const [selectedChunk, setSelectedChunk] = useState<ChunkItem | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   // One heavy inference at a time. Sidecar returns BUSY for overlapping requests.
   const concurrency = 1;
   const [exportSrt, setExportSrt] = useState<boolean>(() => !!loadStoredTtsSettings().exportSrt);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
-  const [totalChunks, setTotalChunks] = useState(7);
+  const [totalChunks, setTotalChunks] = useState(0);
 
   // Global Audio Preview Player State
   const [activeAudioTrack, setActiveAudioTrack] = useState<ActiveAudioTrack | null>(null);
@@ -178,7 +187,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
 
   const handlePlayChunk = (chunk: ChunkItem) => {
     const voice = voices.find((v) => v.id === (chunk.voiceOverrideId || activeVoiceId));
-    const speakerName = voice?.name || "Hoài My (Edge)";
+    const speakerName = voice?.name || "Hoài My";
 
     if (activeAudioTrack?.id === chunk.id && activeAudioTrack?.audioUrl === chunk.audioUrl) {
       setIsAudioPlaying((prev) => !prev);
@@ -263,7 +272,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
     const nowIso = new Date().toISOString();
     const voiceWithTimestamp = { ...newVoice, lastUsedAt: nowIso };
     setVoices((prev) => [voiceWithTimestamp, ...prev]);
-    setActiveVoiceId(voiceWithTimestamp.id);
+    handleSelectActiveVoice(voiceWithTimestamp);
   };
 
   const handleUpdateVoice = (updatedVoice: VoiceProfile) => {
@@ -365,8 +374,8 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
 
         {/* Right Area: Workspace Frame on top, Bottom Audio Player below */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0 bg-background">
-          {/* Workspace Frame: rounded container with 10-12px outer margin */}
-          <div className={`flex-1 flex flex-col overflow-hidden min-w-0 min-h-0 m-2.5 sm:m-3 ${showBottomPlayer && activeAudioTrack ? 'mb-2 sm:mb-2.5' : ''} rounded-[11px] border border-borderDefault bg-panel shadow-sm relative`}>
+          {/* Workspace Frame: sculpted rounded studio container floating over chassis */}
+          <div className={`flex-1 flex flex-col overflow-hidden min-w-0 min-h-0 m-2.5 sm:m-3 ${showBottomPlayer && activeAudioTrack ? 'mb-2 sm:mb-2.5' : ''} rounded-xl border border-borderDefault bg-panel shadow-[0_4px_20px_-4px_rgba(36,24,12,0.08),0_1px_2px_rgba(36,24,12,0.04)] dark:shadow-[0_10px_28px_-6px_rgba(0,0,0,0.58),0_2px_4px_rgba(0,0,0,0.35)] relative`}>
             <main className="flex-1 flex flex-col overflow-hidden relative">
               {activeWorkspace === "tts" && (
                 <TtsWorkspace
@@ -569,7 +578,9 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
         }}
         onForceExport={() => {
           setExportValidationOpen(false);
-          alert("Tiến hành ghép và xuất audio với các đoạn đã sẵn sàng: D:/VoxLabOutput/Podcast_Ep12_Partial.wav");
+          if (typeof window !== "undefined" && (window as any).__VOXLAB_FORCE_EXPORT__) {
+            (window as any).__VOXLAB_FORCE_EXPORT__();
+          }
         }}
       />
 
@@ -608,11 +619,106 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
 }
 
 function LicenseStartupGate() {
-  const [phase, setPhase] = useState<"checking" | "locked" | "authorized">(() =>
-    LicenseService.isCommercialGateEnabled() ? "checking" : "authorized"
+  const [phase, setPhase] = useState<"checking" | "locked" | "bootstrapping" | "authorized">(
+    "checking"
   );
   const [lockedError, setLockedError] = useState<string | null>(null);
   const [startupToast, setStartupToast] = useState<string | null>(null);
+  const [bootstrapStatus, setBootstrapStatus] = useState<RuntimeBootstrapStatus | null>(null);
+  const [bootstrapProgress, setBootstrapProgress] = useState<ModelInstallProgressEvent | null>(
+    null
+  );
+  const [bootstrapRunning, setBootstrapRunning] = useState(false);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [gateTheme] = useState<"dark" | "light">(() => {
+    try {
+      return localStorage.getItem("voxlab_theme") === "light" ? "light" : "dark";
+    } catch {
+      return "dark";
+    }
+  });
+
+  const runRuntimeBootstrap = useCallback(async (postLicenseToast?: string | null) => {
+    setBootstrapError(null);
+    setBootstrapRunning(true);
+    setBootstrapProgress({
+      modelId: BOOTSTRAP_JOB_ID,
+      status: "installing",
+      stage: "preparing",
+      pct: 2,
+      message: "Đang kiểm tra cấu hình phần cứng và khởi tạo thư viện AI...",
+    });
+
+    try {
+      await bootstrapAiRuntimes();
+      setBootstrapRunning(false);
+      setStartupToast(
+        postLicenseToast ||
+          "Đã tự động cấu hình xong thư viện AI! Bạn có thể tải thủ công các mô hình cần dùng trong Cài đặt → Mô hình."
+      );
+      setPhase("authorized");
+    } catch (err: any) {
+      setBootstrapRunning(false);
+      const code = err?.code || "";
+      const rawMsg = err?.message || String(err || "Không thể tải thư viện AI.");
+      if (code === "CANCELLED" || rawMsg.includes("CANCELLED") || rawMsg.includes("tạm dừng")) {
+        try {
+          sessionStorage.setItem("voxlab_bootstrap_skipped", "1");
+        } catch {}
+        if (postLicenseToast) {
+          setStartupToast(postLicenseToast);
+        }
+        setPhase("authorized");
+        return;
+      }
+      setBootstrapError(rawMsg);
+    }
+  }, []);
+
+  const enterAuthorizedOrBootstrap = useCallback(
+    async (postLicenseToast?: string | null) => {
+      let skipped = false;
+      try {
+        skipped = sessionStorage.getItem("voxlab_bootstrap_skipped") === "1";
+      } catch {}
+
+      if (skipped) {
+        if (postLicenseToast) setStartupToast(postLicenseToast);
+        setPhase("authorized");
+        return;
+      }
+
+      const st = await getAiBootstrapStatus();
+      if (st.ready) {
+        if (postLicenseToast) setStartupToast(postLicenseToast);
+        setPhase("authorized");
+        return;
+      }
+
+      setBootstrapStatus(st);
+      setPhase("bootstrapping");
+      void runRuntimeBootstrap(postLicenseToast);
+    },
+    [runRuntimeBootstrap]
+  );
+
+  useEffect(() => {
+    if (phase !== "bootstrapping") return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    onModelInstallProgress((ev) => {
+      if (!disposed && ev.modelId === BOOTSTRAP_JOB_ID) {
+        setBootstrapProgress(ev);
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [phase]);
 
   useEffect(() => {
     try {
@@ -627,22 +733,21 @@ function LicenseStartupGate() {
       // ignore
     }
 
+    let cancelled = false;
     if (!LicenseService.isCommercialGateEnabled()) {
-      setPhase("authorized");
+      void enterAuthorizedOrBootstrap(null);
       return;
     }
 
-    let cancelled = false;
     LicenseService.verify()
       .then((summary) => {
         if (cancelled) return;
         if (summary.is_valid && summary.can_use_app) {
-          if (summary.status === "OFFLINE_GRACE") {
-            setStartupToast(
-              summary.error_message || "Đang hoạt động ngoại tuyến (Ân hạn tối đa 3 ngày)."
-            );
-          }
-          setPhase("authorized");
+          const graceMsg =
+            summary.status === "OFFLINE_GRACE"
+              ? summary.error_message || "Đang hoạt động ngoại tuyến (Ân hạn tối đa 3 ngày)."
+              : null;
+          void enterAuthorizedOrBootstrap(graceMsg);
         } else {
           setLockedError(
             summary.status !== "NO_KEY" ? summary.error_message || null : null
@@ -659,29 +764,40 @@ function LicenseStartupGate() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enterAuthorizedOrBootstrap]);
 
   const handleGateSuccess = (license: LicenseSummary) => {
-    setStartupToast(
-      `Kích hoạt bản quyền thành công! Hạn dùng: ${license.expires_at_formatted}`
-    );
+    const okMsg = `Kích hoạt bản quyền thành công! Hạn dùng: ${license.expires_at_formatted}`;
+    void enterAuthorizedOrBootstrap(okMsg);
+  };
+
+  const handleSkipBootstrap = async () => {
+    try {
+      sessionStorage.setItem("voxlab_bootstrap_skipped", "1");
+    } catch {}
+    if (bootstrapRunning) {
+      await cancelAiModelInstall(BOOTSTRAP_JOB_ID);
+    }
     setPhase("authorized");
   };
 
   if (phase === "checking") {
     return (
-      <div className="h-screen w-screen bg-bgCanvas text-textPrimary flex items-center justify-center p-4 select-none">
-        <div className="bg-surface1 border border-borderDefault rounded-2xl px-8 py-7 shadow-2xl flex flex-col items-center gap-3 max-w-sm w-full">
-          <div className="w-11 h-11 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center text-accent">
-            <ShieldCheck className="w-5 h-5" />
+      <div className={`h-screen w-screen flex flex-col overflow-hidden bg-background text-textPrimary select-none ${gateTheme}`}>
+        <TopBar theme={gateTheme} minimal={true} />
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="bg-surface1 border border-borderDefault rounded-2xl px-8 py-7 shadow-2xl flex flex-col items-center gap-3 max-w-sm w-full">
+            <div className="w-11 h-11 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center text-accent">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div className="flex items-center gap-2 text-xs font-semibold text-textPrimary">
+              <Loader2 className="w-4 h-4 animate-spin text-accent" />
+              <span>Đang xác thực bản quyền VoxLab...</span>
+            </div>
+            <p className="text-[11px] text-textMuted text-center">
+              Kiểm tra chữ ký phần cứng (HWID v3) và máy chủ bản quyền
+            </p>
           </div>
-          <div className="flex items-center gap-2 text-xs font-semibold text-textPrimary">
-            <Loader2 className="w-4 h-4 animate-spin text-accent" />
-            <span>Đang xác thực bản quyền VoxLab...</span>
-          </div>
-          <p className="text-[11px] text-textMuted text-center">
-            Kiểm tra chữ ký phần cứng (HWID v3) và máy chủ bản quyền
-          </p>
         </div>
       </div>
     );
@@ -689,14 +805,106 @@ function LicenseStartupGate() {
 
   if (phase === "locked") {
     return (
-      <LicenseModal
-        isOpen={true}
-        onClose={() => {}}
-        onSuccess={handleGateSuccess}
-        isInitialLaunch={true}
-        mandatory={true}
-        initialErrorMessage={lockedError}
-      />
+      <div className={`h-screen w-screen flex flex-col overflow-hidden bg-background text-textPrimary select-none ${gateTheme}`}>
+        <TopBar theme={gateTheme} minimal={true} />
+        <LicenseModal
+          isOpen={true}
+          onClose={() => {}}
+          onSuccess={handleGateSuccess}
+          isInitialLaunch={true}
+          mandatory={true}
+          initialErrorMessage={lockedError}
+        />
+      </div>
+    );
+  }
+
+  if (phase === "bootstrapping") {
+    const pct = Math.max(2, Math.min(100, Math.round(bootstrapProgress?.pct ?? 2)));
+    return (
+      <div className={`h-screen w-screen flex flex-col overflow-hidden bg-background text-textPrimary select-none ${gateTheme}`}>
+        <TopBar theme={gateTheme} minimal={true} />
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="bg-surface1 border border-borderDefault rounded-2xl p-6 shadow-2xl flex flex-col gap-4 max-w-lg w-full">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <img
+                  src="/app-icon.png?v=2"
+                  alt="VoxLab"
+                  className="w-11 h-11 rounded-xl shadow-md shadow-accent/25 object-cover shrink-0"
+                />
+                <div>
+                  <h2 className="font-bold text-base text-textPrimary">
+                    Thiết lập thư viện AI lần đầu
+                  </h2>
+                  <p className="text-xs text-textMuted">
+                    Tự động cấu hình môi trường thực thi theo phần cứng máy tính
+                  </p>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-accent/15 text-accent border border-accent/25 shrink-0">
+                <Cpu className="w-3.5 h-3.5" />
+                <span>
+                  {bootstrapStatus?.hasNvidiaGpu
+                    ? bootstrapStatus.gpuName || "NVIDIA CUDA GPU"
+                    : "Chế độ CPU"}
+                </span>
+              </span>
+            </div>
+
+            {bootstrapError ? (
+              <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/25 text-danger text-xs space-y-2">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{bootstrapError}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 rounded-xl bg-surface2/60 border border-borderDefault space-y-2.5">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="inline-flex items-center gap-2 text-textPrimary font-medium min-w-0">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-accent shrink-0" />
+                    <span className="truncate">
+                      {bootstrapProgress?.message || "Đang tải và cấu hình các thư viện cần thiết..."}
+                    </span>
+                  </span>
+                  <span className="font-mono font-bold text-accent shrink-0">{pct}%</span>
+                </div>
+                <div className="w-full h-2 bg-surface3 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-300 rounded-full"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="px-3.5 py-2.5 rounded-lg bg-accent/[0.06] border border-accent/20 text-[11px] text-textSecondary leading-relaxed">
+              Quá trình cấu hình thư viện chỉ diễn ra <strong className="text-textPrimary">một lần duy nhất</strong> khi mở ứng dụng lần đầu. Các mô hình AI dung lượng lớn (Whisper, OmniVoice, Chatterbox, Qwen3-TTS) sẽ không tự động tải mà do bạn chủ động tải thủ công trong mục <strong className="text-textPrimary">Cài đặt → Mô hình</strong>.
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              {bootstrapError && (
+                <button
+                  type="button"
+                  onClick={() => void runRuntimeBootstrap(null)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent text-white text-xs font-semibold cursor-pointer transition-all"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Thử lại</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleSkipBootstrap()}
+                className="px-3 py-2 rounded-lg bg-surface2 hover:bg-surface3 border border-borderDefault text-textSecondary hover:text-textPrimary text-xs font-medium transition-colors cursor-pointer"
+              >
+                {bootstrapError ? "Vào ứng dụng (Cài sau)" : "Bỏ qua tạm thời"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 

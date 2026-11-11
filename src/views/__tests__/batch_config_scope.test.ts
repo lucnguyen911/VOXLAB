@@ -630,7 +630,7 @@ describe("Gate D: Final Config Scope & Output Diff Verification Suite", () => {
 
     // Load stored settings via helper
     const stored = loadStoredDubbingSettings();
-    assert.equal(stored.voice, "Heart (Kokoro Local)", "Voice ID 'kokoro_af_heart' should resolve to voice name");
+    assert.equal(stored.voice, "Heart", "Voice ID 'kokoro_af_heart' should resolve to voice name");
     assert.equal(stored.ttsModel, "Chatterbox Turbo");
     assert.equal(stored.speed, 1.15);
     assert.equal(stored.pitch, 0.90);

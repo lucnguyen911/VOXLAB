@@ -106,7 +106,7 @@ export const TtsChunkCard = React.memo(function TtsChunkCard({
       <div className="min-h-[28px] flex items-center justify-between gap-3">
         {/* Left: Index & Duration & Pause & Non-normal Badges */}
         <div className="flex items-center gap-2 flex-wrap min-w-0">
-          <span className="font-mono text-xs font-bold text-accent px-1.5 py-0.5 rounded-md bg-surface3/80 shrink-0">
+          <span className="font-mono text-xs font-bold text-accent px-2 py-0.5 rounded-md bg-surface2 border border-borderDefault/85 shadow-2xs shrink-0">
             {String(chunk.index).padStart(2, "0")}
           </span>
 
@@ -159,7 +159,7 @@ export const TtsChunkCard = React.memo(function TtsChunkCard({
                 e.stopPropagation();
                 onToggleIssues(chunk.id);
               }}
-              className="text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 hover:bg-amber-500/25 text-amber-500 border border-amber-500/30 flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+              className="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-400 border border-amber-500/35 flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
               title="Bấm để xem chi tiết vấn đề"
             >
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />

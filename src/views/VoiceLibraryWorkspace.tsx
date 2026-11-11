@@ -14,9 +14,11 @@ import {
   Sparkles,
   Edit2,
   Download,
+  Loader2,
 } from "lucide-react";
 import { VoiceProfile, VoiceSource } from "../types/ui";
 import { useI18n } from "../i18n/context";
+import { providerRegistry } from "../services/providers";
 import {
   getVoiceLanguageInfo,
   getVoiceSecondaryTags,
@@ -80,6 +82,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
 
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
+  const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
   const [openCardMenuId, setOpenCardMenuId] = useState<string | null>(null);
   const [voiceToDelete, setVoiceToDelete] = useState<VoiceProfile | null>(null);
   const [voiceToEdit, setVoiceToEdit] = useState<VoiceProfile | null>(null);
@@ -208,26 +211,67 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
     });
   }, [selectedLanguage]);
 
-  const handlePlayVoice = (voice: VoiceProfile) => {
-    const isPlayingThisVoice = activePlayingTrackId !== undefined ? activePlayingTrackId === voice.id : playingVoiceId === voice.id;
+  const handlePlayVoice = async (voice: VoiceProfile) => {
+    const isPlayingThisVoice =
+      activePlayingTrackId !== undefined
+        ? activePlayingTrackId === voice.id
+        : playingVoiceId === voice.id;
     if (isPlayingThisVoice) {
+      providerRegistry.stopPreview();
       if (onStopPlaying) {
         onStopPlaying();
       }
       setPlayingVoiceId(null);
-    } else {
-      const cleanVoiceName = voice.name.replace(/\s*\(Clone\)$/i, "");
+      setPreviewLoadingId(null);
+      return;
+    }
+
+    const cleanVoiceName = voice.name.replace(/\s*\(Clone\)$/i, "");
+    if (voice.sampleAudioPath) {
       if (onPlayTrack) {
         onPlayTrack({
           id: voice.id,
           voiceName: cleanVoiceName,
           title: `Bản thử · ${cleanVoiceName}`,
-          durationSec: voice.sampleDurationSec || 18.5,
+          durationSec: voice.sampleDurationSec || 5.0,
           audioUrl: voice.sampleAudioPath,
           text: `Bản nghe thử giọng ${cleanVoiceName}`,
         });
       }
       setPlayingVoiceId(voice.id);
+      return;
+    }
+
+    // For online voices without a static sampleAudioPath, synthesize a real preview
+    try {
+      setPreviewLoadingId(voice.id);
+      if (onStopPlaying) {
+        onStopPlaying();
+      }
+      const res = await providerRegistry.previewVoice(voice, () => {
+        setPlayingVoiceId((prev) => (prev === voice.id ? null : prev));
+      });
+      setPreviewLoadingId(null);
+
+      if (res.success && res.audioUrl) {
+        providerRegistry.stopPreview();
+        if (onPlayTrack) {
+          onPlayTrack({
+            id: voice.id,
+            voiceName: cleanVoiceName,
+            title: `Bản thử · ${cleanVoiceName}`,
+            durationSec: 4.5,
+            audioUrl: res.audioUrl,
+            text: `Bản nghe thử giọng ${cleanVoiceName}`,
+          });
+        }
+        setPlayingVoiceId(voice.id);
+      } else if (!res.success && res.error) {
+        alert(res.error);
+      }
+    } catch (err: any) {
+      setPreviewLoadingId(null);
+      alert(err?.message || "Không thể phát mẫu thử cho giọng này.");
     }
   };
 
@@ -449,11 +493,8 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
                               : "hover:bg-surface2 text-textPrimary"
                           }`}
                         >
-                          <div className="flex items-center gap-1.5 truncate min-w-0 pr-1.5">
+                          <div className="flex items-center truncate min-w-0 pr-1.5">
                             <span className="truncate">{getLanguageLabel(l.code, lang)}</span>
-                            <span className="text-[10px] text-textMuted uppercase font-mono px-1 py-0.5 bg-surface2/80 rounded border border-borderDefault/50 shrink-0">
-                              {l.code}
-                            </span>
                           </div>
                           {selectedLanguage === l.code && <Check className="w-3.5 h-3.5 text-accent flex-shrink-0" />}
                         </button>
@@ -808,8 +849,9 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
 
                       {/* Play Preview */}
                       <button
-                        onClick={() => handlePlayVoice(voice)}
-                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-all flex-shrink-0 ${
+                        onClick={() => void handlePlayVoice(voice)}
+                        disabled={previewLoadingId === voice.id}
+                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-all flex-shrink-0 cursor-pointer ${
                           isPlayingThisVoice
                             ? "bg-rose-500 text-white shadow-md animate-pulse"
                             : "bg-surface2 hover:bg-accent hover:text-background text-textSecondary"
@@ -821,7 +863,9 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
                         }
                         aria-label={isPlayingThisVoice ? "Stop preview" : "Preview voice"}
                       >
-                        {isPlayingThisVoice ? (
+                        {previewLoadingId === voice.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : isPlayingThisVoice ? (
                           <Pause className="w-3.5 h-3.5 fill-current" />
                         ) : (
                           <Play className="w-3.5 h-3.5 fill-current ml-0.5" />

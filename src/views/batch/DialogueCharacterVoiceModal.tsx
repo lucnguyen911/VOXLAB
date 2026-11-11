@@ -258,7 +258,7 @@ export const DialogueCharacterVoiceModal: React.FC<
                 voices.find((v) => v.id === assignedVoiceId) ||
                 voices[0] || {
                   id: "edge_vi_hoaimy",
-                  name: "Hoài My (Edge)",
+                  name: "Hoài My",
                   gender: "female",
                   language: "vi-VN",
                   avatarColor: "from-sky-500 to-blue-600",

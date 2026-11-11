@@ -8,7 +8,7 @@ export const SIDEBAR_WIDTH = {
   collapsed: "w-16", // 64px
 } as const;
 
-export const HEADER_HEIGHT = "h-[42px]"; // Target 40-46px, preferred 42px
+export const HEADER_HEIGHT = "h-[46px]"; // Target 40-46px, optimized 46px for high-contrast brand & technical UI
 export const AUDIO_PLAYER_HEIGHT = "h-[68px]"; // Enhanced floating studio dock height
 export const BOTTOM_BAR_HEIGHT = "h-[52px]";
 

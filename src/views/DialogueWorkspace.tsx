@@ -409,9 +409,10 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
     const voiceId = char?.voiceId || availableVoices[0]?.id || "vi-VN-HoaiMyNeural";
+    const matchedVoice = availableVoices.find((v) => v.id === voiceId);
 
     const snapshot = createEffectiveVoiceSnapshot(voiceId, availableVoices, {
-      activeModel: settings.model || "Omni Voice",
+      activeModel: matchedVoice?.engine || settings.model || "Omni Voice",
       speed,
       pitch,
       volume,

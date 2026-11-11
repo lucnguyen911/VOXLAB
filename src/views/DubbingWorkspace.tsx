@@ -1241,13 +1241,15 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setIsAudioPaused(false);
     setErrorMessage("");
 
+    const matchedVoice = voices.find((v) => v.id === selectedVoiceId);
+    const effectiveModel = matchedVoice?.engine || selectedModel;
     const snapshot = createEffectiveVoiceSnapshot(selectedVoiceId, voices, {
-      activeModel: selectedModel,
+      activeModel: effectiveModel,
       speed,
       pitch,
       volume,
     });
-    const advancedSettings = getEngineAdvancedSettings(selectedModel);
+    const advancedSettings = getEngineAdvancedSettings(snapshot.modelId || snapshot.engine || effectiveModel);
 
     const activeGroups =
       speechGroups.length > 0

@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import {
   Globe,
   Layers,
-  FolderSync,
   RefreshCw,
   Key,
   FolderOpen,
@@ -16,6 +15,9 @@ import {
   X,
   Sliders,
   Plus,
+  Download,
+  Loader2,
+  Cpu,
 } from "lucide-react";
 import { SettingsGroup } from "../types/ui";
 import {
@@ -46,13 +48,21 @@ import {
   scanAiModels,
   loadAiRuntimeSettings,
   saveAiRuntimeSettings,
+  getAiHardwareInfo,
+  installAiModel,
+  cancelAiModelInstall,
+  onModelInstallProgress,
+  bootstrapAiRuntimes,
+  BOOTSTRAP_JOB_ID,
   type ModelStatus,
+  type ModelInstallProgressEvent,
 } from "../services/ai/aiRuntimeSettings";
 import { showPathInFolder, reloadAiRuntimeSettings } from "../services/batch/batchRuntime";
+import { formatInstalledRamGb } from "../services/ai/hardwareRecommendation";
 import { AdvancedTtsSettingsPanel } from "../components/settings/AdvancedTtsSettingsPanel";
 
 export interface SettingsWorkspaceProps {
-  onOpenMigrationModal: (oldPath: string, newPath: string) => void;
+  onOpenMigrationModal?: (oldPath: string, newPath: string) => void;
   initialGroup?: SettingsGroup;
 }
 
@@ -163,7 +173,7 @@ const BUILTIN_PROVIDERS: ProviderCardItem[] = [
 ];
 
 export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
-  onOpenMigrationModal,
+  onOpenMigrationModal: _onOpenMigrationModal,
   initialGroup,
 }) => {
   // Normalize initial group: map legacy aliases and sub-sections to the 3 main groups
@@ -721,6 +731,12 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   const [modelsDir, setModelsDir] = useState<string>("");
   const [modelsList, setModelsList] = useState<ModelStatus[]>([]);
   const [isScanningModels, setIsScanningModels] = useState<boolean>(false);
+  const [installingModelId, setInstallingModelId] = useState<string | null>(null);
+  const [installProgress, setInstallProgress] = useState<ModelInstallProgressEvent | null>(null);
+  const [modelInstallNotice, setModelInstallNotice] = useState<{
+    type: "success" | "error" | "info";
+    message: string;
+  } | null>(null);
 
   const handleScanModels = async (dirOverride?: string) => {
     setIsScanningModels(true);
@@ -732,6 +748,92 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       console.error("Scan models error:", e);
     } finally {
       setIsScanningModels(false);
+    }
+  };
+
+  const handleInstallModel = async (model: ModelStatus) => {
+    if (installingModelId) return;
+    setModelInstallNotice(null);
+    setInstallingModelId(model.id);
+    setInstallProgress({
+      modelId: model.id,
+      status: "installing",
+      stage: "preparing",
+      pct: 1,
+      message: `Đang khởi tạo cài đặt ${model.displayName}...`,
+    });
+    try {
+      await installAiModel(model.id, modelsDir || undefined);
+      await handleScanModels();
+      await fetchRealStorageStats();
+      await fetchRealHardwareInfo();
+      setModelInstallNotice({
+        type: "success",
+        message: `Đã tải và cài đặt sẵn sàng mô hình ${model.displayName.replace(/\s*\(faster-whisper\)/i, "")}.`,
+      });
+    } catch (err: any) {
+      const code = err?.code || "";
+      const rawMsg = err?.message || String(err || "Không thể cài đặt mô hình.");
+      if (code === "CANCELLED" || rawMsg.includes("CANCELLED") || rawMsg.includes("Đã hủy")) {
+        setModelInstallNotice({
+          type: "info",
+          message: `Đã dừng cài đặt ${model.displayName.replace(/\s*\(faster-whisper\)/i, "")}.`,
+        });
+      } else {
+        setModelInstallNotice({
+          type: "error",
+          message: rawMsg,
+        });
+      }
+      await handleScanModels();
+    } finally {
+      setInstallingModelId(null);
+      setInstallProgress(null);
+    }
+  };
+
+  const handleCancelInstallModel = async (modelId: string) => {
+    await cancelAiModelInstall(modelId);
+  };
+
+  const handleBootstrapAllRuntimes = async () => {
+    if (installingModelId) return;
+    setModelInstallNotice(null);
+    setInstallingModelId(BOOTSTRAP_JOB_ID);
+    setInstallProgress({
+      modelId: BOOTSTRAP_JOB_ID,
+      status: "installing",
+      stage: "preparing",
+      pct: 2,
+      message: "Đang tự động cấu hình và tải các thư viện AI cần thiết...",
+    });
+    try {
+      await bootstrapAiRuntimes();
+      await handleScanModels();
+      await fetchRealStorageStats();
+      await fetchRealHardwareInfo();
+      setModelInstallNotice({
+        type: "success",
+        message: "Đã cấu hình đầy đủ thư viện AI! Bạn có thể bấm \"Tải mô hình\" ở từng mô hình muốn sử dụng.",
+      });
+    } catch (err: any) {
+      const code = err?.code || "";
+      const rawMsg = err?.message || String(err || "Không thể cấu hình thư viện AI.");
+      if (code === "CANCELLED" || rawMsg.includes("CANCELLED") || rawMsg.includes("tạm dừng")) {
+        setModelInstallNotice({
+          type: "info",
+          message: "Đã dừng thiết lập thư viện AI.",
+        });
+      } else {
+        setModelInstallNotice({
+          type: "error",
+          message: rawMsg,
+        });
+      }
+      await handleScanModels();
+    } finally {
+      setInstallingModelId(null);
+      setInstallProgress(null);
     }
   };
 
@@ -757,44 +859,105 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     }
   };
 
-  // Tab 3: Storage state
-  const [appDataRoot, setAppDataRoot] = useState("C:\\Users\\Admin\\AppData\\Local\\VoxLab");
+  // Tab 3: Storage state (real AppData & Scratch metrics)
+  const [appDataRoot, setAppDataRoot] = useState("");
   const [storageStats, setStorageStats] = useState({
-    dataRootSize: "1.2 GB",
-    cacheSize: "245 MB",
-    logsSize: "12.4 MB",
-    historyCount: 38,
+    dataRootSize: "0 MB",
+    cacheSize: "0 MB",
+    scratchBytes: 0,
   });
-  const [cleanActionPending, setCleanActionPending] = useState<"cache" | "logs" | "history" | null>(null);
-  const [activeCleaningTask, setActiveCleaningTask] = useState<"cache" | "logs" | "history" | null>(null);
+  const [cleanActionPending, setCleanActionPending] = useState<"cache" | null>(null);
+  const [activeCleaningTask, setActiveCleaningTask] = useState<"cache" | null>(null);
   const [storageToast, setStorageToast] = useState<string | null>(null);
 
-  const executeCleanAction = (action: "cache" | "logs" | "history") => {
+  const formatBytesReadable = (bytes: number): string => {
+    if (!bytes || bytes <= 0) return "0 MB";
+    if (bytes < 1024 * 1024) {
+      const kb = Math.max(1, Math.round(bytes / 1024));
+      return `${kb} KB`;
+    }
+    const mb = bytes / (1024 * 1024);
+    if (mb < 1024) {
+      return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
+    }
+    return `${(mb / 1024).toFixed(2)} GB`;
+  };
+
+  const fetchRealStorageStats = async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const stats = await invoke<{
+        appDataPath: string;
+        appDataBytes: number;
+        scratchPath: string;
+        scratchBytes: number;
+      }>("fs_storage_stats");
+      if (stats) {
+        setAppDataRoot(stats.scratchPath || stats.appDataPath);
+        setStorageStats({
+          dataRootSize: formatBytesReadable(stats.appDataBytes),
+          cacheSize: formatBytesReadable(stats.scratchBytes),
+          scratchBytes: stats.scratchBytes,
+        });
+      }
+    } catch {
+      // Fallback in non-Tauri test/dev preview
+    }
+  };
+
+  const executeCleanAction = async (action: "cache") => {
     setCleanActionPending(null);
     setActiveCleaningTask(action);
-    setTimeout(() => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const freedBytes = await invoke<number>("fs_clear_scratch");
+      await fetchRealStorageStats();
+      setStorageToast(
+        freedBytes > 0
+          ? `Đã dọn sạch ${formatBytesReadable(freedBytes)} bộ nhớ tạm an toàn.`
+          : "Bộ nhớ tạm đã sạch hoàn toàn."
+      );
+    } catch {
+      setStorageStats((prev) => ({ ...prev, cacheSize: "0 MB", scratchBytes: 0 }));
+      setStorageToast("Đã dọn sạch bộ nhớ tạm an toàn.");
+    } finally {
       setActiveCleaningTask(null);
-      if (action === "cache") {
-        setStorageStats((prev) => ({ ...prev, cacheSize: "0 MB" }));
-        setStorageToast("Đã dọn sạch bộ nhớ tạm an toàn.");
-      } else if (action === "logs") {
-        setStorageStats((prev) => ({ ...prev, logsSize: "0 MB" }));
-        setStorageToast("Đã xóa tệp nhật ký cũ thành công.");
-      } else if (action === "history") {
-        setStorageStats((prev) => ({ ...prev, historyCount: 0 }));
-        setStorageToast("Đã dọn dẹp bản ghi lịch sử thành công.");
-      }
       setTimeout(() => setStorageToast(null), 3000);
-    }, 700);
+    }
+  };
+
+  const handleResetAllDefaultSettings = async () => {
+    setIsResetConfirmOpen(false);
+    try {
+      await handleDeviceChange("auto");
+      const keysToReset = [
+        "voxlab_tts_settings_v1",
+        "voxlab_tts_advanced_settings_v1",
+        "voxlab_dialogue_settings",
+        "voxlab_dubbing_voice_settings",
+        "voxlab_dubbing_pauses_v1",
+        "voxlab_dubbing_mode",
+        "voxlab_subtitle_settings_v2",
+        "voxlab_batch_global_defaults_v2",
+      ];
+      for (const k of keysToReset) {
+        localStorage.removeItem(k);
+      }
+      window.dispatchEvent(new CustomEvent("voxlab_tts_advanced_settings_changed"));
+    } catch (e) {
+      console.error("Failed to reset default settings:", e);
+    }
+    setStorageToast("Đã khôi phục các tùy chọn cấu hình về mặc định chuẩn.");
+    setTimeout(() => setStorageToast(null), 3000);
   };
 
   // Hardware state
   const [hardwareInfo, setHardwareInfo] = useState({
-    cpu: "Intel Core Ultra 7 270K Plus",
-    gpu: "NVIDIA GeForce RTX 5070 Ti",
-    ram: "32 GB",
-    vram: "16 GB",
-    cudaAvailable: true,
+    cpu: "Đang kiểm tra...",
+    gpu: "Đang kiểm tra...",
+    ram: "—",
+    vram: "—",
+    cudaAvailable: false,
   });
   const [aiExecutionDevice, setAiExecutionDevice] = useState<"auto" | "gpu" | "cpu">("auto");
   const [isScanningHardware, setIsScanningHardware] = useState(false);
@@ -814,22 +977,38 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   const fetchRealHardwareInfo = async () => {
     setIsScanningHardware(true);
     try {
+      const hwAccel = await getAiHardwareInfo();
       const { invoke } = await import("@tauri-apps/api/core");
       const info = await invoke<any>("ai_request", {
         runtime: "core",
         method: "system.info",
         params: {},
-      });
-      if (info) {
-        setHardwareInfo((prev) => ({
+      }).catch(() => null);
+
+      setHardwareInfo((prev) => {
+        const hasCuda = Boolean(info?.cudaAvailable || hwAccel.hasNvidiaGpu);
+        const gpuLabel = info?.gpu
+          ? String(info.gpu)
+          : hwAccel.gpuName
+          ? hwAccel.gpuName
+          : hasCuda
+          ? "NVIDIA CUDA GPU"
+          : "Không phát hiện GPU rời";
+        return {
           ...prev,
-          gpu: info.gpu ? `${info.gpu}${info.computeCapability ? ` (sm_${info.computeCapability.replace('.', '')})` : ""}` : prev.gpu,
-          cudaAvailable: Boolean(info.cudaAvailable),
-          vram: info.vramTotalMb ? `${Math.round(info.vramTotalMb / 1024)} GB` : prev.vram,
-        }));
-      }
+          cpu: info?.cpu ? String(info.cpu) : prev.cpu,
+          gpu: gpuLabel,
+          ram: info?.ramTotalMb ? `${formatInstalledRamGb(info.ramTotalMb)} GB` : prev.ram,
+          cudaAvailable: hasCuda,
+          vram: info?.vramTotalMb
+            ? `${Math.round(info.vramTotalMb / 1024)} GB`
+            : hasCuda
+            ? "Sẵn sàng (CUDA)"
+            : "N/A",
+        };
+      });
     } catch (e) {
-      console.warn("Could not query system.info from sidecar:", e);
+      console.warn("Could not query hardware info:", e);
     } finally {
       setIsScanningHardware(false);
     }
@@ -849,14 +1028,31 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   } | null>(null);
 
   useEffect(() => {
+    let unlistenInstall: (() => void) | null = null;
+    onModelInstallProgress((ev) => {
+      if (ev.status === "installing") {
+        setInstallingModelId(ev.modelId);
+        setInstallProgress(ev);
+      }
+    })
+      .then((fn) => {
+        unlistenInstall = fn;
+      })
+      .catch(() => {});
+
     LicenseService.getSummary().then(setLicenseInfo).catch(() => {});
     fetchRealHardwareInfo();
+    fetchRealStorageStats();
     loadAiRuntimeSettings().then(async (settings) => {
       setModelsDir(settings.modelsDir);
       setAiExecutionDevice(settings.device === "cuda" ? "gpu" : settings.device);
       const models = await scanAiModels(settings.modelsDir);
       setModelsList(models);
     }).catch(console.error);
+
+    return () => {
+      if (unlistenInstall) unlistenInstall();
+    };
   }, []);
 
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
@@ -1064,7 +1260,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       {/* ================================================================== */}
       {/* LEFT NAVIGATION SIDEBAR (Strictly 3 Groups in Exact Order)         */}
       {/* ================================================================== */}
-      <aside className="w-56 bg-surface1 border-r border-borderDefault p-3 space-y-1.5 flex-shrink-0 select-none overflow-y-auto">
+      <aside className="w-56 bg-panel border-r border-borderDefault p-3 space-y-1.5 flex-shrink-0 select-none overflow-y-auto">
         <div className="px-3 py-2 text-[10px] font-bold text-textMuted uppercase tracking-wider">
           Cài đặt
         </div>
@@ -1073,17 +1269,27 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
           return (
             <button
               key={g.id}
+              type="button"
+              data-nav-item="true"
               onClick={() => setActiveGroup(g.id)}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-left transition-all cursor-pointer ${
+              className={`group relative w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-left transition-all duration-150 cursor-pointer ${
                 isActive
-                  ? "bg-accent/15 text-accent font-semibold border border-accent/40 shadow-xs"
-                  : "text-textSecondary hover:bg-surface2 hover:text-textPrimary border border-transparent"
+                  ? "bg-surface1 text-textPrimary font-semibold ring-1 ring-[#D2BFA4] dark:ring-amber-500/35 shadow-[inset_0_1px_0_#fff,0_2px_6px_-1px_rgba(36,24,12,0.08)] dark:shadow-[inset_0_1px_0_rgba(255,244,224,0.09),0_4px_10px_-2px_rgba(0,0,0,0.45)]"
+                  : "text-textSecondary hover:bg-surface1/70 dark:hover:bg-surface2/50 hover:text-textPrimary"
               }`}
             >
-              <span className={`shrink-0 ${isActive ? "text-accent" : "text-textMuted"}`}>
+              <span
+                className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-all duration-150 ${
+                  isActive
+                    ? "bg-gradient-to-b from-amber-400 via-amber-500 to-amber-600 text-white shadow-xs shadow-amber-600/30 ring-1 ring-inset ring-white/35"
+                    : "text-textMuted group-hover:text-textPrimary group-hover:bg-surface2/80"
+                }`}
+              >
                 {g.icon}
               </span>
-              <span className="text-xs font-medium truncate">{g.label}</span>
+              <span className={`text-xs truncate ${isActive ? "font-semibold" : "font-medium"}`}>
+                {g.label}
+              </span>
             </button>
           );
         })}
@@ -1127,7 +1333,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                         }}
                         className={`group relative p-3 rounded-xl border text-left transition-all flex flex-col justify-between gap-2 cursor-pointer select-none ${
                           isSelected
-                            ? "bg-accent/10 border-accent shadow-xs ring-2 ring-accent/30 text-textPrimary"
+                            ? "bg-gradient-to-b from-amber-50/90 to-amber-100/60 dark:from-amber-500/18 dark:to-amber-600/10 border-accent shadow-xs ring-1 ring-accent/30 text-textPrimary"
                             : "bg-surface1 hover:bg-surface2/70 border-borderDefault text-textSecondary hover:text-textPrimary"
                         }`}
                       >
@@ -1499,155 +1705,313 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
           {/* TAB 2: MÔ HÌNH (Models)                                          */}
           {/* ---------------------------------------------------------------- */}
           {activeGroup === "models" && (
-            <div className="space-y-6">
-              {/* Header */}
-              <div className="flex items-center gap-2 pb-2 border-b border-borderDefault/60">
-                <Layers className="w-4 h-4 text-accent" />
-                <h3 className="font-semibold text-sm text-textPrimary">Quản lý mô hình AI cục bộ</h3>
-              </div>
-
-              {/* Models Directory */}
-              <div className="p-4 bg-surface1 rounded-xl border border-borderDefault space-y-2">
-                <label className="font-semibold text-xs text-textPrimary block">
-                  Thư mục Lưu trữ Mô hình AI (Models Directory)
-                </label>
-                <div className="flex items-center gap-2">
+            <div className="space-y-4">
+              {/* Thẻ 1: Thư mục mô hình AI */}
+              <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <label className="font-semibold text-xs text-textPrimary block">
+                    Thư mục mô hình AI
+                  </label>
+                  <span className="font-mono text-xs text-accent font-semibold px-2 py-0.5 rounded bg-accent/10 border border-accent/20">
+                    {(() => {
+                      const totalMb = modelsList.reduce(
+                        (sum, m) => sum + (m.installed && m.sizeOnDiskMb > 0 ? m.sizeOnDiskMb : 0),
+                        0
+                      );
+                      return totalMb > 0 ? `${(totalMb / 1024).toFixed(2)} GB` : "0 MB";
+                    })()}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                   <input
                     type="text"
                     readOnly
                     value={modelsDir}
                     placeholder="Đang tải đường dẫn..."
-                    className="flex-1 bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textPrimary focus:border-accent focus:outline-none"
+                    className="flex-1 min-w-[200px] bg-surface2/80 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textPrimary select-none focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={handlePickModelsDir}
-                    className="px-3.5 py-2 bg-surface2 hover:bg-surface3 rounded-lg border border-borderDefault text-textSecondary hover:text-textPrimary text-xs font-medium transition-colors cursor-pointer"
+                    className="px-3.5 py-2 bg-surface2 hover:bg-surface3 rounded-lg border border-borderDefault text-textSecondary hover:text-textPrimary text-xs font-medium transition-colors cursor-pointer shrink-0"
                   >
                     Chọn thư mục...
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleScanModels()}
-                    disabled={isScanningModels}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-surface2 hover:bg-surface3 text-accent rounded-lg border border-accent/40 font-semibold text-xs transition-colors cursor-pointer disabled:opacity-50"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isScanningModels ? "animate-spin" : ""}`} />
-                    <span>{isScanningModels ? "Đang quét..." : "Quét lại"}</span>
                   </button>
                   {modelsDir && (
                     <button
                       type="button"
                       onClick={() => showPathInFolder(modelsDir)}
-                      title="Mở thư mục trên máy"
-                      className="p-2 bg-surface2 hover:bg-surface3 rounded-lg border border-borderDefault text-textSecondary hover:text-textPrimary transition-colors cursor-pointer"
+                      title="Mở thư mục mô hình trên máy"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-lg border border-borderDefault text-xs font-medium transition-colors cursor-pointer shrink-0"
                     >
-                      <FolderOpen className="w-4 h-4" />
+                      <FolderOpen className="w-3.5 h-3.5 text-accent shrink-0" />
+                      <span>Mở thư mục</span>
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Models Table */}
-              <div className="p-4 bg-surface1 rounded-xl border border-borderDefault space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-xs text-textPrimary block">
-                    Danh sách mô hình AI ({modelsList.length})
-                  </span>
-                  <span className="text-[11px] text-textMuted">
-                    Quét thực tế từ thư mục hệ thống
+              {/* Thẻ 2: Danh sách mô hình */}
+              <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-3.5">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-xs text-textPrimary">
+                      Danh sách mô hình AI ({modelsList.length})
+                    </span>
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium border ${
+                        hardwareInfo.cudaAvailable
+                          ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/25"
+                          : "bg-surface2 text-textMuted border-borderDefault"
+                      }`}
+                    >
+                      <Cpu className="w-3 h-3 shrink-0" />
+                      <span>
+                        {hardwareInfo.cudaAvailable
+                          ? `Tăng tốc GPU: ${hardwareInfo.gpu}`
+                          : "Chế độ xử lý: CPU"}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {modelsList.some(
+                      (m) =>
+                        m.runtimeInstalled === false &&
+                        (!m.requiresCuda || hardwareInfo.cudaAvailable)
+                    ) && (
+                      <button
+                        type="button"
+                        onClick={() => void handleBootstrapAllRuntimes()}
+                        disabled={isScanningModels || Boolean(installingModelId)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/15 hover:bg-accent text-accent hover:text-white rounded-lg border border-accent/30 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>Cấu hình thư viện AI</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleScanModels()}
+                      disabled={isScanningModels || Boolean(installingModelId)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-lg border border-borderDefault text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isScanningModels ? "animate-spin text-accent" : ""}`} />
+                      <span>{isScanningModels ? "Đang quét..." : "Quét lại"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {installingModelId === BOOTSTRAP_JOB_ID && (
+                  <div className="p-3 rounded-lg bg-surface2/60 border border-accent/30 space-y-2">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="inline-flex items-center gap-2 text-textPrimary font-medium min-w-0">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-accent shrink-0" />
+                        <span className="truncate">
+                          {installProgress?.message || "Đang cấu hình thư viện AI..."}
+                        </span>
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-mono text-accent font-semibold">
+                          {Math.max(1, Math.min(100, Math.round(installProgress?.pct ?? 2)))}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleCancelInstallModel(BOOTSTRAP_JOB_ID)}
+                          className="px-2 py-0.5 rounded bg-danger/10 hover:bg-danger/20 text-danger border border-danger/25 text-[11px] font-medium cursor-pointer"
+                        >
+                          Hủy
+                        </button>
+                      </div>
+                    </div>
+                    <div className="w-full h-1.5 bg-surface3 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-300 rounded-full"
+                        style={{
+                          width: `${Math.max(1, Math.min(100, Math.round(installProgress?.pct ?? 2)))}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Built-in out-of-the-box engines note */}
+                <div className="px-3 py-2 rounded-lg bg-accent/[0.06] border border-accent/20 flex items-center justify-between gap-2 text-[11px] text-textSecondary">
+                  <span>
+                    <strong className="text-textPrimary">Đã tích hợp sẵn trong bộ cài:</strong> Kokoro-82M (11 giọng Studio ngoại tuyến), Microsoft Edge TTS và xuất file WAV/MP3 hoạt động ngay lập tức mà không cần tải thêm.
                   </span>
                 </div>
 
+                {modelInstallNotice && (
+                  <div
+                    className={`px-3.5 py-2.5 rounded-lg border text-xs flex items-start justify-between gap-2 ${
+                      modelInstallNotice.type === "success"
+                        ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-400"
+                        : modelInstallNotice.type === "error"
+                        ? "bg-danger/10 border-danger/25 text-danger"
+                        : "bg-surface2 border-borderDefault text-textSecondary"
+                    }`}
+                  >
+                    <span className="leading-relaxed">{modelInstallNotice.message}</span>
+                    <button
+                      type="button"
+                      onClick={() => setModelInstallNotice(null)}
+                      className="p-0.5 hover:opacity-80 shrink-0 cursor-pointer"
+                      aria-label="Đóng thông báo"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 <div className="border border-borderDefault rounded-lg overflow-hidden">
-                  <table className="w-full text-left font-mono text-xs">
+                  <table className="w-full text-left text-xs">
                     <thead className="bg-surface2 text-textMuted border-b border-borderDefault text-[11px]">
                       <tr>
-                        <th className="p-2.5">Tên mô hình</th>
-                        <th className="p-2.5">Loại</th>
-                        <th className="p-2.5">Dung lượng</th>
-                        <th className="p-2.5">Trạng thái</th>
-                        <th className="p-2.5 text-right">Thao tác</th>
+                        <th className="p-2.5 font-medium">Tên mô hình</th>
+                        <th className="p-2.5 font-medium">Loại</th>
+                        <th className="p-2.5 font-medium">Dung lượng</th>
+                        <th className="p-2.5 font-medium text-right">Trạng thái & Cài đặt</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-borderDefault">
                       {modelsList.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="p-4 text-center text-textMuted font-sans text-xs">
-                            {isScanningModels ? "Đang quét mô hình..." : "Chưa tìm thấy mô hình nào trong thư mục."}
+                          <td colSpan={4} className="p-4 text-center text-textMuted text-xs">
+                            {isScanningModels ? "Đang quét mô hình..." : "Chưa tìm thấy danh sách mô hình."}
                           </td>
                         </tr>
                       ) : (
-                        modelsList.map((m) => (
-                          <tr key={m.id} className="hover:bg-surface2/40">
-                            <td className="p-2.5 font-sans font-medium text-textPrimary">
-                              <div>{m.displayName}</div>
-                              <div className="text-[10px] font-mono text-textMuted">{m.id}</div>
-                            </td>
-                            <td className="p-2.5 text-textMuted font-sans">
-                              {m.kind === "tts" ? "TTS / Voice Clone" : "Bóc băng (ASR)"}
-                            </td>
-                            <td className="p-2.5 text-textMuted">
-                              {m.sizeOnDiskMb > 0
-                                ? `${(m.sizeOnDiskMb / 1024).toFixed(2)} GB`
-                                : `~${(m.approxSizeMb / 1024).toFixed(1)} GB`}
-                            </td>
-                            <td className="p-2.5">
-                              {m.installed ? (
-                                <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1.5">
-                                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                                  <span>ĐÃ CÀI ĐẶT</span>
-                                </span>
-                              ) : (
-                                <span className="text-amber-500 font-semibold flex items-center gap-1.5" title={m.missingFiles?.join(", ")}>
-                                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                  <span>CHƯA CÀI</span>
-                                </span>
+                        modelsList.map((m) => {
+                          const isThisInstalling = installingModelId === m.id;
+                          const isOtherInstalling = Boolean(installingModelId && installingModelId !== m.id);
+                          const pct = isThisInstalling
+                            ? Math.max(1, Math.min(100, Math.round(installProgress?.pct ?? 1)))
+                            : 0;
+                          const weightsOnlyReady = Boolean(m.weightsInstalled && m.runtimeInstalled === false);
+
+                          return (
+                            <React.Fragment key={m.id}>
+                              <tr className="hover:bg-surface2/40">
+                                <td className="p-2.5 font-medium text-textPrimary">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span>{m.displayName.replace(/\s*\(faster-whisper\)/i, "")}</span>
+                                    {m.requiresCuda ? (
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                                        NVIDIA GPU
+                                      </span>
+                                    ) : (
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface2 text-textMuted border border-borderDefault">
+                                        GPU / CPU
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="p-2.5 text-textMuted">
+                                  {m.kind === "tts" ? "TTS / Voice Clone" : "Bóc băng & Hậu kiểm (ASR)"}
+                                </td>
+                                <td className="p-2.5 font-mono text-textMuted whitespace-nowrap">
+                                  {m.sizeOnDiskMb > 0
+                                    ? `${(m.sizeOnDiskMb / 1024).toFixed(2)} GB`
+                                    : m.approxSizeMb >= 1000
+                                    ? `~${(m.approxSizeMb / 1024).toFixed(1)} GB`
+                                    : `~${m.approxSizeMb} MB`}
+                                </td>
+                                <td className="p-2.5 text-right whitespace-nowrap">
+                                  {isThisInstalling ? (
+                                    <div className="inline-flex items-center justify-end gap-2">
+                                      <span className="inline-flex items-center gap-1.5 text-accent font-semibold font-mono">
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                                        <span>{pct}%</span>
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleCancelInstallModel(m.id)}
+                                        className="px-2 py-1 rounded-md bg-danger/10 hover:bg-danger/20 text-danger border border-danger/25 text-[11px] font-medium transition-colors cursor-pointer"
+                                      >
+                                        Hủy
+                                      </button>
+                                    </div>
+                                  ) : m.installed ? (
+                                    <span className="inline-flex items-center justify-end gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium">
+                                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                      <span>Đã cài đặt</span>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleInstallModel(m)}
+                                      disabled={isOtherInstalling}
+                                      title={
+                                        weightsOnlyReady
+                                          ? "Đã có tệp trọng số trên ổ cứng — nhấn để cài đặt tự động môi trường Python AI"
+                                          : m.runtimeInstalled !== false
+                                          ? `Tải thủ công mô hình ${m.displayName}`
+                                          : `Tự động cài đặt môi trường AI và tải ${m.displayName}`
+                                      }
+                                      className="inline-flex items-center justify-end gap-1.5 px-2.5 py-1.5 rounded-lg bg-accent/15 hover:bg-accent text-accent hover:text-white border border-accent/30 text-xs font-semibold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      <Download className="w-3.5 h-3.5 shrink-0" />
+                                      <span>
+                                        {weightsOnlyReady
+                                          ? "Cài thư viện AI"
+                                          : m.runtimeInstalled !== false
+                                          ? "Tải mô hình"
+                                          : "Tải & Cài đặt"}
+                                      </span>
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                              {isThisInstalling && (
+                                <tr className="bg-surface2/30">
+                                  <td colSpan={4} className="px-3 py-2">
+                                    <div className="space-y-1.5">
+                                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                                        <span className="text-textSecondary truncate">
+                                          {installProgress?.message || "Đang xử lý cài đặt..."}
+                                        </span>
+                                        <span className="font-mono text-accent font-semibold shrink-0">
+                                          {pct}%
+                                        </span>
+                                      </div>
+                                      <div className="w-full h-1.5 bg-surface3 rounded-full overflow-hidden">
+                                        <div
+                                          className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-300 rounded-full"
+                                          style={{ width: `${pct}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
                               )}
-                            </td>
-                            <td className="p-2.5 text-right font-sans">
-                              {m.installed ? (
-                                <button
-                                  type="button"
-                                  onClick={() => showPathInFolder(m.path)}
-                                  className="inline-flex items-center gap-1 text-accent hover:underline text-xs font-sans px-2 py-1 rounded hover:bg-surface3 transition-colors cursor-pointer"
-                                >
-                                  <FolderOpen className="w-3.5 h-3.5" />
-                                  <span>Mở thư mục</span>
-                                </button>
-                              ) : (
-                                <span className="text-[11px] text-textMuted" title={m.missingFiles?.join("\n")}>
-                                  Thiếu {m.missingFiles?.length || 0} tệp
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        ))
+                            </React.Fragment>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
                 </div>
               </div>
 
-              {/* Global Advanced TTS Settings Panel */}
+              {/* Thẻ 3: Thông số nâng cao TTS */}
               <AdvancedTtsSettingsPanel />
             </div>
           )}
 
-          {/* ---------------------------------------------------------------- */}
           {/* ---------------------------------------------------------------- */}
           {/* TAB 3: CHUNG (Thẻ Thông tin, Lưu trữ, Phần cứng & AI)             */}
           {/* ---------------------------------------------------------------- */}
           {activeGroup === "general" && (
             <div className="space-y-4">
               {/* Thẻ 1: Thông tin & Bản quyền */}
-              <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-4">
-                {/* Header: VoxLab - V1.0.0 + [Kiểm tra cập nhật] */}
+              <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-3.5">
                 <div className="flex items-center justify-between flex-wrap gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-accent to-sky-500 flex items-center justify-center text-white font-bold text-base shadow-md shadow-accent/20 shrink-0">
-                      VX
-                    </div>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <img
+                      src="/app-icon.png?v=2"
+                      alt="VoxLab"
+                      className="w-10 h-10 rounded-xl shadow-md shadow-accent/25 object-cover shrink-0 select-none"
+                    />
                     <div className="font-bold text-base text-textPrimary tracking-tight">
                       VoxLab - V1.0.0
                     </div>
@@ -1655,7 +2019,13 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => alert("Phiên bản VoxLab hiện tại (V1.0.0) là mới nhất.")}
+                    onClick={() => {
+                      setLicenseToast({
+                        type: "success",
+                        message: "Phiên bản VoxLab hiện tại (V1.0.0) là bản mới nhất.",
+                      });
+                      setTimeout(() => setLicenseToast(null), 3000);
+                    }}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-accent rounded-lg border border-accent/30 text-xs font-medium transition-colors cursor-pointer"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
@@ -1664,27 +2034,10 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                 </div>
 
                 {/* Key bản quyền */}
-                <div className="pt-3 border-t border-borderDefault/70 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <label className="font-semibold text-xs text-textPrimary block">
-                      Key bản quyền
-                    </label>
-                    <span
-                      className={`text-[10px] px-2.5 py-0.5 rounded-full font-semibold border ${
-                        licenseInfo?.is_valid
-                          ? licenseInfo.status === "OFFLINE_GRACE"
-                            ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/25"
-                            : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/25"
-                          : "bg-danger/10 text-danger border-danger/25"
-                      }`}
-                    >
-                      {licenseInfo?.is_valid
-                        ? licenseInfo.status === "OFFLINE_GRACE"
-                          ? "Ngoại tuyến (Ân hạn 3 ngày)"
-                          : "Bản quyền hợp lệ"
-                        : "Chưa kích hoạt"}
-                    </span>
-                  </div>
+                <div className="pt-3 border-t border-borderDefault/70 space-y-2">
+                  <label className="font-semibold text-xs text-textPrimary block">
+                    Key bản quyền
+                  </label>
 
                   <div className="flex items-center gap-2">
                     <input
@@ -1692,7 +2045,11 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                       readOnly
                       value={licenseInfo ? licenseInfo.masked_key : "Chưa kích hoạt"}
                       placeholder="VOXLAB-****-****-XXXX"
-                      className="flex-1 bg-surface2/80 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textPrimary select-none focus:outline-none"
+                      className={`flex-1 bg-surface2/80 border rounded-lg px-3 py-2 text-xs font-mono text-textPrimary select-none focus:outline-none ${
+                        licenseInfo && !licenseInfo.is_valid
+                          ? "border-danger/60"
+                          : "border-borderDefault"
+                      }`}
                     />
                     <button
                       type="button"
@@ -1716,23 +2073,21 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     </button>
                   </div>
 
-                  {/* Thời hạn & loại gói đặt ở dưới thanh nhập key */}
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-textSecondary pt-0.5">
-                    <span>
+                  {licenseInfo && !licenseInfo.is_valid ? (
+                    <div className="flex items-center gap-1.5 text-xs text-danger pt-0.5">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        {licenseInfo.error_message || "Key bản quyền không hợp lệ hoặc chưa được kích hoạt."}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-textSecondary pt-0.5">
                       Thời hạn:{" "}
                       <strong className="text-textPrimary font-medium">
                         {licenseInfo?.expires_at_formatted || "N/A"}
                       </strong>
-                    </span>
-                    {licenseInfo?.license_type && licenseInfo.license_type !== "N/A" && (
-                      <span>
-                        Gói:{" "}
-                        <strong className="text-textPrimary font-medium">
-                          {licenseInfo.license_type}
-                        </strong>
-                      </span>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1752,162 +2107,81 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                 </div>
               )}
 
-              {/* Thẻ 2: Lưu trữ & Dữ liệu (1 Vùng duy nhất) */}
-              <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-4">
-                {/* Khu vực trên: Thư mục dữ liệu VoxLab */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="font-semibold text-xs text-textPrimary block">
-                      Thư mục dữ liệu VoxLab
-                    </label>
-                    <span className="font-mono text-xs text-accent font-semibold px-2 py-0.5 rounded bg-accent/10 border border-accent/20">
-                      {storageStats.dataRootSize}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={appDataRoot}
-                      onChange={(e) => setAppDataRoot(e.target.value)}
-                      disabled={activeCleaningTask !== null}
-                      className="flex-1 bg-surface2 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textPrimary focus:border-accent focus:outline-none disabled:opacity-60"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => onOpenMigrationModal(appDataRoot, "D:\\VoxLabData")}
-                      disabled={activeCleaningTask !== null}
-                      className="flex items-center gap-1.5 px-3.5 py-2 bg-accent hover:bg-accent/90 text-white font-medium rounded-lg transition-colors text-xs cursor-pointer shadow-xs disabled:opacity-50"
-                    >
-                      <FolderSync className="w-3.5 h-3.5" />
-                      <span>Thay đổi thư mục...</span>
-                    </button>
-                  </div>
+              {/* Thẻ 2: Thư mục Cache */}
+              <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <label className="font-semibold text-xs text-textPrimary block">
+                    Cache
+                  </label>
+                  <span className="font-mono text-xs text-accent font-semibold px-2 py-0.5 rounded bg-accent/10 border border-accent/20">
+                    {storageStats.cacheSize}
+                  </span>
                 </div>
 
-                {/* Phân cách & Khu vực dưới: 3 thẻ dọn dẹp (Bộ nhớ tạm, Nhật ký, Lịch sử) */}
-                <div className="pt-4 border-t border-borderDefault/70">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {/* Bộ nhớ tạm */}
-                    <div className="p-3.5 bg-surface2/60 rounded-xl border border-borderDefault flex flex-col justify-between gap-3">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-xs text-textPrimary">Bộ nhớ tạm</span>
-                        <span className="font-mono text-[11px] text-textMuted">{storageStats.cacheSize}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setCleanActionPending("cache")}
-                        disabled={activeCleaningTask !== null || storageStats.cacheSize === "0 MB"}
-                        className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-surface1 hover:bg-danger/15 text-textSecondary hover:text-danger rounded-lg border border-borderDefault hover:border-danger/30 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {activeCleaningTask === "cache" ? (
-                          <>
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            <span>Đang dọn...</span>
-                          </>
-                        ) : storageStats.cacheSize === "0 MB" ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-500" />
-                            <span>Đã dọn sạch</span>
-                          </>
-                        ) : (
-                          <>
-                            <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                            <span>Dọn bộ nhớ tạm</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    {/* Nhật ký */}
-                    <div className="p-3.5 bg-surface2/60 rounded-xl border border-borderDefault flex flex-col justify-between gap-3">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-xs text-textPrimary">Nhật ký</span>
-                        <span className="font-mono text-[11px] text-textMuted">{storageStats.logsSize}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setStorageToast("Đã mở thư mục nhật ký hệ thống.");
-                            setTimeout(() => setStorageToast(null), 2500);
-                          }}
-                          disabled={activeCleaningTask !== null}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-surface1 hover:bg-surface3 text-textPrimary rounded-lg border border-borderDefault text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
-                        >
-                          <FolderOpen className="w-3.5 h-3.5 text-textMuted shrink-0" />
-                          <span>Mở thư mục</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setCleanActionPending("logs")}
-                          disabled={activeCleaningTask !== null || storageStats.logsSize === "0 MB"}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-surface1 hover:bg-danger/15 text-textSecondary hover:text-danger rounded-lg border border-borderDefault hover:border-danger/30 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {activeCleaningTask === "logs" ? (
-                            <>
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                              <span>Đang xóa...</span>
-                            </>
-                          ) : storageStats.logsSize === "0 MB" ? (
-                            <>
-                              <Check className="w-3.5 h-3.5 text-emerald-500" />
-                              <span>Đã xóa</span>
-                            </>
-                          ) : (
-                            <>
-                              <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                              <span>Xóa nhật ký</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Lịch sử */}
-                    <div className="p-3.5 bg-surface2/60 rounded-xl border border-borderDefault flex flex-col justify-between gap-3">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-xs text-textPrimary">Lịch sử</span>
-                        <span className="font-mono text-[11px] text-textMuted">{storageStats.historyCount} bản ghi</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setCleanActionPending("history")}
-                        disabled={activeCleaningTask !== null || storageStats.historyCount === 0}
-                        className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-surface1 hover:bg-danger/15 text-textSecondary hover:text-danger rounded-lg border border-borderDefault hover:border-danger/30 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {activeCleaningTask === "history" ? (
-                          <>
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            <span>Đang dọn...</span>
-                          </>
-                        ) : storageStats.historyCount === 0 ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-500" />
-                            <span>Đã dọn</span>
-                          </>
-                        ) : (
-                          <>
-                            <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                            <span>Dọn lịch sử</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
+                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                  <input
+                    type="text"
+                    readOnly
+                    value={appDataRoot || "Đang tải đường dẫn..."}
+                    className="flex-1 min-w-[200px] bg-surface2/80 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textPrimary select-none focus:outline-none"
+                  />
+                  {appDataRoot && (
+                    <button
+                      type="button"
+                      onClick={() => showPathInFolder(appDataRoot)}
+                      title="Mở thư mục dữ liệu trên máy"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-lg border border-borderDefault text-xs font-medium transition-colors cursor-pointer shrink-0"
+                    >
+                      <FolderOpen className="w-3.5 h-3.5 text-accent shrink-0" />
+                      <span>Mở thư mục</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setCleanActionPending("cache")}
+                    disabled={activeCleaningTask !== null || storageStats.scratchBytes === 0}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-surface2 hover:bg-danger/15 text-textSecondary hover:text-danger rounded-lg border border-borderDefault hover:border-danger/30 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                  >
+                    {activeCleaningTask === "cache" ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Đang dọn...</span>
+                      </>
+                    ) : storageStats.scratchBytes === 0 ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                        <span>Bộ nhớ tạm trống</span>
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Dọn bộ nhớ tạm</span>
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
 
-              {/* Thẻ 3: Phần Cứng & Hiệu suất xử lý (1 Vùng duy nhất) */}
+              {/* Thẻ 3: Phần Cứng & Hiệu suất xử lý */}
               <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-4">
                 {/* Phần Cứng ở trên */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <span className="font-semibold text-xs text-textPrimary">Phần Cứng</span>
                     <div className="flex items-center gap-2.5">
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                        CUDA: Khả dụng
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium border ${
+                          hardwareInfo.cudaAvailable
+                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                            : "bg-surface2 text-textSecondary border-borderDefault"
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            hardwareInfo.cudaAvailable ? "bg-emerald-500 animate-pulse" : "bg-textMuted"
+                          }`}
+                        />
+                        {hardwareInfo.cudaAvailable ? "CUDA: Khả dụng" : "CUDA: Không khả dụng"}
                       </span>
                       <button
                         type="button"
@@ -1924,7 +2198,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                   {/* 4 Cards: CPU, GPU, RAM, VRAM */}
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     {/* CPU */}
-                    <div className="p-3 bg-surface2/60 rounded-xl border border-borderDefault space-y-1">
+                    <div className="p-3.5 bg-gradient-to-b from-surface2/50 to-surface2/90 dark:from-surface2/70 dark:to-surface2/40 rounded-xl border border-borderDefault shadow-[inset_0_1px_0_#fff] dark:shadow-[inset_0_1px_0_rgba(255,244,224,0.06)] space-y-1">
                       <span className="text-[10px] font-bold text-textMuted uppercase tracking-wider block">CPU</span>
                       <div className="text-xs font-semibold text-textPrimary truncate" title={hardwareInfo.cpu}>
                         {hardwareInfo.cpu}
@@ -1932,7 +2206,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     </div>
 
                     {/* GPU */}
-                    <div className="p-3 bg-surface2/60 rounded-xl border border-borderDefault space-y-1">
+                    <div className="p-3.5 bg-gradient-to-b from-surface2/50 to-surface2/90 dark:from-surface2/70 dark:to-surface2/40 rounded-xl border border-borderDefault shadow-[inset_0_1px_0_#fff] dark:shadow-[inset_0_1px_0_rgba(255,244,224,0.06)] space-y-1">
                       <span className="text-[10px] font-bold text-textMuted uppercase tracking-wider block">GPU</span>
                       <div className="text-xs font-semibold text-textPrimary truncate" title={hardwareInfo.gpu}>
                         {hardwareInfo.gpu}
@@ -1940,7 +2214,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     </div>
 
                     {/* RAM */}
-                    <div className="p-3 bg-surface2/60 rounded-xl border border-borderDefault space-y-1">
+                    <div className="p-3.5 bg-gradient-to-b from-surface2/50 to-surface2/90 dark:from-surface2/70 dark:to-surface2/40 rounded-xl border border-borderDefault shadow-[inset_0_1px_0_#fff] dark:shadow-[inset_0_1px_0_rgba(255,244,224,0.06)] space-y-1">
                       <span className="text-[10px] font-bold text-textMuted uppercase tracking-wider block">RAM</span>
                       <div className="text-xs font-semibold text-textPrimary">
                         {hardwareInfo.ram}
@@ -1948,7 +2222,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     </div>
 
                     {/* VRAM */}
-                    <div className="p-3 bg-surface2/60 rounded-xl border border-borderDefault space-y-1">
+                    <div className="p-3.5 bg-gradient-to-b from-surface2/50 to-surface2/90 dark:from-surface2/70 dark:to-surface2/40 rounded-xl border border-borderDefault shadow-[inset_0_1px_0_#fff] dark:shadow-[inset_0_1px_0_rgba(255,244,224,0.06)] space-y-1">
                       <span className="text-[10px] font-bold text-textMuted uppercase tracking-wider block">VRAM</span>
                       <div className="text-xs font-semibold text-textPrimary">
                         {hardwareInfo.vram}
@@ -1967,13 +2241,18 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     {/* Tự động */}
                     <label
                       onClick={() => handleDeviceChange("auto")}
-                      className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
+                      className={`p-3.5 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
                         aiExecutionDevice === "auto"
-                          ? "bg-accent/15 border-accent text-accent shadow-xs"
-                          : "bg-surface2/60 border-borderDefault text-textSecondary hover:bg-surface2"
+                          ? "bg-gradient-to-b from-amber-50/90 to-amber-100/60 dark:from-amber-500/18 dark:to-amber-600/10 border-accent text-accent ring-1 ring-accent/25 shadow-xs"
+                          : "bg-surface1 hover:bg-surface2/70 border-borderDefault text-textSecondary shadow-2xs"
                       }`}
                     >
-                      <span className="font-semibold text-xs text-textPrimary">Tự động</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-xs text-textPrimary">Tự động</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-accent/15 border border-accent/25 text-accent font-semibold">
+                          Khuyên dùng
+                        </span>
+                      </div>
                       <input
                         type="radio"
                         name="device"
@@ -1986,13 +2265,13 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     {/* GPU */}
                     <label
                       onClick={() => handleDeviceChange("gpu")}
-                      className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
+                      className={`p-3.5 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
                         aiExecutionDevice === "gpu"
-                          ? "bg-accent/15 border-accent text-accent shadow-xs"
-                          : "bg-surface2/60 border-borderDefault text-textSecondary hover:bg-surface2"
+                          ? "bg-gradient-to-b from-amber-50/90 to-amber-100/60 dark:from-amber-500/18 dark:to-amber-600/10 border-accent text-accent ring-1 ring-accent/25 shadow-xs"
+                          : "bg-surface1 hover:bg-surface2/70 border-borderDefault text-textSecondary shadow-2xs"
                       }`}
                     >
-                      <span className="font-semibold text-xs text-textPrimary">GPU</span>
+                      <span className="font-semibold text-xs text-textPrimary">GPU (CUDA)</span>
                       <input
                         type="radio"
                         name="device"
@@ -2005,10 +2284,10 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     {/* CPU */}
                     <label
                       onClick={() => handleDeviceChange("cpu")}
-                      className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
+                      className={`p-3.5 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
                         aiExecutionDevice === "cpu"
-                          ? "bg-accent/15 border-accent text-accent shadow-xs"
-                          : "bg-surface2/60 border-borderDefault text-textSecondary hover:bg-surface2"
+                          ? "bg-gradient-to-b from-amber-50/90 to-amber-100/60 dark:from-amber-500/18 dark:to-amber-600/10 border-accent text-accent ring-1 ring-accent/25 shadow-xs"
+                          : "bg-surface1 hover:bg-surface2/70 border-borderDefault text-textSecondary shadow-2xs"
                       }`}
                     >
                       <span className="font-semibold text-xs text-textPrimary">CPU</span>
@@ -2021,29 +2300,18 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                       />
                     </label>
                   </div>
-
-                  {/* Dòng đề xuất và trạng thái hoạt động */}
-                  <div className="pt-1 flex items-center justify-between flex-wrap gap-2 text-xs">
-                    <div className="flex items-center gap-1.5 text-textSecondary">
-                      <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-                      <span>Khuyến nghị: <strong className="text-textPrimary font-medium">GPU · 16 GB VRAM</strong></span>
-                    </div>
-                    <div className="flex items-center gap-1.5 font-medium text-emerald-500 dark:text-emerald-400">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      <span>Đang kích hoạt: <strong className="font-semibold">{aiExecutionDevice === "cpu" ? "CPU" : "GPU (CUDA)"}</strong></span>
-                    </div>
-                  </div>
                 </div>
               </div>
 
-              {/* Nút Đặt lại cài đặt ở chân trang */}
-              <div className="pt-2 flex items-center justify-end">
+              {/* Nút Đặt lại mặc định ở chân trang */}
+              <div className="pt-1 flex items-center justify-end">
                 <button
                   type="button"
                   onClick={() => setIsResetConfirmOpen(true)}
-                  className="px-3.5 py-1.5 text-danger hover:bg-danger/10 border border-danger/30 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-danger hover:bg-danger/10 border border-danger/30 rounded-lg text-xs font-medium transition-colors cursor-pointer"
                 >
-                  Đặt lại
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Đặt lại mặc định</span>
                 </button>
               </div>
             </div>
@@ -2053,7 +2321,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       </div>
 
       {/* Storage Action Confirmation Modal */}
-      {cleanActionPending && (
+      {cleanActionPending === "cache" && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-surface1 border border-borderDefault rounded-xl w-full max-w-md shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             {/* Header */}
@@ -2064,12 +2332,10 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                 </div>
                 <div>
                   <h3 className="font-bold text-sm text-textPrimary">
-                    {cleanActionPending === "cache" && "Xác nhận dọn dẹp bộ nhớ tạm"}
-                    {cleanActionPending === "logs" && "Xác nhận xóa tệp nhật ký"}
-                    {cleanActionPending === "history" && "Xác nhận dọn dẹp lịch sử"}
+                    Xác nhận dọn dẹp bộ nhớ tạm
                   </h3>
                   <p className="text-xs text-textMuted">
-                    Hành động này sẽ giải phóng dữ liệu theo quy tắc an toàn.
+                    Giải phóng các tệp âm thanh tạm (scratch) sinh ra trong quá trình xử lý.
                   </p>
                 </div>
               </div>
@@ -2083,74 +2349,26 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
 
             {/* Body */}
             <div className="p-5 text-xs space-y-4">
-              {cleanActionPending === "cache" && (
-                <div className="space-y-3">
-                  <div className="p-3 rounded-lg bg-surface2 border border-borderDefault space-y-1.5">
-                    <div className="font-semibold text-textPrimary flex items-center gap-1.5">
-                      <AlertCircle className="w-3.5 h-3.5 text-accent" />
-                      <span>Dữ liệu sẽ dọn dẹp:</span>
-                    </div>
-                    <p className="text-textSecondary leading-relaxed">
-                      Giải phóng <span className="font-mono font-semibold text-textPrimary">{storageStats.cacheSize}</span> bộ nhớ đệm audio nghe thử và waveform giải mã tạm thời.
-                    </p>
+              <div className="space-y-3">
+                <div className="p-3 rounded-lg bg-surface2 border border-borderDefault space-y-1.5">
+                  <div className="font-semibold text-textPrimary flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-accent" />
+                    <span>Dữ liệu sẽ dọn dẹp:</span>
                   </div>
-                  <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 space-y-1">
-                    <div className="font-semibold flex items-center gap-1.5">
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Bảo toàn an toàn:</span>
-                    </div>
-                    <p className="text-[11px] leading-relaxed">
-                      Không xóa mô hình AI, cấu hình, preset giọng đọc, tệp nguồn hoặc kết quả xuất. Không ảnh hưởng đến các công việc Batch đang xử lý.
-                    </p>
-                  </div>
+                  <p className="text-textSecondary leading-relaxed">
+                    Giải phóng <span className="font-mono font-semibold text-textPrimary">{storageStats.cacheSize}</span> bộ nhớ đệm audio tạm thời trong thư mục <code className="font-mono">scratch</code>.
+                  </p>
                 </div>
-              )}
-
-              {cleanActionPending === "logs" && (
-                <div className="space-y-3">
-                  <div className="p-3 rounded-lg bg-surface2 border border-borderDefault space-y-1.5">
-                    <div className="font-semibold text-textPrimary flex items-center gap-1.5">
-                      <AlertCircle className="w-3.5 h-3.5 text-accent" />
-                      <span>Dữ liệu sẽ dọn dẹp:</span>
-                    </div>
-                    <p className="text-textSecondary leading-relaxed">
-                      Xóa toàn bộ các tệp nhật ký sự kiện và lỗi cũ (<span className="font-mono font-semibold text-textPrimary">{storageStats.logsSize}</span>).
-                    </p>
+                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 space-y-1">
+                  <div className="font-semibold flex items-center gap-1.5">
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Bảo toàn an toàn:</span>
                   </div>
-                  <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 space-y-1">
-                    <div className="font-semibold flex items-center gap-1.5">
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Bảo toàn an toàn:</span>
-                    </div>
-                    <p className="text-[11px] leading-relaxed">
-                      Giữ nguyên phiên nhật ký hiện tại đang ghi. Nhật ký không lưu trữ API Key, License Key hay dữ liệu nhạy cảm.
-                    </p>
-                  </div>
+                  <p className="text-[11px] leading-relaxed">
+                    Không xóa mô hình AI, cấu hình, giọng nhân bản, tệp nguồn hoặc kết quả đã xuất.
+                  </p>
                 </div>
-              )}
-
-              {cleanActionPending === "history" && (
-                <div className="space-y-3">
-                  <div className="p-3 rounded-lg bg-surface2 border border-borderDefault space-y-1.5">
-                    <div className="font-semibold text-textPrimary flex items-center gap-1.5">
-                      <AlertCircle className="w-3.5 h-3.5 text-accent" />
-                      <span>Dữ liệu sẽ dọn dẹp:</span>
-                    </div>
-                    <p className="text-textSecondary leading-relaxed">
-                      Xóa danh sách <span className="font-mono font-semibold text-textPrimary">{storageStats.historyCount} bản ghi</span> lịch sử hiển thị trong ứng dụng.
-                    </p>
-                  </div>
-                  <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 space-y-1">
-                    <div className="font-semibold flex items-center gap-1.5">
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Bảo toàn an toàn:</span>
-                    </div>
-                    <p className="text-[11px] leading-relaxed">
-                      Tuyệt đối không xóa tệp âm thanh nguồn hoặc kết quả xuất trên ổ đĩa. Bảo toàn hàng đợi, snapshot và metadata cho tác vụ Batch Retry/Regenerate.
-                    </p>
-                  </div>
-                </div>
-              )}
+              </div>
             </div>
 
             {/* Footer */}
@@ -2162,17 +2380,15 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                 Hủy bỏ
               </button>
               <button
-                onClick={() => executeCleanAction(cleanActionPending)}
+                onClick={() => void executeCleanAction("cache")}
                 className="px-4 py-2 rounded-lg bg-danger hover:bg-danger/90 text-white font-medium text-xs transition-colors cursor-pointer shadow-xs"
               >
-                {cleanActionPending === "logs" ? "Xác nhận xóa" : "Xác nhận dọn dẹp"}
+                Xác nhận dọn dẹp
               </button>
             </div>
           </div>
         </div>
       )}
-
-
 
       {/* Modal: Xác nhận Đặt lại cài đặt */}
       {isResetConfirmOpen && (
@@ -2185,7 +2401,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                   <RefreshCw className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-sm text-textPrimary">Đặt lại cài đặt</h3>
+                  <h3 className="font-bold text-sm text-textPrimary">Đặt lại cài đặt mặc định</h3>
                   <p className="text-xs text-textMuted">Khôi phục cấu hình mặc định ban đầu</p>
                 </div>
               </div>
@@ -2200,7 +2416,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
             {/* Body */}
             <div className="p-5 text-xs space-y-3">
               <p className="text-textSecondary leading-relaxed">
-                Hành động này sẽ khôi phục các tùy chọn cấu hình ứng dụng (nhà cung cấp AI, thiết bị xử lý, tham số mặc định) về trạng thái ban đầu.
+                Hành động này sẽ khôi phục thiết bị xử lý AI (về Tự động) cùng các thông số Tốc độ, Cao độ, Âm lượng, Ngắt nghỉ và Tham số nâng cao của các tab về trạng thái chuẩn ban đầu.
               </p>
               <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 space-y-1">
                 <div className="font-semibold flex items-center gap-1.5">
@@ -2208,7 +2424,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                   <span>Bảo toàn an toàn:</span>
                 </div>
                 <p className="text-[11px] leading-relaxed">
-                  Tuyệt đối không xóa mô hình AI, không xóa lịch sử, không xóa tệp âm thanh đầu ra và không xóa Voice Library.
+                  Giữ nguyên Key bản quyền, API Key dịch thuật, các mô hình AI đã tải, giọng nhân bản (Voice Clone) và lịch sử xuất file.
                 </p>
               </div>
             </div>
@@ -2224,14 +2440,10 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setIsResetConfirmOpen(false);
-                  setStorageToast("Đã khôi phục các cài đặt về mặc định ban đầu.");
-                  setTimeout(() => setStorageToast(null), 3000);
-                }}
+                onClick={() => void handleResetAllDefaultSettings()}
                 className="px-4 py-2 rounded-lg bg-danger hover:bg-danger/90 text-white font-medium text-xs transition-colors cursor-pointer shadow-xs"
               >
-                Đặt lại cấu hình
+                Đặt lại mặc định
               </button>
             </div>
           </div>

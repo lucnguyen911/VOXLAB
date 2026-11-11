@@ -159,7 +159,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   activeVoiceId,
   onChangeActiveVoice: _onChangeActiveVoice,
   activeModel,
-  onChangeModel,
+  onChangeModel: _onChangeModel,
   isOpen: _isOpen = true,
   onToggle: _onToggle,
   inspectorWidth = 340,
@@ -301,14 +301,14 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                 onOpenVoiceModal?.();
               }
             }}
-            className="p-3 bg-surface2/60 hover:bg-surface2 border border-borderDefault hover:border-accent/50 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none rounded-xl transition-all cursor-pointer flex items-center justify-between gap-3 group shadow-2xs"
+            className="p-3 bg-surface1 hover:bg-surface1 border border-borderDefault hover:border-accent/55 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none rounded-xl transition-all cursor-pointer flex items-center justify-between gap-3 group"
             title={t.inspector.fromLibrary}
           >
             <div className="flex items-center gap-3 min-w-0">
               <div
                 className={`w-10 h-10 rounded-full bg-gradient-to-tr ${
                   activeVoice.avatarColor || "from-pink-500 to-rose-600"
-                } flex items-center justify-center text-white font-bold text-xs shadow-sm flex-shrink-0`}
+                } flex items-center justify-center text-white font-bold text-xs shadow-sm ring-1 ring-inset ring-white/30 flex-shrink-0`}
               >
                 {activeVoice.name.charAt(0)}
               </div>
@@ -350,53 +350,11 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-1 text-xs text-accent font-semibold flex-shrink-0 group-hover:translate-x-0.5 transition-transform">
+            <div className="flex items-center gap-0.5 px-2 py-1 rounded-lg bg-accent/10 group-hover:bg-accent/18 border border-accent/25 text-xs text-accent font-semibold flex-shrink-0 transition-all">
               <span>{t.inspector.changeVoice}</span>
-              <ChevronRight className="w-3.5 h-3.5" />
+              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
             </div>
           </div>
-        </div>
-
-        {/* 2. MODEL & DEVICE (Section 5 & Requirement 6: Online voice vs Local model consistency) */}
-        <div className="space-y-1.5 pt-0.5">
-          {activeVoice?.isOnline || activeVoice?.provider === "edge" || activeVoice?.provider === "google_translate" || activeVoice?.provider === "openai" ? (
-            <>
-              <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-                {t.inspector.model}
-              </label>
-              <div className="w-full h-[34px] bg-surface2/70 border border-borderDefault rounded-lg px-2.5 flex items-center justify-between text-xs text-textPrimary">
-                <div className="flex items-center gap-2 truncate">
-                  <span className="w-2 h-2 rounded-full bg-sky-400" />
-                  <span className="font-medium truncate">
-                    {activeVoice.provider === "edge"
-                      ? "Microsoft Edge Neural (Cloud API)"
-                      : activeVoice.provider === "google_translate"
-                      ? "Google Cloud TTS (API v1)"
-                      : "OpenAI Audio TTS"}
-                  </span>
-                </div>
-                <span className="text-[10px] text-textMuted uppercase font-mono tracking-wider ml-2 flex-shrink-0">
-                  Online
-                </span>
-              </div>
-            </>
-          ) : (
-            <>
-              <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-                {t.inspector.model}
-              </label>
-              <select
-                value={activeModel}
-                onChange={(e) => onChangeModel(e.target.value)}
-                className="w-full h-[34px] bg-surface2 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
-              >
-                <option value="Kokoro-82M">Kokoro-82M (Cài sẵn · Nhẹ)</option>
-                <option value="OmniVoice">OmniVoice (Đa ngữ · Tiếng Việt)</option>
-                <option value="Chatterbox Turbo">Chatterbox Turbo (Tiếng Anh)</option>
-                <option value="Qwen TTS 1.7B">Qwen TTS 1.7B (Đa ngữ · Base)</option>
-              </select>
-            </>
-          )}
         </div>
 
         {/* Section 5: Subtle Divider before CÀI ĐẶT */}
@@ -808,7 +766,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                 >
                   {/* Background progress fill with gradient and animation */}
                   <div
-                    className="absolute inset-y-0 left-0 bg-accent transition-[width] duration-300 ease-out shadow-[0_0_12px_rgba(56,189,248,0.25)]"
+                    className="absolute inset-y-0 left-0 bg-gradient-to-r from-amber-500 to-orange-500 transition-[width] duration-300 ease-out shadow-[0_0_16px_rgba(245,158,11,0.45)]"
                     style={{ width: `${Math.max(effectivePercent, 2)}%` }}
                   />
 

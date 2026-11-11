@@ -541,7 +541,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
     <div
       role="region"
       aria-label="Audio Preview Player"
-      className={`h-[68px] px-3.5 sm:px-5 bg-panel/95 dark:bg-[#0c1322]/95 backdrop-blur-xl border border-borderDefault/80 dark:border-white/10 rounded-xl shadow-lg shadow-black/5 dark:shadow-2xl dark:shadow-black/50 flex items-center justify-between gap-3 sm:gap-6 text-xs select-none shrink-0 z-30 relative overflow-hidden transition-all duration-200 ${
+      className={`h-[68px] px-3.5 sm:px-5 bg-surface1/95 dark:bg-[#19140F]/95 backdrop-blur-xl border border-borderDefault dark:border-amber-500/20 rounded-xl shadow-[0_8px_24px_-4px_rgba(36,24,12,0.12),inset_0_1px_0_#fff] dark:shadow-[0_12px_32px_-4px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,240,212,0.08)] flex items-center justify-between gap-3 sm:gap-6 text-xs select-none shrink-0 z-30 relative overflow-hidden transition-all duration-200 ${
         className ?? "mx-2.5 sm:mx-3 mb-2.5 sm:mb-3"
       }`}
     >
@@ -614,7 +614,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
           <button
             type="button"
             onClick={onTogglePlay}
-            className="w-8 h-8 rounded-full bg-gradient-to-tr from-accent to-sky-500 hover:from-accentHover hover:to-sky-400 text-white shadow-md shadow-accent/25 hover:shadow-accent/40 active:scale-95 transition-all flex items-center justify-center shrink-0 cursor-pointer focus-visible:ring-2 focus-visible:ring-accent"
+            className="w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center shrink-0 cursor-pointer"
             title={isPlaying ? t.audioPlayer?.pause || "Tạm dừng" : t.audioPlayer?.play || "Phát"}
             aria-label={isPlaying ? t.audioPlayer?.pause || "Tạm dừng" : t.audioPlayer?.play || "Phát"}
           >

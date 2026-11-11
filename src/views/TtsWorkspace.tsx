@@ -14,7 +14,7 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { ChunkItem, VoiceProfile, EffectiveVoiceSnapshot } from "../types/ui";
-import { INITIAL_SCRIPT, MOCK_CHUNKS, MOCK_VOICES } from "../mock/data";
+import { INITIAL_SCRIPT, MOCK_VOICES } from "../mock/data";
 import { useI18n } from "../i18n/context";
 import { batchQueueExecutor } from "../services/concurrencyExecutor";
 import {
@@ -23,7 +23,7 @@ import {
 import { TextNormalizationModal } from "../components/modals/TextNormalizationModal";
 import { PronunciationManagerModal } from "../components/modals/PronunciationManagerModal";
 import { ManualPausePopover } from "../components/popovers/ManualPausePopover";
-import { formatPauseToken, splitScriptWithPauses } from "../services/pause";
+import { formatPauseToken, splitScriptWithPauses, TTS_SMART_CHUNK_OPTIONS } from "../services/pause";
 import {
   validateChunksForExport,
   validateMasterBoundaries,
@@ -122,27 +122,18 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 }) => {
   const { t } = useI18n();
   const [progressStage, setProgressStage] = useState<string>("");
-  const [stage, setStage] = useState<"prep" | "studio">(() => {
-    try {
-      const saved = localStorage.getItem("voxlab_tts_stage");
-      if (saved === "prep" || saved === "studio") return saved;
-    } catch {}
-    return "studio";
-  });
+  const [stage, setStage] = useState<"prep" | "studio">("prep");
 
-  React.useEffect(() => {
-    try {
-      localStorage.setItem("voxlab_tts_stage", stage);
-    } catch {}
-  }, [stage]);
   const [workingText, setWorkingText] = useState(() => {
     try {
       const saved = localStorage.getItem("voxlab_script_working_text");
-      if (saved !== null && saved.length > 0) return saved;
+      if (!saved || saved.trim() === INITIAL_SCRIPT.trim()) {
+        return "";
+      }
+      return saved;
     } catch {
-      // ignore
+      return "";
     }
-    return INITIAL_SCRIPT;
   });
 
   React.useEffect(() => {
@@ -154,9 +145,9 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       }
     }
   }, [incomingScript, onConsumeIncomingScript]);
-  const [originalText] = useState(INITIAL_SCRIPT);
+  const [originalText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [chunks, setChunks] = useState<ChunkItem[]>(MOCK_CHUNKS);
+  const [chunks, setChunks] = useState<ChunkItem[]>([]);
   const [playingChunkId, setPlayingChunkId] = useState<string | null>(null);
 
   const [isNormalizerOpen, setIsNormalizerOpen] = useState(false);
@@ -337,7 +328,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     if (isGenerating) {
       handleCancelGeneration();
     }
-    const parsedChunks = splitScriptWithPauses(workingText);
+    const parsedChunks = splitScriptWithPauses(workingText, TTS_SMART_CHUNK_OPTIONS);
     if (parsedChunks.length > 0) {
       setChunks(parsedChunks);
     }
@@ -502,19 +493,21 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     }
 
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const matchedActiveVoice = availableVoices.find((v) => v.id === activeVoiceId);
+    const effectiveActiveModel = matchedActiveVoice?.engine || activeModel;
     const storedSettings = loadStoredTtsSettings();
 
     // Requirement 7: By default use target's existing snapshot if it matches activeVoiceId, or create new from active voice
     const snapshotToUse = (target.effectiveVoiceSnapshot && target.effectiveVoiceSnapshot.voiceId === activeVoiceId)
       ? target.effectiveVoiceSnapshot
       : createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-          activeModel,
+          activeModel: effectiveActiveModel,
           speed: storedSettings.speed,
           pitch: storedSettings.pitch,
           volume: storedSettings.volume,
         });
 
-    const targetEngineOrModel = snapshotToUse.modelId || snapshotToUse.engine || activeModel;
+    const targetEngineOrModel = snapshotToUse.modelId || snapshotToUse.engine || effectiveActiveModel;
     const singleAdvancedSettings = getEngineAdvancedSettings(targetEngineOrModel);
 
     setChunks((prev) =>
@@ -748,7 +741,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
     // Requirement 2: Single source of truth immutable snapshot for entire regeneration batch
     const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-      activeModel,
+      activeModel: availableVoices.find((v) => v.id === activeVoiceId)?.engine || activeModel,
       speed: storedSettings.speed,
       pitch: storedSettings.pitch,
       volume: storedSettings.volume,
@@ -840,7 +833,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     const storedSettings = loadStoredTtsSettings();
 
     const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-      activeModel,
+      activeModel: availableVoices.find((v) => v.id === activeVoiceId)?.engine || activeModel,
       speed: storedSettings.speed,
       pitch: storedSettings.pitch,
       volume: storedSettings.volume,
@@ -932,7 +925,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     const storedSettings = loadStoredTtsSettings();
 
     const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-      activeModel,
+      activeModel: availableVoices.find((v) => v.id === activeVoiceId)?.engine || activeModel,
       speed: storedSettings.speed,
       pitch: storedSettings.pitch,
       volume: storedSettings.volume,
@@ -1028,7 +1021,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
     // Requirement 2: Single source of truth immutable snapshot for entire generation run
     const generationVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-      activeModel,
+      activeModel: availableVoices.find((v) => v.id === activeVoiceId)?.engine || activeModel,
       speed: storedSettings.speed,
       pitch: storedSettings.pitch,
       volume: storedSettings.volume,
@@ -1111,7 +1104,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       (window as any).__VOXLAB_REGENERATE_INVALID__ = handleRegenerateInvalidChunks;
       (window as any).__VOXLAB_REGENERATE_ERRORS__ = handleRegenerateErrorChunks;
       (window as any).__VOXLAB_GENERATE_ALL__ = handleGenerateAllAudio;
-      (window as any).__VOXLAB_EXPORT_AUDIO__ = handleExportAudio;
+      (window as any).__VOXLAB_EXPORT_AUDIO__ = () => handleExportAudio(false);
+      (window as any).__VOXLAB_FORCE_EXPORT__ = () => handleExportAudio(true);
       (window as any).__VOXLAB_MERGE_MASTER__ = () =>
         mergeMasterAudio(chunks, {
           projectTitle: "Podcast_Ep12",
@@ -1212,10 +1206,19 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   };
 
   // Master audio export execution with user-chosen destination dialog
-  const handleExportAudio = async () => {
+  const handleExportAudio = async (forcePartial = false) => {
     const val = validateChunksForExport(chunks);
-    if (!val.canExport) {
+    if (!forcePartial && !val.canExport) {
       onOpenExportValidation(val.invalidChunks);
+      return;
+    }
+
+    const targetChunks = forcePartial
+      ? chunks.filter((c) => c.status === "ready" && (c.durationSec ?? 0) > 0)
+      : chunks;
+
+    if (targetChunks.length === 0) {
+      alert("Chưa có đoạn audio nào hoàn thành để xuất file.");
       return;
     }
 
@@ -1250,7 +1253,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         }
       }
 
-      const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
+      const sortedChunks = [...targetChunks].sort((a, b) => a.index - b.index);
       const chunkPausesMs = computeChunkPausesMs(sortedChunks, ttsSettings.pauses);
       const seamWarnings = validateMasterBoundaries(sortedChunks, chunkPausesMs);
       if (seamWarnings.length > 0) {
@@ -1434,7 +1437,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             <button
               onClick={() => {
                 if (stage === "prep") {
-                  const parsedChunks = splitScriptWithPauses(workingText);
+                  const parsedChunks = splitScriptWithPauses(workingText, TTS_SMART_CHUNK_OPTIONS);
                   if (parsedChunks.length > 0) {
                     setChunks(parsedChunks);
                   }
@@ -1531,7 +1534,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               {/* PERMANENT TOP-RIGHT CTA: Ghép & xuất */}
               <button
                 type="button"
-                onClick={handleExportAudio}
+                onClick={() => handleExportAudio(false)}
                 disabled={chunks.length === 0 || isGenerating}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors whitespace-nowrap cursor-pointer ${
                   chunks.length === 0 || isGenerating

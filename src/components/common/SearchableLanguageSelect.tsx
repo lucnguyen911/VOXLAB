@@ -154,13 +154,8 @@ export const SearchableLanguageSelect: React.FC<SearchableLanguageSelectProps> =
             : "hover:bg-surface2 text-textPrimary"
         }`}
       >
-        <div className="flex items-center gap-1.5 truncate min-w-0 pr-1.5">
+        <div className="flex items-center truncate min-w-0 pr-1.5">
           <span className="truncate">{displayName}</span>
-          {item.code !== "auto" && (
-            <span className="text-[10px] text-textMuted uppercase font-mono px-1 py-0.5 bg-surface2/80 rounded border border-borderDefault/50 shrink-0">
-              {item.code}
-            </span>
-          )}
         </div>
         {isSelected && <Check className="w-3.5 h-3.5 text-accent flex-shrink-0" />}
       </button>

@@ -1,6 +1,13 @@
-import React from "react";
-import { AlertTriangle, CheckCircle, Download, ArrowRight, X, ShieldAlert } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle, Download, ArrowRight, X, ShieldAlert, Loader2 } from "lucide-react";
 import type { AsrReadinessResult } from "../../services/ai/asrReadiness";
+import {
+  cancelAiModelInstall,
+  installAiModel,
+  normalizeWhisperModelId,
+  onModelInstallProgress,
+  type ModelInstallProgressEvent,
+} from "../../services/ai/aiRuntimeSettings";
 
 interface AsrReadinessModalProps {
   isOpen: boolean;
@@ -15,12 +22,67 @@ export const AsrReadinessModal: React.FC<AsrReadinessModalProps> = ({
   onClose,
   readiness,
   onSwitchModelAndProceed,
-  onNavigateToTranscription,
 }) => {
+  const [isInstalling, setIsInstalling] = useState(false);
+  const [progress, setProgress] = useState<ModelInstallProgressEvent | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+
+  const canonicalId = readiness ? normalizeWhisperModelId(readiness.selectedModel) : "large-v3-turbo";
+  const targetModelFullId = `faster-whisper-${canonicalId}`;
+
+  useEffect(() => {
+    if (!isOpen) {
+      setInstallError(null);
+      return;
+    }
+    let unlisten: (() => void) | null = null;
+    onModelInstallProgress((ev) => {
+      if (ev.modelId === targetModelFullId && ev.status === "installing") {
+        setIsInstalling(true);
+        setProgress(ev);
+      }
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [isOpen, targetModelFullId]);
+
   if (!isOpen || !readiness) return null;
 
   const installedModels = readiness.installedModels || [];
   const hasInstalledModels = installedModels.length > 0;
+  const pct = isInstalling ? Math.max(1, Math.min(100, Math.round(progress?.pct ?? 1))) : 0;
+
+  const handleInstallSelected = async () => {
+    if (isInstalling) return;
+    setInstallError(null);
+    setIsInstalling(true);
+    setProgress({
+      modelId: targetModelFullId,
+      status: "installing",
+      stage: "preparing",
+      pct: 1,
+      message: `Đang khởi tạo cài đặt ${readiness.selectedModelDisplayName}...`,
+    });
+    try {
+      await installAiModel(targetModelFullId);
+      setIsInstalling(false);
+      setProgress(null);
+      onSwitchModelAndProceed(canonicalId);
+    } catch (err: any) {
+      const code = err?.code || "";
+      const msg = err?.message || String(err || "Không thể tải mô hình.");
+      setIsInstalling(false);
+      setProgress(null);
+      if (code !== "CANCELLED" && !msg.includes("CANCELLED") && !msg.includes("Đã hủy")) {
+        setInstallError(msg);
+      }
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150 select-none">
@@ -108,30 +170,66 @@ export const AsrReadinessModal: React.FC<AsrReadinessModalProps> = ({
               </div>
             )}
 
-            {/* Option 2: Navigate to Transcription tab to download selected model */}
-            <div className="p-3.5 rounded-xl border border-borderDefault bg-surface2/30 hover:bg-surface2/60 transition-all flex items-center justify-between gap-3 group">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm text-textPrimary group-hover:text-textPrimary transition-colors">
-                    Tải mô hình tại tab Phụ đề
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded-md border border-cyan-500/20">
-                    <Download className="w-3 h-3" />
-                    Tải về máy
-                  </span>
+            {/* Option 2: Direct In-App Download & Install */}
+            <div className="p-3.5 rounded-xl border border-borderDefault bg-surface2/30 hover:bg-surface2/60 transition-all space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-sm text-textPrimary">
+                      Tải & Cài đặt tự động {readiness.selectedModelDisplayName}
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded-md border border-cyan-500/20">
+                      <Download className="w-3 h-3" />
+                      Tự động
+                    </span>
+                  </div>
+                  <p className="text-xs text-textMuted mt-1">
+                    Tự động thiết lập môi trường AI và tải {readiness.selectedModelDisplayName} về máy, sau đó tiếp tục tạo âm thanh ngay lập tức.
+                  </p>
                 </div>
-                <p className="text-xs text-textMuted mt-1">
-                  Đến tab Phụ đề để tải mô hình {readiness.selectedModelDisplayName} đầy đủ trước khi thực hiện tác vụ tạo giọng đọc.
-                </p>
+                {isInstalling ? (
+                  <button
+                    type="button"
+                    onClick={() => cancelAiModelInstall(targetModelFullId)}
+                    className="shrink-0 px-3.5 py-2 bg-danger/10 hover:bg-danger/20 text-danger border border-danger/25 rounded-lg text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    Hủy tải
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleInstallSelected}
+                    className="shrink-0 px-3.5 py-2 bg-accent hover:bg-accentHover text-white rounded-lg text-xs font-semibold shadow-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Tải & Cài đặt</span>
+                  </button>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={onNavigateToTranscription}
-                className="shrink-0 px-3.5 py-2 bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault hover:border-textMuted/40 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
-              >
-                <span>Đến tab Phụ đề</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+
+              {isInstalling && (
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="inline-flex items-center gap-1.5 text-textSecondary truncate">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-accent shrink-0" />
+                      <span className="truncate">{progress?.message || "Đang tải mô hình..."}</span>
+                    </span>
+                    <span className="font-mono font-semibold text-accent shrink-0">{pct}%</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-surface3 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-300 rounded-full"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {installError && (
+                <div className="p-2.5 rounded-lg bg-danger/10 border border-danger/25 text-danger text-xs">
+                  {installError}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -141,9 +239,10 @@ export const AsrReadinessModal: React.FC<AsrReadinessModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-1.5 text-xs font-medium text-textMuted hover:text-textPrimary hover:bg-surface3 rounded-lg transition-colors"
+            disabled={isInstalling}
+            className="px-4 py-1.5 text-xs font-medium text-textMuted hover:text-textPrimary hover:bg-surface3 rounded-lg transition-colors disabled:opacity-50"
           >
-            Hủy bỏ
+            Đóng
           </button>
         </div>
       </div>

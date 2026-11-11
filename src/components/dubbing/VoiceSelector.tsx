@@ -26,8 +26,8 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
   selectedVoiceId,
   onSelectVoice,
   onOpenVoiceModal,
-  activeModel = "Omni Voice",
-  onChangeModel,
+  activeModel: _activeModel = "Omni Voice",
+  onChangeModel: _onChangeModel,
 }) => {
   const { t, lang } = useI18n();
 
@@ -65,7 +65,7 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
   const selectedVoice =
     voices.find((v) => v.id === selectedVoiceId) || voices[0] || {
       id: "edge_vi_hoaimy",
-      name: "Hoài My (Edge)",
+      name: "Hoài My",
       gender: "female",
       language: "vi-VN",
       avatarColor: "from-sky-500 to-blue-600",
@@ -143,23 +143,6 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
             <ChevronRight className="w-3.5 h-3.5" />
           </div>
         </div>
-      </div>
-
-      {/* 2. MODEL ĐỌC Selector */}
-      <div className="space-y-1.5">
-        <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
-          {lang === "en" ? "Reading Model" : "Model Đọc"}
-        </label>
-        <select
-          value={activeModel}
-          onChange={(e) => onChangeModel?.(e.target.value)}
-          className="w-full h-[34px] bg-surface1 hover:bg-surface2/80 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none transition-colors cursor-pointer"
-        >
-          <option value="Kokoro-82M">Kokoro-82M (Cài sẵn)</option>
-          <option value="Omni Voice">Omni Voice</option>
-          <option value="Chatterbox Turbo">Chatterbox Turbo</option>
-          <option value="Qwen 1.7B">Qwen 1.7B</option>
-        </select>
       </div>
     </div>
   );

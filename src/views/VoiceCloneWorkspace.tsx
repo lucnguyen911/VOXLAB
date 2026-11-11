@@ -30,6 +30,7 @@ import {
   STYLE_OPTIONS,
   AGE_OPTIONS,
   LANGUAGE_REGISTRY,
+  getLanguageLabel,
   getGenderLabel,
   getAccentLabel,
   getStyleLabel,
@@ -84,7 +85,7 @@ const CLONE_MODELS: CloneModelDefinition[] = [
       { code: "auto", label: "Tự động phát hiện" },
       ...LANGUAGE_REGISTRY.map((l) => ({
         code: l.code,
-        label: `${l.labels.vi} (${l.code.toUpperCase()})`,
+        label: l.labels.vi,
       })),
     ],
     supportsAutoLang: true,
@@ -98,7 +99,7 @@ const CLONE_MODELS: CloneModelDefinition[] = [
     badge: "Tốc độ cao · Độ trễ thấp",
     description: "Tối ưu hóa cho tốc độ tổng hợp nhanh và streaming thời gian thực, chuyên sâu tiếng Anh.",
     supportedLanguages: [
-      { code: "en", label: "Tiếng Anh (EN)" },
+      { code: "en", label: "Tiếng Anh" },
     ],
     supportsAutoLang: false,
     requiresTranscript: false,
@@ -111,16 +112,16 @@ const CLONE_MODELS: CloneModelDefinition[] = [
     badge: "Neural trung thực cao",
     description: "Mô hình mạng nơ-ron sâu chất lượng phòng thu (10 ngôn ngữ, không hỗ trợ tiếng Việt), bắt buộc văn bản tham chiếu.",
     supportedLanguages: [
-      { code: "en", label: "Tiếng Anh (EN)" },
-      { code: "zh", label: "Tiếng Trung (ZH)" },
-      { code: "ja", label: "Tiếng Nhật (JA)" },
-      { code: "ko", label: "Tiếng Hàn (KO)" },
-      { code: "de", label: "Tiếng Đức (DE)" },
-      { code: "fr", label: "Tiếng Pháp (FR)" },
-      { code: "es", label: "Tiếng Tây Ban Nha (ES)" },
-      { code: "ru", label: "Tiếng Nga (RU)" },
-      { code: "it", label: "Tiếng Ý (IT)" },
-      { code: "pt", label: "Tiếng Bồ Đào Nha (PT)" },
+      { code: "en", label: "Tiếng Anh" },
+      { code: "zh", label: "Tiếng Trung" },
+      { code: "ja", label: "Tiếng Nhật" },
+      { code: "ko", label: "Tiếng Hàn" },
+      { code: "de", label: "Tiếng Đức" },
+      { code: "fr", label: "Tiếng Pháp" },
+      { code: "es", label: "Tiếng Tây Ban Nha" },
+      { code: "ru", label: "Tiếng Nga" },
+      { code: "it", label: "Tiếng Ý" },
+      { code: "pt", label: "Tiếng Bồ Đào Nha" },
     ],
     supportsAutoLang: false,
     requiresTranscript: true,
@@ -281,14 +282,15 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
       if (l.code === "auto") {
         return {
           code: "auto",
-          name: lang === "vi" ? "Tự động phát hiện" : "Auto Detect",
+          name: getLanguageLabel("auto", lang) !== "auto" ? getLanguageLabel("auto", lang) : (lang === "vi" ? "Tự động phát hiện" : "Auto Detect"),
           englishName: "Auto Detect",
           isPopular: true,
         };
       }
+      const localized = getLanguageLabel(l.code, lang);
       return {
         code: l.code,
-        name: match?.name || l.label,
+        name: localized !== l.code ? localized : (match?.name || l.label),
         nativeName: match?.nativeName,
         englishName: match?.englishName,
         isPopular: match?.isPopular,

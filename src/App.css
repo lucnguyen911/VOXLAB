@@ -3,6 +3,14 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
+  --font-sans: "Inter Variable", "Segoe UI Variable Text", "Microsoft YaHei UI", "PingFang SC", "Yu Gothic UI", "Hiragino Sans", "Malgun Gothic", "Leelawadee UI", "Nirmala UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "Cascadia Mono", "Consolas", ui-monospace, SFMono-Regular, monospace;
+  --font-weight-normal: 460;
+  --font-weight-medium: 540;
+  --font-weight-semibold: 630;
+  --font-weight-bold: 710;
+  --font-weight-extrabold: 780;
+
   --color-background: var(--theme-background);
   --color-panel: var(--theme-panel);
   --color-surface1: var(--theme-surface1);
@@ -20,47 +28,47 @@
   --color-danger: var(--theme-danger);
 }
 
-/* Base Dark Theme (Default) */
+/* Base Dark Theme (Default — Mệnh Thổ: Hoàng Kim Hổ Phách & Đá Đen Nâu Obsidian) */
 :root,
 .dark,
 [data-theme="dark"] {
   color-scheme: dark;
-  --theme-background: #0B1220;
-  --theme-panel: #0E1828;
-  --theme-surface1: #111D2E;
-  --theme-surface2: #152338;
-  --theme-surface3: #1E2D44;
-  --theme-borderDefault: #223149;
-  --theme-borderHighlight: #38BDF8;
-  --theme-textPrimary: #E8EEF7;
-  --theme-textSecondary: #A0AEC0;
-  --theme-textMuted: #8B9BB0;
-  --theme-accent: #38BDF8;
-  --theme-accentHover: #7DD3FC;
+  --theme-background: #0C0A08;      /* Đá đen ánh nâu trầm Obsidian (Khung nền ngoài) */
+  --theme-panel: #130F0C;           /* Nâu đá satin trầm cho Sidebar, Topbar, Inspector */
+  --theme-surface1: #1C1611;        /* Thẻ chính nổi khối sang trọng */
+  --theme-surface2: #261E17;        /* Nền phụ & nút điều khiển thứ cấp */
+  --theme-surface3: #352A20;        /* Rãnh trượt, chip & trạng thái nhấn */
+  --theme-borderDefault: #413226;   /* Viền đồng trầm sắc sảo */
+  --theme-borderHighlight: #F59E0B; /* Vàng Hổ Phách */
+  --theme-textPrimary: #FDF9F3;     /* Trắng kem ngà sắc nét, tương phản cao */
+  --theme-textSecondary: #DBCFC0;   /* Vàng cát sáng rõ */
+  --theme-textMuted: #AE9C88;       /* Nâu xám ấm dễ đọc (WCAG AA+) */
+  --theme-accent: #F59E0B;          /* Hoàng Kim Hổ Phách (Amber 500) */
+  --theme-accentHover: #FBBF24;     /* Vàng Kim sáng (Amber 400) */
   --theme-success: #10B981;
-  --theme-warning: #F59E0B;
-  --theme-danger: #EF4444;
+  --theme-warning: #F97316;         /* Cam Hỏa tương sinh */
+  --theme-danger: #F43F5E;          /* Đỏ Hồng Ruby (Hỏa) */
 }
 
-/* Light Theme */
+/* Light Theme (Mệnh Thổ: Đá Travertine Ấm, Ngà Satin & Sứ Trắng Hoàng Kim) */
 .light,
 [data-theme="light"] {
   color-scheme: light;
-  --theme-background: #F5F7FA;      /* soft cool gray background */
-  --theme-panel: #FFFFFF;           /* white panels (sidebar, topbar, inspector) */
-  --theme-surface1: #FFFFFF;        /* white cards */
-  --theme-surface2: #F0F4F8;        /* soft cool gray secondary surfaces / inputs */
-  --theme-surface3: #E2E8F0;        /* slate-200 tracks & chips */
-  --theme-borderDefault: #D9E2EC;  /* clear, crisp, subtle borders */
-  --theme-borderHighlight: #0284C7; /* sky-600 */
-  --theme-textPrimary: #172033;    /* deep slate/navy high contrast */
-  --theme-textSecondary: #4A5568;  /* slate-600 readable secondary */
-  --theme-textMuted: #667085;      /* cool slate helper text (WCAG AA >= 4.5:1) */
-  --theme-accent: #0284C7;          /* sky-600 */
-  --theme-accentHover: #0369A1;     /* sky-700 */
-  --theme-success: #059669;         /* emerald-600 */
-  --theme-warning: #D97706;         /* amber-600 */
-  --theme-danger: #DC2626;          /* red-600 */
+  --theme-background: #EFE9DF;      /* Đá Travertine kem cát ấm (Khung nền ngoài tách lớp) */
+  --theme-panel: #F7F3EC;           /* Ngà Satin ấm cho Sidebar, Topbar & Canvas chính */
+  --theme-surface1: #FFFFFF;        /* Thẻ sứ trắng tinh khôi nổi khối rõ trên nền Panel */
+  --theme-surface2: #EFE8DD;        /* Nền phụ & rãnh nhập liệu ấm */
+  --theme-surface3: #E3DACB;        /* Rãnh thanh trượt & trạng thái nhấn */
+  --theme-borderDefault: #D4C5B0;   /* Viền vàng cát ánh đồng tách khối rõ */
+  --theme-borderHighlight: #D97706; /* Hổ phách đậm */
+  --theme-textPrimary: #18110B;     /* Nâu đen Espresso đậm sắc nét (>15:1) */
+  --theme-textSecondary: #433528;   /* Nâu trầm rõ chữ (~10.5:1) */
+  --theme-textMuted: #635242;       /* Nâu đồng đậm dễ đọc (~6.5:1 WCAG AA+) */
+  --theme-accent: #D97706;          /* Hổ Phách Hoàng Kim (Amber 600) */
+  --theme-accentHover: #B45309;     /* Nâu Vàng Hoàng Kim (Amber 700) */
+  --theme-success: #059669;
+  --theme-warning: #EA580C;
+  --theme-danger: #E11D48;
 }
 
 /* Ensure form controls match active theme color-scheme */
@@ -116,33 +124,52 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: none !important;
 }
 
-button:focus,
-button:focus-visible,
+button:focus:not(:focus-visible),
 button:active {
-  outline: none !important;
+  outline: none;
 }
 
-/* Unified, modern styling for all dropdown selects (balanced right chevron) */
+button:focus-visible {
+  outline: 2px solid var(--theme-accent);
+  outline-offset: 2px;
+}
+
+/* Unified, tactile studio styling for all dropdown selects (warm metallic chevron) */
 select:not([multiple]):not([size]):not(.opacity-0) {
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236B5744' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.75rem center;
   background-size: 14px 14px;
   padding-right: 2.25rem !important;
   cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
 }
 
 [data-theme="dark"] select:not([multiple]):not([size]):not(.opacity-0),
 .dark select:not([multiple]):not([size]):not(.opacity-0) {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23D8CBB9' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-color: #241C15;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 244, 224, 0.08),
+    0 1px 2px 0 rgba(0, 0, 0, 0.42);
 }
 
 [data-theme="light"] select:not([multiple]):not([size]):not(.opacity-0),
 .light select:not([multiple]):not([size]):not(.opacity-0) {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235C4938' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-color: #FCF9F4;
+  box-shadow:
+    inset 0 1px 0 0 #FFFFFF,
+    0 1px 2px 0 rgba(28, 19, 10, 0.06);
+}
+
+select:not([multiple]):not([size]):not(.opacity-0):focus {
+  border-color: var(--theme-accent) !important;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16) !important;
+  outline: none;
 }
 
 select:not([multiple]):not([size]):not(.opacity-0):disabled {
@@ -171,6 +198,14 @@ select option {
   background: var(--theme-textMuted);
 }
 
+html {
+  font-size: 17px;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
 body {
   margin: 0;
   padding: 0;
@@ -179,7 +214,47 @@ body {
   color: var(--theme-textPrimary);
   user-select: none;
   -webkit-user-select: none;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
+  font-weight: 460;
+  line-height: 1.5;
+  font-feature-settings: "cv02" 1, "cv03" 1, "cv04" 1;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+.font-mono,
+code,
+kbd,
+pre {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Minimum legibility floor for micro-typography across all workspaces & Vietnamese diacritics */
+.text-\[9px\],
+.text-\[10px\] {
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.text-\[11px\] {
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.text-\[12px\] {
+  font-size: 13.25px;
+  line-height: 1.45;
+}
+
+.text-\[13px\] {
+  font-size: 14px;
+  line-height: 1.45;
 }
 
 /* Prevent accidental text selection on all non-editable UI elements */
@@ -303,3 +378,428 @@ input:not([type]):not(:disabled):not([readonly]),
 .animate-eq-2 { animation: eq-dance-2 0.55s ease-in-out infinite; }
 .animate-eq-3 { animation: eq-dance-3 0.65s ease-in-out infinite; }
 .animate-eq-4 { animation: eq-dance-4 0.5s ease-in-out infinite; }
+
+/* ============================================================================
+   TACTILE LUXURY STUDIO DESIGN SYSTEM (HOÀNG KIM HỔ PHÁCH & SỨ / ĐÁ OBSIDIAN)
+   ============================================================================ */
+
+/* 1. Warm architectural ambient glow on main workspace canvas */
+.dark main,
+[data-theme="dark"] main {
+  background-image:
+    radial-gradient(ellipse 80% 42% at 50% 0%, rgba(245, 158, 11, 0.075), rgba(234, 88, 12, 0.022) 55%, transparent 85%);
+}
+
+.light main,
+[data-theme="light"] main {
+  background-image:
+    radial-gradient(ellipse 80% 42% at 50% 0%, rgba(245, 158, 11, 0.065), transparent 72%);
+}
+
+/* 2. Sculpted 3D elevation & inner crown highlight on primary cards */
+.dark .bg-surface1.rounded-xl,
+.dark .bg-surface1.rounded-2xl {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 240, 212, 0.075),
+    0 2px 4px 0 rgba(0, 0, 0, 0.36),
+    0 10px 26px -6px rgba(0, 0, 0, 0.52);
+}
+
+.light .bg-surface1.rounded-xl,
+.light .bg-surface1.rounded-2xl {
+  box-shadow:
+    inset 0 1px 0 0 #FFFFFF,
+    0 1px 2px 0 rgba(36, 24, 12, 0.045),
+    0 6px 18px -4px rgba(58, 40, 22, 0.075);
+}
+
+/* 3. Recessed Studio Input & Textarea Wells (strictly bordered fields) */
+.light :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="submit"]),
+  textarea
+).border {
+  background-color: #EDE6DA;
+  border-color: #CEC0AB;
+  box-shadow:
+    inset 0 1.5px 3px rgba(28, 19, 10, 0.065),
+    0 1px 0 rgba(255, 255, 255, 0.85);
+  transition: background-color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.dark :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="submit"]),
+  textarea
+).border {
+  background-color: #14100C;
+  border-color: #3A2D22;
+  box-shadow:
+    inset 0 1.5px 3.5px rgba(0, 0, 0, 0.55),
+    0 1px 0 rgba(255, 244, 224, 0.04);
+  transition: background-color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.light :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="submit"]),
+  textarea
+).border:focus:not([readonly]) {
+  background-color: #FFFFFF;
+  border-color: #D97706 !important;
+  box-shadow:
+    0 0 0 3px rgba(217, 119, 6, 0.15),
+    inset 0 1px 2px rgba(28, 19, 10, 0.03);
+}
+
+.dark :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="submit"]),
+  textarea
+).border:focus:not([readonly]) {
+  background-color: #1A140F;
+  border-color: #F59E0B !important;
+  box-shadow:
+    0 0 0 3px rgba(245, 158, 11, 0.18),
+    inset 0 1px 2px rgba(0, 0, 0, 0.42);
+}
+
+/* 4. Segmented Control Slots & Raised Active Pills */
+.light div.inline-flex.bg-surface2.rounded-lg {
+  background-color: #EAE2D5;
+  box-shadow: inset 0 1px 2.5px rgba(28, 19, 10, 0.08);
+}
+
+.dark div.inline-flex.bg-surface2.rounded-lg {
+  background-color: #15110C;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+.light div.inline-flex.bg-surface2.rounded-lg > button.bg-surface1 {
+  background-image: linear-gradient(180deg, #FFFFFF 0%, #FAF6F0 100%);
+  box-shadow:
+    inset 0 1px 0 #FFFFFF,
+    0 1px 3px rgba(28, 19, 10, 0.12),
+    0 2px 5px -1px rgba(28, 19, 10, 0.06);
+}
+
+.dark div.inline-flex.bg-surface2.rounded-lg > button.bg-surface1 {
+  background-image: linear-gradient(180deg, #30261E 0%, #231B15 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 244, 224, 0.12),
+    0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+/* ============================================================================
+   5. 4-TIER TACTILE HARDWARE BUTTON SYSTEM
+   ============================================================================ */
+
+/* Smooth tactile physics across interactive buttons */
+button:not([role="switch"]):not([data-nav-item]) {
+  transition:
+    background-color 0.16s ease,
+    background-image 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.12s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* TIER 1: Primary Burnished Gold-Amber Hardware CTA */
+button.bg-accent:not([role="switch"]):not([data-nav-item]) {
+  background-image: linear-gradient(180deg, #FBBF24 0%, #F59E0B 48%, #D97706 100%) !important;
+  color: #FFFFFF !important;
+  border: 1px solid rgba(180, 83, 9, 0.68);
+  text-shadow: 0 1px 1px rgba(120, 42, 6, 0.30);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 0 rgba(120, 45, 8, 0.34),
+    0 2px 5px -1px rgba(217, 119, 6, 0.38),
+    0 6px 14px -3px rgba(180, 83, 9, 0.28);
+}
+
+.dark button.bg-accent:not([role="switch"]):not([data-nav-item]) {
+  background-image: linear-gradient(180deg, #FCD34D 0%, #F59E0B 46%, #EA580C 100%) !important;
+  border: 1px solid rgba(251, 191, 36, 0.44);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 0 rgba(124, 45, 18, 0.40),
+    0 2px 6px -1px rgba(245, 158, 11, 0.36),
+    0 6px 16px -3px rgba(234, 88, 12, 0.34);
+}
+
+button.bg-accent:not([role="switch"]):not([data-nav-item]):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #FCD34D 0%, #F59E0B 45%, #D97706 100%) !important;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 0 rgba(120, 45, 8, 0.30),
+    0 4px 12px -1px rgba(245, 158, 11, 0.46),
+    0 8px 18px -4px rgba(180, 83, 9, 0.32);
+}
+
+button.bg-accent:not([role="switch"]):not([data-nav-item]):not(.w-full):hover:not(:disabled) {
+  transform: translateY(-0.5px);
+}
+
+button.bg-accent:not([role="switch"]):not([data-nav-item]):active:not(:disabled) {
+  transform: translateY(0.5px);
+  background-image: linear-gradient(180deg, #D97706 0%, #EA580C 100%) !important;
+  box-shadow:
+    inset 0 2px 3px rgba(120, 45, 8, 0.40),
+    0 1px 2px rgba(180, 83, 9, 0.25);
+}
+
+/* TIER 2: Neutral Satin Hardware Keycap (Porcelain Pearl in Light / Brushed Obsidian in Dark) */
+.light button.border:not([role="switch"]):not([data-nav-item]):not(.border-transparent):not(.border-dashed):not(.bg-accent):is(
+  .bg-surface1,
+  .bg-surface2,
+  [class*="bg-surface2/"],
+  .bg-panel
+):not([class*="border-accent"]):not([class*="border-danger"]):not([class*="border-rose"]):not([class*="border-amber"]):not([class*="border-warning"]) {
+  background-image: linear-gradient(180deg, #FFFFFF 0%, #FCF9F4 56%, #F1E9DD 100%);
+  border-color: #C9B79E;
+  color: #241910;
+  box-shadow:
+    inset 0 1px 0 0 #FFFFFF,
+    inset 0 -1px 0 0 rgba(158, 132, 100, 0.20),
+    0 1px 2px 0 rgba(28, 19, 10, 0.08),
+    0 3px 6px -2px rgba(28, 19, 10, 0.05);
+}
+
+.light button.border:not([role="switch"]):not([data-nav-item]):not(.border-transparent):not(.border-dashed):not(.bg-accent):is(
+  .bg-surface1,
+  .bg-surface2,
+  [class*="bg-surface2/"],
+  .bg-panel
+):not([class*="border-accent"]):not([class*="border-danger"]):not([class*="border-rose"]):not([class*="border-amber"]):not([class*="border-warning"]):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #FFFFFF 0%, #FFFDF9 60%, #F7F0E5 100%);
+  border-color: #B69A76;
+  color: #140D08;
+  box-shadow:
+    inset 0 1px 0 0 #FFFFFF,
+    0 2px 5px -1px rgba(28, 19, 10, 0.11),
+    0 5px 11px -3px rgba(28, 19, 10, 0.07);
+}
+
+.dark button.border:not([role="switch"]):not([data-nav-item]):not(.border-transparent):not(.border-dashed):not(.bg-accent):is(
+  .bg-surface1,
+  .bg-surface2,
+  [class*="bg-surface2/"],
+  .bg-panel
+):not([class*="border-accent"]):not([class*="border-danger"]):not([class*="border-rose"]):not([class*="border-amber"]):not([class*="border-warning"]) {
+  background-image: linear-gradient(180deg, #31271F 0%, #251D17 56%, #1D1712 100%);
+  border-color: #4F3E30;
+  color: #F6EFE6;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 244, 224, 0.10),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.48),
+    0 1px 2px 0 rgba(0, 0, 0, 0.52),
+    0 4px 8px -2px rgba(0, 0, 0, 0.36);
+}
+
+.dark button.border:not([role="switch"]):not([data-nav-item]):not(.border-transparent):not(.border-dashed):not(.bg-accent):is(
+  .bg-surface1,
+  .bg-surface2,
+  [class*="bg-surface2/"],
+  .bg-panel
+):not([class*="border-accent"]):not([class*="border-danger"]):not([class*="border-rose"]):not([class*="border-amber"]):not([class*="border-warning"]):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #3B2F25 0%, #2D241C 56%, #231C16 100%);
+  border-color: #6B533E;
+  color: #FFFFFF;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 244, 224, 0.15),
+    0 2px 5px 0 rgba(0, 0, 0, 0.56),
+    0 6px 12px -3px rgba(0, 0, 0, 0.42);
+}
+
+/* Danger-hover override for neutral buttons (e.g. Dọn bộ nhớ tạm, Hủy) */
+.light button.border:not([role="switch"]):not([data-nav-item]):is(
+  [class*="hover:border-danger"],
+  [class*="hover:text-danger"]
+):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #FFFFFF 0%, #FFF4F6 55%, #FFE4E8 100%) !important;
+  border-color: rgba(225, 29, 72, 0.45) !important;
+  color: #BE123C !important;
+}
+
+.dark button.border:not([role="switch"]):not([data-nav-item]):is(
+  [class*="hover:border-danger"],
+  [class*="hover:text-danger"]
+):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, rgba(244, 63, 94, 0.24) 0%, rgba(190, 18, 60, 0.14) 100%) !important;
+  border-color: rgba(244, 63, 94, 0.46) !important;
+  color: #FDA4AF !important;
+}
+
+/* TIER 3: Champagne-Gold Tinted Hardware Keycap (Kiểm tra cập nhật, Tải mô hình, Tạo lại đoạn) */
+.light button.border:not([role="switch"]):not([data-nav-item]):not(.border-dashed):not(.bg-accent):is(
+  [class*="border-accent"],
+  [class*="border-amber"],
+  [class*="border-warning"]
+) {
+  background-image: linear-gradient(180deg, #FFFDF8 0%, #FEF5E3 55%, #FDE7C0 100%);
+  border-color: rgba(217, 119, 6, 0.44);
+  color: #B45309;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.94),
+    inset 0 -1px 0 0 rgba(217, 119, 6, 0.15),
+    0 1px 2px 0 rgba(180, 83, 9, 0.10),
+    0 3px 7px -2px rgba(217, 119, 6, 0.12);
+}
+
+.light button.border:not([role="switch"]):not([data-nav-item]):not(.border-dashed):not(.bg-accent):is(
+  [class*="border-accent"],
+  [class*="border-amber"],
+  [class*="border-warning"]
+):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #FFFFFF 0%, #FEF0CF 55%, #FDDC9E 100%);
+  border-color: rgba(180, 83, 9, 0.62);
+  color: #92400E;
+  box-shadow:
+    inset 0 1px 0 0 #FFFFFF,
+    0 2px 6px -1px rgba(217, 119, 6, 0.18),
+    0 5px 11px -3px rgba(180, 83, 9, 0.14);
+}
+
+.dark button.border:not([role="switch"]):not([data-nav-item]):not(.border-dashed):not(.bg-accent):is(
+  [class*="border-accent"],
+  [class*="border-amber"],
+  [class*="border-warning"]
+) {
+  background-image: linear-gradient(180deg, rgba(245, 158, 11, 0.24) 0%, rgba(217, 119, 6, 0.14) 58%, rgba(180, 83, 9, 0.18) 100%);
+  border-color: rgba(245, 158, 11, 0.42);
+  color: #FBBF24;
+  box-shadow:
+    inset 0 1px 0 0 rgba(253, 224, 71, 0.20),
+    0 1px 3px 0 rgba(0, 0, 0, 0.45),
+    0 3px 8px -2px rgba(245, 158, 11, 0.15);
+}
+
+.dark button.border:not([role="switch"]):not([data-nav-item]):not(.border-dashed):not(.bg-accent):is(
+  [class*="border-accent"],
+  [class*="border-amber"],
+  [class*="border-warning"]
+):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, rgba(251, 191, 36, 0.30) 0%, rgba(217, 119, 6, 0.20) 100%);
+  border-color: rgba(251, 191, 36, 0.62);
+  color: #FDE68A;
+  box-shadow:
+    inset 0 1px 0 0 rgba(254, 240, 138, 0.26),
+    0 3px 9px -1px rgba(245, 158, 11, 0.24);
+}
+
+/* Tinted buttons with hover:bg-accent (e.g. Tải mô hình) ignite into full Burnished Gold on hover */
+button.border:not([role="switch"]):not([data-nav-item])[class*="hover:bg-accent"]:hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #FBBF24 0%, #F59E0B 48%, #D97706 100%) !important;
+  border-color: rgba(180, 83, 9, 0.72) !important;
+  color: #FFFFFF !important;
+  text-shadow: 0 1px 1px rgba(120, 42, 6, 0.28);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.46),
+    0 4px 12px -2px rgba(245, 158, 11, 0.42) !important;
+}
+
+/* TIER 4: Ruby-Crimson Tinted Hardware Keycap (Đặt lại mặc định, Thử lại, Xóa API) */
+.light button.border:not([role="switch"]):not([data-nav-item]):not(.border-dashed):is(
+  [class*="border-danger"],
+  [class*="border-rose"]
+) {
+  background-image: linear-gradient(180deg, #FFFFFF 0%, #FFF5F7 56%, #FFE7EB 100%);
+  border-color: rgba(225, 29, 72, 0.38);
+  color: #BE123C;
+  box-shadow:
+    inset 0 1px 0 0 #FFFFFF,
+    inset 0 -1px 0 0 rgba(225, 29, 72, 0.12),
+    0 1px 2px 0 rgba(190, 18, 60, 0.08),
+    0 3px 6px -2px rgba(225, 29, 72, 0.08);
+}
+
+.light button.border:not([role="switch"]):not([data-nav-item]):not(.border-dashed):is(
+  [class*="border-danger"],
+  [class*="border-rose"]
+):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, #FFF9FA 0%, #FFE0E6 100%);
+  border-color: rgba(190, 18, 60, 0.56);
+  color: #9F1239;
+  box-shadow:
+    inset 0 1px 0 0 #FFFFFF,
+    0 2px 6px -1px rgba(225, 29, 72, 0.16);
+}
+
+.dark button.border:not([role="switch"]):not([data-nav-item]):not(.border-dashed):is(
+  [class*="border-danger"],
+  [class*="border-rose"]
+) {
+  background-image: linear-gradient(180deg, rgba(244, 63, 94, 0.22) 0%, rgba(190, 18, 60, 0.12) 100%);
+  border-color: rgba(244, 63, 94, 0.40);
+  color: #FB7185;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 205, 215, 0.16),
+    0 1px 3px 0 rgba(0, 0, 0, 0.45);
+}
+
+.dark button.border:not([role="switch"]):not([data-nav-item]):not(.border-dashed):is(
+  [class*="border-danger"],
+  [class*="border-rose"]
+):hover:not(:disabled) {
+  background-image: linear-gradient(180deg, rgba(244, 63, 94, 0.30) 0%, rgba(190, 18, 60, 0.18) 100%);
+  border-color: rgba(251, 113, 133, 0.58);
+  color: #FDA4AF;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 220, 226, 0.22),
+    0 3px 8px -1px rgba(244, 63, 94, 0.22);
+}
+
+/* Micro-lift on compact bordered buttons & crisp mechanical active press */
+button.border:not([role="switch"]):not([data-nav-item]):not(.border-transparent):not(.border-dashed):not(.w-full):hover:not(:disabled) {
+  transform: translateY(-0.5px);
+}
+
+button.border:not([role="switch"]):not([data-nav-item]):not(.border-transparent):not(.border-dashed):active:not(:disabled) {
+  transform: translateY(0.5px);
+  box-shadow: inset 0 1.5px 3px rgba(0, 0, 0, 0.16) !important;
+}
+
+button:disabled {
+  transform: none !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+}
+
+/* ============================================================================
+   6. STUDIO RANGE SLIDER THUMB & DASHED DROPZONES
+   ============================================================================ */
+input[type="range"] {
+  accent-color: var(--theme-accent);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, #FDE68A 0%, #F59E0B 50%, #D97706 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    0 0 0 2px rgba(245, 158, 11, 0.24),
+    0 2px 5px rgba(0, 0, 0, 0.42) !important;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 0 0 4px rgba(245, 158, 11, 0.28),
+    0 3px 7px rgba(0, 0, 0, 0.48) !important;
+}
+
+/* Subtle studio dot-grid & warm center glow on dashed dropzones */
+.dark .border-dashed {
+  background-image:
+    radial-gradient(circle at 50% 50%, rgba(245, 158, 11, 0.05) 0%, transparent 65%),
+    radial-gradient(rgba(200, 185, 166, 0.075) 1px, transparent 1px);
+  background-size: 100% 100%, 20px 20px;
+}
+
+.light .border-dashed {
+  background-image:
+    radial-gradient(circle at 50% 50%, rgba(217, 119, 6, 0.045) 0%, transparent 65%),
+    radial-gradient(rgba(125, 106, 88, 0.11) 1px, transparent 1px);
+  background-size: 100% 100%, 20px 20px;
+}
