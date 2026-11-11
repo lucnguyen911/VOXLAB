@@ -173,10 +173,72 @@ def _probe_std_handles() -> dict:
             "stdout": names.get(k32.GetFileType(k32.GetStdHandle(-11)), "?")}
 
 
+def _register_sp_dlls(sp: str) -> None:
+    dll_rels = (
+        "torch\\lib",
+        "ctranslate2",
+        "_soundfile_data",
+        "nvidia\\cublas\\bin",
+        "nvidia\\cudnn\\bin",
+        "nvidia\\cuda_runtime\\bin",
+        "nvidia\\cufft\\bin",
+        "nvidia\\curand\\bin",
+        "nvidia\\cusolver\\bin",
+        "nvidia\\cusparse\\bin",
+        "nvidia\\nvjitlink\\bin",
+    )
+    for dll_rel in dll_rels:
+        dll_dir = os.path.join(sp, dll_rel)
+        if os.path.isdir(dll_dir):
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(dll_dir)
+                except Exception:
+                    pass
+            cur_path = os.environ.get("PATH", "")
+            if dll_dir.lower() not in cur_path.lower():
+                os.environ["PATH"] = dll_dir + os.pathsep + cur_path
+
+
+def _attach_runtime_site_packages(runtime: str) -> None:
+    if not getattr(sys, "frozen", False):
+        return
+    if os.environ.get("VOXLAB_ISOLATED_SMOKE_TEST") == "1":
+        return
+    venv_map = {
+        "core": ".venv",
+        "chatterbox": ".venv-chatterbox",
+        "qwen": ".venv-qwen",
+    }
+    venv_name = venv_map.get(runtime, ".venv")
+    appdata = os.environ.get("APPDATA", "")
+    user_rt_sp = (
+        os.path.join(appdata, "com.voxlab.app", "runtimes", runtime, "Lib", "site-packages")
+        if appdata
+        else ""
+    )
+    if user_rt_sp and os.path.isdir(user_rt_sp):
+        if user_rt_sp not in sys.path:
+            sys.path.append(user_rt_sp)
+        _register_sp_dlls(user_rt_sp)
+        return
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    candidates = [
+        os.path.join(exe_dir, "site-packages"),
+        os.path.join(exe_dir, "_internal", "site-packages"),
+        os.path.abspath(os.path.join(exe_dir, "..", venv_name, "Lib", "site-packages")),
+    ]
+    for sp in candidates:
+        if sp and os.path.isdir(sp) and sp not in sys.path:
+            sys.path.append(sp)
+            _register_sp_dlls(sp)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="voxlab_sidecar")
     parser.add_argument("--runtime", default="core", choices=["core", "chatterbox", "qwen"])
     args = parser.parse_args(argv)
+    _attach_runtime_site_packages(args.runtime)
 
     sys.stderr.reconfigure(encoding="utf-8")
     # Protocol pipes are private; process stdin → NUL, stdout → stderr (see stdio.py).

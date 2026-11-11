@@ -153,6 +153,38 @@ pub fn decode_cim_smbios_query() -> ZeroizingBytes {
     )
 }
 
+pub fn decode_rpc_app_version_path() -> ZeroizingBytes {
+    decrypt_polymorphic(
+        &raw::OBF_RPC_APP_VERSION_PATH_DATA,
+        raw::OBF_RPC_APP_VERSION_PATH_KEY_A,
+        raw::OBF_RPC_APP_VERSION_PATH_KEY_B,
+    )
+}
+
+pub fn decode_ai_model_repos_json() -> ZeroizingBytes {
+    decrypt_polymorphic(
+        &raw::OBF_AI_MODEL_REPOS_JSON_DATA,
+        raw::OBF_AI_MODEL_REPOS_JSON_KEY_A,
+        raw::OBF_AI_MODEL_REPOS_JSON_KEY_B,
+    )
+}
+
+pub fn decode_ai_runtime_specs_json() -> ZeroizingBytes {
+    decrypt_polymorphic(
+        &raw::OBF_AI_RUNTIME_SPECS_JSON_DATA,
+        raw::OBF_AI_RUNTIME_SPECS_JSON_KEY_A,
+        raw::OBF_AI_RUNTIME_SPECS_JSON_KEY_B,
+    )
+}
+
+pub fn decode_hf_downloader_py() -> ZeroizingBytes {
+    decrypt_polymorphic(
+        &raw::OBF_HF_DOWNLOADER_PY_DATA,
+        raw::OBF_HF_DOWNLOADER_PY_KEY_A,
+        raw::OBF_HF_DOWNLOADER_PY_KEY_B,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,10 +201,24 @@ mod tests {
             "/rest/v1/rpc/activate_or_verify_voxlab_license_v3"
         );
 
+        let ver_rpc = decode_rpc_app_version_path();
+        assert_eq!(
+            ver_rpc.as_str_lossy(),
+            "/rest/v1/rpc/get_active_app_version_v3"
+        );
+
         let reg_path = decode_reg_crypto_subkey();
         assert_eq!(reg_path.as_str_lossy(), "SOFTWARE\\Microsoft\\Cryptography");
 
         let reg_val = decode_reg_machine_guid();
         assert_eq!(reg_val.as_str_lossy(), "MachineGuid");
+
+        let repos_raw = decode_ai_model_repos_json();
+        let repos: serde_json::Value = serde_json::from_slice(repos_raw.as_bytes()).unwrap();
+        assert!(repos.get("omnivoice").and_then(|v| v.as_str()).is_some());
+
+        let specs_raw = decode_ai_runtime_specs_json();
+        let specs: serde_json::Value = serde_json::from_slice(specs_raw.as_bytes()).unwrap();
+        assert!(specs.get("markers").is_some());
     }
 }

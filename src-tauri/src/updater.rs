@@ -166,9 +166,11 @@ fn fetch_active_version_blocking() -> Result<Option<RemoteAppVersionRecord>, Str
     let (supabase_url, anon_key) = license_client::get_supabase_config()
         .ok_or_else(|| "Chưa cấu hình kết nối máy chủ cập nhật.".to_string())?;
 
-    let endpoint = format!(
-        "{}/rest/v1/rpc/get_active_app_version_v3",
-        supabase_url.trim_end_matches('/')
+    let rpc_path = crate::security::obf::decode_rpc_app_version_path();
+    let mut endpoint = format!(
+        "{}{}",
+        supabase_url.trim_end_matches('/'),
+        rpc_path.as_str_lossy()
     );
 
     let agent = ureq::AgentBuilder::new()
@@ -184,8 +186,11 @@ fn fetch_active_version_blocking() -> Result<Option<RemoteAppVersionRecord>, Str
         .set("Content-Type", "application/json")
         .send_json(serde_json::json!({ "p_app_id": VOXLAB_APP_ID }));
 
-    // Zeroize temporary Authorization header buffer
+    // Zeroize temporary endpoint & Authorization header buffers
     unsafe {
+        for b in endpoint.as_bytes_mut() {
+            std::ptr::write_volatile(b, 0);
+        }
         for b in auth_header.as_bytes_mut() {
             std::ptr::write_volatile(b, 0);
         }

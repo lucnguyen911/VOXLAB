@@ -45,6 +45,10 @@ $MandatoryProtectedModules = @(
     "asr_engine.py",
     "audio_ops.py",
     "edge_tts_engine.py",
+    "pronunciation.py",
+    "number_normalizer.py",
+    "subtitle_optimizer.py",
+    "audio_quality.py",
     "tts\__init__.py",
     "tts\base.py",
     "tts\service.py",
@@ -54,12 +58,97 @@ $MandatoryProtectedModules = @(
     "tts\qwen_adapter.py"
 )
 
-$LargeExtendedModules = @(
+$VaultedLargeModules = @(
     "pronunciation.py",
     "number_normalizer.py",
     "subtitle_optimizer.py",
     "audio_quality.py"
 )
+
+function Invoke-StageVaultSeal([string]$PythonExe, [string]$SourcePkgDir, [string]$StageDir, [string]$VaultOutDir, [string[]]$RelFiles) {
+    New-Item -ItemType Directory -Force -Path $VaultOutDir | Out-Null
+    $sealScript = @'
+import hashlib, hmac, marshal, os, sys, zlib
+
+src_pkg = sys.argv[1]
+stage_pkg = sys.argv[2]
+vault_dir = sys.argv[3]
+rel_files = sys.argv[4:]
+
+os.makedirs(vault_dir, exist_ok=True)
+
+for rel in rel_files:
+    src_path = os.path.join(src_pkg, rel)
+    dst_path = os.path.join(stage_pkg, rel)
+    with open(src_path, "r", encoding="utf-8") as f:
+        src_text = f.read()
+
+    mod_tag = "<voxlab:" + rel.replace("\\", "/").removesuffix(".py") + ">"
+    code_obj = compile(src_text, mod_tag, "exec", optimize=2)
+    compressed = zlib.compress(marshal.dumps(code_obj), 9)
+
+    key = os.urandom(32)
+    mask_a = os.urandom(32)
+    mask_b = bytes(k ^ a for k, a in zip(key, mask_a))
+    nonce = os.urandom(16)
+    vault_id = hashlib.sha256(os.urandom(16) + rel.encode("utf-8")).hexdigest()[:20]
+
+    chunks = []
+    for idx in range(0, len(compressed), 64):
+        blk = compressed[idx:idx + 64]
+        ks = hashlib.blake2b(
+            nonce + (idx >> 6).to_bytes(8, "little"),
+            key=key,
+            digest_size=len(blk),
+        ).digest()
+        enc_blk = (
+            int.from_bytes(blk, "little") ^ int.from_bytes(ks, "little")
+        ).to_bytes(len(blk), "little")
+        chunks.append(enc_blk)
+    cipher = b"".join(chunks)
+    tag = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
+
+    vault_file = os.path.join(vault_dir, vault_id + ".bin")
+    with open(vault_file, "wb") as vf:
+        vf.write(nonce + tag + cipher)
+
+    stub = (
+        "from __future__ import annotations\n"
+        "import hashlib, hmac, marshal, os, sys, zlib\n"
+        "def _vxl_boot() -> bytes:\n"
+        f"    _a = bytes.fromhex('{mask_a.hex()}')\n"
+        f"    _b = bytes.fromhex('{mask_b.hex()}')\n"
+        "    _k = bytes(x ^ y for x, y in zip(_a, _b))\n"
+        "    _base = getattr(sys, '_MEIPASS', '') or os.path.join(os.path.dirname(os.path.abspath(sys.executable)), '_internal')\n"
+        f"    with open(os.path.join(_base, '_vxl_vault', '{vault_id}.bin'), 'rb') as _f:\n"
+        "        _d = _f.read()\n"
+        "    _n, _t, _c = _d[:16], _d[16:48], _d[48:]\n"
+        "    if not hmac.compare_digest(hmac.new(_k, _n + _c, hashlib.sha256).digest(), _t):\n"
+        "        raise RuntimeError('VXL_VAULT_TAMPERED')\n"
+        "    _p = []\n"
+        "    for _i in range(0, len(_c), 64):\n"
+        "        _s = _c[_i:_i + 64]\n"
+        "        _ks = hashlib.blake2b(_n + (_i >> 6).to_bytes(8, 'little'), key=_k, digest_size=len(_s)).digest()\n"
+        "        _p.append((int.from_bytes(_s, 'little') ^ int.from_bytes(_ks, 'little')).to_bytes(len(_s), 'little'))\n"
+        "    return zlib.decompress(b''.join(_p))\n"
+        "exec(marshal.loads(_vxl_boot()), globals())\n"
+        "del _vxl_boot\n"
+    )
+    with open(dst_path, "w", encoding="utf-8") as sf:
+        sf.write(stub)
+'@
+    $sealPyPath = Join-Path $StageDir "_vxl_seal_tmp.py"
+    $stagePkgDir = Join-Path $StageDir "voxlab_sidecar"
+    try {
+        Set-Content -Path $sealPyPath -Value $sealScript -Encoding UTF8
+        & $PythonExe $sealPyPath $SourcePkgDir $stagePkgDir $VaultOutDir @RelFiles
+        if ($LASTEXITCODE -ne 0) {
+            throw "CRITICAL SECURITY ERROR: Vault encryption pre-stage failed!"
+        }
+    } finally {
+        Remove-Item -Force $sealPyPath -ErrorAction SilentlyContinue
+    }
+}
 
 function Resolve-PyArmorCli([string]$VenvScriptsDir, [string]$PythonExe) {
     if ($env:PYARMOR_CLI -and (Test-Path $env:PYARMOR_CLI)) {
@@ -84,7 +173,10 @@ function Resolve-PyArmorCli([string]$VenvScriptsDir, [string]$PythonExe) {
 function Invoke-TargetedPyArmor([string]$PyArmorExe, [string]$SourcePkgDir, [string]$StageDir, [string[]]$RelFiles, [bool]$FailClosed) {
     $tmpOut = Join-Path $StageDir "_pyarmor_tmp"
     foreach ($rel in $RelFiles) {
-        $srcFile = Join-Path $SourcePkgDir $rel
+        $srcFile = Join-Path (Join-Path $StageDir "voxlab_sidecar") $rel
+        if (-not (Test-Path $srcFile)) {
+            $srcFile = Join-Path $SourcePkgDir $rel
+        }
         if (-not (Test-Path $srcFile)) {
             if ($FailClosed) {
                 throw "CRITICAL SECURITY ERROR: Mandatory module missing at $srcFile"
@@ -231,13 +323,25 @@ foreach ($rt in $Runtimes) {
 
     $extraPyInstallerArgs = @()
 
+    $stageVaultDir = Join-Path $stageDir "_vxl_vault"
     if ($SkipObfuscationForDev) {
         Write-Warning "[DEV ONLY] Skipping PyArmor obfuscation for '$rt' (-SkipObfuscationForDev)."
     } else {
+        Write-Host "==> Sealing 4 large algorithm modules into 256-bit BLAKE2b+HMAC encrypted vault..." -ForegroundColor Cyan
+        Invoke-StageVaultSeal -PythonExe $pythonExe -SourcePkgDir $PkgDir -StageDir $stageDir -VaultOutDir $stageVaultDir -RelFiles $VaultedLargeModules
+
         $pyarmorExe = Resolve-PyArmorCli -VenvScriptsDir $venvScripts -PythonExe $pythonExe
-        Write-Host "==> Obfuscating 15 mandatory security/IPC/engine modules with PyArmor ($pyarmorExe)..." -ForegroundColor Cyan
+        Write-Host "==> Obfuscating ALL $($MandatoryProtectedModules.Count) voxlab_sidecar modules (100% Fail-Closed) with PyArmor ($pyarmorExe)..." -ForegroundColor Cyan
         Invoke-TargetedPyArmor -PyArmorExe $pyarmorExe -SourcePkgDir $PkgDir -StageDir $stageDir -RelFiles $MandatoryProtectedModules -FailClosed $true
-        Invoke-TargetedPyArmor -PyArmorExe $pyarmorExe -SourcePkgDir $PkgDir -StageDir $stageDir -RelFiles $LargeExtendedModules -FailClosed $false
+
+        # Verify 100% of .py files in staged voxlab_sidecar carry __pyarmor__ signature
+        $allStagedPy = Get-ChildItem -Path (Join-Path $stageDir "voxlab_sidecar") -Filter "*.py" -Recurse
+        foreach ($stFile in $allStagedPy) {
+            $rawContent = Get-Content -Path $stFile.FullName -Raw
+            if ($rawContent -notmatch "__pyarmor__") {
+                throw "CRITICAL SECURITY ERROR: Unarmored Python file detected in stage: $($stFile.FullName)"
+            }
+        }
 
         $runtimeDirs = Get-ChildItem -Path $stageDir -Directory -Filter "pyarmor_runtime*"
         if (-not $runtimeDirs -or $runtimeDirs.Count -eq 0) {
@@ -246,11 +350,10 @@ foreach ($rt in $Runtimes) {
         foreach ($rtDir in $runtimeDirs) {
             $extraPyInstallerArgs += @("--hidden-import", $rtDir.Name, "--collect-all", $rtDir.Name)
         }
-        Write-Host "[SECURITY OK] All 15 mandatory security/engine modules verified with __pyarmor__ armor." -ForegroundColor Green
+        Write-Host "[SECURITY OK] 100% of all $($allStagedPy.Count) voxlab_sidecar modules verified with __pyarmor__ native armor." -ForegroundColor Green
     }
 
-    # Bootstrapper ensures package-qualified execution so relative imports, stdlib modules
-    # required by PyArmor-obfuscated bytecode, and runtime site-packages load cleanly.
+    # Minimal entry bootstrapper ensures stdlib modules required by PyArmor & encrypted vaults are bundled
     $coreStaticImports = if ($rt -eq "core") {
         @(
             "    import numpy"
@@ -273,9 +376,9 @@ foreach ($rt in $Runtimes) {
         "from __future__ import annotations"
         "import argparse, asyncio, ctypes, ctypes.wintypes, dataclasses, datetime, difflib"
         "import email.utils, faulthandler, functools, gc, hashlib, hmac, importlib, importlib.util"
-        "import inspect, io, json, logging, math, msvcrt, os, pathlib, platform, re, shutil"
+        "import inspect, io, json, logging, marshal, math, msvcrt, os, pathlib, platform, re, shutil"
         "import ssl, stat, struct, subprocess, sys, tempfile, threading, time, typing"
-        "import unicodedata, urllib.error, urllib.parse, urllib.request, uuid, wave, winreg"
+        "import unicodedata, urllib.error, urllib.parse, urllib.request, uuid, wave, winreg, zlib"
         ""
         "if False:"
         "    import voxlab_sidecar"
@@ -300,47 +403,6 @@ foreach ($rt in $Runtimes) {
         "    import voxlab_sidecar.tts.qwen_adapter"
     ) + $coreStaticImports + @(
         ""
-        "def _register_sp_dlls(sp: str) -> None:"
-        "    dll_rels = ("
-        "        'torch\\lib', 'ctranslate2', '_soundfile_data',"
-        "        'nvidia\\cublas\\bin', 'nvidia\\cudnn\\bin', 'nvidia\\cuda_runtime\\bin',"
-        "        'nvidia\\cufft\\bin', 'nvidia\\curand\\bin', 'nvidia\\cusolver\\bin',"
-        "        'nvidia\\cusparse\\bin', 'nvidia\\nvjitlink\\bin',"
-        "    )"
-        "    for dll_rel in dll_rels:"
-        "        dll_dir = os.path.join(sp, dll_rel)"
-        "        if os.path.isdir(dll_dir):"
-        "            if hasattr(os, 'add_dll_directory'):"
-        "                try:"
-        "                    os.add_dll_directory(dll_dir)"
-        "                except Exception:"
-        "                    pass"
-        "            cur_path = os.environ.get('PATH', '')"
-        "            if dll_dir.lower() not in cur_path.lower():"
-        "                os.environ['PATH'] = dll_dir + os.pathsep + cur_path"
-        ""
-        "def _attach_runtime_site_packages() -> None:"
-        "    if os.environ.get('VOXLAB_ISOLATED_SMOKE_TEST') == '1':"
-        "        return"
-        "    appdata = os.environ.get('APPDATA', '')"
-        "    user_rt_sp = os.path.join(appdata, 'com.voxlab.app', 'runtimes', '$rt', 'Lib', 'site-packages') if appdata else ''"
-        "    if user_rt_sp and os.path.isdir(user_rt_sp):"
-        "        if user_rt_sp not in sys.path:"
-        "            sys.path.append(user_rt_sp)"
-        "        _register_sp_dlls(user_rt_sp)"
-        "        return"
-        "    exe_dir = os.path.dirname(os.path.abspath(sys.executable))"
-        "    candidates = ["
-        "        os.path.join(exe_dir, 'site-packages'),"
-        "        os.path.join(exe_dir, '_internal', 'site-packages'),"
-        "        os.path.abspath(os.path.join(exe_dir, '..', '$venvName', 'Lib', 'site-packages')),"
-        "    ]"
-        "    for sp in candidates:"
-        "        if sp and os.path.isdir(sp) and sp not in sys.path:"
-        "            sys.path.append(sp)"
-        "            _register_sp_dlls(sp)"
-        ""
-        "_attach_runtime_site_packages()"
         "from voxlab_sidecar.__main__ import main"
         "if __name__ == '__main__':"
         "    raise SystemExit(main())"
@@ -434,6 +496,14 @@ foreach ($rt in $Runtimes) {
     $builtExe = Join-Path $ResolvedOutput "$distName\$distName.exe"
     if (-not (Test-Path $builtExe)) {
         throw "Failed to produce expected sidecar executable at $builtExe"
+    }
+
+    if (-not $SkipObfuscationForDev -and (Test-Path $stageVaultDir)) {
+        $dstVaultDir = Join-Path $ResolvedOutput "$distName\_internal\_vxl_vault"
+        if (Test-Path $dstVaultDir) {
+            Remove-Item -Recurse -Force $dstVaultDir
+        }
+        Copy-Item -Recurse -Force $stageVaultDir $dstVaultDir
     }
 
     if ($rt -eq "core") {

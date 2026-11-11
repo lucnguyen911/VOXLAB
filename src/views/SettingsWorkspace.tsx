@@ -17,7 +17,6 @@ import {
   Plus,
   Download,
   Loader2,
-  Cpu,
 } from "lucide-react";
 import { SettingsGroup } from "../types/ui";
 import {
@@ -52,9 +51,7 @@ import {
   installAiModel,
   cancelAiModelInstall,
   onModelInstallProgress,
-  bootstrapAiRuntimes,
   normalizeWhisperModelId,
-  BOOTSTRAP_JOB_ID,
   type ModelStatus,
   type ModelInstallProgressEvent,
 } from "../services/ai/aiRuntimeSettings";
@@ -814,47 +811,6 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     await cancelAiModelInstall(modelId);
   };
 
-  const handleBootstrapAllRuntimes = async () => {
-    if (installingModelId) return;
-    setModelInstallNotice(null);
-    setInstallingModelId(BOOTSTRAP_JOB_ID);
-    setInstallProgress({
-      modelId: BOOTSTRAP_JOB_ID,
-      status: "installing",
-      stage: "preparing",
-      pct: 2,
-      message: "Đang tự động cấu hình và tải các thư viện AI cần thiết...",
-    });
-    try {
-      await bootstrapAiRuntimes();
-      await handleScanModels();
-      await fetchRealStorageStats();
-      await fetchRealHardwareInfo();
-      setModelInstallNotice({
-        type: "success",
-        message: "Đã cấu hình đầy đủ thư viện AI! Bạn có thể bấm \"Tải mô hình\" ở từng mô hình muốn sử dụng.",
-      });
-    } catch (err: any) {
-      const code = err?.code || "";
-      const rawMsg = err?.message || String(err || "Không thể cấu hình thư viện AI.");
-      if (code === "CANCELLED" || rawMsg.includes("CANCELLED") || rawMsg.includes("tạm dừng")) {
-        setModelInstallNotice({
-          type: "info",
-          message: "Đã dừng thiết lập thư viện AI.",
-        });
-      } else {
-        setModelInstallNotice({
-          type: "error",
-          message: rawMsg,
-        });
-      }
-      await handleScanModels();
-    } finally {
-      setInstallingModelId(null);
-      setInstallProgress(null);
-    }
-  };
-
   const handlePickModelsDir = async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
@@ -1041,7 +997,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   const [isLicenseModalOpen, setIsLicenseModalOpen] = useState(false);
   const [isVerifyingLicense, setIsVerifyingLicense] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
-  const [currentAppVersion, setCurrentAppVersion] = useState("1.0.0");
+  const [currentAppVersion, setCurrentAppVersion] = useState("1.0.1");
   const [licenseToast, setLicenseToast] = useState<{
     type: "success" | "error";
     message: string;
@@ -1089,6 +1045,14 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
       .catch(() => {});
 
     LicenseService.getSummary().then(setLicenseInfo).catch(() => {});
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      import("@tauri-apps/api/app")
+        .then(({ getVersion }) => getVersion())
+        .then((v) => {
+          if (v) setCurrentAppVersion(v);
+        })
+        .catch(() => {});
+    }
     fetchRealHardwareInfo();
     fetchRealStorageStats();
     loadAiRuntimeSettings().then(async (settings) => {
@@ -1802,94 +1766,18 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
               {/* Thẻ 2: Danh sách mô hình */}
               <div className="p-5 bg-surface1 rounded-xl border border-borderDefault space-y-3.5">
                 <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-xs text-textPrimary">
-                      Danh sách mô hình AI ({modelsList.length})
-                    </span>
-                    <span
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium border ${
-                        hardwareInfo.cudaAvailable
-                          ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/25"
-                          : "bg-surface2 text-textMuted border-borderDefault"
-                      }`}
-                    >
-                      <Cpu className="w-3 h-3 shrink-0" />
-                      <span>
-                        {hardwareInfo.cudaAvailable
-                          ? `Tăng tốc GPU: ${hardwareInfo.gpu}`
-                          : "Chế độ xử lý: CPU"}
-                      </span>
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {modelsList.some(
-                      (m) => !m.requiresCuda && m.runtimeInstalled === false
-                    ) && (
-                      <button
-                        type="button"
-                        onClick={() => void handleBootstrapAllRuntimes()}
-                        disabled={isScanningModels || Boolean(installingModelId)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/15 hover:bg-accent text-accent hover:text-white rounded-lg border border-accent/30 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
-                      >
-                        <Download className="w-3 h-3" />
-                        <span>Cấu hình thư viện nền tảng</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => handleScanModels()}
-                      disabled={isScanningModels || Boolean(installingModelId)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-lg border border-borderDefault text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      <RefreshCw className={`w-3 h-3 ${isScanningModels ? "animate-spin text-accent" : ""}`} />
-                      <span>{isScanningModels ? "Đang quét..." : "Quét lại"}</span>
-                    </button>
-                  </div>
-                </div>
-
-                {installingModelId === BOOTSTRAP_JOB_ID && (
-                  <div className="p-3 rounded-lg bg-surface2/60 border border-accent/30 space-y-2">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="inline-flex items-center gap-2 text-textPrimary font-medium min-w-0">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-accent shrink-0" />
-                        <span className="truncate">
-                          {installProgress?.message || "Đang cấu hình thư viện AI..."}
-                        </span>
-                      </span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {installProgress?.speedMbps != null && installProgress.speedMbps > 0.05 && (
-                          <span className="px-1.5 py-0.5 rounded bg-accent/15 border border-accent/25 font-mono text-[10px] font-semibold text-accent">
-                            {installProgress.speedMbps.toFixed(1)} MB/s
-                          </span>
-                        )}
-                        <span className="font-mono text-accent font-semibold">
-                          {Math.max(1, Math.min(100, Math.round(installProgress?.pct ?? 2)))}%
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleCancelInstallModel(BOOTSTRAP_JOB_ID)}
-                          className="px-2 py-0.5 rounded bg-danger/10 hover:bg-danger/20 text-danger border border-danger/25 text-[11px] font-medium cursor-pointer"
-                        >
-                          Hủy
-                        </button>
-                      </div>
-                    </div>
-                    <div className="w-full h-1.5 bg-surface3 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-300 rounded-full"
-                        style={{
-                          width: `${Math.max(1, Math.min(100, Math.round(installProgress?.pct ?? 2)))}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* Built-in out-of-the-box engines note */}
-                <div className="px-3 py-2 rounded-lg bg-accent/[0.06] border border-accent/20 flex items-center justify-between gap-2 text-[11px] text-textSecondary">
-                  <span>
-                    <strong className="text-textPrimary">Đã tích hợp sẵn trong bộ cài:</strong> Kokoro-82M (11 giọng Studio ngoại tuyến), Microsoft Edge TTS và xuất file WAV/MP3 hoạt động ngay lập tức mà không cần tải thêm.
+                  <span className="font-semibold text-xs text-textPrimary">
+                    Danh sách mô hình AI ({modelsList.length})
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => handleScanModels()}
+                    disabled={isScanningModels || Boolean(installingModelId)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-lg border border-borderDefault text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isScanningModels ? "animate-spin text-accent" : ""}`} />
+                    <span>{isScanningModels ? "Đang quét..." : "Quét lại"}</span>
+                  </button>
                 </div>
 
                 {modelInstallNotice && (
@@ -1938,24 +1826,12 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                           const pct = isThisInstalling
                             ? Math.max(1, Math.min(100, Math.round(installProgress?.pct ?? 1)))
                             : 0;
-                          const weightsOnlyReady = Boolean(m.weightsInstalled && m.runtimeInstalled === false);
 
                           return (
                             <React.Fragment key={m.id}>
                               <tr className="hover:bg-surface2/40">
                                 <td className="p-2.5 font-medium text-textPrimary">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span>{m.displayName.replace(/\s*\(faster-whisper\)/i, "")}</span>
-                                    {m.requiresCuda ? (
-                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                                        NVIDIA GPU
-                                      </span>
-                                    ) : (
-                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface2 text-textMuted border border-borderDefault">
-                                        GPU / CPU
-                                      </span>
-                                    )}
-                                  </div>
+                                  <span>{m.displayName.replace(/\s*\(faster-whisper\)/i, "")}</span>
                                 </td>
                                 <td className="p-2.5 text-textMuted">
                                   {m.kind === "tts" ? "TTS / Voice Clone" : "Bóc băng & Hậu kiểm (ASR)"}
@@ -1970,7 +1846,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                                 <td className="p-2.5 text-right whitespace-nowrap">
                                   {isThisInstalling ? (
                                     <div className="inline-flex items-center justify-end gap-2">
-                                      <span className="inline-flex items-center gap-1.5 text-accent font-semibold font-mono">
+                                      <span className="inline-flex items-center justify-end gap-1.5 text-accent font-semibold font-mono">
                                         <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
                                         <span>{pct}%</span>
                                       </span>
@@ -1992,23 +1868,11 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                                       type="button"
                                       onClick={() => handleInstallModel(m)}
                                       disabled={isOtherInstalling}
-                                      title={
-                                        weightsOnlyReady
-                                          ? "Đã có tệp trọng số trên ổ cứng — nhấn để cài đặt tự động môi trường Python AI"
-                                          : m.runtimeInstalled !== false
-                                          ? `Tải thủ công mô hình ${m.displayName}`
-                                          : `Tự động cài đặt môi trường AI và tải ${m.displayName}`
-                                      }
+                                      title={`Tải mô hình ${m.displayName}`}
                                       className="inline-flex items-center justify-end gap-1.5 px-2.5 py-1.5 rounded-lg bg-accent/15 hover:bg-accent text-accent hover:text-white border border-accent/30 text-xs font-semibold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
                                       <Download className="w-3.5 h-3.5 shrink-0" />
-                                      <span>
-                                        {weightsOnlyReady
-                                          ? "Cài thư viện AI"
-                                          : m.runtimeInstalled !== false
-                                          ? "Tải mô hình"
-                                          : "Tải & Cài đặt"}
-                                      </span>
+                                      <span>Tải mô hình</span>
                                     </button>
                                   )}
                                 </td>

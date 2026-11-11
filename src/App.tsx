@@ -38,10 +38,8 @@ import {
   BOOTSTRAP_JOB_ID,
   getAiBootstrapStatus,
   bootstrapAiRuntimes,
-  cancelAiModelInstall,
   onModelInstallProgress,
   type ModelInstallProgressEvent,
-  type RuntimeBootstrapStatus,
 } from "./services/ai/aiRuntimeSettings";
 import { resolveLocalEngine } from "./services/ai/ttsEngines";
 import { AppUpdateModal } from "./components/modals/AppUpdateModal";
@@ -50,7 +48,7 @@ import {
   OPEN_APP_UPDATE_MODAL_EVENT,
   type UpdateCheckResult,
 } from "./services/updater/updaterService";
-import { AlertCircle, CheckCircle2, Cpu, Loader2, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, RefreshCw, ShieldCheck, X } from "lucide-react";
 
 // Run synchronous migrations before components mount and read localStorage
 migratePunctuationPauseDefaults();
@@ -708,11 +706,9 @@ function LicenseStartupGate() {
   );
   const [lockedError, setLockedError] = useState<string | null>(null);
   const [startupToast, setStartupToast] = useState<string | null>(null);
-  const [bootstrapStatus, setBootstrapStatus] = useState<RuntimeBootstrapStatus | null>(null);
   const [bootstrapProgress, setBootstrapProgress] = useState<ModelInstallProgressEvent | null>(
     null
   );
-  const [bootstrapRunning, setBootstrapRunning] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [gateTheme] = useState<"dark" | "light">(() => {
     try {
@@ -724,54 +720,29 @@ function LicenseStartupGate() {
 
   const runRuntimeBootstrap = useCallback(async (postLicenseToast?: string | null) => {
     setBootstrapError(null);
-    setBootstrapRunning(true);
     setBootstrapProgress({
       modelId: BOOTSTRAP_JOB_ID,
       status: "installing",
       stage: "preparing",
       pct: 2,
-      message: "Đang kiểm tra cấu hình phần cứng và khởi tạo thư viện AI...",
+      message: "Đang kiểm tra tài nguyên thiết bị...",
     });
 
     try {
       await bootstrapAiRuntimes();
-      setBootstrapRunning(false);
       setStartupToast(
-        postLicenseToast ||
-          "Đã tự động cấu hình xong thư viện AI! Bạn có thể tải thủ công các mô hình cần dùng trong Cài đặt → Mô hình."
+        postLicenseToast || "Đã khởi tạo môi trường hoàn tất! Sẵn sàng làm việc."
       );
       setPhase("authorized");
     } catch (err: any) {
-      setBootstrapRunning(false);
-      const code = err?.code || "";
-      const rawMsg = err?.message || String(err || "Không thể tải thư viện AI.");
-      if (code === "CANCELLED" || rawMsg.includes("CANCELLED") || rawMsg.includes("tạm dừng")) {
-        try {
-          sessionStorage.setItem("voxlab_bootstrap_skipped", "1");
-        } catch {}
-        if (postLicenseToast) {
-          setStartupToast(postLicenseToast);
-        }
-        setPhase("authorized");
-        return;
-      }
+      const rawMsg =
+        err?.message || String(err || "Không thể khởi tạo môi trường làm việc. Vui lòng kiểm tra mạng và thử lại.");
       setBootstrapError(rawMsg);
     }
   }, []);
 
   const enterAuthorizedOrBootstrap = useCallback(
     async (postLicenseToast?: string | null) => {
-      let skipped = false;
-      try {
-        skipped = sessionStorage.getItem("voxlab_bootstrap_skipped") === "1";
-      } catch {}
-
-      if (skipped) {
-        if (postLicenseToast) setStartupToast(postLicenseToast);
-        setPhase("authorized");
-        return;
-      }
-
       const st = await getAiBootstrapStatus();
       if (st.ready) {
         if (postLicenseToast) setStartupToast(postLicenseToast);
@@ -779,7 +750,6 @@ function LicenseStartupGate() {
         return;
       }
 
-      setBootstrapStatus(st);
       setPhase("bootstrapping");
       void runRuntimeBootstrap(postLicenseToast);
     },
@@ -855,16 +825,6 @@ function LicenseStartupGate() {
     void enterAuthorizedOrBootstrap(okMsg);
   };
 
-  const handleSkipBootstrap = async () => {
-    try {
-      sessionStorage.setItem("voxlab_bootstrap_skipped", "1");
-    } catch {}
-    if (bootstrapRunning) {
-      await cancelAiModelInstall(BOOTSTRAP_JOB_ID);
-    }
-    setPhase("authorized");
-  };
-
   if (phase === "checking") {
     return (
       <div className={`h-screen w-screen flex flex-col overflow-hidden bg-background text-textPrimary select-none ${gateTheme}`}>
@@ -905,42 +865,50 @@ function LicenseStartupGate() {
 
   if (phase === "bootstrapping") {
     const pct = Math.max(2, Math.min(100, Math.round(bootstrapProgress?.pct ?? 2)));
+    const stageCaption =
+      pct < 18
+        ? "Đang kiểm tra tài nguyên thiết bị..."
+        : pct < 88
+        ? "Đang đồng bộ thành phần xử lý..."
+        : "Đang hoàn tất khởi tạo...";
     return (
       <div className={`h-screen w-screen flex flex-col overflow-hidden bg-background text-textPrimary select-none ${gateTheme}`}>
         <TopBar theme={gateTheme} minimal={true} />
         <div className="flex-1 flex items-center justify-center p-4">
-          <div className="bg-surface1 border border-borderDefault rounded-2xl p-6 shadow-2xl flex flex-col gap-4 max-w-lg w-full">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <img
-                  src="/app-icon.png?v=2"
-                  alt="VoxLab"
-                  className="w-11 h-11 rounded-xl shadow-md shadow-accent/25 object-cover shrink-0"
-                />
-                <div>
-                  <h2 className="font-bold text-base text-textPrimary">
-                    Thiết lập thư viện AI lần đầu
-                  </h2>
-                  <p className="text-xs text-textMuted">
-                    Tự động cấu hình môi trường thực thi theo phần cứng máy tính
-                  </p>
-                </div>
+          <div className="bg-surface1 border border-borderDefault rounded-2xl p-6 shadow-2xl flex flex-col gap-4 max-w-md w-full">
+            <div className="flex items-center gap-3">
+              <img
+                src="/app-icon.png?v=2"
+                alt="VoxLab"
+                className="w-11 h-11 rounded-xl shadow-md shadow-accent/25 object-cover shrink-0"
+              />
+              <div>
+                <h2 className="font-bold text-base text-textPrimary">
+                  Khởi tạo môi trường lần đầu
+                </h2>
+                <p className="text-xs text-textMuted">
+                  Đang tự động cấu hình và tối ưu hoá môi trường làm việc
+                </p>
               </div>
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-accent/15 text-accent border border-accent/25 shrink-0">
-                <Cpu className="w-3.5 h-3.5" />
-                <span>
-                  {bootstrapStatus?.hasNvidiaGpu
-                    ? bootstrapStatus.gpuName || "NVIDIA CUDA GPU"
-                    : "Chế độ CPU"}
-                </span>
-              </span>
             </div>
 
             {bootstrapError ? (
-              <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/25 text-danger text-xs space-y-2">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span className="leading-relaxed">{bootstrapError}</span>
+              <div className="space-y-3">
+                <div className="p-3.5 rounded-xl bg-danger/10 border border-danger/25 text-danger text-xs">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span className="leading-relaxed">{bootstrapError}</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void runRuntimeBootstrap(null)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent text-white text-xs font-semibold cursor-pointer transition-all"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Thử lại</span>
+                  </button>
                 </div>
               </div>
             ) : (
@@ -948,18 +916,9 @@ function LicenseStartupGate() {
                 <div className="flex items-center justify-between gap-3 text-xs">
                   <span className="inline-flex items-center gap-2 text-textPrimary font-medium min-w-0">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-accent shrink-0" />
-                    <span className="truncate">
-                      {bootstrapProgress?.message || "Đang tải và cấu hình các thư viện nền tảng..."}
-                    </span>
+                    <span className="truncate">{stageCaption}</span>
                   </span>
-                  <div className="inline-flex items-center gap-2 shrink-0">
-                    {bootstrapProgress?.speedMbps != null && bootstrapProgress.speedMbps > 0.05 && (
-                      <span className="px-1.5 py-0.5 rounded bg-accent/15 border border-accent/25 font-mono text-[11px] font-semibold text-accent">
-                        {bootstrapProgress.speedMbps.toFixed(1)} MB/s
-                      </span>
-                    )}
-                    <span className="font-mono font-bold text-accent">{pct}%</span>
-                  </div>
+                  <span className="font-mono font-bold text-accent shrink-0">{pct}%</span>
                 </div>
                 <div className="w-full h-2 bg-surface3 rounded-full overflow-hidden">
                   <div
@@ -967,40 +926,8 @@ function LicenseStartupGate() {
                     style={{ width: `${pct}%` }}
                   />
                 </div>
-                {bootstrapProgress?.downloadedMb != null && bootstrapProgress?.totalMb != null && bootstrapProgress.totalMb > 0 && (
-                  <div className="flex items-center justify-between text-[11px] font-mono text-textMuted">
-                    <span>Tải đa luồng song song</span>
-                    <span>
-                      {bootstrapProgress.downloadedMb.toFixed(0)} / {bootstrapProgress.totalMb.toFixed(0)} MB
-                    </span>
-                  </div>
-                )}
               </div>
             )}
-
-            <div className="px-3.5 py-2.5 rounded-lg bg-accent/[0.06] border border-accent/20 text-[11px] text-textSecondary leading-relaxed">
-              Hệ thống chỉ thiết lập <strong className="text-textPrimary">bộ thư viện nền tảng cốt lõi</strong> (tải đa luồng tốc độ cao, một lần duy nhất) để mở ứng dụng nhanh nhất. Các mô hình AI dung lượng lớn (Whisper, OmniVoice, Chatterbox, Qwen3-TTS) cùng thư viện chuyên biệt sẽ tự động tải khi bạn chọn trong mục <strong className="text-textPrimary">Cài đặt → Mô hình</strong>.
-            </div>
-
-            <div className="flex items-center justify-end gap-2.5 pt-1">
-              {bootstrapError && (
-                <button
-                  type="button"
-                  onClick={() => void runRuntimeBootstrap(null)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent text-white text-xs font-semibold cursor-pointer transition-all"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Thử lại</span>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => void handleSkipBootstrap()}
-                className="px-3 py-2 rounded-lg bg-surface2 hover:bg-surface3 border border-borderDefault text-textSecondary hover:text-textPrimary text-xs font-medium transition-colors cursor-pointer"
-              >
-                {bootstrapError ? "Vào ứng dụng (Cài sau)" : "Bỏ qua tạm thời"}
-              </button>
-            </div>
           </div>
         </div>
       </div>

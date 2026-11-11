@@ -130,10 +130,10 @@ export interface ModelStatus {
   engine: string;
   runtime: string;
   displayName: string;
-  sourceRepo: string;
+  sourceRepo?: string;
   approxSizeMb: number;
-  license: string;
-  requiredFiles: string[];
+  license?: string;
+  requiredFiles?: string[];
   path: string;
   installed: boolean;
   weightsInstalled?: boolean;

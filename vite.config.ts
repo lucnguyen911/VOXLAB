@@ -1,15 +1,71 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import JavaScriptObfuscator from "javascript-obfuscator";
 
 const nodeEnv = (
   globalThis as unknown as { process?: { env?: Record<string, string | undefined> } }
 ).process?.env;
 const host = nodeEnv?.TAURI_DEV_HOST;
 
+function voxlabProductionObfuscator(): Plugin {
+  return {
+    name: "voxlab-production-obfuscator",
+    apply: "build",
+    enforce: "post",
+    renderChunk(code, chunk) {
+      if (chunk.name === "vendor" || chunk.fileName.includes("vendor")) {
+        return null;
+      }
+      const result = JavaScriptObfuscator.obfuscate(code, {
+        compact: true,
+        simplify: true,
+        ignoreImports: true,
+        target: "browser-no-eval",
+        identifierNamesGenerator: "hexadecimal",
+        renameGlobals: false,
+        numbersToExpressions: false,
+        splitStrings: false,
+        stringArray: true,
+        stringArrayEncoding: ["rc4"],
+        stringArrayThreshold: 0.95,
+        stringArrayRotate: true,
+        stringArrayShuffle: true,
+        stringArrayIndexShift: true,
+        stringArrayCallsTransform: true,
+        stringArrayCallsTransformThreshold: 0.75,
+        forceTransformStrings: [
+          "ai_",
+          "license",
+          "update",
+          "sidecar",
+          "supabase",
+          "whisper",
+          "omnivoice",
+          "chatterbox",
+          "qwen",
+          "kokoro",
+        ],
+        controlFlowFlattening: false,
+        deadCodeInjection: false,
+        selfDefending: false,
+        sourceMap: false,
+      });
+      return {
+        code: result.getObfuscatedCode(),
+        map: null,
+      };
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => ({
-  plugins: [tailwindcss(), react()],
+  plugins: [
+    tailwindcss(),
+    react(),
+    ...(mode === "production" ? [voxlabProductionObfuscator()] : []),
+  ],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
@@ -33,7 +89,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
 
-  // Security v3.1: zero sourcemaps, strip debugger & legal comments in production bundles
+  // Security v3.2: zero sourcemaps, strip debugger & legal comments, obfuscate app chunks in production
   esbuild:
     mode === "production"
       ? {
@@ -44,5 +100,14 @@ export default defineConfig(({ mode }) => ({
   build: {
     sourcemap: false,
     minify: "esbuild",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            return "vendor";
+          }
+        },
+      },
+    },
   },
 }));

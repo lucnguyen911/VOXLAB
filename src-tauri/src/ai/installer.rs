@@ -8,7 +8,7 @@
 use crate::ai::models::{self, ModelSpec, ModelStatus, MODELS};
 use crate::ai::sidecar::{AiError, SidecarManager};
 use serde::Serialize;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -153,166 +153,133 @@ pub fn allow_patterns_for_model(model_id: &str) -> Option<Vec<&'static str>> {
     }
 }
 
+fn json_str_vec(val: &serde_json::Value, key: &str) -> Vec<String> {
+    val.get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn build_uv_install_steps(engine: &str, has_nvidia_gpu: bool) -> Result<Vec<UvInstallStep>, AiError> {
-    let torch_index = if has_nvidia_gpu {
-        "https://download.pytorch.org/whl/cu128"
+    let raw = crate::security::obf::decode_ai_runtime_specs_json();
+    let spec_doc: serde_json::Value = serde_json::from_slice(raw.as_bytes()).map_err(|_| {
+        AiError::new("INTERNAL", "Không thể đọc cấu hình môi trường thực thi.")
+    })?;
+
+    let torch_index_key = if has_nvidia_gpu {
+        "torch_cu128_index"
     } else {
-        "https://download.pytorch.org/whl/cpu"
+        "torch_cpu_index"
     };
-    let torch_label = if has_nvidia_gpu {
-        "Đang tải nhân PyTorch 2.8 GPU (NVIDIA CUDA 12.8)..."
-    } else {
-        "Đang tải nhân PyTorch 2.8 (CPU)..."
-    };
+    let torch_index = spec_doc
+        .get(torch_index_key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let torch_packages = json_str_vec(&spec_doc, "torch_packages");
+    let torch_label = "Đang đồng bộ nhân xử lý tốc độ cao...";
 
     match engine {
         "faster-whisper" => {
-            let mut pkgs = vec![
-                "faster-whisper==1.2.1".to_string(),
-                "ctranslate2==4.8.2".to_string(),
-                "av>=14.0".to_string(),
-                "scipy>=1.13.0".to_string(),
-                "librosa>=0.11.0".to_string(),
-                "soundfile>=0.13.0".to_string(),
-                "numpy>=2.0.0,<2.5.0".to_string(),
-                "huggingface_hub>=0.30.0".to_string(),
-                "hf-xet>=1.0.0".to_string(),
-                "tqdm>=4.66.0".to_string(),
-                "certifi".to_string(),
-            ];
-            let label = if has_nvidia_gpu {
-                pkgs.push("nvidia-cublas-cu12".to_string());
-                pkgs.push("nvidia-cudnn-cu12".to_string());
-                pkgs.push("nvidia-cuda-runtime-cu12".to_string());
-                "Đang cài đặt thư viện nhận diện giọng nói Whisper (GPU CUDA)..."
-            } else {
-                "Đang cài đặt thư viện nhận diện giọng nói Whisper (CPU)..."
-            };
+            let mut pkgs = json_str_vec(&spec_doc, "whisper_base");
+            if has_nvidia_gpu {
+                pkgs.extend(json_str_vec(&spec_doc, "whisper_cuda_extra"));
+            }
             Ok(vec![UvInstallStep {
-                label: label.to_string(),
+                label: "Đang cấu hình thành phần xử lý giọng nói...".to_string(),
                 index_url: None,
                 no_deps: false,
                 packages: pkgs,
             }])
         }
-        "omnivoice" => Ok(vec![
-            UvInstallStep {
-                label: torch_label.to_string(),
-                index_url: Some(torch_index.to_string()),
-                no_deps: false,
-                packages: vec!["torch==2.8.0".into(), "torchaudio==2.8.0".into()],
-            },
-            UvInstallStep {
-                label: "Đang cài đặt thư viện xử lý âm thanh & ngôn ngữ OmniVoice...".to_string(),
-                index_url: None,
-                no_deps: false,
-                packages: vec![
-                    "numpy>=2.0.0,<2.5.0".into(),
-                    "soundfile>=0.13.0".into(),
-                    "scipy>=1.13.0".into(),
-                    "librosa>=0.11.0".into(),
-                    "accelerate>=1.12.0".into(),
-                    "transformers>=5.3.0,<6.0.0".into(),
-                    "safetensors>=0.7.0".into(),
-                    "tokenizers>=0.22.0".into(),
-                    "pydub>=0.25.1".into(),
-                    "webdataset>=1.0.0".into(),
-                    "tensorboardX>=2.6.0".into(),
-                    "av>=14.0".into(),
-                    "faster-whisper==1.2.1".into(),
-                    "ctranslate2==4.8.2".into(),
-                    "huggingface_hub>=0.30.0".into(),
-                    "hf-xet>=1.0.0".into(),
-                    "tqdm>=4.66.0".into(),
-                    "certifi".into(),
-                ],
-            },
-            UvInstallStep {
-                label: "Đang kích hoạt engine OmniVoice...".to_string(),
-                index_url: None,
-                no_deps: true,
-                packages: vec!["omnivoice==0.2.1".into()],
-            },
-        ]),
-        "chatterbox" => Ok(vec![
-            UvInstallStep {
-                label: torch_label.to_string(),
-                index_url: Some(torch_index.to_string()),
-                no_deps: false,
-                packages: vec!["torch==2.8.0".into(), "torchaudio==2.8.0".into()],
-            },
-            UvInstallStep {
-                label: "Đang cài đặt thư viện tổng hợp giọng nói Chatterbox Turbo...".to_string(),
-                index_url: None,
-                no_deps: false,
-                packages: vec![
-                    "numpy==1.26.4".into(),
-                    "soundfile>=0.13.0".into(),
-                    "scipy>=1.13.0".into(),
-                    "librosa==0.11.0".into(),
-                    "transformers==5.2.0".into(),
-                    "diffusers==0.29.0".into(),
-                    "safetensors>=0.5.3".into(),
-                    "tokenizers>=0.22.0".into(),
-                    "s3tokenizer".into(),
-                    "resemble-perth>=1.0.0".into(),
-                    "conformer==0.3.2".into(),
-                    "spacy-pkuseg".into(),
-                    "pykakasi==2.3.0".into(),
-                    "pyloudnorm".into(),
-                    "omegaconf>=2.3.0".into(),
-                    "einops>=0.8.0".into(),
-                    "huggingface_hub>=0.30.0".into(),
-                    "hf-xet>=1.0.0".into(),
-                    "tqdm>=4.66.0".into(),
-                    "certifi".into(),
-                ],
-            },
-            UvInstallStep {
-                label: "Đang kích hoạt engine Chatterbox Turbo...".to_string(),
-                index_url: None,
-                no_deps: true,
-                packages: vec!["chatterbox-tts==0.1.7".into()],
-            },
-        ]),
-        "qwen" => Ok(vec![
-            UvInstallStep {
-                label: torch_label.to_string(),
-                index_url: Some(torch_index.to_string()),
-                no_deps: false,
-                packages: vec!["torch==2.8.0".into(), "torchaudio==2.8.0".into()],
-            },
-            UvInstallStep {
-                label: "Đang cài đặt thư viện tổng hợp giọng nói Qwen3-TTS...".to_string(),
-                index_url: None,
-                no_deps: false,
-                packages: vec![
-                    "numpy>=2.0.0,<2.5.0".into(),
-                    "soundfile>=0.13.0".into(),
-                    "onnxruntime>=1.20.0".into(),
-                    "transformers==4.57.3".into(),
-                    "accelerate==1.12.0".into(),
-                    "librosa>=0.11.0".into(),
-                    "scipy>=1.13.0".into(),
-                    "sox>=1.5.0".into(),
-                    "einops>=0.8.0".into(),
-                    "safetensors>=0.7.0".into(),
-                    "huggingface_hub>=0.30.0".into(),
-                    "hf-xet>=1.0.0".into(),
-                    "tqdm>=4.66.0".into(),
-                    "certifi".into(),
-                ],
-            },
-            UvInstallStep {
-                label: "Đang kích hoạt engine Qwen3-TTS...".to_string(),
-                index_url: None,
-                no_deps: true,
-                packages: vec!["qwen-tts==0.1.1".into()],
-            },
-        ]),
-        other => Err(AiError::new(
+        "omnivoice" => {
+            let leaf = spec_doc
+                .get("omnivoice_leaf")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Ok(vec![
+                UvInstallStep {
+                    label: torch_label.to_string(),
+                    index_url: Some(torch_index),
+                    no_deps: false,
+                    packages: torch_packages,
+                },
+                UvInstallStep {
+                    label: "Đang cấu hình thành phần tổng hợp âm thanh...".to_string(),
+                    index_url: None,
+                    no_deps: false,
+                    packages: json_str_vec(&spec_doc, "omnivoice_deps"),
+                },
+                UvInstallStep {
+                    label: "Đang hoàn tất kích hoạt mô hình...".to_string(),
+                    index_url: None,
+                    no_deps: true,
+                    packages: vec![leaf],
+                },
+            ])
+        }
+        "chatterbox" => {
+            let leaf = spec_doc
+                .get("chatterbox_leaf")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Ok(vec![
+                UvInstallStep {
+                    label: torch_label.to_string(),
+                    index_url: Some(torch_index),
+                    no_deps: false,
+                    packages: torch_packages,
+                },
+                UvInstallStep {
+                    label: "Đang cấu hình thành phần tổng hợp âm thanh...".to_string(),
+                    index_url: None,
+                    no_deps: false,
+                    packages: json_str_vec(&spec_doc, "chatterbox_deps"),
+                },
+                UvInstallStep {
+                    label: "Đang hoàn tất kích hoạt mô hình...".to_string(),
+                    index_url: None,
+                    no_deps: true,
+                    packages: vec![leaf],
+                },
+            ])
+        }
+        "qwen" => {
+            let leaf = spec_doc
+                .get("qwen_leaf")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Ok(vec![
+                UvInstallStep {
+                    label: torch_label.to_string(),
+                    index_url: Some(torch_index),
+                    no_deps: false,
+                    packages: torch_packages,
+                },
+                UvInstallStep {
+                    label: "Đang cấu hình thành phần tổng hợp âm thanh...".to_string(),
+                    index_url: None,
+                    no_deps: false,
+                    packages: json_str_vec(&spec_doc, "qwen_deps"),
+                },
+                UvInstallStep {
+                    label: "Đang hoàn tất kích hoạt mô hình...".to_string(),
+                    index_url: None,
+                    no_deps: true,
+                    packages: vec![leaf],
+                },
+            ])
+        }
+        _ => Err(AiError::new(
             "INVALID_REQUEST",
-            format!("Engine không được hỗ trợ cài đặt tự động: {}", other),
+            "Không hỗ trợ khởi tạo tự động thành phần này.",
         )),
     }
 }
@@ -362,7 +329,7 @@ fn resolve_uv_binary(dev_sidecar_root: Option<&Path>) -> Result<PathBuf, AiError
 
     Err(AiError::new(
         "INSTALLER_TOOL_MISSING",
-        "Không tìm thấy trình cài đặt môi trường AI nội bộ (uv.exe). Vui lòng cài lại bộ cài VoxLab.",
+        "Không tìm thấy bộ công cụ khởi tạo môi trường nội bộ. Vui lòng cài lại bộ cài VoxLab.",
     ))
 }
 
@@ -542,130 +509,6 @@ fn resolve_runtime_python(
     None
 }
 
-const HF_DOWNLOADER_SCRIPT: &str = r#"
-import fnmatch
-import json
-import os
-import shutil
-import sys
-import threading
-import time
-
-os.environ.pop("HF_HUB_OFFLINE", None)
-os.environ.pop("TRANSFORMERS_OFFLINE", None)
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
-os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = "32"
-
-model_id = sys.argv[1]
-repo_id = sys.argv[2]
-dest_dir = sys.argv[3]
-allow_json = sys.argv[4]
-fallback_total_mb = float(sys.argv[5])
-allow_patterns = json.loads(allow_json) if allow_json != "null" else None
-
-os.makedirs(dest_dir, exist_ok=True)
-
-from huggingface_hub import HfApi, snapshot_download
-
-expected_bytes = 0
-try:
-    info = HfApi().repo_info(repo_id=repo_id, repo_type="model", files_metadata=True)
-    for sib in (info.siblings or []):
-        rname = getattr(sib, "rfilename", "") or ""
-        if not rname or rname.startswith(".git"):
-            continue
-        if allow_patterns is not None:
-            if not any(fnmatch.fnmatch(rname, pat) for pat in allow_patterns):
-                continue
-        sz = getattr(sib, "size", None)
-        if isinstance(sz, int) and sz > 0:
-            expected_bytes += sz
-except Exception:
-    expected_bytes = 0
-
-if expected_bytes <= 0:
-    expected_bytes = int(max(1.0, fallback_total_mb) * 1048576)
-
-def measure_dest_bytes(root: str) -> int:
-    total = 0
-    for r, _dirs, files in os.walk(root):
-        in_cache = ".cache" in r
-        for f in files:
-            if in_cache and not f.endswith(".incomplete"):
-                continue
-            fp = os.path.join(r, f)
-            try:
-                total += os.path.getsize(fp)
-            except OSError:
-                pass
-    return total
-
-stop_evt = threading.Event()
-start_ts = time.monotonic()
-initial_bytes = measure_dest_bytes(dest_dir)
-
-def monitor_loop() -> None:
-    last_bytes = initial_bytes
-    last_ts = start_ts
-    smoothed_speed = 0.0
-    while not stop_evt.wait(0.45):
-        cur_bytes = measure_dest_bytes(dest_dir)
-        now = time.monotonic()
-        dt = max(0.05, now - last_ts)
-        delta_mb = max(0.0, (cur_bytes - last_bytes) / 1048576.0)
-        inst_speed = delta_mb / dt
-        smoothed_speed = inst_speed if smoothed_speed <= 0.01 else (0.65 * smoothed_speed + 0.35 * inst_speed)
-        last_bytes = cur_bytes
-        last_ts = now
-        dl_mb = cur_bytes / 1048576.0
-        tot_mb = expected_bytes / 1048576.0
-        pct = min(99.0, max(0.0, (cur_bytes / float(expected_bytes)) * 100.0))
-        payload = {
-            "downloadedMb": round(dl_mb, 1),
-            "totalMb": round(tot_mb, 1),
-            "pct": round(pct, 1),
-            "speedMbps": round(max(0.0, smoothed_speed), 2),
-        }
-        print("VOXLAB_DL_PROGRESS:" + json.dumps(payload), flush=True)
-
-mon = threading.Thread(target=monitor_loop, daemon=True)
-mon.start()
-try:
-    snapshot_download(
-        repo_id=repo_id,
-        local_dir=dest_dir,
-        allow_patterns=allow_patterns,
-        max_workers=8,
-    )
-finally:
-    stop_evt.set()
-    mon.join(timeout=1.0)
-
-vocab_json = os.path.join(dest_dir, "vocabulary.json")
-vocab_txt = os.path.join(dest_dir, "vocabulary.txt")
-if os.path.isfile(vocab_json) and not os.path.isfile(vocab_txt):
-    try:
-        with open(vocab_json, "r", encoding="utf-8") as vf:
-            tokens = json.load(vf)
-        if isinstance(tokens, list):
-            with open(vocab_txt, "w", encoding="utf-8") as tf:
-                for tok in tokens:
-                    tf.write(f"{tok}\n")
-    except Exception:
-        pass
-
-shutil.rmtree(os.path.join(dest_dir, ".cache"), ignore_errors=True)
-final_mb = round(measure_dest_bytes(dest_dir) / 1048576.0, 1)
-print("VOXLAB_DL_PROGRESS:" + json.dumps({
-    "downloadedMb": final_mb,
-    "totalMb": final_mb,
-    "pct": 100.0,
-    "speedMbps": 0.0,
-}), flush=True)
-"#;
-
 pub fn install_model_blocking<F>(
     spec: &'static ModelSpec,
     models_dir: &Path,
@@ -826,15 +669,15 @@ where
             .ok_or_else(|| {
                 AiError::new(
                     "PYTHON_NOT_FOUND",
-                    "Không tìm thấy Python runtime để tải trọng số mô hình.",
+                    "Chưa khởi tạo xong môi trường thực thi để tải mô hình.",
                 )
             })?;
 
+        let mut repo_id = models::decode_model_source_repo(spec.id).ok_or_else(|| {
+            AiError::new("INVALID_REQUEST", "Không tìm thấy thông tin nguồn tải mô hình.")
+        })?;
         let dest_dir = models_dir.join(spec.id);
-        let allow_json = match allow_patterns_for_model(spec.id) {
-            Some(pats) => serde_json::to_string(&pats).unwrap_or_else(|_| "null".into()),
-            None => "null".to_string(),
-        };
+        let allow_patterns = allow_patterns_for_model(spec.id);
 
         emit(ModelInstallProgressEvent {
             model_id: spec.id.to_string(),
@@ -842,7 +685,7 @@ where
             stage: "weights".to_string(),
             pct: weights_pct_span.0,
             message: format!(
-                "Đang kết nối HuggingFace để tải {} (~{} MB)...",
+                "Đang kết nối máy chủ tải {} (~{} MB)...",
                 spec.display_name, spec.approx_size_mb
             ),
             downloaded_mb: Some(0.0),
@@ -853,19 +696,31 @@ where
         let hf_xet_cache_dir = app_data_dir.join("scratch").join("hf-xet-cache");
         let _ = std::fs::create_dir_all(&hf_xet_cache_dir);
 
+        let cfg_val = serde_json::json!({
+            "model_id": spec.id,
+            "repo_id": repo_id,
+            "dest_dir": dest_dir.to_string_lossy(),
+            "allow_patterns": allow_patterns,
+            "fallback_total_mb": spec.approx_size_mb,
+        });
+        let mut cfg_json = serde_json::to_string(&cfg_val).unwrap_or_else(|_| "{}".into());
+        let py_body = crate::security::obf::decode_hf_downloader_py();
+        let mut full_script = format!("_VOXLAB_CFG = {}\n{}", cfg_json, py_body.as_str_lossy());
+
+        unsafe {
+            for b in repo_id.as_bytes_mut() {
+                std::ptr::write_volatile(b, 0);
+            }
+            for b in cfg_json.as_bytes_mut() {
+                std::ptr::write_volatile(b, 0);
+            }
+        }
+
         let mut dl_cmd = Command::new(&py_exe);
         configure_hidden_command(&mut dl_cmd);
         dl_cmd
-            .args([
-                "-u",
-                "-c",
-                HF_DOWNLOADER_SCRIPT,
-                spec.id,
-                spec.source_repo,
-                &dest_dir.to_string_lossy(),
-                &allow_json,
-                &spec.approx_size_mb.to_string(),
-            ])
+            .stdin(Stdio::piped())
+            .args(["-u", "-"])
             .env_remove("HF_HUB_OFFLINE")
             .env_remove("TRANSFORMERS_OFFLINE")
             .env("HF_XET_HIGH_PERFORMANCE", "1")
@@ -874,12 +729,27 @@ where
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8");
 
-        let dl_child = dl_cmd.spawn().map_err(|e| {
+        let mut dl_child = dl_cmd.spawn().map_err(|e| {
+            unsafe {
+                for b in full_script.as_bytes_mut() {
+                    std::ptr::write_volatile(b, 0);
+                }
+            }
             AiError::new(
                 "DOWNLOAD_SPAWN_FAILED",
                 format!("Không thể khởi chạy trình tải mô hình: {}", e),
             )
         })?;
+
+        if let Some(mut stdin_pipe) = dl_child.stdin.take() {
+            let _ = stdin_pipe.write_all(full_script.as_bytes());
+            let _ = stdin_pipe.flush();
+        }
+        unsafe {
+            for b in full_script.as_bytes_mut() {
+                std::ptr::write_volatile(b, 0);
+            }
+        }
 
         let model_id_str = spec.id.to_string();
         let display_name = spec.display_name.to_string();
@@ -951,7 +821,7 @@ where
     if !final_state.runtime_installed {
         return Err(AiError::new(
             "RUNTIME_INCOMPLETE",
-            "Môi trường Python AI chưa sẵn sàng sau khi cài đặt.",
+            "Môi trường thực thi chưa sẵn sàng sau khi cài đặt.",
         ));
     }
 
@@ -1008,10 +878,7 @@ where
             status: "installing".to_string(),
             stage: "preparing".to_string(),
             pct: pct_span.0.max(2.0),
-            message: format!(
-                "Đang khởi tạo môi trường Python 3.11 độc lập ({})...",
-                runtime
-            ),
+            message: "Đang chuẩn bị không gian thực thi...".to_string(),
             downloaded_mb: None,
             total_mb: None,
             speed_mbps: None,
@@ -1036,7 +903,7 @@ where
         let venv_child = venv_cmd.spawn().map_err(|e| {
             AiError::new(
                 "INSTALL_FAILED",
-                format!("Không thể khởi chạy uv venv: {}", e),
+                format!("Không thể khởi tạo không gian thực thi: {}", e),
             )
         })?;
         run_monitored_child(venv_child, cancelled, current_pid, |_line| {})?;
@@ -1061,12 +928,11 @@ where
             speed_mbps: None,
         });
 
-        // Pre-fetch large wheels (>= 16 MB, e.g. torch+cu128 ~3.3 GB, cudnn ~664 MB, cublas ~528 MB)
-        // via 8-16 parallel HTTP Range streams into `wheelhouse_dir` with live MB/s progress.
         let mut did_prefetch = false;
         let prefetch_ceil = step_base + (step_ceil - step_base) * 0.78;
         if !step.no_deps {
             let model_id_str = job_model_id.to_string();
+            let is_bootstrap = job_model_id == BOOTSTRAP_JOB_ID;
             let prefetch_res = crate::ai::fast_dl::prefetch_large_wheels_for_step(
                 &uv_bin,
                 &rt_python,
@@ -1087,34 +953,26 @@ where
                         / p.batch_total_bytes.max(1) as f64)
                         .clamp(0.0, 1.0);
                     let cur_pct = step_base + (prefetch_ceil - step_base) * ratio;
-                    let pkg_badge = if p.pkg_total > 1 {
-                        format!("{} ({}/{})", p.pkg_name, p.pkg_index, p.pkg_total)
-                    } else {
-                        p.pkg_name
-                    };
-                    let msg = if p.speed_mbps > 0.05 {
-                        format!(
-                            "Đang tải đa luồng ({} luồng) {}: {:.0} / {:.0} MB ({:.1} MB/s)",
-                            p.streams, pkg_badge, dl_mb, tot_mb, p.speed_mbps
-                        )
-                    } else {
-                        format!(
-                            "Đang tải đa luồng ({} luồng) {}: {:.0} / {:.0} MB",
-                            p.streams, pkg_badge, dl_mb, tot_mb
-                        )
-                    };
                     emit(ModelInstallProgressEvent {
                         model_id: model_id_str.clone(),
                         status: "installing".to_string(),
                         stage: "runtime".to_string(),
                         pct: (cur_pct.max(3.0) * 10.0).round() / 10.0,
-                        message: msg,
-                        downloaded_mb: Some((dl_mb * 10.0).round() / 10.0),
-                        total_mb: Some((tot_mb * 10.0).round() / 10.0),
-                        speed_mbps: if p.speed_mbps > 0.05 {
-                            Some((p.speed_mbps * 100.0).round() / 100.0)
-                        } else {
+                        message: "Đang đồng bộ thành phần xử lý...".to_string(),
+                        downloaded_mb: if is_bootstrap {
                             None
+                        } else {
+                            Some((dl_mb * 10.0).round() / 10.0)
+                        },
+                        total_mb: if is_bootstrap {
+                            None
+                        } else {
+                            Some((tot_mb * 10.0).round() / 10.0)
+                        },
+                        speed_mbps: if is_bootstrap || p.speed_mbps <= 0.05 {
+                            None
+                        } else {
+                            Some((p.speed_mbps * 100.0).round() / 100.0)
                         },
                     });
                 },
@@ -1159,33 +1017,23 @@ where
         let pip_child = pip_cmd.spawn().map_err(|e| {
             AiError::new(
                 "INSTALL_FAILED",
-                format!("Không thể khởi chạy uv pip install: {}", e),
+                format!("Không thể đồng bộ thành phần xử lý: {}", e),
             )
         })?;
 
         let mut line_counter = 0usize;
         let model_id_str = job_model_id.to_string();
         let base_label = step.label.clone();
-        run_monitored_child(pip_child, cancelled, current_pid, |line| {
+        run_monitored_child(pip_child, cancelled, current_pid, |_line| {
             line_counter += 1;
             let progress_ratio = (1.0 - (-0.06 * line_counter as f64).exp()).clamp(0.05, 0.96);
             let cur_pct = uv_step_base + (step_ceil - uv_step_base) * progress_ratio;
-            let detail = if line.starts_with("Prepared ")
-                || line.starts_with("Installed ")
-                || line.starts_with("Audited ")
-                || line.starts_with("Resolved ")
-                || line.starts_with("Downloading ")
-            {
-                format!("{} ({})", base_label, line)
-            } else {
-                base_label.clone()
-            };
             emit(ModelInstallProgressEvent {
                 model_id: model_id_str.clone(),
                 status: "installing".to_string(),
                 stage: "runtime".to_string(),
                 pct: (cur_pct * 10.0).round() / 10.0,
-                message: detail,
+                message: base_label.clone(),
                 downloaded_mb: None,
                 total_mb: None,
                 speed_mbps: None,
@@ -1201,11 +1049,7 @@ where
     ) {
         return Err(AiError::new(
             "RUNTIME_VERIFY_FAILED",
-            format!(
-                "Đã chạy trình cài đặt nhưng không tìm thấy gói '{}' trong runtime '{}'.",
-                models::engine_marker_package(engine),
-                runtime
-            ),
+            "Chưa hoàn tất đồng bộ thành phần xử lý cần thiết. Vui lòng kiểm tra kết nối mạng và thử lại.",
         ));
     }
 
@@ -1215,14 +1059,6 @@ where
 }
 
 /// Returns `(engine, runtime)` bootstrap targets required on first launch.
-///
-/// Strategy (Option A — Fast Studio Entry):
-/// First launch only bootstraps the lean `core` Whisper + audio DSP runtime (`faster-whisper` +
-/// `ctranslate2` + NVIDIA CUDA `cublas`/`cudnn` on GPU, or lightweight CPU runtime on non-NVIDIA PCs).
-/// Built-in Kokoro-82M & Online TTS work immediately, and heavy 3.3 GB PyTorch CUDA runtimes
-/// (`omnivoice`, `chatterbox`, `qwen`) are installed automatically on-demand via 16-stream
-/// segmented downloading only when the user chooses to install one of those optional Clone models
-/// in Settings -> Models (sharing `wheelhouse` & `uv-cache` across all 3 runtimes).
 pub fn required_bootstrap_targets(_has_nvidia_gpu: bool) -> Vec<(&'static str, &'static str)> {
     vec![("faster-whisper", "core")]
 }
@@ -1280,13 +1116,10 @@ where
         let mut guard = active_install_slot()
             .lock()
             .map_err(|_| AiError::new("INTERNAL", "install lock poisoned"))?;
-        if let Some(existing) = guard.as_ref() {
+        if guard.is_some() {
             return Err(AiError::new(
                 "INSTALL_BUSY",
-                format!(
-                    "Tiến trình cài đặt '{}' đang chạy. Vui lòng đợi hoàn tất.",
-                    existing.model_id
-                ),
+                "Một tiến trình thiết lập khác đang chạy. Vui lòng đợi hoàn tất.",
             ));
         }
         *guard = Some(ActiveInstallJob {
@@ -1329,15 +1162,12 @@ where
             )?;
         }
 
-        // Preserve `scratch/uv-cache` and `scratch/wheelhouse` so subsequent on-demand engine
-        // installs (OmniVoice, Chatterbox, Qwen3-TTS) reuse already-extracted wheels via NTFS
-        // hardlinks in seconds. Users can clear `scratch/` anytime via Settings -> General -> Cache.
         emit(ModelInstallProgressEvent {
             model_id: BOOTSTRAP_JOB_ID.to_string(),
             status: "installing".to_string(),
             stage: "verifying".to_string(),
             pct: 98.0,
-            message: "Đang kiểm tra và hoàn tất cấu hình thư viện nền tảng...".to_string(),
+            message: "Đang hoàn tất khởi tạo...".to_string(),
             downloaded_mb: None,
             total_mb: None,
             speed_mbps: None,
@@ -1347,10 +1177,7 @@ where
         if !final_status.ready {
             return Err(AiError::new(
                 "RUNTIME_INCOMPLETE",
-                format!(
-                    "Chưa hoàn tất cấu hình các thư viện: {}",
-                    final_status.missing_runtimes.join(", ")
-                ),
+                "Chưa hoàn tất khởi tạo môi trường. Vui lòng thử lại.",
             ));
         }
         Ok(final_status)
@@ -1367,7 +1194,7 @@ where
                 status: "completed".to_string(),
                 stage: "done".to_string(),
                 pct: 100.0,
-                message: "Đã cấu hình hoàn tất toàn bộ thư viện AI!".to_string(),
+                message: "Đã khởi tạo môi trường hoàn tất!".to_string(),
                 downloaded_mb: None,
                 total_mb: None,
                 speed_mbps: None,
@@ -1379,7 +1206,7 @@ where
                 status: "cancelled".to_string(),
                 stage: "done".to_string(),
                 pct: 0.0,
-                message: "Đã tạm dừng thiết lập thư viện AI.".to_string(),
+                message: "Đã tạm dừng khởi tạo môi trường.".to_string(),
                 downloaded_mb: None,
                 total_mb: None,
                 speed_mbps: None,

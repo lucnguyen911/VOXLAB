@@ -9,12 +9,10 @@ use std::path::Path;
 pub struct ModelSpec {
     pub id: &'static str,
     pub kind: &'static str,    // "asr" | "tts"
-    pub engine: &'static str,  // "faster-whisper" | "omnivoice" | "chatterbox" | "qwen-tts"
+    pub engine: &'static str,  // "faster-whisper" | "omnivoice" | "chatterbox" | "qwen"
     pub runtime: &'static str, // sidecar runtime that can load it
     pub display_name: &'static str,
-    pub source_repo: &'static str,
     pub approx_size_mb: u32,
-    pub license: &'static str,
     pub required_files: &'static [&'static str],
 }
 
@@ -39,9 +37,7 @@ pub const MODELS: &[ModelSpec] = &[
         engine: "faster-whisper",
         runtime: "core",
         display_name: "Whisper Large V3 Turbo",
-        source_repo: "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
         approx_size_mb: 1600,
-        license: "MIT",
         required_files: &["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"],
     },
     ModelSpec {
@@ -50,9 +46,7 @@ pub const MODELS: &[ModelSpec] = &[
         engine: "faster-whisper",
         runtime: "core",
         display_name: "Whisper Large V3",
-        source_repo: "Systran/faster-whisper-large-v3",
         approx_size_mb: 3100,
-        license: "MIT",
         required_files: &["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"],
     },
     ModelSpec {
@@ -61,9 +55,7 @@ pub const MODELS: &[ModelSpec] = &[
         engine: "faster-whisper",
         runtime: "core",
         display_name: "Whisper Medium",
-        source_repo: "Systran/faster-whisper-medium",
         approx_size_mb: 1500,
-        license: "MIT",
         required_files: &["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"],
     },
     ModelSpec {
@@ -72,9 +64,7 @@ pub const MODELS: &[ModelSpec] = &[
         engine: "faster-whisper",
         runtime: "core",
         display_name: "Whisper Small",
-        source_repo: "Systran/faster-whisper-small",
         approx_size_mb: 464,
-        license: "MIT",
         required_files: &["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"],
     },
     ModelSpec {
@@ -83,9 +73,7 @@ pub const MODELS: &[ModelSpec] = &[
         engine: "omnivoice",
         runtime: "core",
         display_name: "OmniVoice",
-        source_repo: "k2-fsa/OmniVoice",
         approx_size_mb: 3116,
-        license: "CC-BY-NC-4.0 (weights); Boson Higgs Audio 2 Community License (audio tokenizer); Apache-2.0 (code)",
         required_files: &["config.json", "model.safetensors", "tokenizer.json", "audio_tokenizer/model.safetensors", "audio_tokenizer/LICENSE"],
     },
     ModelSpec {
@@ -94,9 +82,7 @@ pub const MODELS: &[ModelSpec] = &[
         engine: "chatterbox",
         runtime: "chatterbox",
         display_name: "Chatterbox Turbo",
-        source_repo: "ResembleAI/chatterbox-turbo",
         approx_size_mb: 2849,
-        license: "MIT (weights and code); output carries Resemble Perth watermark",
         required_files: &[
             "ve.safetensors", "t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "vocab.json", "merges.txt",
             "tokenizer_config.json", "special_tokens_map.json", "added_tokens.json", "conds.pt",
@@ -108,9 +94,7 @@ pub const MODELS: &[ModelSpec] = &[
         engine: "qwen",
         runtime: "qwen",
         display_name: "Qwen3-TTS 1.7B Base",
-        source_repo: "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         approx_size_mb: 4334,
-        license: "Apache-2.0 (weights and code)",
         required_files: &[
             "config.json", "generation_config.json", "model.safetensors", "vocab.json", "merges.txt",
             "tokenizer_config.json", "preprocessor_config.json", "speech_tokenizer/model.safetensors",
@@ -118,6 +102,12 @@ pub const MODELS: &[ModelSpec] = &[
         ],
     },
 ];
+
+pub fn decode_model_source_repo(model_id: &str) -> Option<String> {
+    let raw = crate::security::obf::decode_ai_model_repos_json();
+    let val: serde_json::Value = serde_json::from_slice(raw.as_bytes()).ok()?;
+    val.get(model_id)?.as_str().map(|s| s.to_string())
+}
 
 fn dir_size(path: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(path) else { return 0 };
@@ -131,14 +121,18 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-pub fn engine_marker_package<'a>(engine: &'a str) -> &'a str {
-    match engine {
-        "faster-whisper" => "faster_whisper",
-        "omnivoice" => "omnivoice",
-        "chatterbox" => "chatterbox",
-        "qwen" => "qwen_tts",
-        _ => engine,
+pub fn engine_marker_package(engine: &str) -> String {
+    let raw = crate::security::obf::decode_ai_runtime_specs_json();
+    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(raw.as_bytes()) {
+        if let Some(m) = val
+            .get("markers")
+            .and_then(|mk| mk.get(engine))
+            .and_then(|v| v.as_str())
+        {
+            return m.to_string();
+        }
     }
+    engine.to_string()
 }
 
 pub fn engine_requires_cuda(engine: &str) -> bool {
@@ -211,7 +205,7 @@ pub fn is_engine_runtime_installed(
     }
 
     sp_candidates.into_iter().any(|sp| {
-        let pkg_dir = sp.join(marker);
+        let pkg_dir = sp.join(&marker);
         let pkg_file = sp.join(format!("{}.py", marker));
         pkg_dir.is_dir() || pkg_file.is_file()
     })
