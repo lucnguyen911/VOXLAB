@@ -57,6 +57,7 @@ import { getEffectiveRules } from "../services/pronunciation";
 import {
   checkAsrReadiness,
   applyAsrModelSwitch,
+  getFriendlyAsrName,
   type AsrReadinessResult,
 } from "../services/ai/asrReadiness";
 import { AsrReadinessModal } from "../components/modals/AsrReadinessModal";
@@ -1282,7 +1283,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           try {
             const subtitleSettings = loadSubtitleSettings();
             setProgressStage(
-              `Đang nhận dạng & căn chỉnh phụ đề bằng ${subtitleSettings.whisperModel}...`
+              `Đang nhận dạng & căn chỉnh phụ đề bằng ${getFriendlyAsrName(subtitleSettings.whisperModel)}...`
             );
             const srtRes = await generateMasterSrtWithAsr({
               audioPath: chosenPath,

@@ -58,6 +58,12 @@ import { CompactWaveform } from "../components/waveform";
 import { SearchableLanguageSelect } from "../components/common/SearchableLanguageSelect";
 import { ALL_STANDARD_LANGUAGES, findLanguage, LanguageItem } from "../services/subtitle/languages";
 import { persistCloneReferenceWav, upsertCloneVoice } from "../services/ai/cloneVoiceRegistry";
+import {
+  scanAiModels,
+  onAiModelsChanged,
+  type ModelStatus,
+} from "../services/ai/aiRuntimeSettings";
+import { resolveLocalEngine } from "../services/ai/ttsEngines";
 import { readAudioFileBlobUrl } from "../services/batch/batchRuntime";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 
@@ -167,6 +173,47 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
 
   // Model & Form State
   const [selectedModelId, setSelectedModelId] = useState<string>("omnivoice");
+  const [installedModels, setInstalledModels] = useState<ModelStatus[]>([]);
+  const didAutoSelectInstalledRef = useRef<boolean>(false);
+
+  const isCloneModelInstalled = useCallback(
+    (m: CloneModelDefinition, list: ModelStatus[] = installedModels): boolean => {
+      if (list.length === 0) return true;
+      const caps = resolveLocalEngine(m.engine);
+      if (!caps) return true;
+      const st = list.find((s) => s.id === caps.modelId || s.engine === caps.engine);
+      return st ? Boolean(st.installed) : true;
+    },
+    [installedModels]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      scanAiModels()
+        .then((list) => {
+          if (cancelled) return;
+          setInstalledModels(list);
+          if (!didAutoSelectInstalledRef.current && list.length > 0) {
+            didAutoSelectInstalledRef.current = true;
+            const currentDef = CLONE_MODELS.find((m) => m.id === selectedModelId) || CLONE_MODELS[0];
+            if (!isCloneModelInstalled(currentDef, list)) {
+              const firstInstalled = CLONE_MODELS.find((m) => isCloneModelInstalled(m, list));
+              if (firstInstalled) {
+                setSelectedModelId(firstInstalled.id);
+              }
+            }
+          }
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const unsub = onAiModelsChanged(refresh);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
   const [voiceName, setVoiceName] = useState<string>("");
   const [selectedLang, setSelectedLang] = useState<string>("auto");
 
@@ -962,17 +1009,40 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
               <div className="space-y-1.5">
                 <div className="grid grid-cols-2 gap-2.5">
                   <div className="space-y-1.5 min-w-0">
-                    <label className="block text-textSecondary font-medium">Model</label>
+                    <div className="flex items-center justify-between gap-1">
+                      <label className="block text-textSecondary font-medium">Model</label>
+                      {installedModels.length > 0 && (
+                        isCloneModelInstalled(currentModel) ? (
+                          <span className="text-[10px] font-semibold text-emerald-500">
+                            {lang === "vi" ? "Đã cài" : "Installed"}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              window.dispatchEvent(new CustomEvent("voxlab_open_settings_models"))
+                            }
+                            className="text-[10px] font-semibold text-amber-500 hover:underline cursor-pointer"
+                            title="Mở Cài đặt → Mô hình để tải mô hình này"
+                          >
+                            {lang === "vi" ? "Chưa cài · Tải →" : "Install →"}
+                          </button>
+                        )
+                      )}
+                    </div>
                     <select
                       value={selectedModelId}
                       onChange={(e) => setSelectedModelId(e.target.value)}
                       className="w-full h-[34px] bg-surface2 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none"
                     >
-                      {CLONE_MODELS.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name}
-                        </option>
-                      ))}
+                      {CLONE_MODELS.map((m) => {
+                        const ready = installedModels.length === 0 || isCloneModelInstalled(m);
+                        return (
+                          <option key={m.id} value={m.id}>
+                            {m.name} {installedModels.length > 0 ? (ready ? "✓" : "(Chưa cài)") : ""}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
 

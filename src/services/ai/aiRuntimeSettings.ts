@@ -86,8 +86,25 @@ export async function loadAiRuntimeSettings(): Promise<StoredAiRuntimeSettings> 
   return settings;
 }
 
+export const AI_MODELS_CHANGED_EVENT = "voxlab_ai_models_changed";
+
+export function notifyAiModelsChanged(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(AI_MODELS_CHANGED_EVENT));
+  }
+}
+
+export function onAiModelsChanged(handler: () => void): () => void {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+  window.addEventListener(AI_MODELS_CHANGED_EVENT, handler);
+  return () => window.removeEventListener(AI_MODELS_CHANGED_EVENT, handler);
+}
+
 export async function saveAiRuntimeSettings(s: StoredAiRuntimeSettings): Promise<void> {
   await saveAppDataFile(FILE, JSON.stringify(s, null, 2));
+  notifyAiModelsChanged();
 }
 
 export async function syncAsrModelToAiRuntime(whisperModel: string): Promise<void> {
@@ -167,10 +184,12 @@ export async function getAiHardwareInfo(): Promise<HardwareAcceleratorInfo> {
 
 export async function installAiModel(modelId: string, modelsDir?: string): Promise<ModelStatus> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return await invoke<ModelStatus>("ai_install_model", {
+  const status = await invoke<ModelStatus>("ai_install_model", {
     modelId,
     modelsDir: modelsDir || null,
   });
+  notifyAiModelsChanged();
+  return status;
 }
 
 export async function cancelAiModelInstall(modelId?: string): Promise<boolean> {
@@ -207,7 +226,9 @@ export async function getAiBootstrapStatus(): Promise<RuntimeBootstrapStatus> {
 
 export async function bootstrapAiRuntimes(): Promise<RuntimeBootstrapStatus> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return await invoke<RuntimeBootstrapStatus>("ai_bootstrap_runtimes");
+  const status = await invoke<RuntimeBootstrapStatus>("ai_bootstrap_runtimes");
+  notifyAiModelsChanged();
+  return status;
 }
 
 export async function onModelInstallProgress(

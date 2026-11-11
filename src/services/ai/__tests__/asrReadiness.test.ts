@@ -58,4 +58,27 @@ describe("ASR Readiness Service Tests", () => {
     current = loadSubtitleSettings();
     assert.equal(current.whisperModel, "large-v3-turbo");
   });
+
+  it("AR4: applyAsrModelSwitch dispatches voxlab_asr_model_changed window event", async () => {
+    let emittedDetail: string | null = null;
+    const prevWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      dispatchEvent: (ev: any) => {
+        if (ev?.type === "voxlab_asr_model_changed") {
+          emittedDetail = ev.detail;
+        }
+        return true;
+      },
+    };
+    try {
+      await applyAsrModelSwitch("faster-whisper-medium");
+      assert.equal(emittedDetail, "medium");
+    } finally {
+      if (prevWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = prevWindow;
+      }
+    }
+  });
 });

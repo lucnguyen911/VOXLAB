@@ -118,6 +118,42 @@ pub fn ai_status(state: State<'_, AiState>) -> Vec<RuntimeStatus> {
     state.0.status()
 }
 
+/// Parses `<app_data>/settings/ai_runtime.json` and extracts a user-configured custom `modelsDir`
+/// when `customModelsDir` is `true` and `modelsDir` is non-empty.
+pub fn parse_custom_models_dir_from_json(raw_json: &str) -> Option<PathBuf> {
+    let parsed: Value = serde_json::from_str(raw_json).ok()?;
+    let is_custom = parsed.get("customModelsDir").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !is_custom {
+        return None;
+    }
+    let dir_str = parsed.get("modelsDir").and_then(|v| v.as_str())?.trim();
+    if dir_str.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(dir_str))
+}
+
+fn resolve_configured_models_dir(
+    app: &AppHandle,
+    explicit_models_dir: Option<String>,
+) -> Result<PathBuf, AiError> {
+    if let Some(d) = explicit_models_dir {
+        let trimmed = d.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    if let Ok(app_data) = app.path().app_data_dir() {
+        let settings_file = app_data.join("settings").join("ai_runtime.json");
+        if let Ok(raw) = std::fs::read_to_string(&settings_file) {
+            if let Some(custom_dir) = parse_custom_models_dir_from_json(&raw) {
+                return Ok(custom_dir);
+            }
+        }
+    }
+    Ok(PathBuf::from(ai_models_dir(app.clone())?))
+}
+
 #[tauri::command]
 pub fn ai_models_dir(app: AppHandle) -> Result<String, AiError> {
     let dir = app
@@ -136,10 +172,7 @@ pub fn ai_scan_models(
 ) -> Result<Vec<models::ModelStatus>, AiError> {
     let app_data = app.path().app_data_dir().ok();
     let dev_root = sidecar_root();
-    let dir = match models_dir {
-        Some(d) if !d.trim().is_empty() => PathBuf::from(d),
-        _ => PathBuf::from(ai_models_dir(app)?),
-    };
+    let dir = resolve_configured_models_dir(&app, models_dir)?;
     Ok(models::scan_with_runtime(
         &dir,
         app_data.as_deref(),
@@ -170,10 +203,7 @@ pub async fn ai_install_model(
     .map_err(|msg| AiError::new("LICENSE_REQUIRED", msg))?;
 
     let spec = installer::find_model_spec(model_id.trim())?;
-    let target_models_dir = match models_dir {
-        Some(d) if !d.trim().is_empty() => PathBuf::from(d),
-        _ => PathBuf::from(ai_models_dir(app.clone())?),
-    };
+    let target_models_dir = resolve_configured_models_dir(&app, models_dir)?;
     let dev_root = sidecar_root();
     let mgr = state.0.clone();
     let emit_handle = app.clone();
@@ -224,7 +254,7 @@ pub async fn ai_bootstrap_runtimes(
     )
     .map_err(|msg| AiError::new("LICENSE_REQUIRED", msg))?;
 
-    let target_models_dir = PathBuf::from(ai_models_dir(app.clone())?);
+    let target_models_dir = resolve_configured_models_dir(&app, None)?;
     let dev_root = sidecar_root();
     let mgr = state.0.clone();
     let emit_handle = app.clone();
@@ -242,4 +272,38 @@ pub async fn ai_bootstrap_runtimes(
     })
     .await
     .map_err(|e| AiError::new("INTERNAL", e.to_string()))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_custom_models_dir_when_enabled() {
+        let json = r#"{"modelsDir":"D:\\AI_Models\\VoxLab","customModelsDir":true,"device":"auto"}"#;
+        assert_eq!(
+            parse_custom_models_dir_from_json(json),
+            Some(PathBuf::from(r"D:\AI_Models\VoxLab"))
+        );
+    }
+
+    #[test]
+    fn ignores_models_dir_when_custom_flag_is_false_or_empty() {
+        let not_custom = r#"{"modelsDir":"C:\\Default\\models","customModelsDir":false}"#;
+        assert_eq!(parse_custom_models_dir_from_json(not_custom), None);
+
+        let blank_dir = r#"{"modelsDir":"   ","customModelsDir":true}"#;
+        assert_eq!(parse_custom_models_dir_from_json(blank_dir), None);
+    }
+
+    #[test]
+    fn whisper_display_names_are_clean_and_consistent() {
+        for spec in models::MODELS.iter().filter(|m| m.kind == "asr") {
+            assert!(
+                !spec.display_name.contains("faster-whisper"),
+                "ASR display_name should not expose internal engine suffix: {}",
+                spec.display_name
+            );
+        }
+    }
 }

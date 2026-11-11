@@ -122,9 +122,25 @@ export const saveStoredTtsSettings = (settings: Partial<PersistedTtsSettings>) =
 
 import {
   scanAiModels,
+  onAiModelsChanged,
+  normalizeWhisperModelId,
   type ModelStatus,
 } from "../../services/ai/aiRuntimeSettings";
+import { applyAsrModelSwitch } from "../../services/ai/asrReadiness";
 import { resolveLocalEngine } from "../../services/ai/ttsEngines";
+
+const CLONE_MODEL_OPTIONS = [
+  { label: "OmniVoice", engine: "omnivoice", modelId: "omnivoice" },
+  { label: "Chatterbox Turbo", engine: "chatterbox", modelId: "chatterbox-turbo" },
+  { label: "Qwen TTS 1.7B", engine: "qwen", modelId: "qwen3-tts-1.7b-base" },
+] as const;
+
+const WHISPER_ASR_OPTIONS = [
+  { id: "large-v3-turbo", fullId: "faster-whisper-large-v3-turbo", label: "Whisper Large V3 Turbo" },
+  { id: "large-v3", fullId: "faster-whisper-large-v3", label: "Whisper Large V3" },
+  { id: "medium", fullId: "faster-whisper-medium", label: "Whisper Medium" },
+  { id: "small", fullId: "faster-whisper-small", label: "Whisper Small" },
+] as const;
 
 interface TtsInspectorProps {
   selectedChunk: ChunkItem | null;
@@ -159,7 +175,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   activeVoiceId,
   onChangeActiveVoice: _onChangeActiveVoice,
   activeModel,
-  onChangeModel: _onChangeModel,
+  onChangeModel,
   isOpen: _isOpen = true,
   onToggle: _onToggle,
   inspectorWidth = 340,
@@ -180,18 +196,59 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
 }) => {
   const { t, lang } = useI18n();
 
-  // Model scanning
+  // Selected active voice details
+  const activeVoice = voices.find((v) => v.id === activeVoiceId) || voices[0];
+  const isOnlineVoice = Boolean(activeVoice?.isOnline);
+  const isCloneVoice = Boolean(
+    activeVoice &&
+      !isOnlineVoice &&
+      (activeVoice.origin === "clone" ||
+        activeVoice.source === "local_clone" ||
+        activeVoice.id.startsWith("clone_"))
+  );
+
+  // Model scanning (auto-rescan on install / modelsDir change)
   const [installedModels, setInstalledModels] = useState<ModelStatus[]>([]);
 
   useEffect(() => {
-    scanAiModels().then(setInstalledModels).catch(() => {});
-  }, []);
+    let cancelled = false;
+    const refresh = () => {
+      scanAiModels()
+        .then((list) => {
+          if (!cancelled) setInstalledModels(list);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const unsub = onAiModelsChanged(refresh);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [activeModel, activeVoiceId]);
 
-  const currentCaps = resolveLocalEngine(activeModel);
-  const currentModelStatus = installedModels.find(
-    (m) => m.id === currentCaps?.modelId || m.engine === currentCaps?.engine
-  );
-  const isCurrentModelInstalled = currentModelStatus ? currentModelStatus.installed : true;
+  const effectiveEngineSource = isCloneVoice
+    ? activeVoice?.engine || activeModel
+    : activeModel;
+  const currentCaps = isOnlineVoice ? null : resolveLocalEngine(effectiveEngineSource);
+  const currentModelStatus = currentCaps
+    ? installedModels.find(
+        (m) => m.id === currentCaps.modelId || m.engine === currentCaps.engine
+      )
+    : undefined;
+  const isCurrentModelInstalled =
+    isOnlineVoice || currentCaps?.preBundled
+      ? true
+      : currentModelStatus
+      ? Boolean(currentModelStatus.installed)
+      : true;
+
+  const selectedCloneOptionLabel = (() => {
+    const matched = CLONE_MODEL_OPTIONS.find(
+      (opt) => opt.engine === currentCaps?.engine || opt.modelId === currentCaps?.modelId
+    );
+    return matched ? matched.label : "OmniVoice";
+  })();
 
   // Load initial persisted settings
   const initialSettings = loadStoredTtsSettings();
@@ -228,6 +285,16 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
     }
   }, [effectiveExportSrt]);
 
+  useEffect(() => {
+    const handleAsrChanged = () => {
+      setSubtitleSettings(loadSubtitleSettings());
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_asr_model_changed", handleAsrChanged);
+      return () => window.removeEventListener("voxlab_asr_model_changed", handleAsrChanged);
+    }
+  }, []);
+
   const handleUpdateSubtitleSettings = (
     updates: Partial<{ aspectRatio: SubtitleAspectRatio; maxLines: SubtitleMaxLines }>
   ) => {
@@ -241,9 +308,6 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
     saveStoredTtsSettings({ exportSrt: enabled });
     onChangeExportSrt?.(enabled);
   };
-
-  // Selected active voice details
-  const activeVoice = voices.find((v) => v.id === activeVoiceId) || voices[0];
 
   // Reset voice settings (Speed, Pitch, Volume) - Section 7
   const handleResetSettings = () => {
@@ -356,6 +420,60 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
             </div>
           </div>
         </div>
+
+        {/* 2. MÔ HÌNH NHÂN BẢN (Shown for cloned voices so users can inspect & switch local clone engines) */}
+        {isCloneVoice && (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
+                {lang === "vi" ? "MÔ HÌNH NHÂN BẢN" : "CLONE MODEL"}
+              </label>
+              {installedModels.length > 0 && (
+                isCurrentModelInstalled ? (
+                  <span className="text-[10px] font-semibold text-emerald-500">
+                    {lang === "vi" ? "Đã cài đặt" : "Installed"}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      window.dispatchEvent(new CustomEvent("voxlab_open_settings_models"))
+                    }
+                    className="text-[10px] font-semibold text-amber-500 hover:underline cursor-pointer"
+                  >
+                    {lang === "vi" ? "Chưa cài · Tải mô hình →" : "Install model →"}
+                  </button>
+                )
+              )}
+            </div>
+            <select
+              value={selectedCloneOptionLabel}
+              onChange={(e) => onChangeModel?.(e.target.value)}
+              className="w-full h-[36px] bg-surface1 border border-borderDefault hover:border-accent/55 rounded-xl px-3 text-xs font-medium text-textPrimary focus:border-accent focus:outline-none cursor-pointer transition-colors"
+            >
+              {CLONE_MODEL_OPTIONS.map((opt) => {
+                const st = installedModels.find(
+                  (m) => m.id === opt.modelId || m.engine === opt.engine
+                );
+                const ready = installedModels.length === 0 || (st ? Boolean(st.installed) : true);
+                return (
+                  <option key={opt.modelId} value={opt.label}>
+                    {opt.label}
+                    {installedModels.length > 0
+                      ? ready
+                        ? lang === "vi"
+                          ? " · Đã cài ✓"
+                          : " · Installed ✓"
+                        : lang === "vi"
+                        ? " · Chưa cài"
+                        : " · Not installed"
+                      : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        )}
 
         {/* Section 5: Subtle Divider before CÀI ĐẶT */}
         <div className="border-t border-borderDefault/60 pt-1" />
@@ -638,9 +756,44 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                   </button>
                 </div>
 
-                {/* Subtitle Display Options (Aspect Ratio & Max Lines) when SRT export is ON */}
+                {/* Subtitle Display Options (Whisper Model, Aspect Ratio & Max Lines) when SRT export is ON */}
                 {effectiveExportSrt && (
                   <div className="mt-3 pt-3 border-t border-borderDefault/30 space-y-3 animate-in fade-in-50 duration-200">
+                    {/* Mô hình nhận dạng phụ đề (Whisper) */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="block text-textSecondary font-medium text-[11px]">
+                          {lang === "vi" ? "Mô hình phụ đề (Whisper)" : "Subtitle ASR Model"}
+                        </label>
+                      </div>
+                      <select
+                        value={normalizeWhisperModelId(subtitleSettings.whisperModel)}
+                        onChange={(e) => {
+                          const nextId = e.target.value;
+                          setSubtitleSettings((prev) => ({ ...prev, whisperModel: nextId as any }));
+                          applyAsrModelSwitch(nextId).catch(() => {});
+                        }}
+                        className="w-full h-[32px] bg-surface1 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
+                      >
+                        {WHISPER_ASR_OPTIONS.map((w) => {
+                          const st = installedModels.find((m) => m.id === w.fullId);
+                          const ready = installedModels.length === 0 || (st ? Boolean(st.installed) : false);
+                          return (
+                            <option key={w.id} value={w.id}>
+                              {w.label}
+                              {installedModels.length > 0
+                                ? ready
+                                  ? " ✓"
+                                  : lang === "vi"
+                                  ? " (Chưa cài)"
+                                  : " (Not installed)"
+                                : ""}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+
                     {/* Tỉ lệ khung hình */}
                     <div className="space-y-1.5">
                       <label className="block text-textSecondary font-medium text-[11px]">
@@ -806,27 +959,38 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                   </div>
                 </button>
               )
+            ) : !isCurrentModelInstalled ? (
+              /* State: Required Local Model Missing -> Actionable button to open Settings -> Models */
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(new CustomEvent("voxlab_open_settings_models"))
+                }
+                title={`Mô hình ${currentCaps?.displayName || activeModel} chưa được cài đặt. Nhấn để mở Cài đặt → Mô hình.`}
+                className="w-full h-[68px] px-4 rounded-xl text-xs font-semibold shadow-sm transition-all flex flex-col items-center justify-center gap-1 bg-amber-500/12 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/35 cursor-pointer active:scale-[0.98]"
+              >
+                <span>
+                  Chưa cài {currentCaps?.displayName || activeModel}
+                </span>
+                <span className="text-[11px] font-normal opacity-90">
+                  Nhấn để mở Cài đặt → Mô hình
+                </span>
+              </button>
             ) : (
               /* State: Idle -> Standard Action Button */
               <button
                 type="button"
                 onClick={onGenerateAudio}
-                disabled={canGenerate === false || !isCurrentModelInstalled}
-                title={
-                  !isCurrentModelInstalled
-                    ? "Model chưa được cài đặt trong thư mục models."
-                    : generateTooltip || t.tts.generateAudio
-                }
+                disabled={canGenerate === false}
+                title={generateTooltip || t.tts.generateAudio}
                 className={`w-full h-[68px] px-4 rounded-xl text-sm font-semibold shadow-md transition-all flex items-center justify-center gap-2 ${
-                  canGenerate === false || !isCurrentModelInstalled
+                  canGenerate === false
                     ? "bg-surface3 text-textMuted cursor-not-allowed border border-borderDefault/50"
                     : "bg-accent hover:bg-accentHover text-white cursor-pointer active:scale-[0.98] hover:shadow-lg hover:shadow-accent/20"
                 }`}
               >
                 <Sparkles className="w-4 h-4 fill-current" />
-                <span>
-                  {!isCurrentModelInstalled ? "Model chưa được cài" : t.tts.generateAudio}
-                </span>
+                <span>{t.tts.generateAudio}</span>
               </button>
             )}
           </div>

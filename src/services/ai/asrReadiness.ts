@@ -67,7 +67,7 @@ export async function checkAsrReadiness(
         return {
           id,
           fullId: m.id.startsWith("faster-whisper-") ? m.id : `faster-whisper-${m.id}`,
-          displayName: m.displayName || getFriendlyAsrName(id),
+          displayName: (m.displayName || getFriendlyAsrName(id)).replace(/\s*\(faster-whisper\)/i, ""),
           installed: Boolean(m.installed),
           missingFiles: m.missingFiles,
           path: m.path,
@@ -138,4 +138,7 @@ export async function applyAsrModelSwitch(targetModelId: string): Promise<void> 
   const canonical = normalizeWhisperModelId(targetModelId);
   saveSubtitleSettings({ whisperModel: canonical });
   await syncAsrModelToAiRuntime(canonical);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("voxlab_asr_model_changed", { detail: canonical }));
+  }
 }
