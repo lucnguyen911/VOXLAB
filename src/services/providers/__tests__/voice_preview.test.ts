@@ -2,10 +2,11 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { providerRegistry } from "../index";
 import { edgeTtsProvider } from "../edgeProvider";
-import { googleTranslateTtsProvider } from "../googleProvider";
+import { googleTranslateTtsProvider, ensureCanonicalGoogleWav } from "../googleProvider";
 import { localTtsProvider } from "../localProvider";
 import { previewAudioPlayer } from "../audioPlayer";
 import { VoiceProfile } from "../../../types/ui";
+import { saveGeminiKeyEntries } from "../../translation";
 
 describe("Voice Preview Routing and Architecture Tests", () => {
   beforeEach(() => {
@@ -59,6 +60,35 @@ describe("Voice Preview Routing and Architecture Tests", () => {
       assert.equal(result.unconfigured, true);
       assert.equal(result.errorCode, "AUTH_REQUIRED");
       assert.equal(result.error, "Chưa cấu hình Google TTS");
+    });
+
+    it("resolves API key from Google Gemini vault and builds valid RIFF WAV with non-zero duration", async () => {
+      await saveGeminiKeyEntries([
+        {
+          id: "gemini_key_primary",
+          role: "primary",
+          label: "API Key chính",
+          apiKey: "AIzaSyTestSharedGeminiKeyForGoogleTts123",
+        },
+      ]);
+      try {
+        assert.equal(
+          googleTranslateTtsProvider.getApiKey(),
+          "AIzaSyTestSharedGeminiKeyForGoogleTts123"
+        );
+        assert.equal(googleTranslateTtsProvider.availability(), "available");
+      } finally {
+        await saveGeminiKeyEntries([]);
+      }
+      assert.equal(googleTranslateTtsProvider.getApiKey(), null);
+
+      // 1.5 seconds of 24kHz 16-bit mono PCM = 24000 * 2 * 1.5 = 72000 bytes
+      const pcm = new Uint8Array(72000);
+      const wrapped = ensureCanonicalGoogleWav(pcm, 24000);
+      assert.equal(wrapped.wavBytes.length, 72044);
+      assert.equal(String.fromCharCode(...wrapped.wavBytes.slice(0, 4)), "RIFF");
+      assert.equal(wrapped.durationSec, 1.5);
+      assert.equal(wrapped.sampleRate, 24000);
     });
   });
 

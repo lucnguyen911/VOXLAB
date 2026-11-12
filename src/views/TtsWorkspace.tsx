@@ -19,6 +19,7 @@ import { useI18n } from "../i18n/context";
 import { batchQueueExecutor } from "../services/concurrencyExecutor";
 import {
   createEffectiveVoiceSnapshot,
+  resolveEffectiveActiveModel,
 } from "../services/providers";
 import { TextNormalizationModal } from "../components/modals/TextNormalizationModal";
 import { PronunciationManagerModal } from "../components/modals/PronunciationManagerModal";
@@ -386,7 +387,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     target: ChunkItem,
     res: { durationSec: number; blobUrl: string; outputPath: string },
     voiceSnapshot: EffectiveVoiceSnapshot,
-    firstFinishedCallback?: (readyChunk: ChunkItem) => void
+    firstFinishedCallback?: (readyChunk: ChunkItem) => void,
+    deferQc = false
   ): Promise<ChunkItem> => {
     const nextRevision = (target.audioRevision ?? 0) + 1;
     const baseChunk: ChunkItem = {
@@ -399,7 +401,19 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       effectiveVoiceSnapshot: voiceSnapshot,
       acknowledgedAt: undefined,
       acknowledgedAudioSignature: undefined,
+      qualityReview: undefined,
     };
+
+    if (deferQc) {
+      setChunks((prev) =>
+        prev.map((c) =>
+          c.id === target.id && c.text === target.text ? baseChunk : c
+        )
+      );
+      firstFinishedCallback?.(baseChunk);
+      return baseChunk;
+    }
+
     const audioSig = getChunkAudioSignature(baseChunk);
     const checkingChunk: ChunkItem = {
       ...baseChunk,
@@ -494,20 +508,26 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
     const matchedActiveVoice = availableVoices.find((v) => v.id === activeVoiceId);
-    const effectiveActiveModel = matchedActiveVoice?.engine || activeModel;
+    const effectiveActiveModel = resolveEffectiveActiveModel(matchedActiveVoice, activeModel);
     const storedSettings = loadStoredTtsSettings();
 
-    // Requirement 7: By default use target's existing snapshot if it matches activeVoiceId, or create new from active voice
-    const snapshotToUse = (target.effectiveVoiceSnapshot && target.effectiveVoiceSnapshot.voiceId === activeVoiceId)
-      ? target.effectiveVoiceSnapshot
-      : createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
+    // Always construct fresh snapshot from current voice/model/speed settings when available
+    const snapshotToUse = matchedActiveVoice
+      ? createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
+          activeModel: effectiveActiveModel,
+          speed: storedSettings.speed,
+          pitch: storedSettings.pitch,
+          volume: storedSettings.volume,
+        })
+      : target.effectiveVoiceSnapshot ||
+        createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
           activeModel: effectiveActiveModel,
           speed: storedSettings.speed,
           pitch: storedSettings.pitch,
           volume: storedSettings.volume,
         });
 
-    const targetEngineOrModel = snapshotToUse.modelId || snapshotToUse.engine || effectiveActiveModel;
+    const targetEngineOrModel = snapshotToUse.modelId || snapshotToUse.engine || effectiveActiveModel || activeModel;
     const singleAdvancedSettings = getEngineAdvancedSettings(targetEngineOrModel);
 
     setChunks((prev) =>
@@ -568,11 +588,13 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     setExpandedIssuesChunks((prev) => ({ ...prev, [id]: !prev[id] }));
   }, []);
 
+  const isOnlineBatchGeneratingRef = useRef(false);
+
   // Automated Background Quality Validation for Outdated / Unvalidated Chunks
   // Triggers when chunks are ready with audio, but review is outdated or missing (e.g. validator version bump or ASR model change)
   // Strictly sequential (concurrency 1), guarded against infinite loops and stale audio races.
   useEffect(() => {
-    if (isGenerating) return;
+    if (isGenerating && !isOnlineBatchGeneratingRef.current) return;
     if (!isAsrReady) return;
     // Enforce global concurrency = 1 across the auto-validation queue so multiple chunks never run Whisper concurrently
     if (inFlightValidationsRef.current.size > 0) return;
@@ -723,6 +745,23 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     onCancel?.();
   };
 
+  const buildBatchVoiceSnapshot = (): EffectiveVoiceSnapshot | null => {
+    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const matchedVoice = availableVoices.find((v) => v.id === activeVoiceId);
+    const storedSettings = loadStoredTtsSettings();
+    try {
+      return createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
+        activeModel: resolveEffectiveActiveModel(matchedVoice, activeModel),
+        speed: storedSettings.speed,
+        pitch: storedSettings.pitch,
+        volume: storedSettings.volume,
+      });
+    } catch (err: any) {
+      alert(err?.message || "Không thể khởi tạo cấu hình giọng đọc đã chọn.");
+      return null;
+    }
+  };
+
   // Batch regenerate all invalid chunks using real concurrency executor
   const handleRegenerateInvalidChunks = async () => {
     if (invalidChunks.length === 0 || isGenerating) return;
@@ -736,27 +775,22 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       return;
     }
 
-    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
-    const storedSettings = loadStoredTtsSettings();
-
-    // Requirement 2: Single source of truth immutable snapshot for entire regeneration batch
-    const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-      activeModel: availableVoices.find((v) => v.id === activeVoiceId)?.engine || activeModel,
-      speed: storedSettings.speed,
-      pitch: storedSettings.pitch,
-      volume: storedSettings.volume,
-    });
+    const batchVoiceSnapshot = buildBatchVoiceSnapshot();
+    if (!batchVoiceSnapshot) return;
     const batchEngineOrModel = batchVoiceSnapshot.modelId || batchVoiceSnapshot.engine || activeModel;
     const batchAdvancedSettings = getEngineAdvancedSettings(batchEngineOrModel);
+    const isOnlineBatch = batchVoiceSnapshot.provider === "edge" || batchVoiceSnapshot.provider === "google_translate";
 
     setCompletedCount(0);
     setSkippedCount(0);
     setIsCompletedState(false);
     setGenerationError(null);
     batchQueueExecutor.reset();
+    isOnlineBatchGeneratingRef.current = isOnlineBatch;
     onTriggerJob();
 
     const targetIds = invalidChunks.map((c) => c.id);
+    const deferQc = targetIds.length > 1;
     setBatchTotal(targetIds.length);
     setPendingItems(targetIds.length);
 
@@ -765,7 +799,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency: 1,
+          concurrency: isOnlineBatch ? 3 : 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -780,12 +814,18 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               )
             );
             const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-            await processSynthesizedChunkWithQc(target, res, batchVoiceSnapshot, (readyChunk) => {
-              if (!firstFinishedChunk) {
-                firstFinishedChunk = readyChunk;
-                onPlayChunk?.(readyChunk);
-              }
-            });
+            await processSynthesizedChunkWithQc(
+              target,
+              res,
+              batchVoiceSnapshot,
+              (readyChunk) => {
+                if (!firstFinishedChunk) {
+                  firstFinishedChunk = readyChunk;
+                  onPlayChunk?.(readyChunk);
+                }
+              },
+              deferQc
+            );
           },
           onItemCompleted: (_item, _idx, completed, total) => {
             setCompletedCount(completed);
@@ -811,6 +851,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     } catch (batchErr) {
       console.error("Selective regeneration error:", batchErr);
     } finally {
+      isOnlineBatchGeneratingRef.current = false;
       setProgressStage("");
       onJobComplete?.();
     }
@@ -829,26 +870,22 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       return;
     }
 
-    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
-    const storedSettings = loadStoredTtsSettings();
-
-    const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-      activeModel: availableVoices.find((v) => v.id === activeVoiceId)?.engine || activeModel,
-      speed: storedSettings.speed,
-      pitch: storedSettings.pitch,
-      volume: storedSettings.volume,
-    });
+    const batchVoiceSnapshot = buildBatchVoiceSnapshot();
+    if (!batchVoiceSnapshot) return;
     const batchEngineOrModel = batchVoiceSnapshot.modelId || batchVoiceSnapshot.engine || activeModel;
     const batchAdvancedSettings = getEngineAdvancedSettings(batchEngineOrModel);
+    const isOnlineBatch = batchVoiceSnapshot.provider === "edge" || batchVoiceSnapshot.provider === "google_translate";
 
     setCompletedCount(0);
     setSkippedCount(0);
     setIsCompletedState(false);
     setGenerationError(null);
     batchQueueExecutor.reset();
+    isOnlineBatchGeneratingRef.current = isOnlineBatch;
     onTriggerJob();
 
     const targetIds = errorChunks.map((c) => c.id);
+    const deferQc = targetIds.length > 1;
     setBatchTotal(targetIds.length);
     setPendingItems(targetIds.length);
 
@@ -857,7 +894,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency: 1,
+          concurrency: isOnlineBatch ? 3 : 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -872,12 +909,18 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               )
             );
             const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-            await processSynthesizedChunkWithQc(target, res, batchVoiceSnapshot, (readyChunk) => {
-              if (!firstFinishedChunk) {
-                firstFinishedChunk = readyChunk;
-                onPlayChunk?.(readyChunk);
-              }
-            });
+            await processSynthesizedChunkWithQc(
+              target,
+              res,
+              batchVoiceSnapshot,
+              (readyChunk) => {
+                if (!firstFinishedChunk) {
+                  firstFinishedChunk = readyChunk;
+                  onPlayChunk?.(readyChunk);
+                }
+              },
+              deferQc
+            );
           },
           onItemCompleted: (_item, _idx, completed, total) => {
             setCompletedCount(completed);
@@ -903,6 +946,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     } catch (batchErr) {
       console.error("Error chunks regeneration error:", batchErr);
     } finally {
+      isOnlineBatchGeneratingRef.current = false;
       setProgressStage("");
       onJobComplete?.();
     }
@@ -921,26 +965,22 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       return;
     }
 
-    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
-    const storedSettings = loadStoredTtsSettings();
-
-    const batchVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-      activeModel: availableVoices.find((v) => v.id === activeVoiceId)?.engine || activeModel,
-      speed: storedSettings.speed,
-      pitch: storedSettings.pitch,
-      volume: storedSettings.volume,
-    });
+    const batchVoiceSnapshot = buildBatchVoiceSnapshot();
+    if (!batchVoiceSnapshot) return;
     const batchEngineOrModel = batchVoiceSnapshot.modelId || batchVoiceSnapshot.engine || activeModel;
     const batchAdvancedSettings = getEngineAdvancedSettings(batchEngineOrModel);
+    const isOnlineBatch = batchVoiceSnapshot.provider === "edge" || batchVoiceSnapshot.provider === "google_translate";
 
     setCompletedCount(0);
     setSkippedCount(0);
     setIsCompletedState(false);
     setGenerationError(null);
     batchQueueExecutor.reset();
+    isOnlineBatchGeneratingRef.current = isOnlineBatch;
     onTriggerJob();
 
     const targetIds = warningChunks.map((c) => c.id);
+    const deferQc = targetIds.length > 1;
     setBatchTotal(targetIds.length);
     setPendingItems(targetIds.length);
 
@@ -949,7 +989,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency: 1,
+          concurrency: isOnlineBatch ? 3 : 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -964,12 +1004,18 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               )
             );
             const res = await synthesizeChunkCore(target, batchVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-            await processSynthesizedChunkWithQc(target, res, batchVoiceSnapshot, (readyChunk) => {
-              if (!firstFinishedChunk) {
-                firstFinishedChunk = readyChunk;
-                onPlayChunk?.(readyChunk);
-              }
-            });
+            await processSynthesizedChunkWithQc(
+              target,
+              res,
+              batchVoiceSnapshot,
+              (readyChunk) => {
+                if (!firstFinishedChunk) {
+                  firstFinishedChunk = readyChunk;
+                  onPlayChunk?.(readyChunk);
+                }
+              },
+              deferQc
+            );
           },
           onItemCompleted: (_item, _idx, completed, total) => {
             setCompletedCount(completed);
@@ -995,6 +1041,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     } catch (batchErr) {
       console.error("Warning chunks regeneration error:", batchErr);
     } finally {
+      isOnlineBatchGeneratingRef.current = false;
       setProgressStage("");
       onJobComplete?.();
     }
@@ -1016,18 +1063,13 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       return;
     }
 
-    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
-    const storedSettings = loadStoredTtsSettings();
-
     // Requirement 2: Single source of truth immutable snapshot for entire generation run
-    const generationVoiceSnapshot = createEffectiveVoiceSnapshot(activeVoiceId, availableVoices, {
-      activeModel: availableVoices.find((v) => v.id === activeVoiceId)?.engine || activeModel,
-      speed: storedSettings.speed,
-      pitch: storedSettings.pitch,
-      volume: storedSettings.volume,
-    });
+    const generationVoiceSnapshot = buildBatchVoiceSnapshot();
+    if (!generationVoiceSnapshot) return;
     const batchEngineOrModel = generationVoiceSnapshot.modelId || generationVoiceSnapshot.engine || activeModel;
     const batchAdvancedSettings = getEngineAdvancedSettings(batchEngineOrModel);
+    const isOnlineBatch =
+      generationVoiceSnapshot.provider === "edge" || generationVoiceSnapshot.provider === "google_translate";
 
     if (validCustom) {
       setChunks(validCustom);
@@ -1037,10 +1079,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     setIsCompletedState(false);
     setGenerationError(null);
     batchQueueExecutor.reset();
+    isOnlineBatchGeneratingRef.current = isOnlineBatch;
     onTriggerJob();
 
     let firstFinishedChunk: ChunkItem | null = null;
     const targetIds = targetChunks.map((c) => c.id);
+    const deferQc = targetIds.length > 1;
     setBatchTotal(targetIds.length);
     setPendingItems(targetIds.length);
 
@@ -1048,7 +1092,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency: 1,
+          concurrency: isOnlineBatch ? 3 : 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -1063,12 +1107,18 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               )
             );
             const res = await synthesizeChunkCore(target, generationVoiceSnapshot, (s) => setProgressStage(s), batchAdvancedSettings);
-            await processSynthesizedChunkWithQc(target, res, generationVoiceSnapshot, (readyChunk) => {
-              if (!firstFinishedChunk) {
-                firstFinishedChunk = readyChunk;
-                onPlayChunk?.(readyChunk);
-              }
-            });
+            await processSynthesizedChunkWithQc(
+              target,
+              res,
+              generationVoiceSnapshot,
+              (readyChunk) => {
+                if (!firstFinishedChunk) {
+                  firstFinishedChunk = readyChunk;
+                  onPlayChunk?.(readyChunk);
+                }
+              },
+              deferQc
+            );
           },
           onItemCompleted: (_item, _idx, completed, total) => {
             setCompletedCount(completed);
@@ -1094,6 +1144,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     } catch (batchErr) {
       console.error("Batch synthesis error:", batchErr);
     } finally {
+      isOnlineBatchGeneratingRef.current = false;
       setProgressStage("");
       onJobComplete?.();
     }
@@ -1472,10 +1523,14 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             <div className="flex items-center gap-2 flex-shrink-0">
               {/* Error banner if runtime generation error occurred */}
               {generationError && (
-                <div className="flex items-center gap-2 px-2.5 py-1 bg-danger/15 rounded-md border border-danger/30 text-xs shadow-2xs">
+                <div
+                  className="flex items-center gap-2 px-2.5 py-1 bg-danger/15 rounded-md border border-danger/30 text-xs shadow-2xs max-w-[440px]"
+                  title={String(generationError.error?.message || generationError.error || "")}
+                >
                   <AlertCircle className="w-3.5 h-3.5 text-danger flex-shrink-0" />
-                  <span className="font-medium text-danger whitespace-nowrap">
-                    Lỗi khi tạo đoạn {generationError.chunkIndex + 1}/{effectiveTotal}
+                  <span className="font-medium text-danger truncate">
+                    Lỗi đoạn {generationError.chunkIndex + 1}/{effectiveTotal}
+                    {generationError.error?.message ? `: ${generationError.error.message}` : ""}
                   </span>
                   <button
                     type="button"

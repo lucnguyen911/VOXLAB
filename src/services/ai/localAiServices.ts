@@ -152,6 +152,7 @@ function joinPath(dir: string, name: string): string {
 }
 
 export class LocalAiServices {
+  static readonly autoRefTranscriptCache = new Map<string, string>();
   private loadedTts: { runtime: AiRuntime; key: string } | null = null;
   private loadedAsrKey: string | null = null;
   private active: { runtime: AiRuntime; requestId: string } | null = null;
@@ -177,6 +178,12 @@ export class LocalAiServices {
     language?: string;
   } {
     const resolvedRef = this.resolveVoice(voiceId || "");
+    if (typeof voiceId === "string" && voiceId.startsWith("clone_") && !resolvedRef?.refAudioPath) {
+      throw new AiError(
+        "INPUT_NOT_FOUND",
+        "Không tìm thấy tệp âm thanh mẫu của giọng nhân bản đã chọn. Vui lòng chọn lại giọng nhân bản hợp lệ."
+      );
+    }
     const isKokoroVoiceId =
       typeof voiceId === "string" &&
       (voiceId.startsWith("kokoro_") || /^[ab][fm]_[a-z0-9_]+$/i.test(voiceId));
@@ -190,7 +197,8 @@ export class LocalAiServices {
     const advanced = advancedSettings || getEngineAdvancedSettings(caps.engine);
     const xVectorOnly = Boolean(advanced?.x_vector_only_mode ?? advanced?.xVectorOnlyMode);
     const ref = caps.supportsVoiceClone ? resolvedRef : null;
-    const lang = language || ref?.language || detectTextLanguage(text);
+    const isCloneVoiceId = typeof voiceId === "string" && voiceId.startsWith("clone_");
+    const lang = language || detectTextLanguage(text) || (isCloneVoiceId ? undefined : ref?.language);
     const check = checkEngineSupport(caps, {
       language: lang,
       hasReferenceAudio: Boolean(ref?.refAudioPath),
@@ -273,8 +281,63 @@ export class LocalAiServices {
     if (req.sampleRate !== undefined) params.sampleRate = req.sampleRate;
 
     const advanced = req.advancedSettings || getEngineAdvancedSettings(caps.engine);
-    if (advanced && Object.keys(advanced).length > 0) {
-      params.advancedSettings = advanced;
+    const effectiveAdvanced: Record<string, unknown> = advanced ? { ...advanced } : {};
+
+    // Auto-transcribe reference audio via `core` (Faster-Whisper) when Qwen ICL mode lacks refText,
+    // because the isolated `qwen` runtime does not bundle `faster-whisper`.
+    const isQwenIclWithoutTranscript =
+      caps.engine === "qwen" &&
+      Boolean(params.refAudioPath) &&
+      !String(params.refText || "").trim() &&
+      !Boolean(effectiveAdvanced.x_vector_only_mode ?? effectiveAdvanced.xVectorOnlyMode);
+
+    if (isQwenIclWithoutTranscript) {
+      const refPathKey = String(params.refAudioPath);
+      const cachedTranscript = LocalAiServices.autoRefTranscriptCache.get(refPathKey);
+      if (cachedTranscript) {
+        params.refText = cachedTranscript;
+      } else {
+        try {
+          const tr = await this.transcribe(
+            refPathKey,
+            ref?.language || "auto",
+            false,
+            req.onProgress
+          );
+          // Release ASR VRAM on `core` before loading Qwen3-TTS 1.7B on `qwen`
+          try {
+            await this.call("core", "asr.unload", {});
+            this.loadedAsrKey = null;
+          } catch {
+            // ignore unload error
+          }
+          const cleaned = (tr?.segments || [])
+            .map((s) => (s.text || "").trim())
+            .filter(Boolean)
+            .join(" ")
+            .trim();
+          if (cleaned) {
+            params.refText = cleaned;
+            LocalAiServices.autoRefTranscriptCache.set(refPathKey, cleaned);
+            if (req.voiceId && req.voiceId.startsWith("clone_")) {
+              void import("./cloneVoiceRegistry")
+                .then(({ updateCloneVoiceMetadata }) =>
+                  updateCloneVoiceMetadata(req.voiceId!, { refText: cleaned })
+                )
+                .catch(() => {});
+            }
+          } else {
+            effectiveAdvanced.x_vector_only_mode = true;
+          }
+        } catch {
+          // If Faster-Whisper model is not installed locally, degrade gracefully to Qwen speaker x-vector mode
+          effectiveAdvanced.x_vector_only_mode = true;
+        }
+      }
+    }
+
+    if (Object.keys(effectiveAdvanced).length > 0) {
+      params.advancedSettings = effectiveAdvanced;
     }
 
     const effRules = req.pronunciationRules ?? getEffectiveRules(req.projectId);

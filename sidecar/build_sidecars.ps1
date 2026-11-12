@@ -374,11 +374,30 @@ foreach ($rt in $Runtimes) {
     $launcherPath = Join-Path $stageDir "run_voxlab_sidecar.py"
     Set-Content -Path $launcherPath -Encoding UTF8 -Value (@(
         "from __future__ import annotations"
-        "import argparse, asyncio, ctypes, ctypes.wintypes, dataclasses, datetime, difflib"
-        "import email.utils, faulthandler, functools, gc, hashlib, hmac, importlib, importlib.util"
-        "import inspect, io, json, logging, marshal, math, msvcrt, os, pathlib, platform, re, shutil"
-        "import ssl, stat, struct, subprocess, sys, tempfile, threading, time, typing"
-        "import unicodedata, urllib.error, urllib.parse, urllib.request, uuid, wave, winreg, zlib"
+        "import abc, argparse, array, ast, asyncio, atexit, base64, bdb, binascii, bisect, bz2"
+        "import calendar, cmd, code, codecs, codeop, collections, collections.abc, colorsys, compileall"
+        "import concurrent.futures, configparser, contextlib, contextvars, copy, copyreg, cProfile, csv"
+        "import ctypes, ctypes.util, ctypes.wintypes, dataclasses, datetime, decimal, difflib, dis, doctest"
+        "import email, email.message, email.mime.multipart, email.mime.text, email.parser, email.utils"
+        "import encodings, enum, errno, faulthandler, filecmp, fileinput, fnmatch, fractions, ftplib"
+        "import functools, gc, genericpath, getopt, getpass, gettext, glob, graphlib, gzip, hashlib"
+        "import heapq, hmac, html, html.entities, html.parser, http, http.client, http.cookiejar"
+        "import http.cookies, http.server, imaplib, importlib, importlib.abc, importlib.machinery"
+        "import importlib.metadata, importlib.resources, importlib.util, inspect, io, ipaddress, itertools"
+        "import json, keyword, linecache, locale, logging, logging.handlers, lzma, mailbox, marshal"
+        "import math, mimetypes, mmap, modulefinder, multiprocessing, multiprocessing.dummy"
+        "import multiprocessing.pool, multiprocessing.shared_memory, msvcrt, netrc, ntpath, nturl2path"
+        "import numbers, operator, optparse, os, pathlib, pdb, pickle, pickletools, pkgutil, platform"
+        "import plistlib, poplib, posixpath, pprint, profile, pstats, py_compile, pyclbr, pydoc, queue"
+        "import quopri, random, re, reprlib, rlcompleter, runpy, sched, secrets, select, selectors"
+        "import shelve, shlex, shutil, signal, site, smtplib, socket, socketserver, sqlite3, ssl"
+        "import stat, statistics, string, stringprep, struct, subprocess, symtable, sys, sysconfig"
+        "import tabnanny, tarfile, tempfile, textwrap, threading, time, timeit, tokenize, token"
+        "import tomllib, trace, traceback, tracemalloc, types, typing, unicodedata, unittest"
+        "import unittest.mock, urllib, urllib.error, urllib.parse, urllib.request, urllib.response"
+        "import urllib.robotparser, uuid, venv, warnings, wave, weakref, webbrowser, winreg, winsound"
+        "import wsgiref, xml, xml.dom, xml.dom.minidom, xml.etree, xml.etree.ElementTree"
+        "import xml.parsers.expat, xml.sax, xmlrpc, xmlrpc.client, zipapp, zipfile, zipimport, zlib, zoneinfo"
         ""
         "if False:"
         "    import voxlab_sidecar"
@@ -496,6 +515,27 @@ foreach ($rt in $Runtimes) {
     $builtExe = Join-Path $ResolvedOutput "$distName\$distName.exe"
     if (-not (Test-Path $builtExe)) {
         throw "Failed to produce expected sidecar executable at $builtExe"
+    }
+
+    # Ensure Python Stable ABI (python3.dll) and VC++ runtime DLLs are present in `_internal`
+    # so PyO3 abi3 wheels (_safetensors_rust, tokenizers, _pydantic_core) and C++ wheels load cleanly
+    $internalDir = Join-Path $ResolvedOutput "$distName\_internal"
+    $pyBasePrefix = (& $pythonExe -c "import sys; print(sys.base_prefix)").Trim()
+    $dllSearchRoots = @($pyBasePrefix, "$env:SystemRoot\System32")
+    foreach ($reqDll in @("python3.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll")) {
+        $dstDll = Join-Path $internalDir $reqDll
+        if (-not (Test-Path $dstDll)) {
+            foreach ($sRoot in $dllSearchRoots) {
+                $candDll = Join-Path $sRoot $reqDll
+                if ($sRoot -and (Test-Path $candDll)) {
+                    Copy-Item -Force $candDll $dstDll
+                    break
+                }
+            }
+        }
+    }
+    if (-not (Test-Path (Join-Path $internalDir "python3.dll"))) {
+        throw "CRITICAL PACKAGING ERROR: python3.dll missing from $internalDir (required for abi3 extensions)"
     }
 
     if (-not $SkipObfuscationForDev -and (Test-Path $stageVaultDir)) {

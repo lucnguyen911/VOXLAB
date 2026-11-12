@@ -161,9 +161,12 @@ export function resolvePresetVoiceReference(voiceId: string, appDataDir?: string
  * Unified resolver: resolves cloned voices first, then preset system voices, then default fallback.
  */
 export function resolveUnifiedVoiceReference(voiceId: string, appDataDir?: string): VoiceReference | null {
-  // 1. Cloned voice registry takes precedence
+  // 1. Cloned voice registry takes precedence; orphaned clone_* IDs never silently fall back to default_local
   const cloneRef = resolveCloneVoiceReference(voiceId);
   if (cloneRef) return cloneRef;
+  if (typeof voiceId === "string" && voiceId.startsWith("clone_")) {
+    return null;
+  }
 
   // 2. Preset system voice
   const presetRef = resolvePresetVoiceReference(voiceId, appDataDir);

@@ -41,7 +41,7 @@ import { BottomAudioPlayer, ActiveAudioTrack } from "../components/layout/Bottom
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { stripPauseTokens } from "../services/pause";
 import { sanitizePunctuationPauses } from "../services/pause/punctuationPause";
-import { createEffectiveVoiceSnapshot } from "../services/providers";
+import { createEffectiveVoiceSnapshot, resolveEffectiveActiveModel } from "../services/providers";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getEffectiveRules, prepareSpokenText } from "../services/pronunciation";
 import {
@@ -416,7 +416,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     const matchedVoice = availableVoices.find((v) => v.id === voiceId);
 
     const snapshot = createEffectiveVoiceSnapshot(voiceId, availableVoices, {
-      activeModel: matchedVoice?.engine || settings.model || "Omni Voice",
+      activeModel: resolveEffectiveActiveModel(matchedVoice, settings.model || "Omni Voice"),
       speed,
       pitch,
       volume,

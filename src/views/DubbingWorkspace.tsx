@@ -80,7 +80,7 @@ import {
 } from "../services/dubbing/freeNarrationScript";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import { useI18n } from "../i18n/context";
-import { createEffectiveVoiceSnapshot } from "../services/providers";
+import { createEffectiveVoiceSnapshot, resolveEffectiveActiveModel } from "../services/providers";
 import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
 import { recordCompletedJobToHistory } from "../services/history/historyManager";
@@ -1239,14 +1239,14 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     setErrorMessage("");
 
     const matchedVoice = voices.find((v) => v.id === selectedVoiceId);
-    const effectiveModel = matchedVoice?.engine || selectedModel;
+    const effectiveModel = resolveEffectiveActiveModel(matchedVoice, selectedModel);
     const snapshot = createEffectiveVoiceSnapshot(selectedVoiceId, voices, {
       activeModel: effectiveModel,
       speed,
       pitch,
       volume,
     });
-    const advancedSettings = getEngineAdvancedSettings(snapshot.modelId || snapshot.engine || effectiveModel);
+    const advancedSettings = getEngineAdvancedSettings(snapshot.modelId || snapshot.engine || effectiveModel || selectedModel);
 
     const activeGroups =
       speechGroups.length > 0
@@ -1715,13 +1715,15 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
     });
 
     try {
+      const matchedSingleVoice = voices.find((v) => v.id === selectedVoiceId);
+      const effectiveSingleModel = resolveEffectiveActiveModel(matchedSingleVoice, selectedModel);
       const snapshot = createEffectiveVoiceSnapshot(selectedVoiceId, voices, {
-        activeModel: selectedModel,
+        activeModel: effectiveSingleModel,
         speed,
         pitch,
         volume,
       });
-      const advancedSettings = getEngineAdvancedSettings(selectedModel);
+      const advancedSettings = getEngineAdvancedSettings(snapshot.modelId || snapshot.engine || effectiveSingleModel || selectedModel);
 
       const job: DubbingSynthesisJob = {
         originalCue: primaryOrig,

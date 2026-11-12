@@ -256,6 +256,7 @@ fn generate_obfuscated_constants() {
   ],
   "omnivoice_leaf": "omnivoice==0.2.1",
   "chatterbox_deps": [
+    "setuptools<81",
     "numpy==1.26.4",
     "soundfile>=0.13.0",
     "scipy>=1.13.0",

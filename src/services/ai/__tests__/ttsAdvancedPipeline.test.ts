@@ -325,4 +325,65 @@ describe("Global Advanced TTS Settings - Pipeline Transmission & Snapshot Freeze
     assert.equal(call.params.refText, "Reference transcript provided by user");
     assert.equal((call.params.advancedSettings as any).x_vector_only_mode, false);
   });
+
+  it("forwards non-1.0 speed for Chatterbox Turbo and Qwen3-TTS", async () => {
+    const resolveVoice = (id: string) =>
+      id === "clone_matt"
+        ? { refAudioPath: "C:/voices/matt.wav", refText: "Hello there", language: "en" }
+        : null;
+    const { ai, backend } = makeTestAi({}, resolveVoice);
+
+    await ai.synthesize({
+      model: "chatterbox-turbo",
+      voiceId: "clone_matt",
+      text: "Testing Chatterbox at 0.95x speed",
+      outputPath: "cb_speed.wav",
+      speed: 0.95,
+    });
+
+    await ai.synthesize({
+      model: "qwen3-tts-1.7b-base",
+      voiceId: "clone_matt",
+      text: "Testing Qwen at 1.15x speed",
+      outputPath: "qwen_speed.wav",
+      speed: 1.15,
+    });
+
+    const synthCalls = backend.calls.filter((c) => c.method === "tts.synthesize");
+    assert.equal(synthCalls.length, 2);
+    assert.equal(synthCalls[0].params.engine, "chatterbox");
+    assert.equal(synthCalls[0].params.speed, 0.95);
+    assert.equal(synthCalls[1].params.engine, "qwen");
+    assert.equal(synthCalls[1].params.speed, 1.15);
+  });
+
+  it("auto-transcribes missing refText on core runtime before synthesizing Qwen ICL clone", async () => {
+    const resolveVoice = (id: string) =>
+      id === "clone_no_txt"
+        ? { refAudioPath: "C:/voices/matt_untranscribed.wav" }
+        : null;
+    const { ai, backend } = makeTestAi(
+      {
+        asrSegments: [{ id: 0, startSec: 0, endSec: 8.5, text: "Let me paint you a picture." }],
+      },
+      resolveVoice
+    );
+
+    await ai.synthesize({
+      model: "qwen3-tts-1.7b-base",
+      voiceId: "clone_no_txt",
+      text: "Right now across America, millions of retirees face a choice.",
+      outputPath: "qwen_auto_txt.wav",
+      speed: 0.95,
+      advancedSettings: { x_vector_only_mode: false },
+    });
+
+    const asrCall = backend.calls.find((c) => c.method === "asr.transcribe");
+    assert.ok(asrCall, "Expected core asr.transcribe to auto-transcribe clone reference");
+    const synthCall = backend.calls.find((c) => c.method === "tts.synthesize");
+    assert.ok(synthCall);
+    assert.equal(synthCall.params.engine, "qwen");
+    assert.equal(synthCall.params.refText, "Let me paint you a picture.");
+    assert.equal(synthCall.params.speed, 0.95);
+  });
 });

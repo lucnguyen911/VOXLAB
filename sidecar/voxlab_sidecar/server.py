@@ -52,8 +52,10 @@ class Server:
         self._require_auth = require_auth
         self._authenticated = not self._require_auth
         self._heavy: dict[str, Handler] = {}
+        self._io: dict[str, Handler] = {}
         self._light: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
         self._active: RequestContext | None = None
+        self._io_active: dict[str, RequestContext] = {}
         self._active_lock = threading.Lock()
         self._worker: threading.Thread | None = None
         self._running = True
@@ -67,6 +69,9 @@ class Server:
 
     def register_heavy(self, method: str, handler: Handler) -> None:
         self._heavy[method] = handler
+
+    def register_io(self, method: str, handler: Handler) -> None:
+        self._io[method] = handler
 
     def register_light(self, method: str, handler: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         self._light[method] = handler
@@ -109,6 +114,8 @@ class Server:
             self.writer.ok(req_id, {"cancelRequested": self._cancel(params.get("target"))})
         elif method in self._light:
             self._run_inline(req_id, method, params)
+        elif method in self._io:
+            self._dispatch_io(req_id, method, params)
         elif method in self._heavy:
             self._dispatch(req_id, method, params)
         else:
@@ -128,7 +135,32 @@ class Server:
             if self._active is not None and self._active.req_id == target:
                 self._active.cancel()
                 return True
+            if isinstance(target, str) and target in self._io_active:
+                self._io_active[target].cancel()
+                return True
         return False
+
+    def _dispatch_io(self, req_id: str, method: str, params: dict[str, Any]) -> None:
+        ctx = RequestContext(req_id, self.writer)
+        with self._active_lock:
+            self._io_active[req_id] = ctx
+        t = threading.Thread(target=self._run_io, args=(ctx, method, params), daemon=True)
+        t.start()
+
+    def _run_io(self, ctx: RequestContext, method: str, params: dict[str, Any]) -> None:
+        try:
+            result = self._io[method](method, params, ctx)
+            if ctx.cancelled:
+                raise Cancelled()
+            self.writer.ok(ctx.req_id, result)
+        except SidecarError as e:
+            self.writer.error(ctx.req_id, e.code, e.message)
+        except Exception as e:  # noqa: BLE001
+            log(f"{method} failed: {type(e).__name__}")
+            self.writer.error(ctx.req_id, "INFERENCE_FAILED", f"{type(e).__name__}: {e}")
+        finally:
+            with self._active_lock:
+                self._io_active.pop(ctx.req_id, None)
 
     def _dispatch(self, req_id: str, method: str, params: dict[str, Any]) -> None:
         with self._active_lock:

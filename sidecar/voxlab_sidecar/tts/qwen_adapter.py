@@ -56,7 +56,7 @@ class QwenTtsAdapter(TtsEngineAdapter):
         reference_text_required=True,   # ICL clone mode needs the reference transcript
         supports_cuda=True,
         supports_cpu=False,  # not verified on CPU
-        supports_speed=False,
+        supports_speed=True,  # pitch-preserving time-stretch postprocessing in TtsService
         model_size_mb=4334,
         sample_rate=24000,
         notes=("No Vietnamese.", "Reference audio and transcript required.", "Weights and code Apache-2.0."),

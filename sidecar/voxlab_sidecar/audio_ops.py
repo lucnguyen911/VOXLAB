@@ -61,14 +61,38 @@ def apply_clarity_time_stretch(audio: np.ndarray, sr: int, rate: float = 0.95) -
     """
     if rate == 1.0 or audio.size == 0:
         return audio
-    import librosa
 
     mono = np.ascontiguousarray(audio, dtype=np.float32)
     if mono.ndim > 1:
         mono = mono.mean(axis=1)
 
-    stretched = librosa.effects.time_stretch(mono, rate=rate)
-    return np.clip(stretched, -1.0, 1.0).astype(np.float32)
+    try:
+        import librosa
+
+        stretched = librosa.effects.time_stretch(mono, rate=rate)
+        return np.clip(stretched, -1.0, 1.0).astype(np.float32)
+    except ImportError:
+        # Lightweight Hann overlap-add fallback when librosa is unavailable (e.g. unit test venv)
+        win = max(256, int(round(sr * 0.025)))
+        hop_s = max(64, win // 4)
+        hop_a = max(1, int(round(hop_s * rate)))
+        if mono.shape[0] <= win:
+            return mono
+        window = np.hanning(win).astype(np.float32)
+        n_frames = max(1, 1 + (mono.shape[0] - win) // hop_a)
+        out_len = (n_frames - 1) * hop_s + win
+        out = np.zeros(out_len, dtype=np.float32)
+        norm = np.zeros(out_len, dtype=np.float32)
+        for idx in range(n_frames):
+            a_start = idx * hop_a
+            if a_start + win > mono.shape[0]:
+                break
+            s_start = idx * hop_s
+            out[s_start : s_start + win] += mono[a_start : a_start + win] * window
+            norm[s_start : s_start + win] += window * window
+        mask = norm > 1e-6
+        out[mask] /= norm[mask]
+        return np.clip(out, -1.0, 1.0).astype(np.float32)
 
 
 def detect_and_filter_leading_artifact(

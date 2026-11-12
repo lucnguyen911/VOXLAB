@@ -229,11 +229,155 @@ class CapabilityValidationTests(unittest.TestCase):
             self.skipTest("Sample audio default_local.mp3 not found")
         server, out, dummy = self._service(supports_voice_clone=True, reference_audio_required=True,
                                            reference_text_required=True)
-        res = self._synth(server, out, "auto_trans_1", refAudioPath=sample_audio)
+        from unittest.mock import patch
+        with patch(
+            "voxlab_sidecar.asr_engine.auto_transcribe_sample",
+            return_value="Xin chào, đây là bản nghe thử giọng đọc mẫu trên VoxLab.",
+        ):
+            res = self._synth(server, out, "auto_trans_1", refAudioPath=sample_audio)
         self.assertTrue(res["ok"])
         self.assertIsNotNone(dummy.last_req)
         self.assertIsNotNone(dummy.last_req.ref_text)
         self.assertTrue(len(dummy.last_req.ref_text.strip()) > 0)
+
+    def test_io_methods_run_concurrently_without_blocking_heavy_slot(self):
+        server, out = make_server()
+        heavy_started = threading.Event()
+        release_heavy = threading.Event()
+
+        def heavy_job(_m, _p, _c):
+            heavy_started.set()
+            release_heavy.wait(timeout=3.0)
+            return {"heavy": True}
+
+        def io_job(_m, params, _c):
+            return {"io": params.get("n")}
+
+        server.register_heavy("gpu.work", heavy_job)
+        server.register_io("net.edge", io_job)
+
+        server.handle_line('{"id":"h1","method":"gpu.work","params":{}}')
+        self.assertTrue(heavy_started.wait(2.0))
+        # Concurrent I/O calls succeed immediately even while heavy GPU job is active
+        server.handle_line('{"id":"io1","method":"net.edge","params":{"n":1}}')
+        server.handle_line('{"id":"io2","method":"net.edge","params":{"n":2}}')
+        self.assertEqual(wait_for(out, "io1")["result"], {"io": 1})
+        self.assertEqual(wait_for(out, "io2")["result"], {"io": 2})
+        release_heavy.set()
+        self.assertEqual(wait_for(out, "h1")["result"], {"heavy": True})
+
+    def test_chatterbox_and_qwen_support_speed_time_stretch(self):
+        import tempfile
+        import numpy as np
+        from voxlab_sidecar.tts.chatterbox_adapter import ChatterboxAdapter
+        from voxlab_sidecar.tts.qwen_adapter import QwenTtsAdapter
+        from voxlab_sidecar.tts.base import TtsEngineAdapter
+        from voxlab_sidecar.tts.service import TtsService
+
+        self.assertTrue(ChatterboxAdapter.capabilities.supports_speed)
+        self.assertTrue(QwenTtsAdapter.capabilities.supports_speed)
+
+        class MockChatterbox(TtsEngineAdapter):
+            capabilities = ChatterboxAdapter.capabilities
+            loaded = True
+
+            def load(self, model_dir, device):
+                return {}
+
+            def synthesize(self, req):
+                t = np.linspace(0.0, 2.0, 48000, endpoint=False, dtype=np.float32)
+                return 0.25 * np.sin(2.0 * np.pi * 220.0 * t).astype(np.float32), 24000
+
+            def unload(self):
+                pass
+
+        server, out = make_server()
+        svc = TtsService([MockChatterbox()])
+        svc._active = svc._adapters["chatterbox"]
+        server.register_heavy("tts.synthesize", svc.synthesize)
+
+        out_slow = os.path.join(tempfile.gettempdir(), "voxlab_cb_slow.wav")
+        out_fast = os.path.join(tempfile.gettempdir(), "voxlab_cb_fast.wav")
+        try:
+            server.handle_line(json.dumps({
+                "id": "cb_slow",
+                "method": "tts.synthesize",
+                "params": {"engine": "chatterbox", "text": "Hello world", "outputPath": out_slow, "speed": 0.8},
+            }))
+            res_slow = wait_for(out, "cb_slow")
+            self.assertTrue(res_slow["ok"], res_slow)
+
+            server.handle_line(json.dumps({
+                "id": "cb_fast",
+                "method": "tts.synthesize",
+                "params": {"engine": "chatterbox", "text": "Hello world", "outputPath": out_fast, "speed": 1.25},
+            }))
+            res_fast = wait_for(out, "cb_fast")
+            self.assertTrue(res_fast["ok"], res_fast)
+
+            self.assertGreater(res_slow["result"]["durationSec"], 2.2)
+            self.assertLess(res_fast["result"]["durationSec"], 1.8)
+        finally:
+            for p in (out_slow, out_fast):
+                if os.path.exists(p):
+                    os.remove(p)
+
+    def test_resolve_python_stdlib_dirs_finds_portable_python_lib_and_dlls(self):
+        import tempfile
+        from voxlab_sidecar.__main__ import _attach_stdlib_dirs, _resolve_python_stdlib_dirs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            py_dir = os.path.join(tmp, "runtimes", "_python", "cpython-3.11.9")
+            os.makedirs(os.path.join(py_dir, "Lib", "unittest"), exist_ok=True)
+            os.makedirs(os.path.join(py_dir, "DLLs"), exist_ok=True)
+            with open(os.path.join(py_dir, "Lib", "pickletools.py"), "w", encoding="utf-8") as f:
+                f.write("# stdlib marker\n")
+
+            sp_dir = os.path.join(tmp, "runtimes", "qwen", "Lib", "site-packages")
+            os.makedirs(sp_dir, exist_ok=True)
+            with open(os.path.join(tmp, "runtimes", "qwen", "pyvenv.cfg"), "w", encoding="utf-8") as f:
+                f.write(f"home = {py_dir}\n")
+
+            dirs = _resolve_python_stdlib_dirs(sp_dir)
+            lib_path = os.path.abspath(os.path.join(py_dir, "Lib"))
+            dlls_path = os.path.abspath(os.path.join(py_dir, "DLLs"))
+            self.assertIn(lib_path, dirs)
+            self.assertIn(dlls_path, dirs)
+
+            orig_sys_path = list(sys.path)
+            orig_env_path = os.environ.get("PATH", "")
+            try:
+                _attach_stdlib_dirs(dirs)
+                self.assertIn(lib_path, sys.path)
+                self.assertIn(dlls_path, sys.path)
+            finally:
+                sys.path[:] = orig_sys_path
+                os.environ["PATH"] = orig_env_path
+
+    def test_runtime_site_packages_finder_prioritizes_external_sp_without_shadowing_protected(self):
+        import tempfile
+        from voxlab_sidecar.__main__ import _RuntimeSitePackagesFinder
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg_dir = os.path.join(tmp, "dummy_ext_pkg")
+            os.makedirs(pkg_dir, exist_ok=True)
+            with open(os.path.join(pkg_dir, "__init__.py"), "w", encoding="utf-8") as f:
+                f.write("VAL = 1\n")
+            with open(os.path.join(pkg_dir, "meta.py"), "w", encoding="utf-8") as f:
+                f.write("META = True\n")
+            # Even if someone dropped fake voxlab_sidecar or json into sp, protected check blocks it
+            os.makedirs(os.path.join(tmp, "voxlab_sidecar"), exist_ok=True)
+            with open(os.path.join(tmp, "voxlab_sidecar", "__init__.py"), "w", encoding="utf-8") as f:
+                f.write("FAKE = True\n")
+            with open(os.path.join(tmp, "json.py"), "w", encoding="utf-8") as f:
+                f.write("FAKE = True\n")
+
+            finder = _RuntimeSitePackagesFinder([tmp])
+            self.assertIsNotNone(finder.find_spec("dummy_ext_pkg", None))
+            self.assertIsNotNone(finder.find_spec("dummy_ext_pkg.meta", [pkg_dir]))
+            self.assertIsNone(finder.find_spec("voxlab_sidecar", None))
+            self.assertIsNone(finder.find_spec("pyarmor_runtime_000000", None))
+            self.assertIsNone(finder.find_spec("json", None))
 
     def test_cpu_unsupported_engine_reports_device_unavailable(self):
         from voxlab_sidecar.tts.base import cuda_available

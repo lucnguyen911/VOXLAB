@@ -3,10 +3,15 @@ PyInstaller-built `voxlab-sidecar-<runtime>` binary (prod)."""
 from __future__ import annotations
 
 import argparse
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import os
 import platform
 import sys
 import time
+import types
+from typing import Any
 
 # Hard guarantee: the sidecar never downloads anything implicitly (Gate E §3).
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -173,11 +178,76 @@ def _probe_std_handles() -> dict:
             "stdout": names.get(k32.GetFileType(k32.GetStdHandle(-11)), "?")}
 
 
+_DLL_HANDLES: list[object] = []
+
+
+class _RuntimeSitePackagesFinder(importlib.abc.MetaPathFinder):
+    """Prioritizes external runtime `site-packages` over PyInstaller's frozen PYZ archive
+    for third-party libraries so partially bundled packages (e.g. `jinja2`, `huggingface_hub`,
+    `safetensors`, `pydantic`) never shadow or version-mix with the installed AI runtime.
+    Never intercepts `voxlab_sidecar`, `pyarmor_runtime*`, `_vxl_vault`, or Python stdlib modules.
+    """
+
+    _STDLIB_NAMES: frozenset[str] = frozenset(getattr(sys, "stdlib_module_names", ()))
+
+    def __init__(self, sp_dirs: list[str]) -> None:
+        self.sp_dirs = [os.path.abspath(d) for d in sp_dirs if d and os.path.isdir(d)]
+        self._norm_exact = frozenset(os.path.normcase(d).rstrip("\\/") for d in self.sp_dirs)
+        self._norm_prefixes = tuple(
+            os.path.normcase(d).rstrip("\\/") + os.sep for d in self.sp_dirs
+        )
+
+    def _is_protected(self, fullname: str) -> bool:
+        top = fullname.partition(".")[0]
+        return (
+            top == "voxlab_sidecar"
+            or top == "_vxl_vault"
+            or top.startswith("pyarmor_runtime")
+            or top in self._STDLIB_NAMES
+        )
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+        if not self.sp_dirs or self._is_protected(fullname):
+            return None
+        if path is None:
+            return importlib.machinery.PathFinder.find_spec(fullname, self.sp_dirs, target)
+        sp_subpaths = [
+            p
+            for p in path
+            if isinstance(p, str)
+            and (
+                os.path.normcase(os.path.abspath(p)).rstrip("\\/") in self._norm_exact
+                or os.path.normcase(os.path.abspath(p)).startswith(self._norm_prefixes)
+            )
+        ]
+        if not sp_subpaths:
+            return None
+        return importlib.machinery.PathFinder.find_spec(fullname, sp_subpaths, target)
+
+
+def _install_runtime_sp_finder(sp: str) -> None:
+    abs_sp = os.path.abspath(sp)
+    for existing in sys.meta_path:
+        if isinstance(existing, _RuntimeSitePackagesFinder):
+            if abs_sp not in existing.sp_dirs:
+                existing.__init__(existing.sp_dirs + [abs_sp])
+            return
+    finder = _RuntimeSitePackagesFinder([abs_sp])
+    insert_idx = len(sys.meta_path)
+    for idx, meta in enumerate(sys.meta_path):
+        cls_name = type(meta).__name__
+        if "PyiFrozen" in cls_name or meta is importlib.machinery.PathFinder:
+            insert_idx = idx
+            break
+    sys.meta_path.insert(insert_idx, finder)
+
+
 def _register_sp_dlls(sp: str) -> None:
-    dll_rels = (
+    dll_rels: list[str] = [
         "torch\\lib",
         "ctranslate2",
         "_soundfile_data",
+        "onnxruntime\\capi",
         "nvidia\\cublas\\bin",
         "nvidia\\cudnn\\bin",
         "nvidia\\cuda_runtime\\bin",
@@ -186,13 +256,19 @@ def _register_sp_dlls(sp: str) -> None:
         "nvidia\\cusolver\\bin",
         "nvidia\\cusparse\\bin",
         "nvidia\\nvjitlink\\bin",
-    )
+    ]
+    try:
+        for entry in os.listdir(sp):
+            if entry.lower().endswith(".libs"):
+                dll_rels.append(entry)
+    except OSError:
+        pass
     for dll_rel in dll_rels:
         dll_dir = os.path.join(sp, dll_rel)
         if os.path.isdir(dll_dir):
             if hasattr(os, "add_dll_directory"):
                 try:
-                    os.add_dll_directory(dll_dir)
+                    _DLL_HANDLES.append(os.add_dll_directory(dll_dir))
                 except Exception:
                     pass
             cur_path = os.environ.get("PATH", "")
@@ -200,8 +276,166 @@ def _register_sp_dlls(sp: str) -> None:
                 os.environ["PATH"] = dll_dir + os.pathsep + cur_path
 
 
+def _resolve_python_stdlib_dirs(site_packages_dir: str) -> list[str]:
+    """Locate portable CPython stdlib (`Lib` and `DLLs`) adjacent to a runtime venv.
+
+    Reads `<runtime_dir>/pyvenv.cfg` (`home = ...`) and probes `<runtimes_root>/_python/*`
+    so external packages (`torch`, `transformers`, `librosa`, `omnivoice`, `chatterbox`, `qwen_tts`)
+    never fail when importing stdlib modules or `.pyd` extensions excluded during PyInstaller analysis.
+    """
+    lib_dir = os.path.dirname(os.path.abspath(site_packages_dir))  # .../Lib
+    runtime_dir = os.path.dirname(lib_dir)  # .../<runtime>
+    runtimes_root = os.path.dirname(runtime_dir)  # .../runtimes
+
+    python_roots: list[str] = []
+    pyvenv_cfg = os.path.join(runtime_dir, "pyvenv.cfg")
+    if os.path.isfile(pyvenv_cfg):
+        try:
+            with open(pyvenv_cfg, "r", encoding="utf-8", errors="ignore") as f:
+                for raw_line in f:
+                    if "=" not in raw_line:
+                        continue
+                    k, v = raw_line.split("=", 1)
+                    if k.strip().lower() == "home":
+                        home_dir = v.strip()
+                        if home_dir:
+                            python_roots.append(home_dir)
+                            python_roots.append(os.path.dirname(home_dir))
+                        break
+        except OSError:
+            pass
+
+    portable_py_root = os.path.join(runtimes_root, "_python")
+    if os.path.isdir(portable_py_root):
+        try:
+            for entry in sorted(os.listdir(portable_py_root)):
+                cand = os.path.join(portable_py_root, entry)
+                if os.path.isdir(cand):
+                    python_roots.append(cand)
+        except OSError:
+            pass
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for root in python_roots:
+        for sub in ("Lib", "DLLs"):
+            target = os.path.abspath(os.path.join(root, sub))
+            norm = os.path.normcase(target)
+            if norm not in seen and os.path.isdir(target):
+                # Never append a venv's own minimal `Lib` folder; require real stdlib markers
+                if sub == "Lib" and not os.path.isfile(os.path.join(target, "pickletools.py")):
+                    continue
+                seen.add(norm)
+                resolved.append(target)
+    return resolved
+
+
+def _attach_stdlib_dirs(stdlib_dirs: list[str]) -> None:
+    for d in stdlib_dirs:
+        if d not in sys.path:
+            sys.path.append(d)
+        if os.path.basename(d).lower() == "dlls":
+            dll_targets = [d]
+            py_home = os.path.dirname(d)
+            if os.path.isfile(os.path.join(py_home, "python3.dll")):
+                dll_targets.append(py_home)
+            for dt in dll_targets:
+                if hasattr(os, "add_dll_directory"):
+                    try:
+                        _DLL_HANDLES.append(os.add_dll_directory(dt))
+                    except OSError:
+                        pass
+                cur_path = os.environ.get("PATH", "")
+                if dt.lower() not in cur_path.lower():
+                    os.environ["PATH"] = dt + os.pathsep + cur_path
+        elif os.path.basename(d).lower() == "lib":
+            # Extend __path__ of any stdlib package already imported from frozen PYZ (e.g. unittest -> unittest.mock)
+            for pkg_name in (
+                "unittest",
+                "xml",
+                "xml.etree",
+                "xml.dom",
+                "xml.sax",
+                "email",
+                "http",
+                "urllib",
+                "html",
+                "collections",
+                "importlib",
+                "logging",
+                "multiprocessing",
+                "concurrent",
+            ):
+                mod = sys.modules.get(pkg_name)
+                pkg_path = getattr(mod, "__path__", None) if mod is not None else None
+                if pkg_path is not None:
+                    disk_sub = os.path.join(d, *pkg_name.split("."))
+                    if os.path.isdir(disk_sub) and disk_sub not in pkg_path:
+                        try:
+                            pkg_path.append(disk_sub)
+                        except Exception:
+                            pass
+
+
+def _ensure_pkg_resources_shim() -> None:
+    """Provide a lightweight `pkg_resources` shim when running inside `uv` venvs that omit
+    `setuptools` (required by upstream packages such as `resemble-perth`)."""
+    if "pkg_resources" in sys.modules:
+        return
+    try:
+        if importlib.util.find_spec("pkg_resources") is not None:
+            return
+    except Exception:
+        pass
+
+    mod = types.ModuleType("pkg_resources")
+
+    class DistributionNotFound(Exception):
+        pass
+
+    def _resolve_resource_path(pkg_or_req: Any, resource_name: str) -> str:
+        name = (
+            pkg_or_req
+            if isinstance(pkg_or_req, str)
+            else getattr(pkg_or_req, "__name__", str(pkg_or_req))
+        )
+        spec = importlib.util.find_spec(name)
+        if spec and spec.submodule_search_locations:
+            base = list(spec.submodule_search_locations)[0]
+        elif spec and spec.origin:
+            base = os.path.dirname(spec.origin)
+        else:
+            raise ModuleNotFoundError(name)
+        parts = [p for p in resource_name.replace("\\", "/").split("/") if p]
+        return os.path.join(base, *parts)
+
+    def resource_filename(pkg_or_req: Any, resource_name: str) -> str:
+        return _resolve_resource_path(pkg_or_req, resource_name)
+
+    def resource_exists(pkg_or_req: Any, resource_name: str) -> bool:
+        try:
+            return os.path.exists(_resolve_resource_path(pkg_or_req, resource_name))
+        except Exception:
+            return False
+
+    def resource_stream(pkg_or_req: Any, resource_name: str) -> Any:
+        return open(_resolve_resource_path(pkg_or_req, resource_name), "rb")
+
+    def resource_string(pkg_or_req: Any, resource_name: str) -> bytes:
+        with open(_resolve_resource_path(pkg_or_req, resource_name), "rb") as f:
+            return f.read()
+
+    mod.DistributionNotFound = DistributionNotFound  # type: ignore[attr-defined]
+    mod.resource_filename = resource_filename  # type: ignore[attr-defined]
+    mod.resource_exists = resource_exists  # type: ignore[attr-defined]
+    mod.resource_stream = resource_stream  # type: ignore[attr-defined]
+    mod.resource_string = resource_string  # type: ignore[attr-defined]
+    sys.modules["pkg_resources"] = mod
+
+
 def _attach_runtime_site_packages(runtime: str) -> None:
     if not getattr(sys, "frozen", False):
+        _ensure_pkg_resources_shim()
         return
     if os.environ.get("VOXLAB_ISOLATED_SMOKE_TEST") == "1":
         return
@@ -227,8 +461,11 @@ def _attach_runtime_site_packages(runtime: str) -> None:
     for user_rt_sp in rt_candidates:
         if user_rt_sp and os.path.isdir(user_rt_sp):
             if user_rt_sp not in sys.path:
-                sys.path.append(user_rt_sp)
+                sys.path.insert(0, user_rt_sp)
+            _install_runtime_sp_finder(user_rt_sp)
             _register_sp_dlls(user_rt_sp)
+            _attach_stdlib_dirs(_resolve_python_stdlib_dirs(user_rt_sp))
+            _ensure_pkg_resources_shim()
             return
 
     candidates = [
@@ -238,8 +475,11 @@ def _attach_runtime_site_packages(runtime: str) -> None:
     ]
     for sp in candidates:
         if sp and os.path.isdir(sp) and sp not in sys.path:
-            sys.path.append(sp)
+            sys.path.insert(0, sp)
+            _install_runtime_sp_finder(sp)
             _register_sp_dlls(sp)
+            _attach_stdlib_dirs(_resolve_python_stdlib_dirs(sp))
+    _ensure_pkg_resources_shim()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -416,8 +656,8 @@ def main(argv: list[str] | None = None) -> int:
         ctx.progress(100.0, "ready")
         return res
 
-    server.register_heavy("tts.edge_preview", edge_preview_handler)
-    server.register_heavy("tts.edge_synthesize", edge_preview_handler)
+    server.register_io("tts.edge_preview", edge_preview_handler)
+    server.register_io("tts.edge_synthesize", edge_preview_handler)
     if not getattr(sys, "frozen", False):
         server.register_heavy("system.debug_sleep", debug_sleep)
     return server.serve(protocol_in)

@@ -116,7 +116,7 @@ class ChatterboxAdapter(TtsEngineAdapter):
         reference_text_required=False,
         supports_cuda=True,
         supports_cpu=False,  # upstream code allows CPU; not verified on real hardware yet
-        supports_speed=False,  # no speed parameter in the Turbo API
+        supports_speed=True,  # pitch-preserving time-stretch postprocessing in TtsService
         model_size_mb=2849,
         sample_rate=24000,
         notes=(
@@ -145,6 +145,13 @@ class ChatterboxAdapter(TtsEngineAdapter):
         if device != "cuda" or not cuda_available():
             raise SidecarError("DEVICE_UNAVAILABLE", "Chatterbox Turbo requires CUDA (CPU execution not verified)")
         configure_cuda_backends()
+        from ..__main__ import _ensure_pkg_resources_shim
+
+        _ensure_pkg_resources_shim()
+        import perth
+
+        if getattr(perth, "PerthImplicitWatermarker", None) is None and hasattr(perth, "DummyWatermarker"):
+            perth.PerthImplicitWatermarker = perth.DummyWatermarker
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 
         self._model = ChatterboxTurboTTS.from_local(model_dir, "cuda")

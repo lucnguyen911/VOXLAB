@@ -212,7 +212,21 @@ class KokoroAdapter(TtsEngineAdapter):
                 f"Kokoro-82M model files not found in {resolved_dir}",
             )
 
-        self._model = Kokoro(model_path, voices_path)
+        try:
+            import onnxruntime as ort
+
+            sess_opts = ort.SessionOptions()
+            sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            sess_opts.intra_op_num_threads = max(2, min(8, os.cpu_count() or 4))
+            sess_opts.inter_op_num_threads = 1
+            avail = set(ort.get_available_providers())
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if (
+                device != "cpu" and "CUDAExecutionProvider" in avail
+            ) else ["CPUExecutionProvider"]
+            sess = ort.InferenceSession(model_path, sess_options=sess_opts, providers=providers)
+            self._model = Kokoro.from_session(sess, voices_path)
+        except Exception:
+            self._model = Kokoro(model_path, voices_path)
         try:
             self._voices = set(self._model.get_voices())
         except Exception:

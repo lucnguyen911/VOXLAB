@@ -17,6 +17,7 @@ function voxlabProductionObfuscator(): Plugin {
       if (chunk.name === "vendor" || chunk.fileName.includes("vendor")) {
         return null;
       }
+      const isHighSecurityChunk = chunk.name === "sec" || chunk.fileName.includes("sec-");
       const result = JavaScriptObfuscator.obfuscate(code, {
         compact: true,
         simplify: true,
@@ -27,13 +28,13 @@ function voxlabProductionObfuscator(): Plugin {
         numbersToExpressions: false,
         splitStrings: false,
         stringArray: true,
-        stringArrayEncoding: ["rc4"],
-        stringArrayThreshold: 0.95,
+        stringArrayEncoding: isHighSecurityChunk ? ["rc4"] : ["base64"],
+        stringArrayThreshold: isHighSecurityChunk ? 0.9 : 0.35,
         stringArrayRotate: true,
         stringArrayShuffle: true,
         stringArrayIndexShift: true,
-        stringArrayCallsTransform: true,
-        stringArrayCallsTransformThreshold: 0.75,
+        stringArrayCallsTransform: isHighSecurityChunk,
+        stringArrayCallsTransformThreshold: isHighSecurityChunk ? 0.75 : 0,
         forceTransformStrings: [
           "ai_",
           "fs_",
@@ -106,6 +107,16 @@ export default defineConfig(({ mode }) => ({
         manualChunks(id) {
           if (id.includes("node_modules")) {
             return "vendor";
+          }
+          if (
+            id.includes("services/license") ||
+            id.includes("services\\license") ||
+            id.includes("services/updater") ||
+            id.includes("services\\updater") ||
+            id.includes("tauriBackend") ||
+            id.includes("geminiKeyStore")
+          ) {
+            return "sec";
           }
         },
       },

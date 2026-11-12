@@ -29,6 +29,7 @@ import { concatPcmWavsFast } from "../batchRuntime";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { listCloneVoices } from "../../ai/cloneVoiceRegistry";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
+import { googleTranslateTtsProvider } from "../../providers/googleProvider";
 import { getEffectiveRules } from "../../pronunciation";
 import {
   validateChunkAudioQuality,
@@ -136,14 +137,15 @@ export class TtsExecutor {
     const isKokoroVoice =
       typeof voiceId === "string" &&
       (voiceId.startsWith("kokoro_") || /^[ab][fm]_[a-z0-9_]+$/i.test(voiceId));
-    const model =
-      (isKokoroVoice ? "kokoro_82m" : cloneBoundEngine) ||
-      ttsSnapshot?.model ||
-      "";
+    const model = isKokoroVoice
+      ? "kokoro_82m"
+      : ttsSnapshot?.model || cloneBoundEngine || "";
     const speed = ttsSnapshot?.speed && ttsSnapshot.speed !== 1 ? ttsSnapshot.speed : undefined;
-    const isOnlineVoice =
+    const isGoogleVoice = typeof voiceId === "string" && voiceId.startsWith("google_");
+    const isEdgeVoice =
       typeof voiceId === "string" &&
-      (voiceId.includes("Neural") || voiceId.startsWith("edge_") || voiceId.startsWith("google_"));
+      (voiceId.includes("Neural") || voiceId.startsWith("edge_"));
+    const isOnlineVoice = isGoogleVoice || isEdgeVoice;
     if (!isOnlineVoice) {
       try {
         ai.resolveEngine(model, voiceId, normalizedText, undefined, speed);
@@ -164,10 +166,17 @@ export class TtsExecutor {
       try {
         const outputPath = await ai.scratchPath(
           scratchScope,
-          `chunk_${String(i + 1).padStart(4, "0")}.${isOnlineVoice ? "mp3" : "wav"}`
+          `chunk_${String(i + 1).padStart(4, "0")}.${isEdgeVoice ? "mp3" : "wav"}`
         );
         let r: { durationSec: number; outputPath: string };
-        if (isOnlineVoice) {
+        if (isGoogleVoice) {
+          r = await googleTranslateTtsProvider.synthesize({
+            voiceId,
+            text: chunk.text,
+            outputPath,
+            speed,
+          });
+        } else if (isEdgeVoice) {
           r = await edgeTtsProvider.synthesize({
             voiceId,
             text: chunk.text,

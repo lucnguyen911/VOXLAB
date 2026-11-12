@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import threading
 import time
 import urllib.request
 from email.utils import parsedate_to_datetime
@@ -15,6 +16,34 @@ from edge_tts.drm import DRM
 import soundfile as sf
 
 from .protocol import SidecarError
+
+_EDGE_LOOP: asyncio.AbstractEventLoop | None = None
+_EDGE_LOOP_LOCK = threading.Lock()
+
+
+def _get_edge_loop() -> asyncio.AbstractEventLoop:
+    """Returns a persistent background asyncio event loop so concurrent Edge TTS calls
+    multiplex cleanly without repeatedly creating/destroying Windows IOCP event loops.
+    """
+    global _EDGE_LOOP
+    with _EDGE_LOOP_LOCK:
+        if _EDGE_LOOP is not None and _EDGE_LOOP.is_running():
+            return _EDGE_LOOP
+        ready = threading.Event()
+        holder: list[asyncio.AbstractEventLoop] = []
+
+        def _runner() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            holder.append(loop)
+            ready.set()
+            loop.run_forever()
+
+        t = threading.Thread(target=_runner, name="voxlab-edge-loop", daemon=True)
+        t.start()
+        ready.wait(timeout=5.0)
+        _EDGE_LOOP = holder[0]
+        return _EDGE_LOOP
 
 
 def _sync_clock_skew_from_server() -> bool:
@@ -79,9 +108,11 @@ def synthesize_edge_tts(
             if not has_audio:
                 raise SidecarError("PROVIDER_UNAVAILABLE", "Edge TTS returned no audio data")
 
+    loop = _get_edge_loop()
     for attempt in range(3):
         try:
-            asyncio.run(_do_synth())
+            fut = asyncio.run_coroutine_threadsafe(_do_synth(), loop)
+            fut.result(timeout=75)
             break
         except edge_tts.exceptions.NoAudioReceived:
             if attempt < 2:
@@ -101,15 +132,17 @@ def synthesize_edge_tts(
                 continue
             raise SidecarError("NETWORK_ERROR", f"Edge TTS request failed: {e}")
 
+    size_bytes = os.path.getsize(output_path) if os.path.exists(output_path) else 0
     try:
         info = sf.info(output_path)
-        duration_sec = info.duration
-        sample_rate = info.samplerate
+        duration_sec = float(info.duration)
+        sample_rate = int(info.samplerate)
     except Exception:
-        duration_sec = 0.0
+        # Edge outputs 24kHz 48kbps CBR mono MP3 (6000 bytes/sec)
+        duration_sec = round(size_bytes / 6000.0, 3) if size_bytes > 0 else 0.0
         sample_rate = 24000
-
-    size_bytes = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+    if duration_sec <= 0.0 and size_bytes > 0:
+        duration_sec = round(size_bytes / 6000.0, 3)
 
     return {
         "outputPath": output_path,

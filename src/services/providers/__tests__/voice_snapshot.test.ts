@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createEffectiveVoiceSnapshot } from "../voiceSnapshot";
+import { createEffectiveVoiceSnapshot, resolveEffectiveActiveModel } from "../voiceSnapshot";
 import { MOCK_VOICES } from "../../../mock/data";
+import { VoiceProfile } from "../../../types/ui";
 
 describe("Voice Snapshot & Single Source of Truth Tests", () => {
   it("enforces NO SILENT FALLBACK: throws when voiceId is empty or whitespace", () => {
@@ -106,5 +107,67 @@ describe("Voice Snapshot & Single Source of Truth Tests", () => {
     assert.equal(kokoroSnapshot.voiceId, "kokoro_af_heart");
     assert.equal(kokoroSnapshot.modelId, "Kokoro-82M");
     assert.equal(kokoroSnapshot.engine, "kokoro_82m");
+  });
+
+  it("prioritizes user-selected model for clone voices and avoids locking language to vi", () => {
+    const cloneVoice: VoiceProfile = {
+      id: "clone_test_999",
+      name: "Matt Clone",
+      source: "local_clone",
+      origin: "clone",
+      sourceType: "clone",
+      provider: "clone",
+      engine: "omnivoice",
+      tags: [],
+      supportedLanguages: ["vi", "en"],
+      modelCompatibility: ["Omni Voice", "Chatterbox Turbo", "Qwen 1.7B"],
+      sampleAudioPath: "F:\\AppData\\voices\\clones\\clone_test_999.wav",
+      isOnline: false,
+      isFavorite: false,
+      avatarColor: "from-amber-500 to-orange-500",
+      availability: "available",
+      previewAvailable: true,
+    };
+
+    assert.equal(
+      resolveEffectiveActiveModel(cloneVoice, "Qwen3-TTS 1.7B Base"),
+      "Qwen3-TTS 1.7B Base"
+    );
+    const kokoroVoice = MOCK_VOICES.find((v) => v.id === "kokoro_af_heart");
+    assert.equal(resolveEffectiveActiveModel(kokoroVoice, "Omni Voice"), "kokoro_82m");
+
+    const snap = createEffectiveVoiceSnapshot("clone_test_999", [cloneVoice], {
+      activeModel: resolveEffectiveActiveModel(cloneVoice, "Qwen3-TTS 1.7B Base"),
+      speed: 0.95,
+    });
+    assert.equal(snap.engine, "qwen_tts_1_7b");
+    assert.equal(snap.speed, 0.95);
+    assert.equal(snap.language, undefined);
+  });
+
+  it("rejects orphaned clone voices whose reference audio path is missing", () => {
+    const orphanClone: VoiceProfile = {
+      id: "clone_orphan_404",
+      name: "Deleted Clone",
+      source: "local_clone",
+      origin: "clone",
+      sourceType: "clone",
+      provider: "clone",
+      engine: "omnivoice",
+      tags: [],
+      supportedLanguages: ["en"],
+      modelCompatibility: ["Omni Voice"],
+      sampleAudioPath: "",
+      isOnline: false,
+      isFavorite: false,
+      avatarColor: "from-amber-500 to-orange-500",
+      availability: "available",
+      previewAvailable: false,
+    };
+
+    assert.throws(
+      () => createEffectiveVoiceSnapshot("clone_orphan_404", [orphanClone]),
+      /Mẫu âm thanh gốc của giọng nhân bản/
+    );
   });
 });

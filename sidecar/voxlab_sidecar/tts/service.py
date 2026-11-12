@@ -399,6 +399,11 @@ class TtsService:
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
 
+        if speed is not None and abs(float(speed) - 1.0) > 1e-3 and caps.engine in ("chatterbox", "qwen"):
+            from ..audio_ops import apply_clarity_time_stretch
+            clamped_speed = max(0.5, min(2.0, float(speed)))
+            audio = apply_clarity_time_stretch(audio, sr, rate=clamped_speed)
+
         from ..audio_ops import (
             attenuate_leading_breath_and_measure_edges,
             detect_and_filter_leading_artifact,

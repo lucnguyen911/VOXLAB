@@ -581,7 +581,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
                   activeVoiceId={activeVoiceId}
                   onChangeActiveVoice={handleSelectActiveVoice}
                   activeModel={activeModel}
-                  onChangeModel={setActiveModel}
+                  onChangeModel={handleChangeActiveModel}
                   onOpenVoiceModal={() => setVoiceModalOpen(true)}
                   onNavigateToSettings={(group) => {
                     setSettingsInitialGroup(group || "translation");

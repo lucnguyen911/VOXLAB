@@ -7818,6 +7818,7 @@ def validate_audio_quality(
 
     from .asr_engine import (
         resolve_whisper_model_dir,
+        find_whisper_model_dir,
         get_shared_whisper_model,
         AsrLifecycleManager,
         DEFAULT_TTS_VAD_PARAMETERS,
@@ -7825,6 +7826,8 @@ def validate_audio_quality(
     )
 
     target_model_dir, canonical_id = resolve_whisper_model_dir(model_id, models_dir)
+    if not target_model_dir:
+        target_model_dir = find_whisper_model_dir(models_dir, model_id)
     if not target_model_dir:
         return {
             "status": "unverified",
