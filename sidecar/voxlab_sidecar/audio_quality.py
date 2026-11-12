@@ -144,6 +144,40 @@ COMMON_EQUIVALENTS: dict[str, set[str]] = {
     "main": {"main", "mane"},
     "hour": {"hour", "our"},
     "hours": {"hours", "ours"},
+    "suite": {"suite", "sweet"},
+    "suites": {"suites", "sweets"},
+    "leased": {"leased", "least"},
+    "chute": {"chute", "shoot"},
+    "chutes": {"chutes", "shoots"},
+    "flour": {"flour", "flower"},
+    "idle": {"idle", "idol"},
+    "tier": {"tier", "tear"},
+    "tiers": {"tiers", "tears"},
+    "aisle": {"aisle", "isle"},
+    "aisles": {"aisles", "isles"},
+    "waist": {"waist", "waste"},
+    "loan": {"loan", "lone"},
+    "feat": {"feat", "feet"},
+    "heal": {"heal", "heel"},
+    "wear": {"wear", "ware"},
+    "bare": {"bare", "bear"},
+    "vein": {"vein", "vain", "vane"},
+    "reign": {"reign", "rain", "rein"},
+    "one": {"one", "won"},
+    "alright": {"alright", "allright"},
+    # General American intervocalic flapped-/ɾ/ homophones (identical acoustic realization in US TTS)
+    "raiding": {"raiding", "rating"},
+    "waiting": {"waiting", "wading"},
+    "grading": {"grading", "grating"},
+    "coding": {"coding", "coating"},
+    "seeding": {"seeding", "seating"},
+    "medal": {"medal", "metal"},
+    "medals": {"medals", "metals"},
+    "pedal": {"pedal", "petal"},
+    "pedals": {"pedals", "petals"},
+    "ladder": {"ladder", "latter"},
+    "tidal": {"tidal", "title"},
+    "bridal": {"bridal", "bridle"},
     # Physical unit abbreviations
     "kg": {"kg", "kilogram", "kilograms", "kilo", "kilos"},
     "km": {"km", "kilometer", "kilometers", "kilometre", "kilometres"},
@@ -154,6 +188,64 @@ COMMON_EQUIVALENTS: dict[str, set[str]] = {
     "lb": {"lb", "lbs", "pound", "pounds"},
     "oz": {"oz", "ounce", "ounces"},
 }
+
+# English loanwords commonly embedded in Vietnamese scripts -> exact Vietnamese ASR phonetic spellings
+# (Matched strictly when one side is ASCII English and the other is Vietnamese ASR output, never between two Vietnamese tone words)
+EN_VI_LOANWORD_TRANSLITERATIONS: dict[str, set[str]] = {
+    "sale": {"xêu", "sêu", "xeo", "seo"},
+    "sales": {"xêu", "sêu", "xeo", "seo"},
+    "voucher": {"vao chờ", "vâu chờ", "vô chờ", "vau chờ", "voucher"},
+    "setup": {"sét ấp", "set up", "sét up", "xét ấp"},
+    "livestream": {"lai chim", "lai trym", "lai stream", "live stream", "lai sờ trim"},
+    "review": {"ri viu", "rì viu"},
+    "file": {"phai", "fai"},
+    "files": {"phai", "fai"},
+    "view": {"viu"},
+    "views": {"viu"},
+    "team": {"tim"},
+    "app": {"áp"},
+    "apps": {"áp"},
+    "video": {"vi đê ô", "vi deo", "vi đê o"},
+    "online": {"on lai", "onlai"},
+    "offline": {"óp lai", "ọp lai", "off lai"},
+    "checkin": {"chếch in", "check in", "chéc in"},
+    "feedback": {"phít bách", "phít béc"},
+    "deal": {"điu"},
+    "clip": {"cờ líp", "líp"},
+    "web": {"quép", "oép"},
+    "link": {"linh"},
+    "tool": {"tun"},
+    "code": {"cốt"},
+    "game": {"gêm"},
+    "top": {"tốp"},
+    "shop": {"sốp", "xốp"},
+    "order": {"o đờ", "o đơ"},
+    "content": {"con ten", "còn ten"},
+    "marketing": {"ma két tinh", "mác két tinh"},
+}
+
+
+def are_en_vi_loanword_spans_equivalent(src_tokens: list[str], asr_tokens: list[str]) -> bool:
+    """True when an English loanword in a Vietnamese script matches Whisper's Vietnamese phonetic spelling
+    (including 1-to-2 or 1-to-3 syllable splits such as 'voucher' <-> 'vao chờ', 'livestream' <-> 'lai chim').
+    """
+    s_clean = [clean_word(t) for t in src_tokens if clean_word(t)]
+    a_clean = [clean_word(t) for t in asr_tokens if clean_word(t)]
+    if not s_clean or not a_clean:
+        return False
+    s_join = "".join(s_clean)
+    a_phrase = " ".join(normalize_vietnamese_orthography(t) for t in a_clean)
+    a_join = "".join(normalize_vietnamese_orthography(t) for t in a_clean)
+    if s_join.isascii() and s_join in EN_VI_LOANWORD_TRANSLITERATIONS:
+        variants = EN_VI_LOANWORD_TRANSLITERATIONS[s_join]
+        if a_phrase in variants or a_join in {v.replace(" ", "") for v in variants}:
+            return True
+    if a_join.isascii() and a_join in EN_VI_LOANWORD_TRANSLITERATIONS:
+        variants = EN_VI_LOANWORD_TRANSLITERATIONS[a_join]
+        s_phrase = " ".join(normalize_vietnamese_orthography(t) for t in s_clean)
+        if s_phrase in variants or s_join in {v.replace(" ", "") for v in variants}:
+            return True
+    return False
 
 NUMBER_WORDS = {
     "0": {"zero", "o", "khong", "không"},
@@ -403,6 +495,8 @@ def are_words_equivalent(w1: str, w2: str) -> bool:
         m2 = (w2_clean == root or w2_clean in equivs or w2_strip == root or w2_strip in equivs)
         if m1 and m2:
             return True
+    if are_en_vi_loanword_spans_equivalent([w1_clean], [w2_clean]):
+        return True
     # Vietnamese tone-preserving orthographic & dialectal consonant equivalence
     if not w1_clean.isascii() or not w2_clean.isascii():
         if normalize_vietnamese_orthography(w1_clean) == normalize_vietnamese_orthography(w2_clean):
@@ -3465,6 +3559,7 @@ def _deduplicate_quality_issues(issues: list[dict[str, Any]]) -> list[dict[str, 
     if len(issues) <= 1:
         return issues
 
+
     sev_rank = {"error": 3, "warning": 2, "unverified": 1}
     deduped: list[dict[str, Any]] = []
 
@@ -3840,7 +3935,7 @@ def _reduce_to_core_defects(issues: list[dict[str, Any]], asr_words: list[dict[s
         tr = iss.get("timeRange") or [0.0, 0.0]
         ts = format_timestamp(float(tr[0]) if tr else 0.0)
         if code == "ABNORMAL_PAUSE":
-            if iss.get("pauseContext") in ("phrase_internal", "misplaced_pause"):
+            if iss.get("pauseContext") in ("phrase_internal", "misplaced_pause", "skipped_comma"):
                 kept.append(iss)
             continue
         # Number reading (digits, number words, currency) is outside the QC scope
@@ -4015,6 +4110,7 @@ def _boundary_silence_run_sec(
     touch_lo = (end1 - 0.06 - win_start) / frame_sec
     touch_hi = (start2 + 0.06 - win_start) / frame_sec
     touch_hi_shifted = (start2 + 0.16 - win_start) / frame_sec
+    w2_onset_frame = min(len(silent), max(0, int(round((max(end1 - 0.01, start2 - 0.01) - win_start) / frame_sec))))
     w2_end_frame = min(len(silent), max(0, int(round((end2 + 0.05 - win_start) / frame_sec))))
     voiced_before = np.cumsum(~silent)
     best = 0
@@ -4027,6 +4123,20 @@ def _boundary_silence_run_sec(
         run_start = k
         while k < n and silent[k]:
             k += 1
+        # Guard against attributing a legitimate pause AFTER a short w2 (e.g. 'about it: [0.7s] rent'
+        # where w2='it' is <=60ms so start2 + 0.06 >= end2) to the boundary BEFORE w2.
+        if run_start > w2_onset_frame:
+            voiced_w2_before = int(
+                voiced_before[run_start - 1]
+                - (voiced_before[w2_onset_frame - 1] if w2_onset_frame > 0 else 0)
+            )
+            voiced_w2_after = (
+                int(voiced_before[w2_end_frame - 1] - voiced_before[k - 1])
+                if k < w2_end_frame
+                else 0
+            )
+            if voiced_w2_before >= 2 and voiced_w2_after < 2:
+                continue
         spoke_first_word = run_start > 0 and voiced_before[run_start - 1] >= 4
         if spoke_first_word and k - 1 >= touch_lo:
             if run_start <= touch_hi:
@@ -4348,6 +4458,7 @@ def detect_phrase_internal_pauses(
     return issues
 
 
+
 # ---------------------------------------------------------------------------
 # Misplaced pause (v3.7.0)
 # ---------------------------------------------------------------------------
@@ -4447,6 +4558,666 @@ def detect_misplaced_punctuation_pauses(
             ),
         })
     return issues
+
+
+_SENTENCE_INITIAL_COMMON_WORDS = frozenset({
+    "then", "when", "while", "what", "where", "which", "this", "that", "there", "these", "those",
+    "here", "after", "before", "under", "over", "into", "from", "with", "they", "their", "your",
+    "just", "still", "today", "worse", "most", "many", "some", "more", "even", "only", "once",
+    "think", "imagine", "moving", "pulling", "buying", "renting", "nobody", "anyone", "every",
+    "across", "inside", "outside", "behind", "around", "without", "because", "although", "though",
+    "however", "meanwhile", "first", "second", "third", "next", "last", "finally",
+})
+
+
+def extract_qc_vocabulary_hotwords(
+    text: str,
+    language: str | None = None,
+    pronunciation_mapping: list[dict[str, Any]] | None = None,
+    max_terms: int = 18,
+) -> str:
+    """Extracts a context-free, order-broken vocabulary hint string for Whisper ASR.
+
+    Includes proper nouns, rare/long domain words (>= 9 chars), mixed-case brand tokens, and
+    ASCII loanwords embedded in Vietnamese scripts — sorted by descending length then alphabetically
+    so consecutive sentence words are never kept in sentence n-gram order (preventing Whisper from
+    hallucinating omitted words or smoothing repeated words).
+    """
+    if not text or not text.strip():
+        return ""
+    eff_lang = resolve_script_language(text, language)
+    words, delimiters, char_spans = tokenize_text_with_spans(text)
+    if not words:
+        return ""
+
+    pm_skip_indices: set[int] = set()
+    for pm in (pronunciation_mapping or []):
+        if pm.get("mode") in ("letter_by_letter", "custom"):
+            ms = int(pm.get("startIndex", -1))
+            me = int(pm.get("endIndex", -1))
+            for idx, (ws, we) in enumerate(char_spans):
+                if ws < me and we > ms:
+                    pm_skip_indices.add(idx)
+
+    selected_by_lower: dict[str, str] = {}
+    lower_counts: dict[str, int] = {}
+    cap_counts: dict[str, int] = {}
+    for w in words:
+        stripped = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", w)
+        if stripped:
+            lw = stripped.lower()
+            lower_counts[lw] = lower_counts.get(lw, 0) + 1
+            if stripped[0].isupper():
+                cap_counts[lw] = cap_counts.get(lw, 0) + 1
+
+    for idx, raw_w in enumerate(words):
+        if idx in pm_skip_indices:
+            continue
+        tok = re.sub(r"^[^\w\u00C0-\u1EF9'-]+|[^\w\u00C0-\u1EF9]+$", "", raw_w)
+        tok_base = re.sub(r"(?:'s|'S|’s|’S)$", "", tok)
+        cln = clean_word(tok_base)
+        if not cln or len(cln) < 4 or re.search(r"\d", cln):
+            continue
+        if (
+            cln in EN_MINOR_STOPWORDS
+            or cln in PHRASE_HEAD_WORDS
+            or cln in PHRASE_OPENER_WORDS
+            or cln in _SENTENCE_INITIAL_COMMON_WORDS
+            or _is_numeric_scope_word(cln)
+        ):
+            continue
+        is_mixed_brand = any(c.isupper() for c in tok_base[1:]) and not tok_base.isupper()
+        is_mid_proper = is_likely_proper_noun(words, delimiters, idx) and not tok_base.isupper()
+        is_repeated_init_proper = (
+            not is_mid_proper
+            and tok_base[:1].isupper()
+            and not tok_base.isupper()
+            and cap_counts.get(cln, 0) >= 2
+        )
+        is_long_domain = len(cln) >= 9
+        is_vi_loanword = (eff_lang == "vi" and cln.isascii() and len(cln) >= 4)
+        if is_mid_proper or is_repeated_init_proper or is_mixed_brand or is_long_domain or is_vi_loanword:
+            if cln not in selected_by_lower:
+                selected_by_lower[cln] = tok_base
+
+    if not selected_by_lower:
+        return ""
+    # Sort longest-first then alphabetically so multi-word spans from the sentence are broken apart
+    ordered = sorted(selected_by_lower.values(), key=lambda t: (-len(t.lower()), t.lower()))[:max_terms]
+    return ", ".join(ordered)
+
+
+def reanchor_asr_word_timestamps(
+    asr_words: list[dict[str, Any]],
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    text: str | None = None,
+) -> list[dict[str, Any]]:
+    """Re-anchors Whisper DTW word timestamps onto true waveform speech & silence boundaries.
+
+    Eliminates Whisper Large V3's systematic -120ms..-350ms left-shifted word-timestamp bias (where a
+    post-pause word `w[k]` starts 150-350ms before the pause and absorbs the silence island `[sil_s, sil_e]`),
+    while preserving genuine illegal pauses (`months and | [SILENCE] | face` -> pause stays between `and` and `face`)
+    and genuine intra-word syllable breaks (`Te - [SILENCE] - sla`).
+    """
+    words = [dict(w) for w in (asr_words or [])]
+    n = len(words)
+    if n < 2 or audio_data is None or audio_data.size == 0 or sample_rate <= 0:
+        return words
+
+    mono = np.ascontiguousarray(audio_data, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    hop = max(1, int(round(0.005 * sample_rate)))
+    win = max(hop + 1, int(round(0.015 * sample_rate)))
+    if mono.size < win * 4:
+        return words
+
+    frames = np.lib.stride_tricks.sliding_window_view(mono, win)[::hop]
+    rms = np.sqrt(np.mean(np.square(frames, dtype=np.float32), axis=1))
+    zcr = np.mean(np.abs(np.diff(np.signbit(frames), axis=1)), axis=1)
+    peak_rms = float(np.max(rms)) if rms.size > 0 else 0.0
+    if peak_rms < 0.015:
+        return words
+
+    fricative = ((rms >= 0.0080) & (zcr >= 0.24)) | ((rms >= 0.0006) & (zcr >= 0.40))
+    sil_thresh = min(0.012, max(0.0025, peak_rms * 0.06))
+    is_silent = (rms < sil_thresh) & (~fricative)
+    voiced_idx = np.where(~is_silent)[0]
+    if voiced_idx.size < 4:
+        return words
+
+    frame_sec = hop / float(sample_rate)
+    win_sec = win / float(sample_rate)
+    first_speech_sec = float(voiced_idx[0]) * frame_sec
+    last_speech_sec = min(mono.size / float(sample_rate), float(voiced_idx[-1]) * frame_sec + win_sec)
+
+    # Optional source punctuation alignment so punctuated boundaries are known
+    punct_boundaries: set[int] = set()
+    if text and text.strip():
+        src_tokens, delims = tokenize_text_with_delimiters(text)
+        src_clean = [clean_word(t) for t in src_tokens]
+        asr_clean = [clean_word(str(w.get("word", ""))) for w in words]
+        for blk in difflib.SequenceMatcher(None, src_clean, asr_clean, autojunk=False).get_matching_blocks():
+            for off in range(blk.size):
+                s_i = blk.a + off
+                a_j = blk.b + off
+                if s_i + 1 < len(delims) and re.search(r"[,;:.!?—–-]", delims[s_i + 1]):
+                    punct_boundaries.add(a_j)
+
+    # Step A: Remove utterance-wide systematic left-shift (e.g. Large V3 ending 150-250ms before speech ends)
+    orig_t0 = float(words[0].get("startSec", 0.0))
+    orig_tN = float(words[-1].get("endSec", 0.0))
+    raw_start_shift = first_speech_sec - orig_t0
+    raw_end_shift = last_speech_sec - orig_tN
+    delta_start = raw_start_shift if (-0.04 <= raw_start_shift <= 0.25) else 0.0
+    if (
+        0.04 <= raw_end_shift <= 0.45
+        and _voice_cut_sec(mono, sample_rate, max(0.0, orig_tN - 0.02), last_speech_sec, threshold=sil_thresh) < 0.075
+    ):
+        delta_end = raw_end_shift
+    else:
+        delta_end = delta_start
+
+    span_orig = orig_tN - orig_t0
+    if span_orig > 0.20 and (abs(delta_start) >= 0.02 or abs(delta_end) >= 0.03):
+        for w in words:
+            st = float(w.get("startSec", 0.0))
+            en = float(w.get("endSec", st))
+            alpha_s = min(1.0, max(0.0, (st - orig_t0) / span_orig))
+            alpha_e = min(1.0, max(0.0, (en - orig_t0) / span_orig))
+            w["startSec"] = round(st + delta_start + alpha_s * (delta_end - delta_start), 3)
+            w["endSec"] = round(en + delta_start + alpha_e * (delta_end - delta_start), 3)
+
+    # Extract internal silence islands >= 45ms strictly inside [first_speech_sec, last_speech_sec]
+    silence_islands: list[tuple[float, float]] = []
+    pos = int(voiced_idx[0]) + 1
+    end_limit = int(voiced_idx[-1])
+    while pos < end_limit:
+        if not is_silent[pos]:
+            pos += 1
+            continue
+        r0 = pos
+        while pos < end_limit and is_silent[pos]:
+            pos += 1
+        sil_s = r0 * frame_sec
+        sil_e = (pos - 1) * frame_sec + win_sec
+        if sil_e > sil_s and (sil_e - sil_s) >= 0.045:
+            silence_islands.append((sil_s, sil_e))
+
+    def _voiced_sec_in_window(t0: float, t1: float) -> float:
+        if t1 <= t0:
+            return 0.0
+        f0 = max(0, int(round(t0 / frame_sec)))
+        f1 = min(len(is_silent), int(round(t1 / frame_sec)))
+        if f1 <= f0:
+            return 0.0
+        return float(np.sum(~is_silent[f0:f1])) * frame_sec
+
+    def _min_rms_around(t_center: float, half_win: float = 0.030) -> float:
+        f0 = max(0, int(round((t_center - half_win) / frame_sec)))
+        f1 = min(len(rms), max(f0 + 1, int(round((t_center + half_win) / frame_sec))))
+        return float(np.min(rms[f0:f1])) if f1 > f0 else peak_rms
+
+    def _snap_boundary(b_idx: int, sil_s: float, sil_e: float) -> None:
+        w_left = words[b_idx]
+        w_right = words[b_idx + 1]
+        if sil_s < float(w_left.get("startSec", 0.0)) + 0.04:
+            return
+        w_left["endSec"] = round(sil_s, 3)
+        w_right["startSec"] = round(sil_e, 3)
+        min_right_dur = 0.08
+        if float(w_right.get("endSec", sil_e)) < sil_e + min_right_dur:
+            w_right["endSec"] = round(min(last_speech_sec, sil_e + min_right_dur), 3)
+            # Propagate forward only if needed to preserve monotonic word intervals
+            for m in range(b_idx + 2, n):
+                prev_end = float(words[m - 1]["endSec"])
+                if float(words[m]["startSec"]) < prev_end:
+                    words[m]["startSec"] = round(prev_end, 3)
+                if float(words[m]["endSec"]) < float(words[m]["startSec"]) + 0.05:
+                    words[m]["endSec"] = round(min(last_speech_sec, float(words[m]["startSec"]) + 0.05), 3)
+
+    # Step B: Snap absorbed silence islands onto exact word boundaries
+    used_boundaries: set[int] = set()
+    for sil_s, sil_e in silence_islands:
+        # 1. Check if silence already touches/bridges an existing ASR gap (b_idx, b_idx + 1)
+        bridged_b = None
+        for b_idx in range(n - 1):
+            if b_idx in used_boundaries:
+                continue
+            e_l = float(words[b_idx]["endSec"])
+            s_r = float(words[b_idx + 1]["startSec"])
+            if (e_l - 0.05) <= sil_s <= (s_r + 0.05) and sil_e <= float(words[b_idx + 1]["endSec"]) - 0.03:
+                bridged_b = b_idx
+                break
+        if bridged_b is not None:
+            _snap_boundary(bridged_b, sil_s, sil_e)
+            used_boundaries.add(bridged_b)
+            continue
+
+        # 2. Otherwise find the word `k` absorbing the largest share of [sil_s, sil_e]
+        best_k = None
+        best_ov = 0.0
+        for k in range(n):
+            ws = float(words[k]["startSec"])
+            we = float(words[k]["endSec"])
+            ov = max(0.0, min(we, sil_e) - max(ws, sil_s))
+            if ov > best_ov:
+                best_ov = ov
+                best_k = k
+        if best_k is None or best_ov < 0.45 * (sil_e - sil_s):
+            continue
+
+        ws_k = float(words[best_k]["startSec"])
+        we_k = float(words[best_k]["endSec"])
+        voiced_before_k = _voiced_sec_in_window(ws_k, sil_s)
+        voiced_after_k = _voiced_sec_in_window(sil_e, we_k)
+
+        # Prefer 2b first when `best_k` itself carries punctuation (`best_k in punct_boundaries`) while
+        # `best_k - 1` does not, and `best_k`'s trailing bbox stretched across `[sil_s, sil_e]` right up to
+        # `words[best_k + 1]["startSec"]` (e.g. Turbo stretching `"it:"` across `[8.37, 9.24]` up to `"rent"`).
+        can_snap_tail = (
+            best_k < n - 1
+            and best_k not in used_boundaries
+            and -0.06 <= (float(words[best_k + 1]["startSec"]) - sil_e) <= 0.14
+            and voiced_after_k < 0.08
+        )
+        is_tail_punct_pause = (
+            can_snap_tail
+            and best_k in punct_boundaries
+            and (best_k - 1) not in punct_boundaries
+            and voiced_before_k >= 0.035
+        )
+        if is_tail_punct_pause:
+            _snap_boundary(best_k, sil_s, sil_e)
+            used_boundaries.add(best_k)
+            continue
+
+        # 2a. Left-shifted post-pause word `best_k >= 1` absorbed the pause that occurred BEFORE `best_k`
+        if best_k >= 1 and (best_k - 1) not in used_boundaries:
+            prev_end = float(words[best_k - 1]["endSec"])
+            prev_start = float(words[best_k - 1]["startSec"])
+            if -0.05 <= (sil_s - prev_end) <= 0.48:
+                cut_between_prev_and_sil = _voice_cut_sec(
+                    mono, sample_rate, max(prev_start + 0.03, prev_end - 0.02), sil_s, threshold=sil_thresh
+                )
+                if cut_between_prev_and_sil < 0.040:
+                    tok_k = clean_word(str(words[best_k].get("word", "")))
+                    exp_syl_k = _estimate_expected_syllables(tok_k)
+                    prev_has_real_dip = _min_rms_around(prev_end, 0.030) < (0.22 * peak_rms)
+                    is_true_mid_word_break = (
+                        exp_syl_k >= 2
+                        and (best_k - 1) not in punct_boundaries
+                        and prev_has_real_dip
+                        and voiced_before_k >= 0.14
+                        and voiced_after_k >= 0.14
+                    )
+                    if not is_true_mid_word_break:
+                        _snap_boundary(best_k - 1, sil_s, sil_e)
+                        used_boundaries.add(best_k - 1)
+                        continue
+
+        # 2b. Tail-absorbed pause at end of `best_k` before `best_k + 1`
+        if can_snap_tail:
+            _snap_boundary(best_k, sil_s, sil_e)
+            used_boundaries.add(best_k)
+
+    return words
+
+
+SKIPPED_COMMA_MIN_SILENCE_SEC = 0.045
+SKIPPED_COMMA_MIN_VOICE_CUT_SEC = 0.025
+
+
+def detect_skipped_clause_pauses(
+    text: str,
+    asr_words: list[dict[str, Any]],
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    speed: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Flags major clause-dividing commas/semicolons/colons (`left_len >= 4` and `right_len >= 4`)
+    that TTS rushes straight through without any acoustic pause or voicing break.
+
+    Exempts numeric commas (`10,000`), short introductory phrases (`Today,`, `Worse yet,`),
+    and coordinate list / Oxford commas (`components, custom actuators, and delicate sensors`).
+    """
+    if audio_data is None or audio_data.size == 0 or sample_rate <= 0 or not text or not asr_words:
+        return []
+    source_words, delimiters = tokenize_text_with_delimiters(text)
+    if len(source_words) < 8:
+        return []
+    src_clean = [clean_word(w) for w in source_words]
+    asr_raw = [str(w.get("word", "")) for w in asr_words]
+    asr_clean = [clean_word(w) for w in asr_raw]
+    eff_lang = resolve_script_language(text, None)
+    eff_speed = max(0.5, float(speed or 1.0))
+
+    src_spans = _collapse_multiplied_letter_spans(
+        collapse_number_tokens(source_words, eff_lang, delimiters=delimiters),
+        source_words,
+        delimiters=delimiters,
+        counterpart_clean=set(asr_clean),
+    )
+    asr_spans = _collapse_multiplied_letter_spans(
+        collapse_number_tokens(asr_raw, eff_lang),
+        asr_raw,
+        counterpart_clean=set(src_clean),
+    )
+    src_boundary_to_asr: dict[int, int] = {}
+    matcher = difflib.SequenceMatcher(
+        None, [s.canonical for s in src_spans], [a.canonical for a in asr_spans], autojunk=False
+    )
+    for block in matcher.get_matching_blocks():
+        for off in range(block.size):
+            s_cur = src_spans[block.a + off]
+            a_cur = asr_spans[block.b + off]
+            s_len = s_cur.orig_end - s_cur.orig_start
+            a_len = a_cur.orig_end - a_cur.orig_start
+            if not s_cur.is_number and not a_cur.is_number and s_len >= 2 and s_len == a_len:
+                for sub in range(s_len - 1):
+                    src_boundary_to_asr[s_cur.orig_start + sub] = a_cur.orig_start + sub
+            if off + 1 < block.size:
+                s_right = src_spans[block.a + off + 1]
+                a_right = asr_spans[block.b + off + 1]
+                i_b = s_cur.orig_end - 1
+                j_b = a_cur.orig_end - 1
+                if s_right.orig_start == i_b + 1 and a_right.orig_start == j_b + 1:
+                    src_boundary_to_asr[i_b] = j_b
+
+    min_sil = SKIPPED_COMMA_MIN_SILENCE_SEC / eff_speed
+    min_cut = SKIPPED_COMMA_MIN_VOICE_CUT_SEC / eff_speed
+    issues: list[dict[str, Any]] = []
+
+    for i in range(3, len(source_words) - 4):
+        punct = delimiters[i + 1]
+        if not re.search(r"[,;:]", punct) or re.search(r"[.!?]", punct):
+            continue
+        j = src_boundary_to_asr.get(i)
+        if j is None or j + 1 >= len(asr_words):
+            continue
+        if _is_numeric_scope_word(src_clean[i]) and _is_numeric_scope_word(src_clean[i + 1]):
+            continue
+
+        # Compute word counts of the clause on the left and the clause on the right
+        left_len = 1
+        for k in range(i - 1, -1, -1):
+            if has_punctuation_boundary(delimiters[k + 1], source_words[k + 1]):
+                break
+            left_len += 1
+        right_len = 1
+        for k in range(i + 1, len(source_words) - 1):
+            if has_punctuation_boundary(delimiters[k + 1], source_words[k + 1]):
+                break
+            right_len += 1
+        if left_len < 4 or right_len < 4:
+            continue
+
+        # Exempt Oxford comma in a multi-item list ('A, B, and C')
+        if src_clean[i + 1] in ("and", "or", "va", "và", "hoặc") and any(
+            re.search(r",", delimiters[k]) for k in range(max(1, i - 3), i + 1)
+        ):
+            continue
+
+        w_cur, w_next = asr_words[j], asr_words[j + 1]
+        if min(float(w_cur.get("probability", 1.0)), float(w_next.get("probability", 1.0))) < 0.50:
+            continue
+        s1, e1 = float(w_cur.get("startSec", 0.0)), float(w_cur.get("endSec", 0.0))
+        s2, e2 = float(w_next.get("startSec", 0.0)), float(w_next.get("endSec", 0.0))
+        if (s2 - e1) >= (0.10 / eff_speed):
+            continue
+        punct_sil = _boundary_silence_run_sec(audio_data, sample_rate, s1, e1, s2, e2)
+        if punct_sil >= min_sil:
+            continue
+        mid_cur = 0.5 * (s1 + e1)
+        mid_next = 0.5 * (s2 + e2)
+        if _voice_cut_sec(audio_data, sample_rate, mid_cur, mid_next) >= min_cut:
+            continue
+        # Relative prosodic valley check: breathy comma pauses (e.g. ~0.015 RMS room/breath tone)
+        # sit slightly above absolute 0.012 RMS yet drop <22% of surrounding syllable energy.
+        val_lo = max(0.0, min(mid_cur, e1 - 0.08))
+        val_hi = min(len(audio_data) / float(sample_rate), max(mid_next, s2 + 0.12))
+        if val_hi - val_lo >= 0.12:
+            seg = audio_data[int(val_lo * sample_rate) : int(val_hi * sample_rate)]
+            win_n = max(1, int(0.010 * sample_rate))
+            n_frames = len(seg) // win_n
+            if n_frames >= 8:
+                frames = seg[: n_frames * win_n].reshape(n_frames, win_n)
+                f_rms = np.sqrt(np.mean(frames * frames, axis=1) + 1e-12)
+                valley_ceil = max(0.006, 0.22 * float(np.percentile(f_rms, 90)))
+                best_run = 0
+                cur_run = 0
+                for rv in f_rms:
+                    if rv < valley_ceil:
+                        cur_run += 1
+                        if cur_run > best_run:
+                            best_run = cur_run
+                    else:
+                        cur_run = 0
+                if best_run * 0.010 >= (0.045 / eff_speed):
+                    continue
+        # If pause was shifted one word early, let detect_misplaced_punctuation_pauses report it
+        if j > 0:
+            w_prev = asr_words[j - 1]
+            mid_prev = 0.5 * (float(w_prev.get("startSec", 0.0)) + float(w_prev.get("endSec", 0.0)))
+            if _voice_cut_sec(audio_data, sample_rate, mid_prev, mid_cur) >= MISPLACED_PAUSE_MIN_EARLY_CUT_SEC:
+                continue
+
+        raw_left = source_words[i].strip(" ,.;:!?\"'()")
+        raw_right = source_words[i + 1].strip(" ,.;:!?\"'()")
+        mark = punct.strip() or ","
+        issues.append({
+            "severity": "warning",
+            "code": "ABNORMAL_PAUSE",
+            "message": (
+                f'Đọc lướt dấu "{mark}" giữa hai mệnh đề "{raw_left}{mark} {raw_right}" '
+                f"— khoảng {format_timestamp(e1)}. Vui lòng nghe lại hoặc bấm Tạo lại."
+            ),
+            "words": [src_clean[i], src_clean[i + 1]],
+            "timeRange": [round(e1, 3), round(max(e1, s2), 3)],
+            "pauseContext": "skipped_comma",
+            "evidence": f"punct='{mark}' silence={punct_sil * 1000:.0f}ms left_len={left_len} right_len={right_len}",
+        })
+    return issues
+
+
+def _match_equivalent_subspans(
+    src_tokens: list[str],
+    asr_tokens: list[str],
+) -> tuple[bool, set[int], list[tuple[int, int]]]:
+    """Matches multi-token compound/loanword sub-spans (e.g. 'setup livestream' <-> 'sét ấp lai chim',
+    'all right' <-> 'alright') within a `replace` opcode.
+
+    Returns `(full_match, covered_local_src_indices, asr_to_local_src_pairs)`.
+    """
+    ns, na = len(src_tokens), len(asr_tokens)
+    if ns == 0 or na == 0 or ns > 12 or na > 16:
+        return False, set(), []
+
+    def _sub_equiv(s_sub: list[str], a_sub: list[str]) -> bool:
+        if len(s_sub) == 1 and len(a_sub) == 1 and are_words_equivalent(s_sub[0], a_sub[0]):
+            return True
+        if are_en_vi_loanword_spans_equivalent(s_sub, a_sub):
+            return True
+        sj = clean_word("".join(s_sub))
+        aj = clean_word("".join(a_sub))
+        if not sj or not aj:
+            return False
+        if sj == aj or are_words_equivalent(sj, aj):
+            return True
+        if min(len(sj), len(aj)) >= 6 and levenshtein_dist(sj, aj) <= 1 and phonetic_key(sj) == phonetic_key(aj):
+            return True
+        return False
+
+    # Exact full-span DP
+    dp: dict[tuple[int, int], list[tuple[int, int, int, int]]] = {(0, 0): []}
+    for si in range(ns + 1):
+        for ai in range(na + 1):
+            path = dp.get((si, ai))
+            if path is None:
+                continue
+            for ds in (1, 2):
+                if si + ds > ns:
+                    break
+                for da in (1, 2, 3):
+                    if ai + da > na or (ds == 2 and da == 3):
+                        continue
+                    if (si + ds, ai + da) in dp:
+                        continue
+                    if _sub_equiv(src_tokens[si : si + ds], asr_tokens[ai : ai + da]):
+                        dp[(si + ds, ai + da)] = path + [(si, si + ds, ai, ai + da)]
+
+    if (ns, na) in dp:
+        pairs: list[tuple[int, int]] = []
+        for s0, s1, a0, a1 in dp[(ns, na)]:
+            for a_k in range(a0, a1):
+                pairs.append((a_k, min(s0 + (a_k - a0), s1 - 1)))
+        return True, set(range(ns)), pairs
+
+    # Partial sub-span coverage for mixed spans where one loanword matched and another word did not
+    covered_src: set[int] = set()
+    used_asr: set[int] = set()
+    for si in range(ns):
+        if si in covered_src:
+            continue
+        for ds in (2, 1):
+            if si + ds > ns:
+                continue
+            matched_here = False
+            for ai in range(na):
+                if ai in used_asr:
+                    continue
+                for da in (3, 2, 1):
+                    if ai + da > na or any((ai + k) in used_asr for k in range(da)):
+                        continue
+                    if _sub_equiv(src_tokens[si : si + ds], asr_tokens[ai : ai + da]):
+                        covered_src.update(range(si, si + ds))
+                        used_asr.update(range(ai, ai + da))
+                        matched_here = True
+                        break
+                if matched_here:
+                    break
+            if matched_here:
+                break
+    return False, covered_src, []
+
+
+def _verify_asr_substitution_with_lexicon(
+    raw_src_word: str,
+    src_clean: str,
+    t_start: float,
+    t_end: float,
+    w_prob: float,
+    audio_data: np.ndarray | None,
+    sample_rate: int,
+    whisper_model: Any | None,
+    language: str | None,
+    total_dur: float,
+    slice_budget: list[int] | None,
+    secondary_reasons: list[str] | None,
+) -> bool:
+    """Layer 3 Anti-ASR-Mishearing Arbitrator:
+    When primary ASR substitutes a word at moderate confidence (`0.45 <= w_prob < CORE_GARBLE_MAX_ASR_PROB`)
+    despite clean unbroken waveform voicing, runs an isolated silence-padded slice with `hotwords=raw_src_word`.
+    Returns True ONLY if isolated ASR confirms an equivalent word with `prob >= 0.72` and zero stutter restarts.
+    """
+    if (
+        whisper_model is None
+        or audio_data is None
+        or audio_data.size == 0
+        or sample_rate <= 0
+        or not src_clean
+        or not (0.45 <= w_prob < CORE_GARBLE_MAX_ASR_PROB)
+        or slice_budget is None
+        or slice_budget[0] <= 0
+    ):
+        return False
+    if (t_end - t_start) < 0.10:
+        return False
+
+    mono = np.ascontiguousarray(audio_data, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    # Do not clear if the word itself has an internal glottal voice cut >= 40ms
+    if (t_end - t_start) >= 0.14 and _voice_cut_sec(mono, sample_rate, t_start + 0.03, t_end - 0.03, threshold=0.003) >= 0.040:
+        return False
+
+    eff_total = total_dur if total_dur > 0 else (mono.size / float(sample_rate))
+    s0 = max(0, int(round(max(0.0, t_start - 0.06) * sample_rate)))
+    s1 = min(mono.size, int(round(min(eff_total, t_end + 0.08) * sample_rate)))
+    if s1 - s0 < int(0.09 * sample_rate):
+        return False
+
+    pad = np.zeros(int(0.18 * sample_rate), dtype=np.float32)
+    isolated_clip = np.concatenate([pad, mono[s0:s1], pad])
+    slice_budget[0] -= 1
+    if secondary_reasons is not None:
+        secondary_reasons.append(f"lexicon_verify:{src_clean}")
+
+    import tempfile
+    import soundfile as sf
+
+    lang_code = None if not language or language == "auto" else language
+    hint = raw_src_word.strip(" ,.;:!?\"'()") or src_clean
+    fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        sf.write(tmp_path, isolated_clip, sample_rate, subtype="PCM_16")
+        try:
+            seg_iter, _ = whisper_model.transcribe(
+                tmp_path,
+                language=lang_code,
+                beam_size=5,
+                word_timestamps=True,
+                vad_filter=False,
+                condition_on_previous_text=False,
+                hotwords=hint,
+            )
+        except TypeError:
+            try:
+                seg_iter, _ = whisper_model.transcribe(
+                    tmp_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=False,
+                    hotwords=hint,
+                )
+            except TypeError:
+                seg_iter, _ = whisper_model.transcribe(
+                    tmp_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=False,
+                )
+        slice_tokens = [
+            (str(w.word).strip(), clean_word(str(w.word)), float(getattr(w, "probability", 0.8)))
+            for seg in seg_iter
+            for w in (getattr(seg, "words", None) or [])
+            if getattr(w, "word", None) and clean_word(str(w.word))
+        ]
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    if not slice_tokens:
+        return False
+    # Reject if isolated slice shows adjacent duplicate/stutter tokens
+    for k in range(len(slice_tokens) - 1):
+        if slice_tokens[k][1] == slice_tokens[k + 1][1] or slice_tokens[k + 1][0].startswith("-"):
+            return False
+    if len(slice_tokens) == 1:
+        _, cln_tok, prob_tok = slice_tokens[0]
+        return prob_tok >= 0.72 and are_words_equivalent(src_clean, cln_tok)
+    joined_cln = clean_word("".join(c for _, c, _ in slice_tokens))
+    min_prob = min(p for _, _, p in slice_tokens)
+    return min_prob >= 0.72 and bool(joined_cln) and are_words_equivalent(src_clean, joined_cln)
 
 
 def analyze_word_alignment_issues(
@@ -4813,6 +5584,25 @@ def analyze_word_alignment_issues(
                 )
 
                 if is_repeat or is_prefix_stutter or is_suffix_stutter:
+                    def _is_silent_phantom_tok(tok_obj: dict[str, Any]) -> bool:
+                        tp = float(tok_obj.get("probability", 1.0))
+                        ts0 = float(tok_obj.get("startSec", 0.0))
+                        ts1 = float(tok_obj.get("endSec", 0.0))
+                        if tp < 0.40 and audio_data is not None and sample_rate > 0:
+                            s_d = max(0, int(round(ts0 * sample_rate)))
+                            e_d = min(len(audio_data), int(round(ts1 * sample_rate)))
+                            if e_d <= s_d or float(np.sqrt(np.mean(np.square(audio_data[s_d:e_d], dtype=np.float32)))) < 0.008:
+                                return True
+                        return tp < 0.25 and (ts1 - ts0) < 0.05
+
+                    if _is_silent_phantom_tok(w_obj):
+                        continue
+                    if is_repeat and j > 0 and w_clean == prev_w and w_clean != next_w and _is_silent_phantom_tok(asr_words[j - 1]):
+                        if (j - 1) in asr_to_source:
+                            asr_to_source[j] = asr_to_source.pop(j - 1)
+                        continue
+                    if is_repeat and (j + 1) < len(asr_words) and w_clean == next_w and w_clean != prev_w and _is_silent_phantom_tok(asr_words[j + 1]):
+                        continue
                     # Check whether count in ASR exceeds count in source script, or if it's a local adjacent repeat
                     # where the source script does not intentionally repeat `w_clean` back-to-back near `i1`:
                     src_count = source_words_clean.count(w_clean)
@@ -5260,12 +6050,21 @@ def analyze_word_alignment_issues(
             if (
                 src_joined == asr_joined
                 or are_words_equivalent(src_joined, asr_joined)
+                or are_en_vi_loanword_spans_equivalent(src_slice_clean, asr_slice_clean)
                 or is_compound_proper_split
                 or (src_canon_joined and src_canon_joined == asr_canon_joined)
                 or are_number_expressions_equivalent(" ".join(src_slice_clean), " ".join(asr_slice_clean), language)
             ):
                 for j_map in range(j1, j2):
                     asr_to_source[j_map] = min(i1 + (j_map - j1), i2 - 1)
+                continue
+
+            subspan_full_match, subspan_covered_local, subspan_pairs = _match_equivalent_subspans(
+                src_slice_clean, asr_slice_clean
+            )
+            if subspan_full_match:
+                for a_loc, s_loc in subspan_pairs:
+                    asr_to_source[j1 + a_loc] = i1 + s_loc
                 continue
 
             # Whisper wrote script words as an abbreviation (e.g. 'A T and T' -> 'AT&T', 'milliampere hour' -> 'mAh')
@@ -5279,7 +6078,7 @@ def analyze_word_alignment_issues(
                 continue
 
             # Identify source word indices already covered by a canonical span matched in ASR
-            matched_src_indices: set[int] = set()
+            matched_src_indices: set[int] = {i1 + loc_i for loc_i in subspan_covered_local}
             for k_sp in range(s_i1, s_i2):
                 sp = src_spans[k_sp]
                 if any(are_words_equivalent(sp.canonical, ac) for ac in asr_span_canonicals):
@@ -5481,6 +6280,22 @@ def analyze_word_alignment_issues(
                         "words": [sw, aw],
                         "timeRange": [round(t_start, 3), round(t_end, 3)],
                     })
+                elif _verify_asr_substitution_with_lexicon(
+                    raw_src_word=raw_sw_tok,
+                    src_clean=sw,
+                    t_start=t_start,
+                    t_end=t_end,
+                    w_prob=w_prob,
+                    audio_data=audio_data,
+                    sample_rate=sample_rate,
+                    whisper_model=whisper_model,
+                    language=language,
+                    total_dur=total_dur,
+                    slice_budget=slice_budget,
+                    secondary_reasons=secondary_reasons,
+                ):
+                    asr_to_source[j1] = i1
+                    continue
                 else:
                     issues.append({
                         "severity": "warning",
@@ -5542,6 +6357,22 @@ def analyze_word_alignment_issues(
                             "words": [sw_k, aw_k],
                             "timeRange": [round(t_s_k, 3), round(t_e_k, 3)],
                         })
+                    elif _verify_asr_substitution_with_lexicon(
+                        raw_src_word=raw_sw_k,
+                        src_clean=sw_k,
+                        t_start=t_s_k,
+                        t_end=t_e_k,
+                        w_prob=p_k,
+                        audio_data=audio_data,
+                        sample_rate=sample_rate,
+                        whisper_model=whisper_model,
+                        language=language,
+                        total_dur=total_dur,
+                        slice_budget=slice_budget,
+                        secondary_reasons=secondary_reasons,
+                    ):
+                        asr_to_source[a_idx_k] = s_idx_k
+                        continue
                     else:
                         issues.append({
                             "severity": "warning",
@@ -5607,6 +6438,13 @@ def analyze_word_alignment_issues(
                     )
 
                     if is_repeat or is_prefix_stutter or is_suffix_stutter:
+                        if p < 0.40 and audio_data is not None and sample_rate > 0:
+                            s_dup = max(0, int(round(t_start_w * sample_rate)))
+                            e_dup = min(len(audio_data), int(round(t_end_w * sample_rate)))
+                            if e_dup <= s_dup or float(np.sqrt(np.mean(np.square(audio_data[s_dup:e_dup], dtype=np.float32)))) < 0.008:
+                                continue
+                        elif p < 0.25 and (t_end_w - t_start_w) < 0.05:
+                            continue
                         src_count = source_words_clean.count(w_clean)
                         asr_count = asr_words_clean.count(w_clean)
                         if asr_count <= src_count:
@@ -6887,6 +7725,7 @@ def detect_acoustic_stutter(
     return issues
 
 
+
 def verify_whisper_smoothed_stutters(
     text: str,
     asr_words: list[dict[str, Any]],
@@ -7016,8 +7855,7 @@ def verify_whisper_smoothed_stutters(
         aw = asr_words_clean[asr_idx]
         if (
             not sw
-            or len(sw) < 3
-            or sw in WEAK_CLITIC_ARTICLES
+            or len(sw) < 2
             or sw in intentional_repeats
             or src_idx in pm_covered_src
             or _is_numeric_scope_word(sw)
@@ -7065,7 +7903,8 @@ def verify_whisper_smoothed_stutters(
         # Trigger A: Double-burst voiced syllable restart inside the word span
         trigger_a = False
         best_burst_meta = ""
-        if active_span_dur >= (0.20 * expected_syl + 0.22):
+        min_trig_a_dur = 0.34 if expected_syl == 1 else (0.20 * expected_syl + 0.22)
+        if active_span_dur >= min_trig_a_dur:
             local_bursts: list[dict[str, Any]] = []
             in_b = False
             b_st_i = f0
@@ -7222,7 +8061,9 @@ def verify_whisper_smoothed_stutters(
             continue
 
         prev_src = source_words_clean[src_idx - 1] if src_idx > 0 else ""
+        prev2_src = source_words_clean[src_idx - 2] if src_idx >= 2 else ""
         next_src = source_words_clean[src_idx + 1] if (src_idx + 1) < len(source_words_clean) else ""
+        next2_src = source_words_clean[src_idx + 2] if (src_idx + 2) < len(source_words_clean) else ""
 
         def _is_neighbor_bleed(tok_c: str, neighbor_c: str) -> bool:
             if not neighbor_c or not tok_c:
@@ -7233,22 +8074,48 @@ def verify_whisper_smoothed_stutters(
                 return True
             return False
 
-        # Trim edge neighbor bleed tokens (e.g. trailing '20' from preceding '2020')
+        def _is_edge_truncated_bleed(tok_c: str, neighbor_c: str) -> bool:
+            if _is_neighbor_bleed(tok_c, neighbor_c):
+                return True
+            if not tok_c or not neighbor_c or len(tok_c) < 2 or len(neighbor_c) < 3:
+                return False
+            pk_t = phonetic_key(tok_c)
+            pk_n = phonetic_key(neighbor_c)
+            return neighbor_c.startswith(tok_c[:2]) or (len(pk_t) >= 2 and pk_n.startswith(pk_t[:2]))
+
+        # Trim edge neighbor bleed tokens (including 2-word bleed when Large V3 stretches w_en across
+        # a short function word into the onset of next2_src, e.g. 'Rent the rope' for 'rent the robot')
         trimmed_slice = list(slice_words)
-        if len(trimmed_slice) >= 2 and _is_neighbor_bleed(trimmed_slice[0][1], prev_src):
+        if (
+            len(trimmed_slice) >= 3
+            and _is_edge_truncated_bleed(trimmed_slice[0][1], prev2_src)
+            and _is_neighbor_bleed(trimmed_slice[1][1], prev_src)
+        ):
+            trimmed_slice = trimmed_slice[2:]
+        elif len(trimmed_slice) >= 2 and _is_neighbor_bleed(trimmed_slice[0][1], prev_src):
             trimmed_slice = trimmed_slice[1:]
-        if len(trimmed_slice) >= 2 and _is_neighbor_bleed(trimmed_slice[-1][1], next_src):
+
+        if (
+            len(trimmed_slice) >= 3
+            and _is_edge_truncated_bleed(trimmed_slice[-1][1], next2_src)
+            and _is_neighbor_bleed(trimmed_slice[-2][1], next_src)
+        ):
+            trimmed_slice = trimmed_slice[:-2]
+        elif len(trimmed_slice) >= 2 and _is_neighbor_bleed(trimmed_slice[-1][1], next_src):
             trimmed_slice = trimmed_slice[:-1]
         if not trimmed_slice:
             continue
 
         # Step 1: Explicit syllable restart / duplicate inside the isolated slice (e.g. 'Da -day', 'day day')
         confirmed_stutter = False
+        confirmed_whole_word_repeat = False
         for idx_s in range(len(trimmed_slice) - 1):
             raw_a, cln_a, _ = trimmed_slice[idx_s]
             raw_b, cln_b, _ = trimmed_slice[idx_s + 1]
             if cln_a == cln_b:
                 confirmed_stutter = True
+                if not raw_a.startswith("-") and not raw_b.startswith("-") and are_words_equivalent(sw, cln_a):
+                    confirmed_whole_word_repeat = True
                 break
             if len(cln_a) >= 2 and sw.startswith(cln_a) and (
                 are_words_equivalent(sw, cln_b) or raw_b.startswith("-")
@@ -7305,13 +8172,19 @@ def verify_whisper_smoothed_stutters(
         t_issue_start = round(speech_onset, 3)
         t_issue_end = round(max(w_en, speech_offset), 3)
         ts = format_timestamp(t_issue_start)
-        verified_issues.append({
-            "severity": "warning",
-            "code": "SUSPECTED_STUTTER",
-            "message": (
+        issue_code = "REPEATED_WORD" if confirmed_whole_word_repeat else "SUSPECTED_STUTTER"
+        issue_msg = (
+            f'Nghi vấn đọc lặp từ "{src_display}" (tách riêng nghe thành "{obs_phrase}") — khoảng {ts}. Vui lòng nghe lại.'
+            if confirmed_whole_word_repeat
+            else (
                 f'Nghi vấn vấp âm hoặc phát âm méo tại từ "{src_display}" '
                 f'(tách riêng nghe thành "{obs_phrase}") — khoảng {ts}. Vui lòng nghe lại.'
-            ),
+            )
+        )
+        verified_issues.append({
+            "severity": "warning",
+            "code": issue_code,
+            "message": issue_msg,
             "words": [sw],
             "timeRange": [t_issue_start, t_issue_end],
             "sourceExcerpt": src_display,
@@ -7725,8 +8598,15 @@ def resolve_script_language(text: str, language: str | None) -> str | None:
     """Resolves the effective language from script text to prevent mismatched voice profile defaults
     (e.g. a cloned voice with default 'vi' reading an English script) from corrupting ASR & number normalization.
     """
+    norm_lang = language
+    if isinstance(language, str) and language.strip():
+        raw_l = language.strip()
+        if raw_l.lower() != "auto":
+            norm_lang = raw_l.split("-")[0].split("_")[0].lower() or raw_l
+        else:
+            norm_lang = "auto"
     if not text or not text.strip():
-        return language
+        return norm_lang
     if re.search(
         r"[ăâđêôơưĂÂĐÊÔƠƯàảãáạằẳẵắặầẩẫấậèẻẽéẹềểễếệìỉĩíịòỏõóọồổỗốộờởỡớợùủũúụừửữứựỳỷỹýỵ]",
         text,
@@ -7738,7 +8618,59 @@ def resolve_script_language(text: str, language: str | None) -> str | None:
         en_hits = sum(1 for t in tokens if t in EN_MINOR_STOPWORDS or t in {"you", "your", "over", "into", "across", "not", "have", "has", "their", "they", "more", "most", "every"})
         if en_hits >= 2 or (en_hits / len(tokens)) >= 0.15:
             return "en"
-    return language
+    return norm_lang
+
+
+_RECENT_PRIMARY_ASR_CACHE: dict[tuple[str, int, int, str, str], list[dict[str, Any]]] = {}
+
+
+def cache_primary_asr_words(
+    audio_path: str,
+    model_id: str | None,
+    language: str | None,
+    words: list[dict[str, Any]],
+) -> None:
+    """Stores recently aligned primary ASR words keyed by exact file stat + model_id so post-synthesis
+    punctuation shaping and immediate Post-QC validation never run Whisper twice on the same WAV.
+    """
+    if not audio_path or not words:
+        return
+    try:
+        st = os.stat(audio_path)
+        key = (
+            os.path.abspath(audio_path),
+            int(st.st_mtime_ns),
+            int(st.st_size),
+            str(model_id or "").lower(),
+            str(language or ""),
+        )
+        if len(_RECENT_PRIMARY_ASR_CACHE) >= 256:
+            _RECENT_PRIMARY_ASR_CACHE.pop(next(iter(_RECENT_PRIMARY_ASR_CACHE)), None)
+        _RECENT_PRIMARY_ASR_CACHE[key] = [dict(w) for w in words]
+    except Exception:
+        pass
+
+
+def get_cached_primary_asr_words(
+    audio_path: str,
+    model_id: str | None,
+    language: str | None,
+) -> list[dict[str, Any]] | None:
+    if not audio_path:
+        return None
+    try:
+        st = os.stat(audio_path)
+        key = (
+            os.path.abspath(audio_path),
+            int(st.st_mtime_ns),
+            int(st.st_size),
+            str(model_id or "").lower(),
+            str(language or ""),
+        )
+        hit = _RECENT_PRIMARY_ASR_CACHE.get(key)
+        return [dict(w) for w in hit] if hit else None
+    except Exception:
+        return None
 
 
 def validate_audio_quality(
@@ -7866,8 +8798,14 @@ def validate_audio_quality(
 
     try:
         lang_code = None if not eff_language or eff_language == "auto" else eff_language
+        qc_hotwords = extract_qc_vocabulary_hotwords(
+            text, language=eff_language, pronunciation_mapping=pronunciation_mapping
+        )
 
         def _invoke_whisper_transcribe(model_obj: Any, use_vad: bool) -> Any:
+            kw_extra: dict[str, Any] = {"condition_on_previous_text": False}
+            if qc_hotwords:
+                kw_extra["hotwords"] = qc_hotwords
             try:
                 if use_vad:
                     return model_obj.transcribe(
@@ -7877,7 +8815,7 @@ def validate_audio_quality(
                         word_timestamps=True,
                         vad_filter=True,
                         vad_parameters=dict(DEFAULT_TTS_VAD_PARAMETERS),
-                        condition_on_previous_text=False,
+                        **kw_extra,
                     )
                 return model_obj.transcribe(
                     audio_path,
@@ -7885,63 +8823,80 @@ def validate_audio_quality(
                     beam_size=5,
                     word_timestamps=True,
                     vad_filter=False,
-                    condition_on_previous_text=False,
+                    **kw_extra,
                 )
             except TypeError:
-                return model_obj.transcribe(
-                    audio_path,
-                    language=lang_code,
-                    beam_size=5,
-                    word_timestamps=True,
-                    vad_filter=use_vad,
-                )
+                try:
+                    return model_obj.transcribe(
+                        audio_path,
+                        language=lang_code,
+                        beam_size=5,
+                        word_timestamps=True,
+                        vad_filter=use_vad,
+                        condition_on_previous_text=False,
+                    )
+                except TypeError:
+                    return model_obj.transcribe(
+                        audio_path,
+                        language=lang_code,
+                        beam_size=5,
+                        word_timestamps=True,
+                        vad_filter=use_vad,
+                    )
 
-        try:
-            segments_iter, _ = _invoke_whisper_transcribe(whisper_model, True)
-            segments_iter = list(segments_iter)
-        except Exception as inf_err:
-            if _is_cuda_runtime_error(inf_err):
-                log(f"[audio_quality] CUDA inference error ({inf_err}); switching ASR to CPU / int8")
-                mgr = AsrLifecycleManager.get_instance()
-                whisper_model = mgr.get_or_load(
-                    model_dir_or_id=target_model_dir,
-                    models_dir=models_dir,
-                    device="cpu",
-                    compute_type="int8",
-                )
+        cached_primary = (
+            get_cached_primary_asr_words(audio_path, active_model_id, lang_code)
+            or get_cached_primary_asr_words(audio_path, canonical_id, lang_code)
+        )
+        detected_words: list[dict[str, Any]] = []
+        if cached_primary is not None:
+            detected_words = cached_primary
+        else:
+            try:
                 segments_iter, _ = _invoke_whisper_transcribe(whisper_model, True)
                 segments_iter = list(segments_iter)
-            else:
-                raise
+            except Exception as inf_err:
+                if _is_cuda_runtime_error(inf_err):
+                    log(f"[audio_quality] CUDA inference error ({inf_err}); switching ASR to CPU / int8")
+                    mgr = AsrLifecycleManager.get_instance()
+                    whisper_model = mgr.get_or_load(
+                        model_dir_or_id=target_model_dir,
+                        models_dir=models_dir,
+                        device="cpu",
+                        compute_type="int8",
+                    )
+                    segments_iter, _ = _invoke_whisper_transcribe(whisper_model, True)
+                    segments_iter = list(segments_iter)
+                else:
+                    raise
 
-        detected_words: list[dict[str, Any]] = []
-        for seg in segments_iter:
-            if seg.words:
-                for w in seg.words:
-                    detected_words.append({
-                        "word": w.word,
-                        "startSec": round(float(w.start), 3),
-                        "endSec": round(float(w.end), 3),
-                        "probability": round(float(w.probability), 4),
-                        "tokenSource": "primary_asr",
-                    })
+            for seg in segments_iter:
+                if seg.words:
+                    for w in seg.words:
+                        detected_words.append({
+                            "word": w.word,
+                            "startSec": round(float(w.start), 3),
+                            "endSec": round(float(w.end), 3),
+                            "probability": round(float(w.probability), 4),
+                            "tokenSource": "primary_asr",
+                        })
 
-        # If detected_words is empty with vad_filter=True, retry once with vad_filter=False
-        if not detected_words:
-            try:
-                seg_retry, _ = _invoke_whisper_transcribe(whisper_model, False)
-                for seg in seg_retry:
-                    if seg.words:
-                        for w in seg.words:
-                            detected_words.append({
-                                "word": w.word,
-                                "startSec": round(float(w.start), 3),
-                                "endSec": round(float(w.end), 3),
-                                "probability": round(float(w.probability), 4),
-                                "tokenSource": "primary_asr",
-                            })
-            except Exception as e:
-                log(f"[audio_quality] retry transcribe error: {e}")
+            # If detected_words is empty with vad_filter=True, retry once with vad_filter=False
+            if not detected_words:
+                try:
+                    seg_retry, _ = _invoke_whisper_transcribe(whisper_model, False)
+                    for seg in seg_retry:
+                        if seg.words:
+                            for w in seg.words:
+                                detected_words.append({
+                                    "word": w.word,
+                                    "startSec": round(float(w.start), 3),
+                                    "endSec": round(float(w.end), 3),
+                                    "probability": round(float(w.probability), 4),
+                                    "tokenSource": "primary_asr",
+                                })
+                except Exception as e:
+                    log(f"[audio_quality] retry transcribe error: {e}")
 
         # Bugfix: If detected_words is empty on valid audio, mark as unverified instead of falsely passing
         if not detected_words:
@@ -7989,18 +8944,24 @@ def validate_audio_quality(
             except Exception as rd_err:
                 log(f"[audio_quality] Cannot read audio waveform: {rd_err}")
 
-        # Recover unaligned words in acoustic speech energy gaps (sharing the secondary slice budget and waveform)
-        detected_words = recover_unaligned_words(
-            audio_path,
-            detected_words,
-            dur,
-            whisper_model,
-            language=eff_language,
-            slice_budget=shared_slice_budget,
-            audio_data=data_wave,
-            sample_rate=sr_wave,
-            secondary_reasons=shared_secondary_reasons,
-        )
+        # Re-anchor Whisper DTW word timestamps onto true waveform boundaries BEFORE gap recovery
+        # (so Large V3's systematic left-shift is corrected using untouched primary timestamps)
+        if cached_primary is None:
+            detected_words = reanchor_asr_word_timestamps(
+                detected_words, data_wave, sr_wave, text=text
+            )
+            detected_words = recover_unaligned_words(
+                audio_path,
+                detected_words,
+                dur,
+                whisper_model,
+                language=eff_language,
+                slice_budget=shared_slice_budget,
+                audio_data=data_wave,
+                sample_rate=sr_wave,
+                secondary_reasons=shared_secondary_reasons,
+            )
+            cache_primary_asr_words(audio_path, active_model_id, lang_code, detected_words)
         t_primary_asr_ms = round((time.perf_counter() - t_stage0) * 1000.0 - t_tech_ms, 2)
 
         t_env0 = time.perf_counter()
@@ -8080,11 +9041,21 @@ def validate_audio_quality(
                 log(f"[audio_quality] Phrase pause check failed: {pause_err}")
             try:
                 # Step 5: Comma pause moved one word too early ('Every single | month, seventy')
-                alignment_issues.extend(
-                    detect_misplaced_punctuation_pauses(text, detected_words, data_wave, sr_wave)
-                )
+                misplaced_issues = detect_misplaced_punctuation_pauses(text, detected_words, data_wave, sr_wave)
+                alignment_issues.extend(misplaced_issues)
             except Exception as misplaced_err:
+                misplaced_issues = []
                 log(f"[audio_quality] Misplaced pause check failed: {misplaced_err}")
+            try:
+                # Step 6: Clause-dividing comma/semicolon/colon rushed straight through without pausing
+                skipped_issues = detect_skipped_clause_pauses(text, detected_words, data_wave, sr_wave, speed=speed)
+                for sk_iss in skipped_issues:
+                    sk_words = sk_iss.get("words") or []
+                    if sk_words and any(sk_words[0] in (mp.get("words") or []) for mp in misplaced_issues):
+                        continue
+                    alignment_issues.append(sk_iss)
+            except Exception as skipped_err:
+                log(f"[audio_quality] Skipped clause pause check failed: {skipped_err}")
         t_pause_ms = round((time.perf_counter() - t_pause0) * 1000.0, 2)
         for iss in alignment_issues:
             iss["asrModelId"] = active_model_id

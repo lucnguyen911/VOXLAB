@@ -563,8 +563,13 @@ def main(argv: list[str] | None = None) -> int:
             _ensure_fresh_qc_modules()
             return audio_ops.probe(params)
 
+        def enforce_pauses_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
+            _ensure_fresh_qc_modules()
+            return audio_ops.enforce_punctuation_pauses(_m, params, ctx)
+
         server.register_heavy("audio.assemble", audio_ops.assemble)
         server.register_light("audio.probe", probe_handler)
+        server.register_heavy("audio.enforce_punctuation_pauses", enforce_pauses_handler)
         server.register_heavy("audio.validate_quality", validate_quality_handler)
 
         def generate_srt_handler(_m: str, params: dict, ctx: RequestContext) -> dict:

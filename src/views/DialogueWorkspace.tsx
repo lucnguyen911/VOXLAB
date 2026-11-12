@@ -426,6 +426,8 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     const res = await synthesizeSpeechCore(cleanSpeechText, snapshot, {
       scope: "dialogue",
       id: `seg_${seg.id}`,
+      punctuationPauses: settings.pauses,
+      asrModelId: currentAsrModel,
       onProgress,
     });
 
@@ -436,6 +438,12 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       durationSec: res.durationSec,
       audioBlobUrl: res.blobUrl,
       audioFilePath: res.outputPath,
+      ...(typeof res.leadingSilenceMs === "number"
+        ? { leadingSilenceSec: res.leadingSilenceMs / 1000 }
+        : {}),
+      ...(typeof res.trailingSilenceMs === "number"
+        ? { trailingSilenceSec: res.trailingSilenceMs / 1000 }
+        : {}),
       errorMessage: undefined,
       effectiveVoiceSnapshot: snapshot,
       qualityReview: {
@@ -499,7 +507,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         s.status === "ready" &&
         Boolean(s.audioFilePath || s.audioBlobUrl) &&
         s.qualityReview?.status !== "checking" &&
-        isReviewOutdated(s, currentAsrModel, isAsrReady) &&
+        isReviewOutdated(s, undefined, isAsrReady) &&
         !inFlightValidationsRef.current.has(`${getChunkAudioSignature(s)}::${currentAsrModel}`)
     );
 
@@ -625,6 +633,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
           outputPath: masterPath,
           format: "wav",
           mode: "sequential",
+          punctuationPauses: settings.pauses,
         });
         const url = await readAudioFileBlobUrl(assembleRes.outputPath);
         setMasterAudioUrl(url);
@@ -985,6 +994,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
             outputPath: chosenPath,
             format: isMp3 ? "mp3" : "wav",
             mode: "sequential",
+            punctuationPauses: settings.pauses,
           });
         }
 

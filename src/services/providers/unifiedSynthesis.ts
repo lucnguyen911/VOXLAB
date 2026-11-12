@@ -1,4 +1,4 @@
-import { EffectiveVoiceSnapshot } from "../../types/ui";
+import { EffectiveVoiceSnapshot, PunctuationPauses } from "../../types/ui";
 import { getSharedAiServices, readAudioFileBlobUrl } from "../batch/batchRuntime";
 import {
   getEffectiveRules,
@@ -14,6 +14,8 @@ export interface SynthesisCoreOptions {
   id?: string;
   projectId?: string;
   pronunciationRules?: PronunciationRule[];
+  punctuationPauses?: PunctuationPauses;
+  asrModelId?: string;
   advancedSettings?: Record<string, unknown>;
   onProgress?: (pct: number, stage: string) => void;
 }
@@ -25,6 +27,8 @@ export interface SynthesisCoreResult {
   sourceText: string;
   spokenText: string;
   pronunciationMapping: PronunciationMappingEntry[];
+  leadingSilenceMs?: number;
+  trailingSilenceMs?: number;
 }
 
 /**
@@ -62,6 +66,9 @@ export async function synthesizeSpeechCore(
   let finalOutputPath = outputPath;
   let spokenText = prepared.spokenText;
   let pronunciationMapping = prepared.pronunciationMapping;
+  let leadingSilenceMs: number | undefined;
+  let trailingSilenceMs: number | undefined;
+  let majorPunctuationSplit = false;
 
   if (snapshot.provider === "edge") {
     const res = await edgeTtsProvider.synthesize({
@@ -97,6 +104,7 @@ export async function synthesizeSpeechCore(
       speed: snapshot.speed,
       advancedSettings: options.advancedSettings,
       pronunciationRules: effectiveRules,
+      punctuationPauses: options.punctuationPauses,
       projectId,
       onProgress: options.onProgress,
     });
@@ -104,8 +112,39 @@ export async function synthesizeSpeechCore(
     finalOutputPath = res.outputPath;
     if (res.spokenText) spokenText = res.spokenText;
     if (res.pronunciationMapping) pronunciationMapping = res.pronunciationMapping;
+    leadingSilenceMs = res.leadingSilenceMs;
+    trailingSilenceMs = res.trailingSilenceMs;
+    majorPunctuationSplit = Boolean(res.majorPunctuationSplit);
   } else {
     throw new Error(`Provider "${snapshot.provider}" chưa được hỗ trợ để tạo audio.`);
+  }
+
+  if (ai && options.punctuationPauses) {
+    const trimmed = text.trim();
+    const innerText = trimmed.length > 2 ? trimmed.slice(0, -1) : "";
+    const needsTier2Shaping = majorPunctuationSplit
+      ? /[,，、:;：；]/.test(innerText)
+      : /[,.;:!?…，、。；：！？]/.test(innerText);
+    if (needsTier2Shaping) {
+      try {
+        const shaped = await ai.enforcePunctuationPauses({
+          audioPath: finalOutputPath,
+          text,
+          punctuationPauses: options.punctuationPauses,
+          language: snapshot.language,
+          speed: snapshot.speed,
+          majorAlreadySplit: majorPunctuationSplit,
+          asrModelId: options.asrModelId,
+        });
+        if (shaped && typeof shaped.durationSec === "number" && shaped.durationSec > 0) {
+          durationSec = shaped.durationSec;
+          if (typeof shaped.leadingSilenceMs === "number") leadingSilenceMs = shaped.leadingSilenceMs;
+          if (typeof shaped.trailingSilenceMs === "number") trailingSilenceMs = shaped.trailingSilenceMs;
+        }
+      } catch (shapeErr) {
+        console.warn("[synthesizeSpeechCore] Punctuation pause shaping skipped:", shapeErr);
+      }
+    }
   }
 
   const blobUrl = await readAudioFileBlobUrl(finalOutputPath);
@@ -116,6 +155,8 @@ export async function synthesizeSpeechCore(
     sourceText: text,
     spokenText,
     pronunciationMapping,
+    ...(leadingSilenceMs !== undefined ? { leadingSilenceMs } : {}),
+    ...(trailingSilenceMs !== undefined ? { trailingSilenceMs } : {}),
   };
 }
 

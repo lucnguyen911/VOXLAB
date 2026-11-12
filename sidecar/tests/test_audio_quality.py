@@ -3892,6 +3892,378 @@ class AudioQualityTest(unittest.TestCase):
         vi_pauses = audio_quality.detect_phrase_internal_pauses(vi_text, vi_words, vi_audio, sr)
         self.assertEqual([i["words"] for i in vi_pauses], [["rằng", "người"]])
 
+    def test_v400_reanchor_eliminates_large_v3_left_shift_false_pauses(self):
+        sr = 16000
+        tone = lambda dur, f=210.0: (0.25 * np.sin(2 * np.pi * f * (np.arange(int(round(dur * sr))) / sr))).astype(np.float32)
+        sil = lambda dur: np.zeros(int(round(dur * sr)), dtype=np.float32)
+
+        # 1. Segment 17 reproduction: natural pause BEFORE 'and' (after 'months'), zero pause between 'and' and 'face',
+        #    with Whisper Large V3 systematic -170ms..-300ms left-shifted word timestamps.
+        text_17 = "fourteen months and face a repair bill."
+        wave_17 = np.concatenate([
+            sil(0.10),
+            tone(0.35, 190.0),  # 'fourteen' [0.10..0.45]
+            tone(0.58, 200.0),  # 'months'   [0.45..1.03]
+            sil(0.43),          # natural breath BEFORE 'and' [1.03..1.46]
+            tone(0.14, 215.0),  # 'and'      [1.46..1.60]
+            tone(0.29, 225.0),  # 'face'     [1.60..1.89]
+            tone(0.10, 205.0),  # 'a'        [1.89..1.99]
+            tone(0.32, 210.0),  # 'repair'   [1.99..2.31]
+            tone(0.34, 195.0),  # 'bill.'    [2.31..2.65]
+            sil(0.15),
+        ])
+        v3_words_17 = [
+            {"word": " fourteen", "startSec": 0.02, "endSec": 0.29, "probability": 0.99},
+            {"word": " months", "startSec": 0.29, "endSec": 0.73, "probability": 0.99},
+            {"word": " and", "startSec": 0.73, "endSec": 1.43, "probability": 0.98},
+            {"word": " face", "startSec": 1.43, "endSec": 1.77, "probability": 0.99},
+            {"word": " a", "startSec": 1.77, "endSec": 1.88, "probability": 0.99},
+            {"word": " repair", "startSec": 1.88, "endSec": 2.18, "probability": 0.99},
+            {"word": " bill.", "startSec": 2.18, "endSec": 2.48, "probability": 0.99},
+        ]
+        reanchored_17 = audio_quality.reanchor_asr_word_timestamps(v3_words_17, wave_17, sr, text=text_17)
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(text_17, reanchored_17, wave_17, sr),
+            [],
+        )
+
+        # 2. Segment 16 reproduction: 'components, [360ms] custom actuators, [70ms] and delicate'
+        #    with Whisper Large V3 left-shifted timestamps.
+        text_16 = "components, custom actuators, and delicate sensors."
+        wave_16 = np.concatenate([
+            sil(0.10),
+            tone(0.64, 195.0),  # 'components,' [0.10..0.74]
+            sil(0.36),          # comma 1 pause [0.74..1.10]
+            tone(0.32, 210.0),  # 'custom'      [1.10..1.42]
+            tone(0.80, 220.0),  # 'actuators,'  [1.42..2.22]
+            sil(0.07),          # comma 2 pause [2.22..2.29]
+            tone(0.13, 205.0),  # 'and'         [2.29..2.42]
+            tone(0.38, 215.0),  # 'delicate'    [2.42..2.80]
+            tone(0.42, 195.0),  # 'sensors.'    [2.80..3.22]
+            sil(0.15),
+        ])
+        v3_words_16 = [
+            {"word": " components,", "startSec": 0.02, "endSec": 0.32, "probability": 0.99},
+            {"word": " custom", "startSec": 0.72, "endSec": 1.32, "probability": 0.99},
+            {"word": " actuators,", "startSec": 1.32, "endSec": 2.04, "probability": 0.99},
+            {"word": " and", "startSec": 2.12, "endSec": 2.34, "probability": 0.98},
+            {"word": " delicate", "startSec": 2.34, "endSec": 2.68, "probability": 0.99},
+            {"word": " sensors.", "startSec": 2.68, "endSec": 3.04, "probability": 0.99},
+        ]
+        reanchored_16 = audio_quality.reanchor_asr_word_timestamps(v3_words_16, wave_16, sr, text=text_16)
+        self.assertEqual(
+            audio_quality.detect_misplaced_punctuation_pauses(text_16, reanchored_16, wave_16, sr),
+            [],
+        )
+
+        # 3. Counter-test: REAL illegal pause AFTER 'and' ('months and | [430ms] | face') with V3 left-shift MUST still warn!
+        wave_bad = np.concatenate([
+            sil(0.10),
+            tone(0.55, 200.0),  # 'months' [0.10..0.65]
+            tone(0.18, 215.0),  # 'and'    [0.65..0.83]
+            sil(0.43),          # ILLEGAL pause AFTER 'and' [0.83..1.26]
+            tone(0.32, 225.0),  # 'face'   [1.26..1.58]
+            tone(0.35, 195.0),  # 'bill.'  [1.58..1.93]
+            sil(0.15),
+        ])
+        v3_words_bad = [
+            {"word": " months", "startSec": 0.04, "endSec": 0.50, "probability": 0.99},
+            {"word": " and", "startSec": 0.50, "endSec": 0.68, "probability": 0.98},
+            {"word": " face", "startSec": 0.68, "endSec": 1.44, "probability": 0.99},
+            {"word": " bill.", "startSec": 1.44, "endSec": 1.78, "probability": 0.99},
+        ]
+        reanchored_bad = audio_quality.reanchor_asr_word_timestamps(v3_words_bad, wave_bad, sr, text="months and face bill.")
+        bad_issues = audio_quality.detect_phrase_internal_pauses("months and face bill.", reanchored_bad, wave_bad, sr)
+        self.assertEqual([i["words"] for i in bad_issues], [["and", "face"]])
+
+    def test_v400_skipped_clause_comma_caught_without_false_positive_on_list_comma(self):
+        # 1. Rushed clause-dividing comma (0ms pause between two full clauses) -> caught as skipped_comma
+        rushed_text = "When stiff knees make hauling laundry impossible, families face a brutal financial trap."
+        rushed_audio, sr, rushed_words = self._phrase_audio([
+            ("When", 0.20, 0.0), ("stiff", 0.22, 0.0), ("knees", 0.24, 0.0), ("make", 0.20, 0.0),
+            ("hauling", 0.26, 0.0), ("laundry", 0.28, 0.0), ("impossible,", 0.36, 0.0),
+            ("families", 0.28, 0.0), ("face", 0.22, 0.0), ("a", 0.10, 0.0),
+            ("brutal", 0.24, 0.0), ("financial", 0.30, 0.0), ("trap.", 0.28, 0.0),
+        ])
+        skipped = audio_quality.detect_skipped_clause_pauses(rushed_text, rushed_words, rushed_audio, sr)
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertEqual(skipped[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(skipped[0]["pauseContext"], "skipped_comma")
+        self.assertEqual(skipped[0]["words"], ["impossible", "families"])
+
+        # Same sentence with a normal 180ms comma pause -> 0 warnings
+        ok_audio, sr, ok_words = self._phrase_audio([
+            ("When", 0.20, 0.0), ("stiff", 0.22, 0.0), ("knees", 0.24, 0.0), ("make", 0.20, 0.0),
+            ("hauling", 0.26, 0.0), ("laundry", 0.28, 0.0), ("impossible,", 0.36, 0.18),
+            ("families", 0.28, 0.0), ("face", 0.22, 0.0), ("a", 0.10, 0.0),
+            ("brutal", 0.24, 0.0), ("financial", 0.30, 0.0), ("trap.", 0.28, 0.0),
+        ])
+        self.assertEqual(audio_quality.detect_skipped_clause_pauses(rushed_text, ok_words, ok_audio, sr), [])
+
+        # Same sentence with a 120ms breathy pause (RMS ~0.015, above absolute 0.012 floor) -> 0 warnings
+        breathy_audio = ok_audio.copy()
+        b_s = int(ok_words[6]["endSec"] * sr)
+        b_e = int(ok_words[7]["startSec"] * sr)
+        t_br = np.arange(max(0, b_e - b_s)) / sr
+        breathy_audio[b_s:b_e] = (0.016 * np.sin(2 * np.pi * 140.0 * t_br)).astype(np.float32)
+        breathy_words = [dict(w) for w in ok_words]
+        breathy_words[6]["endSec"] = breathy_words[7]["startSec"]  # Even if ASR stretches e1 to s2
+        self.assertEqual(audio_quality.detect_skipped_clause_pauses(rushed_text, breathy_words, breathy_audio, sr), [])
+
+        # Oxford comma ', and' with light 60ms micro-break -> 0 warnings
+        list_text = "Optimus packs components, custom actuators, and delicate sensors inside."
+        list_audio, sr, list_words = self._phrase_audio([
+            ("Optimus", 0.30, 0.0), ("packs", 0.24, 0.0), ("components,", 0.34, 0.22),
+            ("custom", 0.24, 0.0), ("actuators,", 0.36, 0.06), ("and", 0.14, 0.0),
+            ("delicate", 0.28, 0.0), ("sensors", 0.28, 0.0), ("inside.", 0.28, 0.0),
+        ])
+        self.assertEqual(audio_quality.detect_skipped_clause_pauses(list_text, list_words, list_audio, sr), [])
+
+    def test_v400_homophones_compound_splits_and_vi_en_code_switching_no_false_alarm(self):
+        # 1. English homophones with different initial letters ('whole'/'hole', 'one'/'won', 'suite'/'sweet', 'hour'/'our')
+        self.assertTrue(audio_quality.are_words_equivalent("whole", "hole"))
+        self.assertTrue(audio_quality.are_words_equivalent("suite", "sweet"))
+        self.assertTrue(audio_quality.are_words_equivalent("leased", "least"))
+        self.assertTrue(audio_quality.are_words_equivalent("hour", "our"))
+        self.assertTrue(audio_quality.are_words_equivalent("raiding", "rating"))
+        self.assertTrue(audio_quality.are_words_equivalent("medal", "metal"))
+        self.assertFalse(audio_quality.are_words_equivalent("ship", "shop"))
+        self.assertFalse(audio_quality.are_words_equivalent("bàn", "bán"))
+
+        # 2. Open vs closed compound words ('all right' <-> 'alright', 'first hand' <-> 'firsthand')
+        comp_audio, sr, comp_asr = self._phrase_audio([
+            ("Everything", 0.28, 0.0), ("is", 0.14, 0.0), ("alright", 0.34, 0.0),
+            ("when", 0.18, 0.0), ("seen", 0.22, 0.0), ("firsthand.", 0.38, 0.0),
+        ])
+        comp_issues = audio_quality._reduce_to_core_defects(
+            audio_quality.analyze_word_alignment_issues(
+                "Everything is all right when seen first hand.",
+                comp_asr, language="en", audio_data=comp_audio, sample_rate=sr, core_scope=True,
+            ),
+            comp_asr,
+        )
+        self.assertEqual(comp_issues, [])
+
+        # 3. Vietnamese-English code-switching ('sale'->'xêu', 'voucher'->'vao chờ', 'livestream'->'lai chim', 'setup'->'sét ấp')
+        vi_audio, sr, vi_asr = self._phrase_audio([
+            ("Săn", 0.22, 0.0), ("xêu", 0.24, 0.0), ("áp", 0.20, 0.0), ("mã", 0.20, 0.0),
+            ("vao", 0.20, 0.0), ("chờ", 0.22, 0.0), ("khi", 0.18, 0.0), ("sét", 0.20, 0.0),
+            ("ấp", 0.20, 0.0), ("lai", 0.22, 0.0), ("chim.", 0.24, 0.0),
+        ])
+        vi_issues = audio_quality._reduce_to_core_defects(
+            audio_quality.analyze_word_alignment_issues(
+                "Săn sale áp mã voucher khi setup livestream.",
+                vi_asr, language="vi", audio_data=vi_audio, sample_rate=sr, core_scope=True,
+            ),
+            vi_asr,
+        )
+        self.assertEqual(vi_issues, [])
+
+    def test_v400_lexicon_guided_arbitration_clears_asr_mishearing_keeps_real_garble(self):
+        from types import SimpleNamespace
+
+        class LexiconMockModel:
+            def __init__(self, reply_word: str, reply_prob: float):
+                self.reply_word = reply_word
+                self.reply_prob = reply_prob
+                self.last_hotwords = None
+
+            def transcribe(self, _path, **kwargs):
+                self.last_hotwords = kwargs.get("hotwords")
+                w = SimpleNamespace(word=" " + self.reply_word, start=0.18, end=0.52, probability=self.reply_prob)
+                return [SimpleNamespace(text=self.reply_word, words=[w])], None
+
+        # Case A: Clean waveform on 'chisel', primary ASR misheard 'sizzle' (prob=0.58), lexicon-guided slice confirms 'chisel' (prob=0.93) -> PASS
+        audio_ok, sr, asr_ok = self._phrase_audio([
+            ("At", 0.14, 0.0), ("the", 0.12, 0.0), ("sizzle", 0.36, 0.0), ("workshop.", 0.42, 0.0),
+        ])
+        asr_ok[2]["probability"] = 0.58
+        mock_ok = LexiconMockModel("chisel", 0.93)
+        raw_ok = audio_quality.analyze_word_alignment_issues(
+            "At the chisel workshop.", asr_ok, language="en", audio_data=audio_ok, sample_rate=sr,
+            whisper_model=mock_ok, slice_budget=[2], core_scope=True,
+        )
+        self.assertEqual(audio_quality._reduce_to_core_defects(raw_ok, asr_ok), [])
+        self.assertIn("chisel", str(mock_ok.last_hotwords or ""))
+
+        # Case B: Real mispronunciation 'Tesla' spoken as 'Tessa' (prob=0.62), lexicon-guided slice still hears 'Tessa' -> WARNING kept!
+        audio_bad, sr, asr_bad = self._phrase_audio([
+            ("Buying", 0.24, 0.0), ("Tessa", 0.34, 0.0), ("cars.", 0.30, 0.0),
+        ])
+        asr_bad[1]["probability"] = 0.62
+        mock_bad = LexiconMockModel("Tessa", 0.88)
+        raw_bad = audio_quality.analyze_word_alignment_issues(
+            "Buying Tesla cars.", asr_bad, language="en", audio_data=audio_bad, sample_rate=sr,
+            whisper_model=mock_bad, slice_budget=[2], core_scope=True,
+        )
+        kept_bad = audio_quality._reduce_to_core_defects(raw_bad, asr_bad)
+        self.assertEqual(len(kept_bad), 1, kept_bad)
+        self.assertEqual(kept_bad[0]["code"], "SUSPECTED_STUTTER")
+
+    def test_v400_short_word_smoothed_repeat_caught_and_hallucination_repeat_ignored(self):
+        from types import SimpleNamespace
+
+        class RepeatSliceModel:
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=" in", start=0.18, end=0.34, probability=0.92),
+                    SimpleNamespace(word=" in", start=0.41, end=0.58, probability=0.94),
+                ]
+                return [SimpleNamespace(text="in in", words=words)], None
+
+        sr = 16000
+        t_b = np.arange(int(0.16 * sr)) / sr
+        burst = (0.28 * np.sin(2 * np.pi * 210.0 * t_b) + 0.12 * np.sin(2 * np.pi * 630.0 * t_b)).astype(np.float32)
+        wave_rep = np.concatenate([
+            np.zeros(int(0.10 * sr), dtype=np.float32),
+            0.22 * np.sin(2 * np.pi * 185.0 * (np.arange(int(0.24 * sr)) / sr)).astype(np.float32),  # 'live'
+            np.zeros(int(0.03 * sr), dtype=np.float32),
+            burst,                                          # 'in' #1
+            np.zeros(int(0.07 * sr), dtype=np.float32),     # 70ms valley
+            burst,                                          # 'in' #2
+            np.zeros(int(0.03 * sr), dtype=np.float32),
+            0.22 * np.sin(2 * np.pi * 200.0 * (np.arange(int(0.32 * sr)) / sr)).astype(np.float32),  # 'peace.'
+            np.zeros(int(0.15 * sr), dtype=np.float32),
+        ])
+        asr_rep = [
+            {"word": " live", "startSec": 0.10, "endSec": 0.34, "probability": 0.99},
+            {"word": " in", "startSec": 0.37, "endSec": 0.76, "probability": 0.89},
+            {"word": " peace.", "startSec": 0.79, "endSec": 1.11, "probability": 0.99},
+        ]
+        rep_issues = audio_quality.verify_whisper_smoothed_stutters(
+            "live in peace.", asr_rep, wave_rep, sr, RepeatSliceModel(), language="en", slice_budget=[2]
+        )
+        self.assertEqual(len(rep_issues), 1, rep_issues)
+        self.assertEqual(rep_issues[0]["code"], "REPEATED_WORD")
+        self.assertEqual(rep_issues[0]["words"], ["in"])
+
+        # Low-probability silent hallucination duplicate 'the' (p=0.20, 40ms in dead silence) -> ignored
+        clean_wave, sr, clean_asr = self._phrase_audio([
+            ("Open", 0.26, 0.20), ("the", 0.14, 0.0), ("door.", 0.30, 0.0),
+        ])
+        hallucinated_asr = [
+            clean_asr[0],
+            {"word": " the", "startSec": 0.40, "endSec": 0.44, "probability": 0.20},  # inside the 0.20s silence gap!
+            clean_asr[1],
+            clean_asr[2],
+        ]
+        hal_issues = audio_quality._reduce_to_core_defects(
+            audio_quality.analyze_word_alignment_issues(
+                "Open the door.", hallucinated_asr, language="en", audio_data=clean_wave, sample_rate=sr, core_scope=True
+            ),
+            hallucinated_asr,
+        )
+        self.assertEqual(hal_issues, [])
+
+    def test_v400_shuffled_hotwords_extracts_proper_nouns_without_sentence_order(self):
+        hw = audio_quality.extract_qc_vocabulary_hotwords(
+            "Then at the Baron Investment Conference, Elon Musk showed Optimus electromechanical actuators.",
+            language="en",
+        )
+        self.assertIn("Baron", hw)
+        self.assertIn("Optimus", hw)
+        self.assertIn("electromechanical", hw)
+        self.assertIn("actuators", hw)
+        self.assertNotIn(" the ", f" {hw} ")
+        self.assertNotIn("Baron Investment Conference", hw)
+
+    def test_v400_short_word_before_punctuation_pause_never_blames_preceding_preposition(self):
+        # Regression: 'about it: rent the robot.' where 'it' is 55ms followed by a 0.72s colon pause.
+        # Previously _boundary_silence_run_sec had touch_hi = start2 + 0.06 > end2, grabbing the 0.72s
+        # silence AFTER 'it:' and false-flagging 'about | it' as a phrase_internal ABNORMAL_PAUSE!
+        wave, sr, asr_words = self._phrase_audio([
+            ("Nobody", 0.28, 0.02),
+            ("talks", 0.24, 0.02),
+            ("honestly", 0.34, 0.02),
+            ("about", 0.26, 0.04),
+            ("it:", 0.055, 0.72),
+            ("rent", 0.25, 0.02),
+            ("the", 0.12, 0.02),
+            ("robot.", 0.32, 0.0),
+        ])
+        issues = audio_quality.detect_phrase_internal_pauses(
+            "Nobody talks honestly about it: rent the robot.", asr_words, wave, sr
+        )
+        self.assertEqual(issues, [])
+
+        # Contrast: genuine 0.55s pause BETWEEN 'about' and 'it:' MUST STILL BE CAUGHT!
+        wave_bad, sr_bad, asr_bad = self._phrase_audio([
+            ("Nobody", 0.28, 0.02),
+            ("talks", 0.24, 0.02),
+            ("honestly", 0.34, 0.02),
+            ("about", 0.26, 0.55),
+            ("it:", 0.06, 0.40),
+            ("rent", 0.25, 0.02),
+            ("the", 0.12, 0.02),
+            ("robot.", 0.32, 0.0),
+        ])
+        issues_bad = audio_quality.detect_phrase_internal_pauses(
+            "Nobody talks honestly about it: rent the robot.", asr_bad, wave_bad, sr_bad
+        )
+        self.assertEqual([i["words"] for i in issues_bad], [["about", "it"]])
+
+    def test_v400_stutter_verifier_ignores_large_v3_right_bleed_into_next_words(self):
+        # Regression: Whisper Large V3 stretches 'rent' bbox [0.05..0.56] across 'the' and 'rob-'
+        # in 'rent the robot.', so isolated slice hears 'Rent the rope'. Must NOT flag SUSPECTED_STUTTER!
+        from types import SimpleNamespace
+
+        wave, sr, _ = self._phrase_audio([
+            ("rent", 0.22, 0.08),
+            ("the", 0.09, 0.04),
+            ("robot.", 0.30, 0.0),
+        ])
+        stretched_asr = [
+            {"word": " rent", "startSec": 0.05, "endSec": 0.56, "probability": 0.96},
+            {"word": " the", "startSec": 0.56, "endSec": 0.62, "probability": 0.98},
+            {"word": " robot.", "startSec": 0.62, "endSec": 0.78, "probability": 0.99},
+        ]
+
+        class BleedSliceModel:
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=" Rent", start=0.18, end=0.40, probability=0.95),
+                    SimpleNamespace(word=" the", start=0.41, end=0.50, probability=0.95),
+                    SimpleNamespace(word=" rope", start=0.51, end=0.68, probability=0.82),
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        issues = audio_quality.verify_whisper_smoothed_stutters(
+            "rent the robot.", stretched_asr, wave, sr, BleedSliceModel(), language="en", slice_budget=[2]
+        )
+        self.assertEqual(issues, [])
+
+    def test_v400_reanchor_tail_stretched_punctuated_word_snaps_after_not_before(self):
+        # Regression: Whisper Turbo stretches `"it:"`'s trailing bbox across the 0.85s colon pause
+        # right up to `"rent"` (`about [0.65..0.90], it: [0.90..1.90], rent [1.90..2.18]`).
+        # `reanchor_asr_word_timestamps` must snap the 0.85s pause AFTER `"it:"` (`it: | rent`),
+        # never BEFORE `"it:"` (`about | it`)!
+        text = "Nobody talks honestly about it: rent the robot."
+        wave, sr, true_asr = self._phrase_audio([
+            ("Nobody", 0.24, 0.0),
+            ("talks", 0.20, 0.0),
+            ("honestly", 0.28, 0.0),
+            ("about", 0.22, 0.0),
+            ("it:", 0.14, 0.85),
+            ("rent", 0.25, 0.02),
+            ("the", 0.12, 0.02),
+            ("robot.", 0.32, 0.0),
+        ])
+        tail_stretched_asr = [dict(w) for w in true_asr]
+        # Stretch `it:` endSec right across the 0.85s colon silence up to `rent`'s startSec
+        tail_stretched_asr[4]["endSec"] = tail_stretched_asr[5]["startSec"]
+
+        reanchored = audio_quality.reanchor_asr_word_timestamps(
+            tail_stretched_asr, wave, sr, text=text
+        )
+        issues = audio_quality.detect_phrase_internal_pauses(text, reanchored, wave, sr)
+        self.assertEqual(issues, [], f"Expected 0 false pause issues after re-anchoring tail-stretched 'it:', got {issues}")
+        self.assertGreaterEqual(
+            reanchored[5]["startSec"] - reanchored[4]["endSec"],
+            0.78,
+            f"Expected >=0.78s snapped pause between 'it:' and 'rent', got {reanchored[4]} -> {reanchored[5]}",
+        )
+
+
 
 if __name__ == "__main__":
     unittest.main()

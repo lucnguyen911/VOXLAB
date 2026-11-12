@@ -126,6 +126,16 @@ export class RecordingAiBackend implements AiBackend {
           metrics: { wpm: 145 },
         };
       }
+      case "audio.enforce_punctuation_pauses":
+        return {
+          shaped: false,
+          audioPath: params.audioPath,
+          durationSec: 1.0,
+          sampleRate: 24000,
+          leadingSilenceMs: 0,
+          trailingSilenceMs: 0,
+          editsCount: 0,
+        };
       default:
         return {};
     }

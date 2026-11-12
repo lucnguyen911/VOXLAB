@@ -377,41 +377,113 @@ class TtsService:
         )
         spoken_text = prep["spokenText"]
 
-        req = SynthesisRequest(text=spoken_text, language=language, ref_audio_path=ref_audio, ref_text=ref_text,
-                               speed=float(speed) if speed is not None else None,
-                               extra=extra)
-        ctx.check_cancelled()
-        ctx.progress(5, "synthesizing")
-        started = time.perf_counter()
-        audio, sr = a.synthesize(req)  # single engine call; hard cancel = host kills the process
-        inference_sec = time.perf_counter() - started
-        if ctx.cancelled:
-            raise Cancelled()
-        if audio is None or audio.size == 0:
-            raise SidecarError("INFERENCE_FAILED", f"{caps.display_name} returned empty audio")
-        target_sr = int(params.get("sampleRate") or 0)
-        if target_sr > 0 and target_sr != sr:
-            from ..audio_ops import _resample
-            audio = _resample(audio, sr, target_sr)
-            sr = target_sr
-
-        # Master WAV Canonical Invariant: strictly MONO (1 channel)
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
-
-        if speed is not None and abs(float(speed) - 1.0) > 1e-3 and caps.engine in ("chatterbox", "qwen"):
-            from ..audio_ops import apply_clarity_time_stretch
-            clamped_speed = max(0.5, min(2.0, float(speed)))
-            audio = apply_clarity_time_stretch(audio, sr, rate=clamped_speed)
-
         from ..audio_ops import (
+            _max_allowed_pause_from_config,
+            _resample,
+            apply_clarity_time_stretch,
             attenuate_leading_breath_and_measure_edges,
             detect_and_filter_leading_artifact,
             normalize_internal_breath_seams,
+            split_tts_chunk_by_major_punctuation,
+            stitch_tts_segments_with_pauses,
         )
-        audio, leading_artifact_info = detect_and_filter_leading_artifact(audio, sr)
-        audio, breath_seam_info = normalize_internal_breath_seams(audio, sr)
-        audio, edge_silence_info = attenuate_leading_breath_and_measure_edges(audio, sr)
+
+        punctuation_pauses = params.get("punctuationPauses") if isinstance(params.get("punctuationPauses"), dict) else None
+        max_allowed_pause = _max_allowed_pause_from_config(punctuation_pauses)
+        major_units = split_tts_chunk_by_major_punctuation(text) if punctuation_pauses is not None else [(text, "")]
+        target_sr = int(params.get("sampleRate") or 0)
+
+        ctx.check_cancelled()
+        ctx.progress(5, "synthesizing")
+        started = time.perf_counter()
+        major_split_applied = False
+
+        if len(major_units) >= 2 and punctuation_pauses is not None:
+            seg_clips: list[Any] = []
+            seg_kinds: list[str] = []
+            sr = 0
+            leading_artifact_info: dict[str, Any] = {"action": "none"}
+            total_compacted = 0.0
+            total_attenuated = 0
+            for seg_idx, (seg_src, b_kind) in enumerate(major_units):
+                ctx.check_cancelled()
+                ctx.progress(5 + int(75 * seg_idx / len(major_units)), "synthesizing")
+                seg_prep = prepare_spoken_text_for_tts(
+                    seg_src, language=language, engine=caps.engine, custom_rules=custom_rules
+                )
+                seg_req = SynthesisRequest(
+                    text=seg_prep["spokenText"],
+                    language=language,
+                    ref_audio_path=ref_audio,
+                    ref_text=ref_text,
+                    speed=float(speed) if speed is not None else None,
+                    extra=extra,
+                )
+                seg_audio, seg_sr = a.synthesize(seg_req)
+                if ctx.cancelled:
+                    raise Cancelled()
+                if seg_audio is None or seg_audio.size == 0:
+                    raise SidecarError("INFERENCE_FAILED", f"{caps.display_name} returned empty audio")
+                if seg_audio.ndim > 1:
+                    seg_audio = seg_audio.mean(axis=1)
+                eff_sr = target_sr if target_sr > 0 else (sr if sr > 0 else int(seg_sr))
+                if int(seg_sr) != eff_sr:
+                    seg_audio = _resample(seg_audio, int(seg_sr), eff_sr)
+                sr = eff_sr
+                if speed is not None and abs(float(speed) - 1.0) > 1e-3 and caps.engine in ("chatterbox", "qwen"):
+                    clamped_speed = max(0.5, min(2.0, float(speed)))
+                    seg_audio = apply_clarity_time_stretch(seg_audio, sr, rate=clamped_speed)
+                seg_audio, seg_lead_info = detect_and_filter_leading_artifact(seg_audio, sr)
+                if seg_idx == 0:
+                    leading_artifact_info = seg_lead_info
+                seg_audio, seg_seam = normalize_internal_breath_seams(
+                    seg_audio, sr, max_allowed_pause_sec=max_allowed_pause
+                )
+                total_compacted += float(seg_seam.get("compactedMs", 0.0))
+                total_attenuated += int(seg_seam.get("attenuatedBreaths", 0))
+                seg_clips.append(seg_audio)
+                seg_kinds.append(b_kind)
+
+            inference_sec = time.perf_counter() - started
+            audio = stitch_tts_segments_with_pauses(seg_clips, sr, seg_kinds, punctuation_pauses)
+            breath_seam_info = {
+                "compactedMs": round(total_compacted, 1),
+                "attenuatedBreaths": total_attenuated,
+            }
+            audio, edge_silence_info = attenuate_leading_breath_and_measure_edges(audio, sr)
+            major_split_applied = True
+        else:
+            req = SynthesisRequest(
+                text=spoken_text,
+                language=language,
+                ref_audio_path=ref_audio,
+                ref_text=ref_text,
+                speed=float(speed) if speed is not None else None,
+                extra=extra,
+            )
+            audio, sr = a.synthesize(req)  # single engine call; hard cancel = host kills the process
+            inference_sec = time.perf_counter() - started
+            if ctx.cancelled:
+                raise Cancelled()
+            if audio is None or audio.size == 0:
+                raise SidecarError("INFERENCE_FAILED", f"{caps.display_name} returned empty audio")
+            if target_sr > 0 and target_sr != sr:
+                audio = _resample(audio, sr, target_sr)
+                sr = target_sr
+
+            # Master WAV Canonical Invariant: strictly MONO (1 channel)
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+
+            if speed is not None and abs(float(speed) - 1.0) > 1e-3 and caps.engine in ("chatterbox", "qwen"):
+                clamped_speed = max(0.5, min(2.0, float(speed)))
+                audio = apply_clarity_time_stretch(audio, sr, rate=clamped_speed)
+
+            audio, leading_artifact_info = detect_and_filter_leading_artifact(audio, sr)
+            audio, breath_seam_info = normalize_internal_breath_seams(
+                audio, sr, max_allowed_pause_sec=max_allowed_pause
+            )
+            audio, edge_silence_info = attenuate_leading_breath_and_measure_edges(audio, sr)
 
         ctx.progress(90, "writing_audio")
         import soundfile as sf
@@ -439,6 +511,7 @@ class TtsService:
             "pronunciationMapping": prep["pronunciationMapping"],
             "leadingSilenceMs": edge_silence_info.get("leadingSilenceMs", 0),
             "trailingSilenceMs": edge_silence_info.get("trailingSilenceMs", 0),
+            "majorPunctuationSplit": major_split_applied,
         }
         if leading_artifact_info.get("action") != "none":
             result_payload["leadingArtifact"] = leading_artifact_info

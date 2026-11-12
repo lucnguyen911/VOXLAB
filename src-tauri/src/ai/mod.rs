@@ -44,6 +44,7 @@ pub fn is_commercial_ai_method(method: &str) -> bool {
     method.starts_with("tts.")
         || method.starts_with("asr.")
         || method == "audio.assemble"
+        || method == "audio.enforce_punctuation_pauses"
         || method == "audio.validate_quality"
         || method == "subtitle.generate_srt"
         || method == "subtitle.optimize"

@@ -299,9 +299,23 @@ def detect_and_filter_leading_artifact(
     return mono, {"action": "none", "confidence": "none"}
 
 
+def _max_allowed_pause_from_config(punctuation_pauses: dict[str, Any] | None) -> float | None:
+    if not isinstance(punctuation_pauses, dict):
+        return None
+    vals: list[float] = []
+    for k in ("comma", "period", "questionExclamation", "colonSemicolon"):
+        v = punctuation_pauses.get(k)
+        if isinstance(v, (int, float)) and not math.isnan(float(v)):
+            vals.append(max(0.0, min(5.0, float(v))))
+    if not vals:
+        return None
+    return max(0.65, max(vals) + 0.15)
+
+
 def normalize_internal_breath_seams(
     audio: np.ndarray,
     sr: int,
+    max_allowed_pause_sec: float | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Normalizes internal double-breath pauses and stitched sub-chunk silence seams
     (e.g. from internal TTS chunking/crossfading) without clipping any speech onset/offset.
@@ -375,11 +389,15 @@ def normalize_internal_breath_seams(
     compacted_samples = 0
     fade_samples = max(1, int(round(0.015 * sr)))
 
+    min_trigger_frames = 57
+    if max_allowed_pause_sec is not None and max_allowed_pause_sec > 0:
+        min_trigger_frames = max(57, int(round(float(max_allowed_pause_sec) * 100.0)))
+
     for qs, qe in zip(q_starts, q_ends):
         if qs <= 10 or qe >= n_frames - 10:
             continue
         dur_frames = int(qe - qs)
-        if dur_frames < 57:
+        if dur_frames < min_trigger_frames:
             continue
 
         inner_s = int(qs + 5)
@@ -404,6 +422,11 @@ def normalize_internal_breath_seams(
                 cur_len = 0
 
         target_total_frames = 38 if dur_frames <= 86 else 60
+        if max_allowed_pause_sec is not None and max_allowed_pause_sec > 0:
+            target_total_frames = max(
+                target_total_frames,
+                int(round(max(0.38, float(max_allowed_pause_sec) - 0.08) * 100.0)),
+            )
         excess_frames = dur_frames - target_total_frames
         removable_frames = min(excess_frames, max(0, best_len - 10))
         if removable_frames >= 8 and best_ds >= 0:
@@ -568,6 +591,7 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
         cursor = 0
         processed_clips: list[np.ndarray] = []
         edge_metrics: list[dict[str, Any]] = []
+        assemble_max_pause = _max_allowed_pause_from_config(params.get("punctuationPauses"))
         for i, raw_clip in enumerate(clips):
             clip, lead_info = detect_and_filter_leading_artifact(raw_clip, sr)
             if lead_info.get("action") == "kept_with_warning":
@@ -580,7 +604,9 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
                     "speechOnsetSec": lead_info.get("speechOnsetSec"),
                     "message": lead_info.get("message", f"Phát hiện xung âm nghi vấn đầu đoạn {i + 1}."),
                 })
-            clip, _seam_info = normalize_internal_breath_seams(clip, sr)
+            clip, _seam_info = normalize_internal_breath_seams(
+                clip, sr, max_allowed_pause_sec=assemble_max_pause
+            )
             clip, edge_info = attenuate_leading_breath_and_measure_edges(clip, sr)
             processed_clips.append(clip)
             edge_metrics.append(edge_info)
@@ -842,4 +868,763 @@ def prepare_clone_reference(
         except Exception:
             pass
     return cached_wav, slice_transcript
+
+
+_MAJOR_PROTECT_PATTERN = (
+    r"(?:\[[^\]]+\]"
+    r"|https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
+    r"|(?:[A-Z]\.){2,6}"
+    r"|\b(?:Ph\.D|M\.D|B\.A|M\.A|U\.S\.A|U\.S|U\.K|E\.U|U\.N|W\.H\.O)\."
+    r"|\b(?:e\.g|i\.e|a\.m|p\.m|E\.G|I\.E|A\.M|P\.M)\."
+    r"|\b(?:Dr|Mr|Mrs|Ms|Prof|Rev|Gen|Sen|Rep|St|Jr|Sr|vs|etc|al|TP|ThS|TS|PGS|GS|BS|KS)\."
+    r"|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?\b"
+    r"|\b\d{1,2}:\d{2}(?::\d{2})?\b"
+    r"|\bv?\d+(?:\.\d+)+[a-zA-Z0-9._-]*\b"
+    r"|\$\d+(?:,\d{3})*(?:\.\d+)?[BMKbmk]?\b)"
+)
+
+
+def _classify_major_boundary_mark(mark_str: str) -> str:
+    if any(c in mark_str for c in ("?", "!", "？", "！")):
+        return "questionExclamation"
+    if any(c in mark_str for c in (":", ";", "：", "；")):
+        return "colonSemicolon"
+    if "…" in mark_str or "." in mark_str or "。" in mark_str:
+        return "period"
+    return ""
+
+
+def split_tts_chunk_by_major_punctuation(text: str) -> list[tuple[str, str]]:
+    """Splits a chunk text into major prosodic units at sentence/clause marks (`.`, `!`, `?`, `…`, `:`, `;`)
+    while protecting abbreviations (`Dr.`, `U.S.`), decimals/versions (`3.0`, `13.5`), currencies (`$10,000`),
+    clock times (`10:30`), and inline control tags (`[B EY1 S]`).
+
+    Returns `[(segment_text, boundary_kind), ...]`, where `boundary_kind` is `"period"`,
+    `"questionExclamation"`, `"colonSemicolon"`, or `""` on the final segment.
+    """
+    import re
+
+    trimmed = (text or "").strip()
+    if not trimmed:
+        return []
+
+    protected_items: list[str] = []
+
+    def _mask(m: re.Match[str]) -> str:
+        protected_items.append(m.group(0))
+        return f"VOXMAJTOK{len(protected_items) - 1}ENDTOK"
+
+    masked = re.sub(_MAJOR_PROTECT_PATTERN, _mask, trimmed)
+
+    def _restore(s: str) -> str:
+        return re.sub(
+            r"VOXMAJTOK(\d+)ENDTOK",
+            lambda m: protected_items[int(m.group(1))],
+            s,
+        )
+
+    # Match major punctuation (+ optional closing quotes/brackets) followed by whitespace
+    split_rx = re.compile(r'([.!?…:;。！？：；]+["\'”’»›)\]}]*)\s+')
+    raw_parts: list[tuple[str, str]] = []
+    last_idx = 0
+    for m in split_rx.finditer(masked):
+        end_punct = m.end(1)
+        seg_masked = masked[last_idx:end_punct].strip()
+        seg_restored = _restore(seg_masked).strip()
+        kind = _classify_major_boundary_mark(m.group(1))
+        if seg_restored and kind:
+            raw_parts.append((seg_restored, kind))
+            last_idx = m.end()
+
+    tail_restored = _restore(masked[last_idx:]).strip()
+    if tail_restored:
+        raw_parts.append((tail_restored, ""))
+    elif raw_parts:
+        raw_parts[-1] = (raw_parts[-1][0], "")
+
+    if len(raw_parts) <= 1:
+        return [(trimmed, "")]
+
+    # Merge tiny 1-word fragments across ':' / ';' so neural TTS always receives natural multi-word phrases
+    merged: list[tuple[str, str]] = []
+    idx = 0
+    while idx < len(raw_parts):
+        seg_txt, b_kind = raw_parts[idx]
+        word_cnt = len(re.findall(r"[\w\u00C0-\u1EF9]+", seg_txt))
+        if b_kind == "colonSemicolon" and word_cnt < 2 and idx + 1 < len(raw_parts):
+            nxt_txt, nxt_kind = raw_parts[idx + 1]
+            raw_parts[idx + 1] = (f"{seg_txt} {nxt_txt}".strip(), nxt_kind)
+            idx += 1
+            continue
+        merged.append((seg_txt, b_kind))
+        idx += 1
+
+    # Also ensure the final segment has >= 2 words if preceded by ':' / ';'
+    if len(merged) >= 2 and merged[-2][1] == "colonSemicolon":
+        tail_words = len(re.findall(r"[\w\u00C0-\u1EF9]+", merged[-1][0]))
+        if tail_words < 2:
+            prev_txt, _ = merged[-2]
+            tail_txt, tail_kind = merged[-1]
+            merged[-2] = (f"{prev_txt} {tail_txt}".strip(), tail_kind)
+            merged.pop()
+
+    if merged:
+        merged[-1] = (merged[-1][0], "")
+    return merged
+
+
+def _apply_edge_cosine_taper(clip: np.ndarray, sr: int, fade_ms: float = 10.0) -> np.ndarray:
+    if clip.size == 0 or sr <= 0:
+        return clip
+    out = clip.astype(np.float32, copy=True)
+    fade_n = min(out.size // 2, max(1, int(round((fade_ms / 1000.0) * sr))))
+    if fade_n > 1:
+        curve = 0.5 * (1.0 - np.cos(np.pi * np.arange(fade_n, dtype=np.float32) / float(fade_n)))
+        out[:fade_n] *= curve
+        out[-fade_n:] *= curve[::-1]
+    return out
+
+
+def stitch_tts_segments_with_pauses(
+    clips: list[np.ndarray],
+    sr: int,
+    boundary_kinds: list[str],
+    punctuation_pauses: dict[str, Any] | None = None,
+) -> np.ndarray:
+    """Stitches synthesized major clauses/sentences with exact user-configured punctuation pauses,
+    accounting for existing trailing/leading silence and applying raised-cosine fades to prevent clicks.
+    """
+    if not clips:
+        return np.zeros(0, dtype=np.float32)
+    if len(clips) == 1:
+        return _apply_edge_cosine_taper(clips[0], sr, fade_ms=8.0)
+
+    cfg = punctuation_pauses if isinstance(punctuation_pauses, dict) else {}
+    defaults = {
+        "comma": 0.2,
+        "period": 0.6,
+        "questionExclamation": 0.5,
+        "colonSemicolon": 0.4,
+    }
+
+    prepared: list[np.ndarray] = []
+    edges: list[dict[str, Any]] = []
+    for raw in clips:
+        mono = np.ascontiguousarray(raw, dtype=np.float32)
+        if mono.ndim > 1:
+            mono = mono.mean(axis=1)
+        mono, edge_info = attenuate_leading_breath_and_measure_edges(mono, sr)
+        prepared.append(_apply_edge_cosine_taper(mono, sr, fade_ms=8.0))
+        edges.append(edge_info)
+
+    safety_pad = max(1, int(round(0.020 * sr)))  # keep >= 20ms natural consonant release/onset pad
+    out_parts: list[np.ndarray] = []
+
+    for i, clip in enumerate(prepared):
+        cur = clip
+        if i < len(prepared) - 1:
+            b_kind = boundary_kinds[i] if i < len(boundary_kinds) else "period"
+            raw_val = cfg.get(b_kind, defaults.get(b_kind, 0.5))
+            target_sec = max(0.0, min(5.0, float(raw_val if isinstance(raw_val, (int, float)) else 0.5)))
+            target_samples = int(round(target_sec * sr))
+
+            trail_samples = int(round((float(edges[i].get("trailingSilenceMs", 0)) / 1000.0) * sr))
+            next_lead_samples = int(round((float(edges[i + 1].get("leadingSilenceMs", 0)) / 1000.0) * sr))
+            existing_total = trail_samples + next_lead_samples
+
+            if existing_total <= target_samples:
+                gap_samples = target_samples - existing_total
+                out_parts.append(cur)
+                if gap_samples > 0:
+                    out_parts.append(np.zeros(gap_samples, dtype=np.float32))
+            else:
+                # Existing trailing + leading silence exceeds configured target pause: trim excess dead silence safely
+                excess = existing_total - target_samples
+                trim_trail = min(excess, max(0, trail_samples - safety_pad))
+                rem_excess = excess - trim_trail
+                if trim_trail > 0 and cur.size > trim_trail + safety_pad:
+                    cur = _apply_edge_cosine_taper(cur[: cur.size - trim_trail], sr, fade_ms=8.0)
+                if rem_excess > 0:
+                    trim_lead = min(rem_excess, max(0, next_lead_samples - safety_pad))
+                    if trim_lead > 0 and prepared[i + 1].size > trim_lead + safety_pad:
+                        prepared[i + 1] = _apply_edge_cosine_taper(prepared[i + 1][trim_lead:], sr, fade_ms=8.0)
+                        edges[i + 1]["leadingSilenceMs"] = max(
+                            0, int(round(((next_lead_samples - trim_lead) / float(sr)) * 1000.0))
+                        )
+                out_parts.append(cur)
+        else:
+            out_parts.append(cur)
+
+    return np.concatenate(out_parts) if out_parts else np.zeros(0, dtype=np.float32)
+
+
+def shape_internal_punctuation_pauses(
+    audio: np.ndarray,
+    sr: int,
+    text: str,
+    punctuation_pauses: dict[str, Any],
+    asr_words: list[dict[str, Any]],
+    speed: float = 1.0,
+    major_already_split: bool = False,
+) -> tuple[np.ndarray, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Shapes in-chunk punctuation pauses (especially in-sentence clause/list commas `,`, plus any unsplit
+    `. ! ? : ;` marks) directly at minimum-energy zero-crossings without altering pitch or prosody.
+
+    Returns `(shaped_audio, updated_asr_words, applied_edits)`.
+    """
+    import difflib
+    import re
+    from . import audio_quality as aq
+
+    mono = np.ascontiguousarray(audio, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    updated_words = [dict(w) for w in asr_words]
+    if mono.size == 0 or sr <= 0 or not text or len(updated_words) < 2 or not isinstance(punctuation_pauses, dict):
+        return mono, updated_words, []
+
+    source_words, delimiters = aq.tokenize_text_with_delimiters(text)
+    if len(source_words) < 2:
+        return mono, updated_words, []
+
+    src_clean = [aq.clean_word(w) for w in source_words]
+    asr_raw = [str(w.get("word", "")) for w in updated_words]
+    asr_clean = [aq.clean_word(w) for w in asr_raw]
+    eff_lang = aq.resolve_script_language(text, None)
+
+    src_spans = aq._collapse_multiplied_letter_spans(
+        aq.collapse_number_tokens(source_words, eff_lang, delimiters=delimiters),
+        source_words,
+        delimiters=delimiters,
+        counterpart_clean=set(asr_clean),
+    )
+    asr_spans = aq._collapse_multiplied_letter_spans(
+        aq.collapse_number_tokens(asr_raw, eff_lang),
+        asr_raw,
+        counterpart_clean=set(src_clean),
+    )
+
+    src_boundary_to_asr: dict[int, int] = {}
+    matcher = difflib.SequenceMatcher(
+        None, [s.canonical for s in src_spans], [a.canonical for a in asr_spans], autojunk=False
+    )
+    opcodes = matcher.get_opcodes()
+    aligned_pairs: list[tuple[int, int]] = []
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == "equal":
+            for off in range(i2 - i1):
+                aligned_pairs.append((i1 + off, j1 + off))
+        elif tag == "replace" and (i2 - i1) == (j2 - j1):
+            for off in range(i2 - i1):
+                sc = src_spans[i1 + off].canonical
+                ac = asr_spans[j1 + off].canonical
+                if aq.are_words_equivalent(sc, ac):
+                    aligned_pairs.append((i1 + off, j1 + off))
+
+    for idx_p, (sp_i, ap_j) in enumerate(aligned_pairs):
+        s_cur = src_spans[sp_i]
+        a_cur = asr_spans[ap_j]
+        s_len = s_cur.orig_end - s_cur.orig_start
+        a_len = a_cur.orig_end - a_cur.orig_start
+        if not s_cur.is_number and not a_cur.is_number and s_len >= 2 and s_len == a_len:
+            for sub in range(s_len - 1):
+                src_boundary_to_asr[s_cur.orig_start + sub] = a_cur.orig_start + sub
+        if idx_p + 1 < len(aligned_pairs):
+            sp_next, ap_next = aligned_pairs[idx_p + 1]
+            s_right = src_spans[sp_next]
+            a_right = asr_spans[ap_next]
+            i_b = s_cur.orig_end - 1
+            j_b = a_cur.orig_end - 1
+            if s_right.orig_start == i_b + 1 and a_right.orig_start == j_b + 1:
+                src_boundary_to_asr[i_b] = j_b
+
+    abbrev_stems = {
+        "dr", "mr", "mrs", "ms", "prof", "rev", "gen", "sen", "rep", "st", "jr", "sr",
+        "vs", "etc", "al", "eg", "ie", "am", "pm", "us", "uk", "usa", "eu", "tp", "ths", "ts", "pgs", "gs", "bs", "ks",
+    }
+    comma_cfg = max(0.0, min(5.0, float(punctuation_pauses.get("comma", 0.2) or 0.0)))
+    period_cfg = max(0.0, min(5.0, float(punctuation_pauses.get("period", 0.6) or 0.0)))
+    qe_cfg = max(0.0, min(5.0, float(punctuation_pauses.get("questionExclamation", 0.5) or 0.0)))
+    cs_cfg = max(0.0, min(5.0, float(punctuation_pauses.get("colonSemicolon", 0.4) or 0.0)))
+
+    total_dur = mono.size / float(sr)
+    win_10ms = max(1, int(round(0.010 * sr)))
+    planned_edits: list[dict[str, Any]] = []
+    last_cut_sample = 0
+
+    for i in range(len(source_words) - 1):
+        delim = delimiters[i + 1] if (i + 1) < len(delimiters) else ""
+        if not delim or not re.search(r"[,.;:!?…，、。；：！？]", delim):
+            continue
+        if major_already_split and re.search(r"[.!?…！？。]", delim) and not re.search(r"[,，、:;：；]", delim):
+            continue
+        j = src_boundary_to_asr.get(i)
+        if j is None or j < 0 or j + 1 >= len(updated_words):
+            continue
+        if aq._is_numeric_scope_word(src_clean[i]) and aq._is_numeric_scope_word(src_clean[i + 1]):
+            continue
+        if "." in delim and not re.search(r"[,;:!?…]", delim):
+            if src_clean[i] in abbrev_stems or re.match(r"^(?:[A-Za-z]\.){1,5}[A-Za-z]?$", source_words[i].strip()):
+                continue
+
+        # Determine punctuation category & target pause duration in seconds
+        if re.search(r"[!?！？]", delim):
+            p_kind = "questionExclamation"
+            target_sec = qe_cfg
+        elif re.search(r"[.…。]", delim):
+            p_kind = "period"
+            target_sec = period_cfg
+        elif re.search(r"[:;：；]", delim):
+            p_kind = "colonSemicolon"
+            target_sec = cs_cfg
+        else:
+            p_kind = "comma"
+            if comma_cfg <= 0.0:
+                continue
+            left_len = 1
+            for k in range(i - 1, -1, -1):
+                if aq.has_punctuation_boundary(delimiters[k + 1], source_words[k + 1]):
+                    break
+                left_len += 1
+            right_len = 1
+            for k in range(i + 1, len(source_words) - 1):
+                if aq.has_punctuation_boundary(delimiters[k + 1], source_words[k + 1]):
+                    break
+                right_len += 1
+            is_clause_conj = src_clean[i + 1] in (
+                "but", "yet", "while", "though", "although", "whereas", "so", "for", "nor",
+                "nhưng", "mà", "tuy", "dù", "vì", "nên", "song",
+            )
+            is_oxford_list = src_clean[i + 1] in ("and", "or", "va", "và", "hoặc") and any(
+                "," in delimiters[k] for k in range(max(1, i - 4), i + 1)
+            )
+            is_clause_comma = (is_clause_conj and left_len >= 2 and right_len >= 2) or (
+                left_len >= 3 and right_len >= 3 and not is_oxford_list
+            )
+            target_sec = comma_cfg if is_clause_comma else min(comma_cfg, max(0.10, 0.65 * comma_cfg))
+
+        w_cur = updated_words[j]
+        w_next = updated_words[j + 1]
+        if min(float(w_cur.get("probability", 1.0)), float(w_next.get("probability", 1.0))) < 0.40:
+            continue
+        s1, e1 = float(w_cur.get("startSec", 0.0)), float(w_cur.get("endSec", 0.0))
+        s2, e2 = float(w_next.get("startSec", 0.0)), float(w_next.get("endSec", 0.0))
+        if e2 <= s1 or e1 > s2 + 0.08:
+            continue
+
+        guard_l = min(0.055, 0.32 * max(0.04, e1 - s1))
+        guard_r = min(0.055, 0.32 * max(0.04, e2 - s2))
+        win_lo = max(0.0, max(s1 + guard_l, e1 - 0.09))
+        win_hi = min(total_dur, min(e2 - guard_r, max(e1, s2) + 0.09))
+        if win_hi <= win_lo + 0.012:
+            mid_b = 0.5 * (e1 + s2)
+            win_lo = max(0.0, mid_b - 0.025)
+            win_hi = min(total_dur, mid_b + 0.025)
+        if win_hi <= win_lo + 0.008:
+            continue
+
+        # Reference local speech energy around the two words
+        ref_lo = int(max(0.0, s1 - 0.10) * sr)
+        ref_hi = int(min(total_dur, e2 + 0.10) * sr)
+        ref_slice = mono[ref_lo:ref_hi]
+        if ref_slice.size < win_10ms * 4:
+            continue
+        ref_frames = ref_slice[: (ref_slice.size // win_10ms) * win_10ms].reshape(-1, win_10ms)
+        ref_rms = float(np.percentile(np.sqrt(np.mean(ref_frames * ref_frames, axis=1) + 1e-12), 90))
+        quiet_ceil = max(0.008, min(0.014, 0.08 * ref_rms))
+
+        b_lo_idx = int(round(win_lo * sr))
+        b_hi_idx = int(round(win_hi * sr))
+        b_seg = mono[b_lo_idx:b_hi_idx]
+        n_bf = b_seg.size // win_10ms
+        best_q_len = 0
+        best_q_start = -1
+        cur_q_len = 0
+        cur_q_start = -1
+        if n_bf >= 1:
+            bf = b_seg[: n_bf * win_10ms].reshape(n_bf, win_10ms)
+            bf_rms = np.sqrt(np.mean(bf * bf, axis=1) + 1e-12)
+            bf_zcr = np.mean(np.abs(np.diff(np.signbit(bf), axis=1)), axis=1)
+            for f_idx, (rv, zv) in enumerate(zip(bf_rms, bf_zcr)):
+                is_fric = (rv >= 0.006 and zv >= 0.24) or (rv >= 0.001 and zv >= 0.42)
+                if rv < quiet_ceil and not is_fric:
+                    if cur_q_len == 0:
+                        cur_q_start = f_idx
+                    cur_q_len += 1
+                    if cur_q_len > best_q_len:
+                        best_q_len = cur_q_len
+                        best_q_start = cur_q_start
+                else:
+                    cur_q_len = 0
+
+        # Also include explicit timestamp gap if silence frames exceed win_lo..win_hi
+        existing_pause_sec = best_q_len * 0.010
+        if s2 > e1:
+            gap_slice = mono[int(round(e1 * sr)) : int(round(s2 * sr))]
+            if gap_slice.size >= win_10ms:
+                gf = gap_slice[: (gap_slice.size // win_10ms) * win_10ms].reshape(-1, win_10ms)
+                gf_rms = np.sqrt(np.mean(gf * gf, axis=1) + 1e-12)
+                gf_zcr = np.mean(np.abs(np.diff(np.signbit(gf), axis=1)), axis=1)
+                gf_fric = ((gf_rms >= 0.006) & (gf_zcr >= 0.24)) | ((gf_rms >= 0.001) & (gf_zcr >= 0.42))
+                gap_quiet_sec = float(np.sum((gf_rms < quiet_ceil) & ~gf_fric)) * 0.010
+                existing_pause_sec = max(existing_pause_sec, gap_quiet_sec)
+
+        needed_sec = target_sec - existing_pause_sec
+        if needed_sec >= 0.035:
+            # Locate minimum-RMS point inside existing quiet valley or boundary transition
+            if best_q_len >= 2 and best_q_start >= 0:
+                q_mid_f = best_q_start + best_q_len // 2
+                center_idx = b_lo_idx + q_mid_f * win_10ms + (win_10ms // 2)
+            else:
+                fine_w = max(4, int(round(0.006 * sr)))
+                fine_hop = max(1, int(round(0.001 * sr)))
+                if b_seg.size > fine_w:
+                    min_e = float("inf")
+                    best_off = b_seg.size // 2
+                    for off in range(0, b_seg.size - fine_w + 1, fine_hop):
+                        sub = b_seg[off : off + fine_w]
+                        e_val = float(np.dot(sub, sub))
+                        if e_val < min_e:
+                            min_e = e_val
+                            best_off = off + fine_w // 2
+                    center_idx = b_lo_idx + best_off
+                else:
+                    center_idx = (b_lo_idx + b_hi_idx) // 2
+
+            # Snap to nearest zero-crossing within ±3ms
+            zc_rad = max(2, int(round(0.003 * sr)))
+            z_lo = max(last_cut_sample + int(0.02 * sr), max(1, center_idx - zc_rad))
+            z_hi = min(mono.size - 2, center_idx + zc_rad)
+            if z_hi <= z_lo:
+                continue
+            cut_idx = center_idx
+            best_zc_dist = zc_rad + 1
+            for k_idx in range(z_lo, z_hi + 1):
+                if mono[k_idx - 1] * mono[k_idx] <= 0.0:
+                    d = abs(k_idx - center_idx)
+                    if d < best_zc_dist:
+                        best_zc_dist = d
+                        cut_idx = k_idx
+            if best_zc_dist > zc_rad:
+                cut_idx = z_lo + int(np.argmin(np.abs(mono[z_lo : z_hi + 1])))
+
+            delta_samples = int(round(needed_sec * sr))
+            if delta_samples > 0 and cut_idx > last_cut_sample + int(0.02 * sr):
+                planned_edits.append({
+                    "mode": "insert",
+                    "cutIdx": cut_idx,
+                    "deltaSamples": delta_samples,
+                    "asrIndex": j,
+                    "kind": p_kind,
+                    "targetSec": round(target_sec, 3),
+                    "existingSec": round(existing_pause_sec, 3),
+                })
+                last_cut_sample = cut_idx
+        elif existing_pause_sec - target_sec >= 0.18 and target_sec >= 0.05 and best_q_len >= 22 and best_q_start >= 0:
+            # Safe dead-silence compaction when TTS left a huge pause far exceeding user's tight setting
+            q_s_idx = b_lo_idx + (best_q_start + 3) * win_10ms
+            q_e_idx = b_lo_idx + (best_q_start + best_q_len - 3) * win_10ms
+            avail = q_e_idx - q_s_idx
+            trim_samples = min(int(round((existing_pause_sec - target_sec) * sr)), max(0, avail - int(round(target_sec * sr))))
+            if trim_samples >= int(round(0.08 * sr)) and q_s_idx > last_cut_sample + int(0.02 * sr):
+                keep_left = (avail - trim_samples) // 2
+                cut_s = q_s_idx + keep_left
+                cut_e = cut_s + trim_samples
+                planned_edits.append({
+                    "mode": "trim",
+                    "cutIdx": cut_s,
+                    "cutEndIdx": cut_e,
+                    "deltaSamples": -trim_samples,
+                    "asrIndex": j,
+                    "kind": p_kind,
+                    "targetSec": round(target_sec, 3),
+                    "existingSec": round(existing_pause_sec, 3),
+                })
+                last_cut_sample = cut_e
+
+    if not planned_edits:
+        return mono, updated_words, []
+
+    # Assemble shaped waveform in a single linear pass with smooth 8ms raised-cosine tapers
+    fade_n = max(2, int(round(0.008 * sr)))
+    fade_in_curve = 0.5 * (1.0 - np.cos(np.pi * np.arange(fade_n, dtype=np.float32) / float(fade_n)))
+    fade_out_curve = fade_in_curve[::-1]
+
+    out_pieces: list[np.ndarray] = []
+    cursor = 0
+    for ed in planned_edits:
+        if ed["mode"] == "insert":
+            c_idx = int(ed["cutIdx"])
+            d_samp = int(ed["deltaSamples"])
+            seg = mono[cursor:c_idx].copy()
+            if cursor > 0 and seg.size >= fade_n:
+                seg[:fade_n] *= fade_in_curve
+            if seg.size >= fade_n:
+                seg[-fade_n:] *= fade_out_curve
+            out_pieces.append(seg)
+            out_pieces.append(np.zeros(d_samp, dtype=np.float32))
+            cursor = c_idx
+        else:
+            c_s = int(ed["cutIdx"])
+            c_e = int(ed["cutEndIdx"])
+            seg = mono[cursor:c_s].copy()
+            if cursor > 0 and seg.size >= fade_n:
+                seg[:fade_n] *= fade_in_curve
+            if seg.size >= fade_n:
+                seg[-fade_n:] *= fade_out_curve
+            out_pieces.append(seg)
+            cursor = c_e
+
+    tail = mono[cursor:].copy()
+    if cursor > 0 and tail.size >= fade_n:
+        tail[:fade_n] *= fade_in_curve
+    out_pieces.append(tail)
+    shaped_audio = np.concatenate(out_pieces) if out_pieces else mono
+
+    # Shift updated_words timestamps accurately across all applied edits
+    cum_shift = 0.0
+    edit_ptr = 0
+    for w_idx, w_obj in enumerate(updated_words):
+        orig_s = float(w_obj.get("startSec", 0.0))
+        orig_e = float(w_obj.get("endSec", orig_s))
+        new_s = orig_s + cum_shift
+        new_e = orig_e + cum_shift
+
+        if edit_ptr < len(planned_edits) and planned_edits[edit_ptr]["asrIndex"] == w_idx:
+            ed = planned_edits[edit_ptr]
+            cut_sec = float(ed["cutIdx"]) / float(sr)
+            delta_sec = float(ed["deltaSamples"]) / float(sr)
+            if ed["mode"] == "insert":
+                new_e = min(new_e, cut_sec + cum_shift)
+                if new_e < new_s + 0.02:
+                    new_e = max(new_s, cut_sec + cum_shift)
+            cum_shift += delta_sec
+            edit_ptr += 1
+            # Ensure the immediately following word starts after the newly inserted silence
+            if ed["mode"] == "insert" and w_idx + 1 < len(updated_words):
+                nxt_orig_s = float(updated_words[w_idx + 1].get("startSec", cut_sec))
+                if nxt_orig_s < cut_sec:
+                    updated_words[w_idx + 1]["startSec"] = round(cut_sec, 3)
+
+        w_obj["startSec"] = round(max(0.0, new_s), 3)
+        w_obj["endSec"] = round(max(w_obj["startSec"], new_e), 3)
+
+    return shaped_audio, updated_words, planned_edits
+
+
+def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, Any]:
+    """Core sidecar handler (`audio.enforce_punctuation_pauses`) that enforces user-configured
+    `punctuationPauses` (`comma`, `period`, `questionExclamation`, `colonSemicolon`) inside a synthesized
+    chunk file (WAV or MP3) and caches the post-shaped ASR word alignment so immediate Post-QC
+    validation reuses it in ~0ms without running Whisper twice.
+    """
+    import re
+    from . import audio_quality as aq
+    from .asr_engine import (
+        AsrLifecycleManager,
+        _is_cuda_runtime_error,
+        find_whisper_model_dir,
+        resolve_whisper_model_dir,
+    )
+    from .protocol import log
+
+    audio_path = require(params, "audioPath", str)
+    text = str(params.get("text") or "").strip()
+    pauses = params.get("punctuationPauses")
+    if not os.path.isfile(audio_path):
+        raise SidecarError("INPUT_NOT_FOUND", f"audioPath not found: {os.path.basename(audio_path)}")
+
+    mono, sr = _read_mono(audio_path)
+    orig_dur = round(mono.size / float(sr), 3) if sr > 0 else 0.0
+    _, edge_initial = attenuate_leading_breath_and_measure_edges(mono, sr)
+
+    if not text or not isinstance(pauses, dict) or sr <= 0 or mono.size == 0:
+        return {
+            "shaped": False,
+            "audioPath": audio_path,
+            "durationSec": orig_dur,
+            "sampleRate": sr,
+            "leadingSilenceMs": edge_initial.get("leadingSilenceMs", 0),
+            "trailingSilenceMs": edge_initial.get("trailingSilenceMs", 0),
+            "editsCount": 0,
+        }
+
+    source_words, delimiters = aq.tokenize_text_with_delimiters(text)
+    major_already_split = bool(params.get("majorAlreadySplit"))
+    internal_delims = delimiters[1:-1] if len(delimiters) >= 3 else []
+    if major_already_split:
+        has_target_punct = any(re.search(r"[,，、:;：；]", d) for d in internal_delims)
+    else:
+        has_target_punct = any(re.search(r"[,.;:!?…，、。；：！？]", d) for d in internal_delims)
+
+    if len(source_words) < 2 or not has_target_punct:
+        return {
+            "shaped": False,
+            "audioPath": audio_path,
+            "durationSec": orig_dur,
+            "sampleRate": sr,
+            "leadingSilenceMs": edge_initial.get("leadingSilenceMs", 0),
+            "trailingSilenceMs": edge_initial.get("trailingSilenceMs", 0),
+            "editsCount": 0,
+        }
+
+    language = params.get("language")
+    eff_language = aq.resolve_script_language(text, language)
+    lang_code = None if (not eff_language or eff_language == "auto") else eff_language
+    speed = float(params.get("speed") or 1.0)
+    models_dir = params.get("modelsDir")
+    model_id = params.get("modelId") or params.get("asrModelId") or "large-v3-turbo"
+    active_model_id = str(model_id)
+
+    mgr_model_id: str | None = None
+    precomputed = params.get("_precomputedAsrWords")
+    detected_words: list[dict[str, Any]] = []
+    if isinstance(precomputed, list) and precomputed:
+        detected_words = aq.reanchor_asr_word_timestamps(
+            [dict(w) for w in precomputed], mono, sr, text=text
+        )
+    else:
+        target_model_dir, canonical_id = resolve_whisper_model_dir(model_id, models_dir)
+        if not target_model_dir:
+            target_model_dir = find_whisper_model_dir(models_dir, model_id)
+        if not target_model_dir:
+            return {
+                "shaped": False,
+                "reason": "asr_unavailable",
+                "audioPath": audio_path,
+                "durationSec": orig_dur,
+                "sampleRate": sr,
+                "leadingSilenceMs": edge_initial.get("leadingSilenceMs", 0),
+                "trailingSilenceMs": edge_initial.get("trailingSilenceMs", 0),
+                "editsCount": 0,
+            }
+        active_model_id = canonical_id or active_model_id
+        ctx.check_cancelled()
+        try:
+            mgr = AsrLifecycleManager.get_instance()
+            whisper_model = mgr.get_or_load(model_dir_or_id=target_model_dir, models_dir=models_dir)
+            mgr_model_id = getattr(mgr, "current_model_id", None)
+            qc_hotwords = aq.extract_qc_vocabulary_hotwords(text, language=eff_language)
+            kw_extra: dict[str, Any] = {}
+            if qc_hotwords:
+                kw_extra["hotwords"] = qc_hotwords
+            try:
+                segs, _ = whisper_model.transcribe(
+                    audio_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=200),
+                    condition_on_previous_text=False,
+                    **kw_extra,
+                )
+                segs = list(segs)
+            except TypeError:
+                segs, _ = whisper_model.transcribe(
+                    audio_path,
+                    language=lang_code,
+                    beam_size=5,
+                    word_timestamps=True,
+                    vad_filter=True,
+                )
+                segs = list(segs)
+            except Exception as inf_err:
+                if _is_cuda_runtime_error(inf_err):
+                    whisper_model = mgr.get_or_load(
+                        model_dir_or_id=target_model_dir,
+                        models_dir=models_dir,
+                        device="cpu",
+                        compute_type="int8",
+                    )
+                    segs, _ = whisper_model.transcribe(
+                        audio_path,
+                        language=lang_code,
+                        beam_size=5,
+                        word_timestamps=True,
+                        vad_filter=True,
+                        condition_on_previous_text=False,
+                    )
+                    segs = list(segs)
+                else:
+                    raise
+
+            for seg in segs:
+                if getattr(seg, "words", None):
+                    for w in seg.words:
+                        detected_words.append({
+                            "word": w.word,
+                            "startSec": round(float(w.start), 3),
+                            "endSec": round(float(w.end), 3),
+                            "probability": round(float(w.probability), 4),
+                            "tokenSource": "primary_asr",
+                        })
+
+            if detected_words:
+                detected_words = aq.reanchor_asr_word_timestamps(detected_words, mono, sr, text=text)
+                detected_words = aq.recover_unaligned_words(
+                    audio_path,
+                    detected_words,
+                    orig_dur,
+                    whisper_model,
+                    language=eff_language,
+                    slice_budget=[2],
+                    audio_data=mono,
+                    sample_rate=sr,
+                )
+        except Exception as e:
+            log(f"[enforce_punctuation_pauses] ASR alignment skipped: {e}")
+            return {
+                "shaped": False,
+                "reason": str(e),
+                "audioPath": audio_path,
+                "durationSec": orig_dur,
+                "sampleRate": sr,
+                "leadingSilenceMs": edge_initial.get("leadingSilenceMs", 0),
+                "trailingSilenceMs": edge_initial.get("trailingSilenceMs", 0),
+                "editsCount": 0,
+            }
+
+    if not detected_words:
+        return {
+            "shaped": False,
+            "audioPath": audio_path,
+            "durationSec": orig_dur,
+            "sampleRate": sr,
+            "leadingSilenceMs": edge_initial.get("leadingSilenceMs", 0),
+            "trailingSilenceMs": edge_initial.get("trailingSilenceMs", 0),
+            "editsCount": 0,
+        }
+
+    shaped_audio, updated_words, edits = shape_internal_punctuation_pauses(
+        mono, sr, text, pauses, detected_words, speed=speed, major_already_split=major_already_split
+    )
+
+    if edits:
+        out_fmt = "mp3" if audio_path.lower().endswith(".mp3") else "wav"
+        write_audio_atomic(audio_path, shaped_audio, sr=sr, fmt=out_fmt)
+        final_dur = round(shaped_audio.size / float(sr), 3)
+        _, edge_final = attenuate_leading_breath_and_measure_edges(shaped_audio, sr)
+    else:
+        final_dur = orig_dur
+        edge_final = edge_initial
+
+    # Cache primary ASR words against the final file on disk so immediate Post-QC skips primary Whisper
+    aq.cache_primary_asr_words(audio_path, active_model_id, lang_code, updated_words)
+    if str(model_id) != active_model_id:
+        aq.cache_primary_asr_words(audio_path, str(model_id), lang_code, updated_words)
+    if mgr_model_id and mgr_model_id not in {active_model_id, str(model_id)}:
+        aq.cache_primary_asr_words(audio_path, mgr_model_id, lang_code, updated_words)
+
+    return {
+        "shaped": bool(edits),
+        "audioPath": audio_path,
+        "durationSec": final_dur,
+        "sampleRate": sr,
+        "leadingSilenceMs": edge_final.get("leadingSilenceMs", 0),
+        "trailingSilenceMs": edge_final.get("trailingSilenceMs", 0),
+        "editsCount": len(edits),
+        "edits": edits,
+    }
+
 

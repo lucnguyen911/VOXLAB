@@ -5,6 +5,7 @@
  * Model lifecycle: one TTS model resident at a time (Rust unloads other runtimes on `tts.load`).
  */
 import { AiBackend, AiError, AiRuntime, newRequestId } from "./types";
+import { PunctuationPauses } from "../../types/ui";
 import {
   DevicePreference,
   TtsEngineCapabilities,
@@ -53,6 +54,7 @@ export interface SynthesizeRequest {
   sampleRate?: number;
   advancedSettings?: Record<string, unknown>;
   pronunciationRules?: PronunciationRule[];
+  punctuationPauses?: PunctuationPauses;
   projectId?: string;
   onProgress?: (pct: number, stage: string) => void;
 }
@@ -65,6 +67,20 @@ export interface SynthesizeResult {
   sourceText?: string;
   spokenText?: string;
   pronunciationMapping?: PronunciationMappingEntry[];
+  leadingSilenceMs?: number;
+  trailingSilenceMs?: number;
+  majorPunctuationSplit?: boolean;
+}
+
+export interface EnforcePunctuationPausesResult {
+  shaped: boolean;
+  audioPath: string;
+  durationSec: number;
+  sampleRate: number;
+  leadingSilenceMs?: number;
+  trailingSilenceMs?: number;
+  editsCount?: number;
+  reason?: string;
 }
 
 export interface AsrSegment {
@@ -156,6 +172,7 @@ export class LocalAiServices {
   private loadedTts: { runtime: AiRuntime; key: string } | null = null;
   private loadedAsrKey: string | null = null;
   private active: { runtime: AiRuntime; requestId: string } | null = null;
+  private pauseShapeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly backend: AiBackend,
@@ -217,7 +234,7 @@ export class LocalAiServices {
     const requestId = newRequestId(method.replace(/\W/g, ""));
     this.active = { runtime, requestId };
     try {
-      const maxBusyRetries = 12;
+      const maxBusyRetries = 30;
       for (let busyAttempt = 0; ; busyAttempt++) {
         try {
           return await this.backend.request<T>(runtime, method, params, {
@@ -344,6 +361,9 @@ export class LocalAiServices {
     if (effRules && effRules.length > 0) {
       params.pronunciationRules = effRules;
     }
+    if (req.punctuationPauses) {
+      params.punctuationPauses = req.punctuationPauses;
+    }
 
     for (let attempt = 0; attempt < 2; attempt++) {
       await this.ensureTtsLoaded(caps, req.onProgress);
@@ -400,11 +420,52 @@ export class LocalAiServices {
     mode?: "sequential" | "timeline";
     totalDurationSec?: number;
     sampleRate?: number;
+    punctuationPauses?: PunctuationPauses;
   }, onProgress?: (pct: number, stage: string) => void): Promise<AssembleResult> {
     return this.call<AssembleResult>("core", "audio.assemble", {
       sampleRate: 44100,
       ...params,
     }, onProgress);
+  }
+
+  async enforcePunctuationPauses(
+    params: {
+      audioPath: string;
+      text: string;
+      punctuationPauses: PunctuationPauses;
+      language?: string;
+      speed?: number;
+      majorAlreadySplit?: boolean;
+      asrModelId?: string;
+    },
+    onProgress?: (pct: number, stage: string) => void
+  ): Promise<EnforcePunctuationPausesResult> {
+    const run = async (): Promise<EnforcePunctuationPausesResult> => {
+      const s = this.settings();
+      const effectiveModel = params.asrModelId || s.asrModelId || "large-v3-turbo";
+      return this.call<EnforcePunctuationPausesResult>(
+        "core",
+        "audio.enforce_punctuation_pauses",
+        {
+          audioPath: params.audioPath,
+          text: params.text,
+          punctuationPauses: params.punctuationPauses,
+          language: params.language || "auto",
+          speed: typeof params.speed === "number" ? params.speed : 1.0,
+          majorAlreadySplit: Boolean(params.majorAlreadySplit),
+          modelsDir: s.modelsDir,
+          modelId: effectiveModel,
+          asrModelId: effectiveModel,
+        },
+        onProgress
+      );
+    };
+    const next = this.pauseShapeQueue.then(run, run);
+    this.pauseShapeQueue = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
   }
 
   async validateAudioQuality(

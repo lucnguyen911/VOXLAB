@@ -373,6 +373,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     return await synthesizeSpeechCore(targetChunk.text, snapshot, {
       scope: "tts",
       id: targetChunk.id,
+      punctuationPauses: loadStoredTtsSettings().pauses,
+      asrModelId: currentAsrModel,
       advancedSettings,
       onProgress: (pct, stage) => {
         onStage?.(`${stage} (${pct}%)`);
@@ -385,7 +387,13 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   // Order: Technical WAV valid -> Immediate UI state: 'ready' + qualityReview: 'checking' -> ASR Validation with timeout -> Final Review
   const processSynthesizedChunkWithQc = async (
     target: ChunkItem,
-    res: { durationSec: number; blobUrl: string; outputPath: string },
+    res: {
+      durationSec: number;
+      blobUrl: string;
+      outputPath: string;
+      leadingSilenceMs?: number;
+      trailingSilenceMs?: number;
+    },
     voiceSnapshot: EffectiveVoiceSnapshot,
     firstFinishedCallback?: (readyChunk: ChunkItem) => void,
     deferQc = false
@@ -399,6 +407,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       audioFilePath: res.outputPath,
       audioRevision: nextRevision,
       effectiveVoiceSnapshot: voiceSnapshot,
+      ...(typeof res.leadingSilenceMs === "number" ? { leadingSilenceMs: res.leadingSilenceMs } : {}),
+      ...(typeof res.trailingSilenceMs === "number" ? { trailingSilenceMs: res.trailingSilenceMs } : {}),
       acknowledgedAt: undefined,
       acknowledgedAudioSignature: undefined,
       qualityReview: undefined,
@@ -606,7 +616,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         c.status === "ready" &&
         Boolean(c.audioFilePath || c.audioUrl) &&
         c.qualityReview?.status !== "checking" &&
-        isReviewOutdated(c, currentAsrModel, isAsrReady) &&
+        isReviewOutdated(c, undefined, isAsrReady) &&
         !inFlightValidationsRef.current.has(`${getChunkAudioSignature(c)}::${currentAsrModel}`)
     );
 
@@ -1335,6 +1345,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             outputPath: chosenPath,
             format: isMp3 ? "mp3" : "wav",
             mode: "sequential",
+            punctuationPauses: ttsSettings.pauses,
           });
         }
 

@@ -2,6 +2,20 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.6] — 2026-11-12
+
+### Added
+- **In-Chunk Punctuation Pause Shaping (`NGẮT NGHỈ`: `,`, `.`, `?!`, `:;`)**:
+  - Two-tier prosodic punctuation pause control inside single chunks across Clone (`OmniVoice`, `Chatterbox Turbo`, `Qwen3-TTS`), Local (`Kokoro-82M`), and Online (`Edge`, `Google`) voices, effective on both batch generation and single-chunk Regenerate (`Tạo lại`).
+- **4-Layer Anti-ASR-Mishearing Protection (`Post-QC v4.0.0`)**:
+  - Context-free vocabulary `hotwords`, General American flapped-`/ɾ/` homophones + open/closed compound matching + Vietnamese–English loanword transliterations, isolated lexicon-guided slice arbitration, and full `spokenText` alignment.
+
+### Fixed
+- **Eliminated False Warnings on `Whisper Large V3` & `Whisper Large V3 Turbo`**:
+  - Added waveform-energy word-boundary re-anchoring (`reanchor_asr_word_timestamps`) and 2-word neighbor bleed peeling so `Whisper Large V3`'s `-120ms .. -400ms` timestamp left-shift and tail-stretched punctuation pauses no longer trigger false `ABNORMAL_PAUSE` or `SUSPECTED_STUTTER` alerts while still catching real skipped-comma, stutter, repeat, and missing-word defects.
+- **Post-QC Speed & Subtitle Model Selector Decoupling**:
+  - Cached post-shaped primary ASR word alignments (`<1ms` reuse on immediate Post-QC) and decoupled the `Mô hình phụ đề (Whisper)` dropdown from wiping/re-running completed chunk reviews.
+
 ## [1.0.0] — 2026-11-11 (Commercial General Availability Release)
 
 ### Added

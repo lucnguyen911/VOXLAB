@@ -59,6 +59,7 @@ $MandatoryProtectedModules = @(
 )
 
 $VaultedLargeModules = @(
+    "audio_ops.py",
     "pronunciation.py",
     "number_normalizer.py",
     "subtitle_optimizer.py",
@@ -327,7 +328,7 @@ foreach ($rt in $Runtimes) {
     if ($SkipObfuscationForDev) {
         Write-Warning "[DEV ONLY] Skipping PyArmor obfuscation for '$rt' (-SkipObfuscationForDev)."
     } else {
-        Write-Host "==> Sealing 4 large algorithm modules into 256-bit BLAKE2b+HMAC encrypted vault..." -ForegroundColor Cyan
+        Write-Host "==> Sealing $($VaultedLargeModules.Count) large algorithm modules into 256-bit BLAKE2b+HMAC encrypted vault..." -ForegroundColor Cyan
         Invoke-StageVaultSeal -PythonExe $pythonExe -SourcePkgDir $PkgDir -StageDir $stageDir -VaultOutDir $stageVaultDir -RelFiles $VaultedLargeModules
 
         $pyarmorExe = Resolve-PyArmorCli -VenvScriptsDir $venvScripts -PythonExe $pythonExe

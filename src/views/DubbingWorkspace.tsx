@@ -720,7 +720,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       if (seg.status !== "ready" || (!seg.audioFilePath && !seg.audioUrl)) {
         return false;
       }
-      if (!isReviewOutdated(seg, currentAsrModel, isAsrReady)) {
+      if (!isReviewOutdated(seg, undefined, isAsrReady)) {
         return false;
       }
       const sig = `${seg.cueIndex}::${getChunkAudioSignature(seg)}::${currentAsrModel}`;

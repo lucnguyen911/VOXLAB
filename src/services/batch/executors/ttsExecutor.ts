@@ -168,7 +168,13 @@ export class TtsExecutor {
           scratchScope,
           `chunk_${String(i + 1).padStart(4, "0")}.${isEdgeVoice ? "mp3" : "wav"}`
         );
-        let r: { durationSec: number; outputPath: string };
+        let r: {
+          durationSec: number;
+          outputPath: string;
+          leadingSilenceMs?: number;
+          trailingSilenceMs?: number;
+          majorPunctuationSplit?: boolean;
+        };
         if (isGoogleVoice) {
           r = await googleTranslateTtsProvider.synthesize({
             voiceId,
@@ -192,11 +198,17 @@ export class TtsExecutor {
             speed,
             advancedSettings: jobAdvancedSettings,
             pronunciationRules: effectiveRules,
+            punctuationPauses: ttsSnapshot?.pauses,
           });
         }
         chunk.durationSec = r.durationSec; // real audio duration → synthesized_timing subtitles
         chunk.audioUrl = r.outputPath;
         chunk.audioFilePath = r.outputPath;
+        if (typeof r.leadingSilenceMs === "number") chunk.leadingSilenceMs = r.leadingSilenceMs;
+        if (typeof r.trailingSilenceMs === "number") chunk.trailingSilenceMs = r.trailingSilenceMs;
+        (chunk as ChunkItem & { _majorPunctuationSplit?: boolean })._majorPunctuationSplit = Boolean(
+          r.majorPunctuationSplit
+        );
         chunk.status = "ready";
       } catch (e) {
         const err = AiError.from(e);
@@ -219,9 +231,48 @@ export class TtsExecutor {
         if (isCancelled?.()) return cancelled(65);
       }
       onProgress?.(68, "Đang hậu kiểm chất lượng giọng đọc bằng Whisper...");
+      const maybeShapeChunkPauses = async (chunk: ChunkItem) => {
+        if (
+          !ttsSnapshot?.pauses ||
+          !chunk.audioFilePath ||
+          typeof ai.enforcePunctuationPauses !== "function"
+        ) {
+          return;
+        }
+        const majorSplit = Boolean(
+          (chunk as ChunkItem & { _majorPunctuationSplit?: boolean })._majorPunctuationSplit
+        );
+        const inner = chunk.text.trim().slice(0, -1);
+        const needsShape = majorSplit
+          ? /[,，、:;：；]/.test(inner)
+          : /[,.;:!?…，、。；：！？]/.test(inner);
+        if (!needsShape) return;
+        try {
+          const shaped = await ai.enforcePunctuationPauses({
+            audioPath: chunk.audioFilePath,
+            text: chunk.text,
+            punctuationPauses: ttsSnapshot.pauses,
+            speed,
+            majorAlreadySplit: majorSplit,
+          });
+          if (shaped && typeof shaped.durationSec === "number" && shaped.durationSec > 0) {
+            chunk.durationSec = shaped.durationSec;
+            if (typeof shaped.leadingSilenceMs === "number") {
+              chunk.leadingSilenceMs = shaped.leadingSilenceMs;
+            }
+            if (typeof shaped.trailingSilenceMs === "number") {
+              chunk.trailingSilenceMs = shaped.trailingSilenceMs;
+            }
+          }
+        } catch {
+          // Non-blocking: pause shaping failure must not abort batch synthesis
+        }
+      };
+
       for (let i = 0; i < sortedChunks.length; i++) {
         if (isCancelled?.()) return cancelled(68);
         const chunk = sortedChunks[i];
+        await maybeShapeChunkPauses(chunk);
         try {
           chunk.qualityReview = await validateChunkAudioQuality(
             chunk,
@@ -277,7 +328,13 @@ export class TtsExecutor {
                   isOnlineVoice ? "mp3" : "wav"
                 }`
               );
-              let r: { durationSec: number; outputPath: string };
+              let r: {
+                durationSec: number;
+                outputPath: string;
+                leadingSilenceMs?: number;
+                trailingSilenceMs?: number;
+                majorPunctuationSplit?: boolean;
+              };
               if (isOnlineVoice) {
                 r = await edgeTtsProvider.synthesize({
                   voiceId,
@@ -294,11 +351,17 @@ export class TtsExecutor {
                   speed,
                   advancedSettings: jobAdvancedSettings,
                   pronunciationRules: effectiveRules,
+                  punctuationPauses: ttsSnapshot?.pauses,
                 });
               }
               chunk.durationSec = r.durationSec;
               chunk.audioUrl = r.outputPath;
               chunk.audioFilePath = r.outputPath;
+              if (typeof r.leadingSilenceMs === "number") chunk.leadingSilenceMs = r.leadingSilenceMs;
+              if (typeof r.trailingSilenceMs === "number") chunk.trailingSilenceMs = r.trailingSilenceMs;
+              (chunk as ChunkItem & { _majorPunctuationSplit?: boolean })._majorPunctuationSplit = Boolean(
+                r.majorPunctuationSplit
+              );
               chunk.status = "ready";
             } catch (e) {
               const err = AiError.from(e);
@@ -314,6 +377,7 @@ export class TtsExecutor {
           );
           for (const chunk of flaggedChunks) {
             if (isCancelled?.()) return cancelled(72);
+            await maybeShapeChunkPauses(chunk);
             try {
               chunk.qualityReview = await validateChunkAudioQuality(
                 chunk,
@@ -368,6 +432,7 @@ export class TtsExecutor {
             inputs: concatInputs,
             outputPath: audioResolution.resolvedPath,
             format: targetAudioFormat,
+            punctuationPauses: ttsSnapshot?.pauses,
           });
         }
       } catch (e) {

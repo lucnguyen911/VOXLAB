@@ -808,7 +808,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "3.7.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "4.0.0");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -820,7 +820,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "3.7.0");
+    assert.equal(review.validatorVersion, "4.0.0");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
@@ -1316,8 +1316,8 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(isReviewOutdated(v300Chunk, "large-v3-turbo", true), true);
   });
 
-  it("V30: v3.7.0 invalidates v3.1.0 - v3.6.0 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "3.7.0");
+  it("V30: v4.0.0 invalidates v3.1.0 - v3.7.0 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
+    assert.equal(QUALITY_VALIDATOR_VERSION, "4.0.0");
 
     const v310Chunk: ChunkItem = {
       id: "chunk_v30_old",
@@ -1452,6 +1452,14 @@ describe("Audio Quality Validator Tests", () => {
       qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "3.6.0" },
     };
     assert.equal(isReviewOutdated(v360Chunk, "large-v3-turbo", true), true);
+
+    // v4.0.0 adds acoustic word-boundary re-anchoring + lexicon arbitration + skipped-clause check: v3.7.0 reviews must be re-checked
+    const v370Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v370_old",
+      qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "3.7.0" },
+    };
+    assert.equal(isReviewOutdated(v370Chunk, "large-v3-turbo", true), true);
   });
 
   it("V31: manual pause tokens become a phrase boundary for QC so intentional pauses are not abnormal", () => {
@@ -1460,6 +1468,35 @@ describe("Audio Quality Validator Tests", () => {
     // Plain stripping (used for display/export) is unchanged
     assert.equal(stripPauseTokens(text), "Hôm nay tôi đi chợ với mẹ rồi về.");
     assert.equal(replacePauseTokensWithBoundary(""), "");
+  });
+
+  it("V32: subtitle Whisper dropdown changes do not invalidate current v4.0.0 reviews when background queue omits currentAsrModel", () => {
+    const verifiedChunk: ChunkItem = {
+      id: "chunk_v32_decoupled",
+      index: 1,
+      text: "Already verified chunk with Turbo.",
+      originalText: "Already verified chunk with Turbo.",
+      status: "ready",
+      durationSec: 4.2,
+      audioFilePath: "C:\\scratch\\tts\\chunk_decoupled.wav",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "pass",
+        issues: [],
+        summary: "Đạt",
+        checkedAt: Date.now(),
+        text: "Already verified chunk with Turbo.",
+        validatorVersion: "4.0.0",
+        asrModelId: "large-v3-turbo",
+        audioSignature: "C:\\scratch\\tts\\chunk_decoupled.wav::4.2",
+      },
+    };
+
+    // Background auto-validation queue passes undefined for currentAsrModel -> stays valid (no 81-chunk re-run storm)
+    assert.equal(isReviewOutdated(verifiedChunk, undefined, true), false);
+    // Explicit model check still preserves unit-tested contract
+    assert.equal(isReviewOutdated(verifiedChunk, "large-v3-turbo", true), false);
+    assert.equal(isReviewOutdated(verifiedChunk, "large-v3", true), true);
   });
 });
 

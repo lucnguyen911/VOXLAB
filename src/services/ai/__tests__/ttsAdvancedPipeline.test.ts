@@ -386,4 +386,102 @@ describe("Global Advanced TTS Settings - Pipeline Transmission & Snapshot Freeze
     assert.equal(synthCall.params.refText, "Let me paint you a picture.");
     assert.equal(synthCall.params.speed, 0.95);
   });
+
+  it("forwards punctuationPauses to tts.synthesize, shapes internal commas via audio.enforce_punctuation_pauses, and passes pauses to audio.assemble", async () => {
+    const { ai, backend } = makeTestAi();
+    const customPauses = {
+      comma: 0.42,
+      period: 0.85,
+      questionExclamation: 0.70,
+      colonSemicolon: 0.55,
+    };
+
+    // 1. Direct LocalAiServices.synthesize + enforcePunctuationPauses
+    await ai.synthesize({
+      model: "omnivoice",
+      voiceId: "default",
+      text: "When stiff knees ache, families face a trap.",
+      outputPath: "pause_test.wav",
+      punctuationPauses: customPauses,
+    });
+    const directSynth = backend.calls.find(
+      (c) => c.method === "tts.synthesize" && c.params.outputPath === "pause_test.wav"
+    );
+    assert.ok(directSynth);
+    assert.deepEqual(directSynth.params.punctuationPauses, customPauses);
+
+    const shapeRes = await (ai as any).enforcePunctuationPauses({
+      audioPath: "pause_test.wav",
+      text: "When stiff knees ache, families face a trap.",
+      punctuationPauses: customPauses,
+      language: "en",
+      speed: 1.0,
+      majorAlreadySplit: true,
+      asrModelId: "large-v3-turbo",
+    });
+    assert.equal(shapeRes.audioPath, "pause_test.wav");
+    const directShape = backend.calls.find(
+      (c) => c.method === "audio.enforce_punctuation_pauses" && c.params.audioPath === "pause_test.wav"
+    );
+    assert.ok(directShape, "audio.enforce_punctuation_pauses must be invoked on core");
+    assert.equal(directShape.runtime, "core");
+    assert.deepEqual(directShape.params.punctuationPauses, customPauses);
+    assert.equal(directShape.params.majorAlreadySplit, true);
+    assert.equal(directShape.params.asrModelId, "large-v3-turbo");
+
+    // 2. TtsExecutor batch flow forwards pauses to synthesize, enforce_punctuation_pauses, and MP3 assemble
+    const job: BatchJob = {
+      id: "job-pauses-e2e",
+      stage: "queued",
+      queueOrder: 1,
+      sourceFilePath: "D:/Test/pauses.txt",
+      sourceFileName: "pauses.txt",
+      sourceFileSize: 512,
+      sourceFileMtime: 2000,
+      fileKind: "text",
+      selectedTasks: ["tts"],
+      executionSequence: ["tts"],
+      currentStepIndex: 0,
+      hasCustomConfig: false,
+      stepResults: {},
+      configOverrides: {
+        tts: {
+          model: "omnivoice",
+          voiceId: "omnivoice-auto",
+          speed: 1.0,
+          pitch: 0,
+          volume: 100,
+          pauses: customPauses,
+        },
+      },
+      outputSnapshot: {
+        saveInSourceFolder: false,
+        resolvedOutputDirectory: "C:/VoxLabExports",
+        collisionPolicy: "auto_rename",
+        outputAudioFormat: "mp3",
+        outputSubtitleFormat: "srt",
+      },
+      artifacts: { ownedArtifactPaths: [] },
+      status: "waiting",
+      progressPct: 0,
+      createdAt: 2000,
+    };
+
+    const stepRes = await TtsExecutor.execute(job, {
+      textContent: "When stiff knees make hauling wet laundry impossible, families face a brutal trap.",
+      ai,
+      writeFile: async () => {},
+    });
+    assert.equal(stepRes.status, "completed", `Job failed with: ${stepRes.error}`);
+
+    const batchShapeCalls = backend.calls.filter(
+      (c) => c.method === "audio.enforce_punctuation_pauses" && c.params.audioPath !== "pause_test.wav"
+    );
+    assert.ok(batchShapeCalls.length >= 1, "TtsExecutor must enforce internal comma pauses");
+    assert.deepEqual(batchShapeCalls[0].params.punctuationPauses, customPauses);
+
+    const assembleCall = backend.calls.find((c) => c.method === "audio.assemble");
+    assert.ok(assembleCall, "MP3 export must call audio.assemble");
+    assert.deepEqual(assembleCall.params.punctuationPauses, customPauses);
+  });
 });

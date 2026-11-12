@@ -467,7 +467,17 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
         `regen_${targetChunk.index}_${Date.now()}.${isOnlineVoice ? "mp3" : "wav"}`
       ));
 
-    let synthResult: { durationSec: number; outputPath: string };
+    const taskPauses = isDialogue
+      ? dialogueSnapshot?.pauses
+      : activeTask === "dubbing"
+      ? dubSnapshot?.pauses
+      : ttsSnapshot?.pauses;
+
+    let synthResult: {
+      durationSec: number;
+      outputPath: string;
+      majorPunctuationSplit?: boolean;
+    };
     if (isOnlineVoice) {
       synthResult = await edgeTtsProvider.synthesize({
         voiceId,
@@ -484,8 +494,32 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
         speed,
         advancedSettings,
         pronunciationRules: effectiveRules,
+        punctuationPauses: taskPauses,
         ...(projectId !== "current" ? { projectId } : {}),
       });
+    }
+
+    if (taskPauses && typeof ai.enforcePunctuationPauses === "function") {
+      const inner = targetChunk.text.trim().slice(0, -1);
+      const needsShape = synthResult.majorPunctuationSplit
+        ? /[,，、:;：；]/.test(inner)
+        : /[,.;:!?…，、。；：！？]/.test(inner);
+      if (needsShape) {
+        try {
+          const shaped = await ai.enforcePunctuationPauses({
+            audioPath: synthResult.outputPath,
+            text: targetChunk.text,
+            punctuationPauses: taskPauses,
+            speed,
+            majorAlreadySplit: Boolean(synthResult.majorPunctuationSplit),
+          });
+          if (shaped && shaped.durationSec > 0) {
+            synthResult.durationSec = shaped.durationSec;
+          }
+        } catch {
+          // Non-blocking
+        }
+      }
     }
 
     const checkable: ChunkItem = {
