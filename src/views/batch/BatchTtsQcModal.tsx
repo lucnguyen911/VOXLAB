@@ -41,6 +41,8 @@ import {
 import { convertSubtitleFormat } from "../../services/batch/outputResolver";
 import { getEngineAdvancedSettings } from "../../services/ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../services/providers/edgeProvider";
+import { googleTranslateTtsProvider } from "../../services/providers/googleProvider";
+import { resolveBatchVoiceTarget } from "../../services/batch/batchModelResolver";
 import { getEffectiveRules } from "../../services/pronunciation";
 import { computeChunkPausesMs } from "../../services/audio/masterExport";
 import { generateSubtitlesFromChunks } from "../../services/subtitle/pipeline";
@@ -421,12 +423,12 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
     const dubSnapshot =
       job.effectiveConfigSnapshot?.tasks.dubbing || job.configOverrides.dubbing;
 
-    const model = isDialogue
+    const rawModel = isDialogue
       ? dialogueSnapshot?.model || "omnivoice"
       : activeTask === "dubbing"
       ? dubSnapshot?.ttsModel || "omnivoice"
       : ttsSnapshot?.model || "omnivoice";
-    const voiceId =
+    const rawVoiceId =
       targetChunk.voiceId ||
       (isDialogue
         ? (targetChunk.characterName &&
@@ -436,18 +438,20 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
         : activeTask === "dubbing"
         ? dubSnapshot?.voiceId || "omnivoice-auto"
         : ttsSnapshot?.voiceId || "omnivoice-auto");
+    const {
+      voiceId,
+      model,
+      isGoogleVoice,
+      isEdgeVoice,
+      isOnlineVoice,
+      audioExt,
+    } = resolveBatchVoiceTarget(rawVoiceId, rawModel);
     const rawSpeed = isDialogue
       ? dialogueSnapshot?.speed
       : activeTask === "dubbing"
       ? dubSnapshot?.speed
       : ttsSnapshot?.speed;
     const speed = rawSpeed && rawSpeed !== 1 ? rawSpeed : undefined;
-
-    const isOnlineVoice =
-      typeof voiceId === "string" &&
-      (voiceId.includes("Neural") ||
-        voiceId.startsWith("edge_") ||
-        voiceId.startsWith("google_"));
 
     const projectId = isDialogue
       ? "dialogue"
@@ -464,7 +468,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       targetChunk.audioFilePath ||
       (await ai.scratchPath(
         scratchScope,
-        `regen_${targetChunk.index}_${Date.now()}.${isOnlineVoice ? "mp3" : "wav"}`
+        `regen_${targetChunk.index}_${Date.now()}.${audioExt}`
       ));
 
     const taskPauses = isDialogue
@@ -478,7 +482,14 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       outputPath: string;
       majorPunctuationSplit?: boolean;
     };
-    if (isOnlineVoice) {
+    if (isGoogleVoice) {
+      synthResult = await googleTranslateTtsProvider.synthesize({
+        voiceId,
+        text: targetChunk.text,
+        outputPath,
+        speed,
+      });
+    } else if (isEdgeVoice) {
       synthResult = await edgeTtsProvider.synthesize({
         voiceId,
         text: targetChunk.text,

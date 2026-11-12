@@ -21,15 +21,28 @@ export const DEV_BASELINE_ASR_MODEL = "faster-whisper-small";
 
 export function normalizeWhisperModelId(raw?: string | null): string {
   if (!raw) return "large-v3-turbo";
-  let s = raw.toLowerCase().trim();
+  let cleaned = String(raw).trim();
+  if (cleaned.includes("/") || cleaned.includes("\\")) {
+    const parts = cleaned.replace(/[\\/]+$/, "").split(/[\\/]/);
+    cleaned = parts[parts.length - 1] || cleaned;
+  }
+  let s = cleaned.toLowerCase().trim();
   if (s.startsWith("faster-whisper-")) {
     s = s.slice("faster-whisper-".length);
   }
+  if (!s || s === "auto") return "large-v3-turbo";
   if (s.includes("turbo")) return "large-v3-turbo";
   if (s.includes("v3")) return "large-v3";
   if (s.includes("medium")) return "medium";
   if (s.includes("small")) return "small";
   return s;
+}
+
+export function toWhisperFolderId(raw?: string | null): string {
+  const canonical = normalizeWhisperModelId(raw);
+  return canonical.startsWith("faster-whisper-")
+    ? canonical
+    : `faster-whisper-${canonical}`;
 }
 
 const DEVICES: DevicePreference[] = ["auto", "cuda", "cpu"];

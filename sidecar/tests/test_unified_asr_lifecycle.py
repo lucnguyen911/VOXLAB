@@ -131,6 +131,48 @@ class UnifiedAsrLifecycleTests(unittest.TestCase):
                 self.assertEqual(resolved, m_dir)
                 self.assertEqual(cid, "large-v3-turbo")
 
+    def test_custom_models_dir_and_unprefixed_path_resolution(self):
+        import tempfile
+
+        mock_whisper = MagicMock()
+        with tempfile.TemporaryDirectory() as custom_dir:
+            prefixed_dir = os.path.join(custom_dir, "faster-whisper-large-v3-turbo")
+            os.makedirs(prefixed_dir, exist_ok=True)
+            with open(os.path.join(prefixed_dir, "model.bin"), "wb") as f:
+                f.write(b"0")
+
+            # 1. Unprefixed modelDir inside custom_dir resolves via parent folder search
+            unprefixed_path = os.path.join(custom_dir, "large-v3-turbo")
+            resolved, cid = resolve_whisper_model_dir(unprefixed_path)
+            self.assertEqual(os.path.abspath(resolved), os.path.abspath(prefixed_dir))
+            self.assertEqual(cid, "large-v3-turbo")
+
+            # 2. AsrEngine.load forwards modelsDir cleanly
+            with patch("faster_whisper.WhisperModel", return_value=mock_whisper):
+                engine = AsrEngine()
+                ctx = MagicMock()
+                res = engine.load(
+                    "asr.load",
+                    {
+                        "modelDir": unprefixed_path,
+                        "modelsDir": custom_dir,
+                        "modelId": "large-v3-turbo",
+                    },
+                    ctx,
+                )
+                self.assertEqual(res["modelId"], "large-v3-turbo")
+                self.assertEqual(
+                    os.path.abspath(self.mgr.status()["modelDir"]),
+                    os.path.abspath(prefixed_dir),
+                )
+
+    def test_canonicalize_whisper_model_id_ignores_parent_folder_tokens(self):
+        self.assertEqual(
+            canonicalize_whisper_model_id(r"D:\Video v3\Models\faster-whisper-small"),
+            "small",
+        )
+        self.assertEqual(canonicalize_whisper_model_id("auto"), "large-v3-turbo")
+
 
 if __name__ == "__main__":
     unittest.main()

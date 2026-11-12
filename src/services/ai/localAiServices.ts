@@ -13,6 +13,7 @@ import {
   resolveLocalEngine,
 } from "./ttsEngines";
 import { getEngineAdvancedSettings } from "./ttsAdvancedSettings";
+import { normalizeWhisperModelId, toWhisperFolderId } from "./aiRuntimeSettings";
 import {
   getEffectiveRules,
   PronunciationMappingEntry,
@@ -389,12 +390,24 @@ export class LocalAiServices {
                    onProgress?: (pct: number, stage: string) => void,
                    asrModelId?: string): Promise<TranscribeResult> {
     const s = this.settings();
-    const effectiveModel = asrModelId || s.asrModelId || "large-v3-turbo";
-    const modelDir = joinPath(s.modelsDir, effectiveModel);
+    const rawModel = asrModelId || s.asrModelId || "large-v3-turbo";
+    const canonicalModelId = normalizeWhisperModelId(rawModel);
+    const folderName = toWhisperFolderId(rawModel);
+    const modelDir = joinPath(s.modelsDir, folderName);
     const key = `${modelDir}|${s.device}`;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (this.loadedAsrKey !== key) {
-        await this.call("core", "asr.load", { modelDir, device: s.device }, onProgress);
+        await this.call(
+          "core",
+          "asr.load",
+          {
+            modelDir,
+            modelsDir: s.modelsDir,
+            modelId: canonicalModelId,
+            device: s.device,
+          },
+          onProgress
+        );
         this.loadedAsrKey = key;
       }
       try {
@@ -442,7 +455,9 @@ export class LocalAiServices {
   ): Promise<EnforcePunctuationPausesResult> {
     const run = async (): Promise<EnforcePunctuationPausesResult> => {
       const s = this.settings();
-      const effectiveModel = params.asrModelId || s.asrModelId || "large-v3-turbo";
+      const effectiveModel = normalizeWhisperModelId(
+        params.asrModelId || s.asrModelId || "large-v3-turbo"
+      );
       return this.call<EnforcePunctuationPausesResult>(
         "core",
         "audio.enforce_punctuation_pauses",
@@ -480,7 +495,9 @@ export class LocalAiServices {
     projectId?: string
   ): Promise<AudioQualityValidationResult> {
     const s = this.settings();
-    const effectiveModel = asrModelId || s.asrModelId || "large-v3-turbo";
+    const effectiveModel = normalizeWhisperModelId(
+      asrModelId || s.asrModelId || "large-v3-turbo"
+    );
     const effRules = pronunciationRules ?? getEffectiveRules(projectId);
     return this.call<AudioQualityValidationResult>(
       "core",
@@ -525,7 +542,9 @@ export class LocalAiServices {
     onProgress?: (pct: number, stage: string) => void
   ): Promise<MasterSubtitleResult> {
     const s = this.settings();
-    const effectiveModel = params.asrModelId || s.asrModelId || "large-v3-turbo";
+    const effectiveModel = normalizeWhisperModelId(
+      params.asrModelId || s.asrModelId || "large-v3-turbo"
+    );
     return this.call<MasterSubtitleResult>(
       "core",
       "subtitle.generate_srt",

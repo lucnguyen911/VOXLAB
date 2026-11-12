@@ -2,6 +2,20 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.7] — 2026-11-13
+
+### Added
+- **Preview Audio Bar Custom Save Dialog**:
+  - Clicking the Download button on `BottomAudioPlayer` during chunk/line/cue preview in `TTS`, `Dialogue`, and `Dubbing` now opens the native OS Save As dialog (defaulting to the last-used export directory and canonical chunk filename) instead of silently downloading into the Windows `Downloads` folder.
+
+### Fixed
+- **Post-QC (`Hậu kiểm`) False-Positive Elimination & Missing-Word Recall (`v4.1.0`)**:
+  - Added waveform envelope bridge validation (`measure_gap_acoustic_bridge_metrics`) so natural articulatory/prosodic transitions (`earth owns`, `the touch`, `of hours`, `rental unit`) no longer trigger false `ABNORMAL_PAUSE` alerts while true disconnected hesitations remain flagged.
+  - Added context-aware isolated-slice verification (`verify_suspect_slice_in_context`) and singular↔plural acoustic duration/sibilant energy guards so ASR prompt hallucinations neither produce false `SUSPECTED_STUTTER` alerts (e.g. `"shear"`) nor mask dropped words (e.g. missing `"dollars"` in repeated currency phrases).
+- **Batch (`Hàng loạt`) Full 5-Task Model & Voice Synchronization**:
+  - Fixed Batch `Phụ đề` (`transcription`) failing with `faster-whisper model '<id>' not found on disk` when using custom `modelsDir` by canonicalizing `faster-whisper-<id>` folder paths and propagating `modelsDir` + live model/voice change events to `batchRuntime`.
+  - Synchronized local & cloned engines (`kokoro_82m`, `omnivoice`, `chatterbox_turbo`, `qwen_tts_1_7b`), online providers (`Google TTS` & `Edge TTS`), workspace default hydration, and step-0 failure labels/retries across all 5 Batch tasks (`Phụ đề`, `Dịch`, `TTS`, `Hội thoại`, `Lồng tiếng`) and `BatchTtsQcModal`.
+
 ## [1.0.6] — 2026-11-12
 
 ### Added

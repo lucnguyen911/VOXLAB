@@ -37,6 +37,10 @@ import {
 import { generateNarrationAlignedSrt } from "../services/dubbing/alignedSrtGenerator";
 import { ReviewGrid } from "../components/dubbing/ReviewGrid";
 import { BottomAudioPlayer, ActiveAudioTrack } from "../components/layout/BottomAudioPlayer";
+import {
+  buildDefaultExportPath,
+  saveLastExportDirFromFilePath,
+} from "../services/storage/exportDirMemory";
 import { VoiceSelector } from "../components/dubbing/VoiceSelector";
 import { parseSubtitleContent } from "../services/subtitle/parser";
 import { exportToSrt } from "../services/subtitle/exporter";
@@ -1933,7 +1937,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         try {
           const { save } = await import("@tauri-apps/plugin-dialog");
           chosenPath = await save({
-            defaultPath: `${baseStem}_master.wav`,
+            defaultPath: buildDefaultExportPath(`${baseStem}_master.wav`),
             filters: [
               { name: "Audio WAV (*.wav)", extensions: ["wav"] },
               { name: "Audio MP3 (*.mp3)", extensions: ["mp3"] },
@@ -1941,6 +1945,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
             ],
           });
           if (!chosenPath) return; // User cancelled
+          saveLastExportDirFromFilePath(chosenPath);
         } catch (dialogErr) {
           console.warn("Tauri save dialog error:", dialogErr);
         }
@@ -2172,6 +2177,9 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       isGrouped && groupIndices.length > 1
         ? `Nhóm ${groupIndices[0]}–${groupIndices[groupIndices.length - 1]} (Câu ${activePreviewCueIndex}) · Lồng tiếng`
         : `Câu ${activePreviewCueIndex < 10 ? `0${activePreviewCueIndex}` : activePreviewCueIndex} · Lồng tiếng`;
+    const hasInMemoryFittedOverride = Boolean(
+      seg?.fittedAudioUrl && (seg?.speedFactor ?? 1.0) > 1.005
+    );
     return {
       id: `dub_cue_${activePreviewCueIndex}`,
       chunkIndex: activePreviewCueIndex,
@@ -2183,6 +2191,9 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         "Lồng tiếng",
       durationSec: dur,
       audioUrl,
+      audioFilePath: hasInMemoryFittedOverride
+        ? undefined
+        : primarySeg?.audioFilePath || seg?.audioFilePath,
       text: trans?.text || orig?.text,
     };
   }, [activePreviewCueIndex, audioSegments, originalCues, translatedCues, voices, selectedVoiceId, activeVoiceId]);

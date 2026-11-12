@@ -33,6 +33,9 @@ import {
   readBatchTextOrDocxFile,
   getDefaultBatchOutputDir,
 } from "../services/batch/batchRuntime";
+import { hydrateBatchGlobalDefaultsFromWorkspaces } from "../services/batch/batchWorkspaceSync";
+import { resolveBatchVoiceTarget } from "../services/batch/batchModelResolver";
+import { onAiModelsChanged } from "../services/ai/aiRuntimeSettings";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { isTauriRuntime } from "../services/ai/tauriBackend";
 import { expandTauriPaths, extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
@@ -87,12 +90,69 @@ export const BatchWorkspace: React.FC = () => {
 
   // Subscribe to orchestrator
   useEffect(() => {
+    const syncWorkspaceDefaultsToOrchestrator = () => {
+      const syncedDefaults = hydrateBatchGlobalDefaultsFromWorkspaces(
+        orchestrator.getGlobalDefaults()
+      );
+      orchestrator.setGlobalDefaults(syncedDefaults);
+      const currentJobs = orchestrator.getJobs();
+      let anyUpdated = false;
+      const nextJobs = currentJobs.map((j) => {
+        if (!j.hasCustomConfig && j.stage === "staging") {
+          anyUpdated = true;
+          return {
+            ...j,
+            configOverrides: {
+              ...j.configOverrides,
+              ...syncedDefaults,
+              dialogue: syncedDefaults.dialogue
+                ? {
+                    ...syncedDefaults.dialogue,
+                    characterVoices: j.configOverrides.dialogue?.characterVoices || {},
+                  }
+                : j.configOverrides.dialogue,
+            },
+          };
+        }
+        return j;
+      });
+      if (anyUpdated) {
+        orchestrator.setJobs(nextJobs);
+      }
+    };
+
+    syncWorkspaceDefaultsToOrchestrator();
+
     // Wire the real desktop runtime first (Tauri fs + local AI sidecar), then restore the durable queue.
     initBatchRuntime()
       .catch((err) => console.error("Không thể khởi tạo local AI runtime:", err))
-      .then(() => loadBatchState())
+      .then(() => {
+        syncWorkspaceDefaultsToOrchestrator();
+        return loadBatchState();
+      })
       .then(async (state) => {
-        let loadedJobs = state.jobs;
+        const syncedDefaults = hydrateBatchGlobalDefaultsFromWorkspaces(
+          orchestrator.getGlobalDefaults()
+        );
+        orchestrator.setGlobalDefaults(syncedDefaults);
+        let loadedJobs = state.jobs.map((j) => {
+          if (!j.hasCustomConfig && j.stage === "staging") {
+            return {
+              ...j,
+              configOverrides: {
+                ...j.configOverrides,
+                ...syncedDefaults,
+                dialogue: syncedDefaults.dialogue
+                  ? {
+                      ...syncedDefaults.dialogue,
+                      characterVoices: j.configOverrides.dialogue?.characterVoices || {},
+                    }
+                  : j.configOverrides.dialogue,
+              },
+            };
+          }
+          return j;
+        });
         if (isTauriRuntime() && loadedJobs.some((j) => j.fileKind === "text")) {
           loadedJobs = await Promise.all(
             loadedJobs.map(async (j) => {
@@ -131,8 +191,23 @@ export const BatchWorkspace: React.FC = () => {
       setJobs(updatedJobs);
       setQueueStatus(qStatus);
     });
+    const unsubAiModels = onAiModelsChanged(() => {
+      syncWorkspaceDefaultsToOrchestrator();
+    });
+    const handleAsrChanged = () => {
+      syncWorkspaceDefaultsToOrchestrator();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_asr_model_changed", handleAsrChanged);
+    }
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      unsubAiModels();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("voxlab_asr_model_changed", handleAsrChanged);
+      }
+    };
   }, [orchestrator]);
 
   // Filtered jobs for current view & search query
@@ -871,18 +946,24 @@ export const BatchWorkspace: React.FC = () => {
                 j.configOverrides.dialogue ||
                 orchestrator.getGlobalDefaults().dialogue || {
                   model: "omnivoice",
-                  defaultVoiceId: defaultVoiceId || "omnivoice-auto",
+                  defaultVoiceId: defaultVoiceId || "edge_vi_hoaimy",
                   sameSpeakerPauseSec: 0.3,
                   exportSrt: true,
                 };
+              const resolvedDefaultVoice =
+                defaultVoiceId || existingDialogue.defaultVoiceId || "edge_vi_hoaimy";
+              const voiceTarget = resolveBatchVoiceTarget(
+                resolvedDefaultVoice,
+                existingDialogue.model
+              );
               return {
                 ...j,
                 configOverrides: {
                   ...j.configOverrides,
                   dialogue: {
                     ...existingDialogue,
-                    defaultVoiceId:
-                      defaultVoiceId || existingDialogue.defaultVoiceId || "omnivoice-auto",
+                    model: voiceTarget.model || existingDialogue.model || "omnivoice",
+                    defaultVoiceId: resolvedDefaultVoice,
                     characterVoices,
                   },
                 },

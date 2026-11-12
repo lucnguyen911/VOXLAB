@@ -69,6 +69,10 @@ import {
 } from "../../constants/voiceFilters";
 import { reconcileCloneVoicesWithProfiles } from "../../services/ai/cloneVoiceRegistry";
 import { resolveJobOutputDirectory } from "../../services/batch/outputResolver";
+import {
+  resolveBatchModelForVoiceProfile,
+  resolveBatchWhisperModelId,
+} from "../../services/batch/batchModelResolver";
 import { isTauriRuntime } from "../../services/ai/tauriBackend";
 
 function loadAvailableVoices(): VoiceProfile[] {
@@ -517,13 +521,16 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
           {/* TAB 2: TTS OVERRIDES (Đồng bộ 1:1 với TtsInspector) */}
           {activeTab === "tts" && (() => {
             const storedTts = loadStoredTtsSettings();
-            const existingTts = configOverrides.tts;
+            const baseTts = job.effectiveConfigSnapshot?.tasks.tts;
+            const existingTts = configOverrides.tts || baseTts;
+            const resolvedVoiceId =
+              existingTts?.voiceId && existingTts.voiceId !== "omnivoice-auto"
+                ? existingTts.voiceId
+                : voices[0]?.id || "edge_vi_hoaimy";
+            const matchedVoice = voices.find((v) => v.id === resolvedVoiceId) || voices[0];
             const ttsCfg = {
-              model: existingTts?.model || "omnivoice",
-              voiceId:
-                existingTts?.voiceId && existingTts.voiceId !== "omnivoice-auto"
-                  ? existingTts.voiceId
-                  : voices[0]?.id || "edge_vi_hoaimy",
+              model: resolveBatchModelForVoiceProfile(matchedVoice, existingTts?.model),
+              voiceId: resolvedVoiceId,
               speed: existingTts?.speed ?? storedTts.speed ?? 1.0,
               pitch:
                 typeof existingTts?.pitch === "number" &&
@@ -873,7 +880,10 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                   activeVoiceId={ttsCfg.voiceId}
                   currentModel={selectedModelLabel}
                   onSelectVoice={(voice) => {
-                    updateTts({ voiceId: voice.id });
+                    updateTts({
+                      voiceId: voice.id,
+                      model: resolveBatchModelForVoiceProfile(voice, ttsCfg.model),
+                    });
                     setIsTtsVoiceModalOpen(false);
                   }}
                 />
@@ -1281,7 +1291,7 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
               baseTrans?.whisperModel ||
               subSettings.whisperModel ||
               "large-v3-turbo";
-            const whisperModelVal = rawModel === "auto" ? "large-v3-turbo" : rawModel;
+            const whisperModelVal = resolveBatchWhisperModelId(rawModel);
             const audioLangVal =
               currentTrans.audioLanguage ||
               baseTrans?.audioLanguage ||
@@ -2181,7 +2191,13 @@ export const PerFileConfigDrawer: React.FC<PerFileConfigDrawerProps> = ({
                   activeVoiceId={selectedVoice.id}
                   currentModel={selectModelVal}
                   onSelectVoice={(voice) => {
-                    updateDubbing({ voiceId: voice.id });
+                    updateDubbing({
+                      voiceId: voice.id,
+                      ttsModel: resolveBatchModelForVoiceProfile(
+                        voice,
+                        currentDub.ttsModel || baseDub?.ttsModel
+                      ),
+                    });
                     setIsDubbingVoiceModalOpen(false);
                   }}
                 />

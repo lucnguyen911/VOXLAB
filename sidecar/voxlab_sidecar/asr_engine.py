@@ -103,9 +103,14 @@ def canonicalize_whisper_model_id(raw_id: str | None) -> str:
     """Normalizes any model name/path into one of: large-v3-turbo, large-v3, medium, small."""
     if not raw_id:
         return "large-v3-turbo"
-    s = raw_id.lower().strip()
+    cleaned = str(raw_id).strip()
+    if "/" in cleaned or "\\" in cleaned:
+        cleaned = os.path.basename(cleaned.rstrip("/\\")) or cleaned
+    s = cleaned.lower().strip()
     if s.startswith("faster-whisper-"):
         s = s[len("faster-whisper-"):]
+    if s == "auto":
+        return "large-v3-turbo"
     if "turbo" in s:
         return "large-v3-turbo"
     if "v3" in s:
@@ -134,8 +139,13 @@ def resolve_whisper_model_dir(model_dir_or_id: str | None = None, models_dir: st
     search_bases: list[str] = []
     if models_dir and os.path.isdir(models_dir):
         search_bases.append(models_dir)
-    if model_dir_or_id and os.path.isdir(model_dir_or_id):
-        search_bases.append(model_dir_or_id)
+    if model_dir_or_id:
+        if os.path.isdir(model_dir_or_id) and model_dir_or_id not in search_bases:
+            search_bases.append(model_dir_or_id)
+        if "/" in model_dir_or_id or "\\" in model_dir_or_id:
+            parent_dir = os.path.dirname(os.path.abspath(model_dir_or_id.rstrip("/\\")))
+            if parent_dir and os.path.isdir(parent_dir) and parent_dir not in search_bases:
+                search_bases.append(parent_dir)
 
     data_dir = os.environ.get("VOXLAB_DATA_DIR", "").strip()
     if data_dir:
@@ -472,9 +482,11 @@ class AsrEngine:
 
     def load(self, _m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, Any]:
         model_dir = require(params, "modelDir", str)
+        models_dir = params.get("modelsDir")
         started = time.perf_counter()
         self.mgr.get_or_load(
             model_dir_or_id=model_dir,
+            models_dir=models_dir if isinstance(models_dir, str) and models_dir.strip() else None,
             device=params.get("device", "auto"),
             compute_type=params.get("computeType"),
             ctx=ctx,

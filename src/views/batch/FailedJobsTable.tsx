@@ -75,7 +75,12 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
           <tbody className="divide-y divide-borderDefault text-xs">
             {jobs.map((job, index) => {
               const diff = getJobDiff(job);
-              const failedTask = job.retryFromStep || "tts";
+              const failedTask =
+                job.retryFromStep ||
+                Object.values(job.stepResults).find((s) => s?.status === "failed")?.task ||
+                job.executionSequence[job.currentStepIndex] ||
+                job.selectedTasks[0] ||
+                "tts";
 
               return (
                 <tr key={job.id} className="hover:bg-surface2/50 transition-colors">

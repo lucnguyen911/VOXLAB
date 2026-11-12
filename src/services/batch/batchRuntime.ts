@@ -12,7 +12,7 @@ import { BatchOrchestrator } from "./batchOrchestrator";
 import { resolveJobOutputDirectory } from "./outputResolver";
 import { LocalAiServices, type AiFs, type AiRuntimeSettings } from "../ai/localAiServices";
 import { TauriAiBackend, isTauriRuntime } from "../ai/tauriBackend";
-import { loadAiRuntimeSettings } from "../ai/aiRuntimeSettings";
+import { loadAiRuntimeSettings, onAiModelsChanged } from "../ai/aiRuntimeSettings";
 import { loadTtsAdvancedSettings } from "../ai/ttsAdvancedSettings";
 import { loadCloneVoiceRegistry } from "../ai/cloneVoiceRegistry";
 import { resolveUnifiedVoiceReference, ensurePresetVoiceSamples } from "../ai/presetVoiceRegistry";
@@ -148,6 +148,16 @@ export function initBatchRuntime(): Promise<LocalAiServices | null> {
       await index.refresh(resolveJobOutputDirectory(job));
     };
     orchestrator.autoPersist = true;
+
+    onAiModelsChanged(() => {
+      void reloadAiRuntimeSettings();
+    });
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_asr_model_changed", () => {
+        void reloadAiRuntimeSettings();
+      });
+    }
+
     return ai;
   })();
   return initialized;
@@ -157,6 +167,7 @@ export function initBatchRuntime(): Promise<LocalAiServices | null> {
 export async function reloadAiRuntimeSettings(): Promise<void> {
   if (currentSettings) currentSettings = await loadAiRuntimeSettings();
   await loadTtsAdvancedSettings();
+  await loadCloneVoiceRegistry().catch(() => {});
 }
 
 export const getSharedAiServices = initBatchRuntime;

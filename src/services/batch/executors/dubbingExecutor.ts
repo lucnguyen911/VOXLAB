@@ -40,7 +40,9 @@ import {
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
-import { listCloneVoices } from "../../ai/cloneVoiceRegistry";
+import { edgeTtsProvider } from "../../providers/edgeProvider";
+import { googleTranslateTtsProvider } from "../../providers/googleProvider";
+import { resolveBatchVoiceTarget } from "../batchModelResolver";
 import { getEffectiveRules } from "../../pronunciation";
 import {
   validateChunkAudioQuality,
@@ -161,39 +163,75 @@ export class DubbingExecutor {
       return fail(20, "Local AI runtime chưa sẵn sàng (sidecar không khả dụng) — không thể lồng tiếng thật.");
     }
 
-    const voiceId = dubSnapshot?.voiceId || "";
-    const cloneBoundEngine = listCloneVoices().find((v) => v.id === voiceId)?.engine;
-    const isKokoroVoice =
-      typeof voiceId === "string" &&
-      (voiceId.startsWith("kokoro_") || /^[ab][fm]_[a-z0-9_]+$/i.test(voiceId));
-    const model =
-      (isKokoroVoice ? "kokoro_82m" : cloneBoundEngine) ||
-      dubSnapshot?.ttsModel ||
-      "";
+    const {
+      voiceId,
+      model,
+      isGoogleVoice,
+      isEdgeVoice,
+      isOnlineVoice,
+      audioExt,
+    } = resolveBatchVoiceTarget(dubSnapshot?.voiceId, dubSnapshot?.ttsModel);
     const speed =
       dubSnapshot?.speed && dubSnapshot.speed !== 1 ? dubSnapshot.speed : undefined;
     const effectiveRules = getEffectiveRules("dubbing");
-    try {
-      ai.resolveEngine(
-        model,
-        voiceId,
-        cues.map((c) => normalizeCueTextForSpeech(c.text)).join(" "),
-        undefined,
-        speed
-      );
-    } catch (e) {
-      return fail(20, AiError.from(e).message);
+    if (!isOnlineVoice) {
+      try {
+        ai.resolveEngine(
+          model,
+          voiceId,
+          cues.map((c) => normalizeCueTextForSpeech(c.text)).join(" "),
+          undefined,
+          speed
+        );
+      } catch (e) {
+        return fail(20, AiError.from(e).message);
+      }
     }
     const speedCeiling = Math.min(
       MAX_DUB_SPEEDUP,
       Math.max(1.0, dubSnapshot?.speedMultiplier || MAX_DUB_SPEEDUP)
     );
 
-    const jobAdvancedSettings = getEngineAdvancedSettings(model);
+    const jobAdvancedSettings = !isOnlineVoice ? getEngineAdvancedSettings(model) : undefined;
 
     const audioSegments: Record<number, DubAudioSegment> = {};
     const primarySegmentsForQc: DubAudioSegment[] = [];
     const scratchScope = `dub-${job.id}`.replace(/[^\w-]/g, "_");
+
+    const synthesizeDubbingUnit = async (cleanText: string, fileStem: string) => {
+      const outputPath = await ai.scratchPath(scratchScope, `${fileStem}.${audioExt}`);
+      if (isGoogleVoice) {
+        return googleTranslateTtsProvider.synthesize({
+          voiceId,
+          text: cleanText,
+          outputPath,
+          speed,
+        });
+      }
+      if (isEdgeVoice) {
+        return edgeTtsProvider.synthesize({
+          voiceId,
+          text: cleanText,
+          outputPath,
+          speed,
+          ...(dubSnapshot?.pitch !== undefined ? { pitch: dubSnapshot.pitch } : {}),
+          ...(dubSnapshot?.volume !== undefined
+            ? { volume: dubSnapshot.volume > 2 ? dubSnapshot.volume / 100 : dubSnapshot.volume }
+            : {}),
+        });
+      }
+      return ai.synthesize({
+        model,
+        voiceId,
+        text: cleanText,
+        outputPath,
+        speed,
+        advancedSettings: jobAdvancedSettings,
+        pronunciationRules: effectiveRules,
+        punctuationPauses: dubSnapshot?.pauses,
+        projectId: "dubbing",
+      });
+    };
 
     const isGroupMode =
       dubbingMode === "source_sync" ||
@@ -215,20 +253,7 @@ export class DubbingExecutor {
         const availableSec = Math.max(groupSpanSec, group.availableDurationSec);
 
         try {
-          const outputPath = await ai.scratchPath(
-            scratchScope,
-            `${group.groupId}.wav`
-          );
-          const raw = await ai.synthesize({
-            model,
-            voiceId,
-            text: cleanText,
-            outputPath,
-            speed,
-            advancedSettings: jobAdvancedSettings,
-            pronunciationRules: effectiveRules,
-            projectId: "dubbing",
-          });
+          const raw = await synthesizeDubbingUnit(cleanText, group.groupId);
 
           let fittedDurationSec = raw.durationSec;
           let speedFactor = 1.0;
@@ -302,20 +327,10 @@ export class DubbingExecutor {
           : cueDuration;
 
         try {
-          const outputPath = await ai.scratchPath(
-            scratchScope,
-            `cue_${String(i + 1).padStart(4, "0")}.wav`
+          const raw = await synthesizeDubbingUnit(
+            cleanText,
+            `cue_${String(i + 1).padStart(4, "0")}`
           );
-          const raw = await ai.synthesize({
-            model,
-            voiceId,
-            text: cleanText,
-            outputPath,
-            speed,
-            advancedSettings: jobAdvancedSettings,
-            pronunciationRules: effectiveRules,
-            projectId: "dubbing",
-          });
 
           let fittedDurationSec = raw.durationSec;
           let speedFactor = 1.0;

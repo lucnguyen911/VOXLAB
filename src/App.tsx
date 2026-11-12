@@ -194,7 +194,11 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
     const voice = voices.find((v) => v.id === (chunk.voiceOverrideId || activeVoiceId));
     const speakerName = voice?.name || "Hoài My";
 
-    if (activeAudioTrack?.id === chunk.id && activeAudioTrack?.audioUrl === chunk.audioUrl) {
+    if (
+      activeAudioTrack?.id === chunk.id &&
+      activeAudioTrack?.audioUrl === chunk.audioUrl &&
+      activeAudioTrack?.audioFilePath === chunk.audioFilePath
+    ) {
       setIsAudioPlaying((prev) => !prev);
       return;
     }
@@ -206,6 +210,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
       title: (chunk as any).title,
       durationSec: chunk.durationSec || 34,
       audioUrl: chunk.audioUrl,
+      audioFilePath: chunk.audioFilePath,
       text: chunk.text,
     });
     setIsAudioPlaying(true);

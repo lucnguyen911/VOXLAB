@@ -579,10 +579,10 @@ export class BatchOrchestrator {
     // Terminal Status Assignment (AC-11, AC-12, AC-25)
     if (failedStepTask) {
       job.errorMessage = stepErrorMsg;
+      job.retryFromStep = failedStepTask;
       if (accumulatedArtifactPaths.length > 0) {
         // Step failed after prior steps successfully committed artifacts
         job.status = "failed_with_artifact";
-        job.retryFromStep = failedStepTask;
       } else {
         job.status = "failed";
       }

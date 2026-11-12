@@ -38,6 +38,10 @@ import {
 import { loadStoredTtsSettings } from "../components/inspector/TtsInspector";
 import { loadSubtitleSettings } from "../services/subtitle";
 import { recordCompletedJobToHistory } from "../services/history/historyManager";
+import {
+  buildDefaultExportPath,
+  saveLastExportDirFromFilePath,
+} from "../services/storage/exportDirMemory";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import {
@@ -1298,7 +1302,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         try {
           const { save } = await import("@tauri-apps/plugin-dialog");
           chosenPath = await save({
-            defaultPath: defaultFilename,
+            defaultPath: buildDefaultExportPath(defaultFilename),
             filters: [
               { name: "Audio WAV (*.wav)", extensions: ["wav"] },
               { name: "Audio MP3 (*.mp3)", extensions: ["mp3"] },
@@ -1309,6 +1313,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           if (!chosenPath) {
             return;
           }
+          saveLastExportDirFromFilePath(chosenPath);
         } catch (dialogErr) {
           console.warn("Tauri save dialog error:", dialogErr);
         }

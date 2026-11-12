@@ -27,9 +27,9 @@ import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { concatPcmWavsFast } from "../batchRuntime";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
-import { listCloneVoices } from "../../ai/cloneVoiceRegistry";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 import { googleTranslateTtsProvider } from "../../providers/googleProvider";
+import { resolveBatchVoiceTarget } from "../batchModelResolver";
 import { getEffectiveRules } from "../../pronunciation";
 import {
   validateChunkAudioQuality,
@@ -132,20 +132,15 @@ export class TtsExecutor {
     if (!ai) {
       return fail(10, "Local AI runtime chưa sẵn sàng (sidecar không khả dụng) — không thể tạo giọng đọc thật.");
     }
-    const voiceId = ttsSnapshot?.voiceId || "";
-    const cloneBoundEngine = listCloneVoices().find((v) => v.id === voiceId)?.engine;
-    const isKokoroVoice =
-      typeof voiceId === "string" &&
-      (voiceId.startsWith("kokoro_") || /^[ab][fm]_[a-z0-9_]+$/i.test(voiceId));
-    const model = isKokoroVoice
-      ? "kokoro_82m"
-      : ttsSnapshot?.model || cloneBoundEngine || "";
+    const {
+      voiceId,
+      model,
+      isGoogleVoice,
+      isEdgeVoice,
+      isOnlineVoice,
+      audioExt,
+    } = resolveBatchVoiceTarget(ttsSnapshot?.voiceId, ttsSnapshot?.model);
     const speed = ttsSnapshot?.speed && ttsSnapshot.speed !== 1 ? ttsSnapshot.speed : undefined;
-    const isGoogleVoice = typeof voiceId === "string" && voiceId.startsWith("google_");
-    const isEdgeVoice =
-      typeof voiceId === "string" &&
-      (voiceId.includes("Neural") || voiceId.startsWith("edge_"));
-    const isOnlineVoice = isGoogleVoice || isEdgeVoice;
     if (!isOnlineVoice) {
       try {
         ai.resolveEngine(model, voiceId, normalizedText, undefined, speed);
@@ -166,7 +161,7 @@ export class TtsExecutor {
       try {
         const outputPath = await ai.scratchPath(
           scratchScope,
-          `chunk_${String(i + 1).padStart(4, "0")}.${isEdgeVoice ? "mp3" : "wav"}`
+          `chunk_${String(i + 1).padStart(4, "0")}.${audioExt}`
         );
         let r: {
           durationSec: number;
@@ -324,9 +319,7 @@ export class TtsExecutor {
             try {
               const retryOutputPath = await ai.scratchPath(
                 scratchScope,
-                `chunk_${String(chunk.index).padStart(4, "0")}_retry${attempt}.${
-                  isOnlineVoice ? "mp3" : "wav"
-                }`
+                `chunk_${String(chunk.index).padStart(4, "0")}_retry${attempt}.${audioExt}`
               );
               let r: {
                 durationSec: number;
@@ -335,7 +328,14 @@ export class TtsExecutor {
                 trailingSilenceMs?: number;
                 majorPunctuationSplit?: boolean;
               };
-              if (isOnlineVoice) {
+              if (isGoogleVoice) {
+                r = await googleTranslateTtsProvider.synthesize({
+                  voiceId,
+                  text: chunk.text,
+                  outputPath: retryOutputPath,
+                  speed,
+                });
+              } else if (isEdgeVoice) {
                 r = await edgeTtsProvider.synthesize({
                   voiceId,
                   text: chunk.text,

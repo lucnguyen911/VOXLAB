@@ -12,6 +12,7 @@ import {
   Activity,
 } from "lucide-react";
 import { useI18n } from "../../i18n/context";
+import { exportPreviewTrack } from "../../services/audio/previewTrackExport";
 
 export interface ActiveAudioTrack {
   id: string;
@@ -20,6 +21,7 @@ export interface ActiveAudioTrack {
   title?: string;
   durationSec: number;
   audioUrl?: string;
+  audioFilePath?: string;
   text?: string;
 }
 
@@ -161,6 +163,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
   const [volume, setVolume] = useState(0.85);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
+  const [isDownloading, setIsDownloading] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
@@ -453,59 +456,29 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
     setPlaybackSpeed(PLAYBACK_SPEEDS[nextIndex]);
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
+    if (isDownloading) return;
+    setIsDownloading(true);
     try {
-      const cacheKey = `${track.id}_${track.audioUrl || ""}`;
-      const cachedBuffer = bufferCacheRef.current.get(cacheKey) || bufferCacheRef.current.get(track.id);
-      const sampleRate = cachedBuffer ? cachedBuffer.sampleRate : 44100;
-      const numChannels = 1;
-      const bytesPerSample = 2;
-      const blockAlign = numChannels * bytesPerSample;
-      const byteRate = sampleRate * blockAlign;
-      const channelData = cachedBuffer ? cachedBuffer.getChannelData(0) : null;
-      const totalSamples = channelData ? channelData.length : Math.floor(duration * sampleRate);
-      const dataSize = totalSamples * bytesPerSample;
-      const buffer = new ArrayBuffer(44 + dataSize);
-      const view = new DataView(buffer);
-
-      const writeString = (offset: number, str: string) => {
-        for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-      };
-      writeString(0, "RIFF");
-      view.setUint32(4, 36 + dataSize, true);
-      writeString(8, "WAVE");
-      writeString(12, "fmt ");
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true); // PCM format
-      view.setUint16(22, numChannels, true);
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, byteRate, true);
-      view.setUint16(32, blockAlign, true);
-      view.setUint16(34, 16, true);
-      writeString(36, "data");
-      view.setUint32(40, dataSize, true);
-
-      if (channelData) {
-        let offset = 44;
-        for (let i = 0; i < channelData.length; i++) {
-          const s = Math.max(-1, Math.min(1, channelData[i]));
-          const val = s < 0 ? s * 0x8000 : s * 0x7fff;
-          view.setInt16(offset, val, true);
-          offset += 2;
-        }
-      }
-
-      const blob = new Blob([buffer], { type: "audio/wav" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `VoxLab_${chunkNumber}_${track.voiceName?.replace(/\s+/g, "_") || "preview"}.wav`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err) {
+      await exportPreviewTrack(track, undefined, () => {
+        const cacheKey = `${track.id}_${track.audioUrl || ""}`;
+        const cachedBuffer =
+          bufferCacheRef.current.get(cacheKey) || bufferCacheRef.current.get(track.id);
+        return cachedBuffer
+          ? {
+              samples: cachedBuffer.getChannelData(0),
+              sampleRate: cachedBuffer.sampleRate || 44100,
+            }
+          : {
+              samples: null,
+              sampleRate: 44100,
+            };
+      });
+    } catch (err: any) {
       console.error("Audio download error:", err);
+      alert(`Lỗi khi lưu tệp âm thanh: ${err?.message || err}`);
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -732,8 +705,9 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
         {/* Download Audio Button */}
         <button
           type="button"
-          onClick={handleDownload}
-          className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-surface2 rounded-lg transition-colors cursor-pointer shrink-0"
+          disabled={isDownloading}
+          onClick={() => void handleDownload()}
+          className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-surface2 rounded-lg transition-colors cursor-pointer disabled:opacity-50 shrink-0"
           title={t.audioPlayer?.download || "Tải audio đoạn này"}
           aria-label={t.audioPlayer?.download || "Tải audio đoạn này"}
         >

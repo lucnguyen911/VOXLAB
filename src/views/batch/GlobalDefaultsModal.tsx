@@ -58,7 +58,11 @@ import {
 import { syncAsrModelToAiRuntime } from "../../services/ai/aiRuntimeSettings";
 import { reloadAiRuntimeSettings, getDefaultBatchOutputDir } from "../../services/batch/batchRuntime";
 import {
-  loadStoredTtsSettings,
+  resolveBatchModelForVoiceProfile,
+  resolveBatchWhisperModelId,
+} from "../../services/batch/batchModelResolver";
+import { hydrateBatchGlobalDefaultsFromWorkspaces } from "../../services/batch/batchWorkspaceSync";
+import {
   saveStoredTtsSettings,
   DEFAULT_TTS_SETTINGS,
 } from "../../components/inspector/TtsInspector";
@@ -252,78 +256,9 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
     };
   }, []);
 
-  const [localDefaults, setLocalDefaults] = useState<BatchTaskConfigMap>(() => {
-    const storedTts = loadStoredTtsSettings();
-    const existingTts = globalDefaults.tts;
-    const rawPitch = existingTts?.pitch;
-    const pitchVal =
-      typeof rawPitch === "number" && rawPitch >= 0.5 && rawPitch <= 1.5
-        ? rawPitch
-        : storedTts.pitch || 1.0;
-    const rawVol = existingTts?.volume;
-    const volPct =
-      typeof rawVol === "number"
-        ? rawVol <= 2.0 && rawVol > 0
-          ? Math.round(rawVol * 100)
-          : Math.round(rawVol)
-        : Math.round((storedTts.volume ?? 1.0) * 100);
-
-    const transSettings = loadTranslationSettings();
-    const existingTrans = globalDefaults.translation;
-    const initialStyle: TranslationStyle =
-      transSettings.translationStyle || existingTrans?.style || "default";
-    const allProviders = translationManager.listProviders();
-    let initialProviderId =
-      transSettings.translationProviderId || existingTrans?.providerId || "google";
-    if (initialStyle === "cinema" && initialProviderId === "google") {
-      const supported = allProviders.filter((p) => p.type !== "google");
-      if (supported.length > 0) {
-        initialProviderId = supported[0].id;
-      }
-    }
-
-    return {
-      ...globalDefaults,
-      tts: {
-        model: existingTts?.model || "omnivoice",
-        voiceId:
-          existingTts?.voiceId && existingTts.voiceId !== "omnivoice-auto"
-            ? existingTts.voiceId
-            : loadAvailableVoices()[0]?.id || "edge_vi_hoaimy",
-        speed: existingTts?.speed ?? storedTts.speed ?? 1.0,
-        pitch: pitchVal,
-        volume: volPct,
-        pauses: existingTts?.pauses || storedTts.pauses || DEFAULT_TTS_SETTINGS.pauses,
-        exportSrt: existingTts?.exportSrt ?? storedTts.exportSrt ?? false,
-      },
-      translation: {
-        providerId: initialProviderId,
-        sourceLanguage: existingTrans?.sourceLanguage || transSettings.sourceLanguage || "auto",
-        targetLanguage: transSettings.targetLanguage || existingTrans?.targetLanguage || "vi",
-        style: initialStyle,
-        outputFormat: existingTrans?.outputFormat || "preserve_input",
-      },
-      dubbing: (() => {
-        const storedDub = loadStoredDubbingSettings();
-        const existingDub = globalDefaults.dubbing;
-        return {
-          ttsModel: existingDub?.ttsModel || "omnivoice",
-          voiceId:
-            existingDub?.voiceId && existingDub.voiceId !== "omnivoice-auto"
-              ? existingDub.voiceId
-              : storedDub.voiceId || loadAvailableVoices()[0]?.id || "edge_vi_hoaimy",
-          dubbingMode: existingDub?.dubbingMode || storedDub.dubbingMode || "source_sync",
-          speed: existingDub?.speed ?? storedDub.speed ?? 1.0,
-          pitch: existingDub?.pitch ?? storedDub.pitch ?? 1.0,
-          volume: existingDub?.volume ?? storedDub.volume ?? 100,
-          pauses: existingDub?.pauses || storedDub.pauses || DEFAULT_TTS_SETTINGS.pauses,
-          autoFitEnabled: existingDub?.autoFitEnabled ?? false,
-          speedMultiplier: existingDub?.speedMultiplier ?? 1.0,
-          turnPauseSec: existingDub?.turnPauseSec ?? 0.3,
-        };
-      })(),
-    };
-  });
+  const [localDefaults, setLocalDefaults] = useState<BatchTaskConfigMap>(() =>
+    hydrateBatchGlobalDefaultsFromWorkspaces(globalDefaults)
+  );
 
   const [localOutput, setLocalOutput] = useState<BatchJobOutputSnapshot>(() => {
     const initial =
@@ -1036,7 +971,10 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
                   activeVoiceId={ttsCfg.voiceId}
                   currentModel={selectedModelLabel}
                   onSelectVoice={(voice) => {
-                    updateTts({ voiceId: voice.id });
+                    updateTts({
+                      voiceId: voice.id,
+                      model: resolveBatchModelForVoiceProfile(voice, ttsCfg.model),
+                    });
                     setIsTtsVoiceModalOpen(false);
                   }}
                 />
@@ -1433,10 +1371,7 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
               outputFormat: (localOutput.outputSubtitleFormat || "srt") as "srt" | "vtt",
             };
 
-            const whisperModelVal =
-              !currentTrans.whisperModel || currentTrans.whisperModel === "auto"
-                ? "large-v3-turbo"
-                : currentTrans.whisperModel;
+            const whisperModelVal = resolveBatchWhisperModelId(currentTrans.whisperModel);
             const audioLangVal = currentTrans.audioLanguage || "auto";
             const speechSpeedVal = currentTrans.speechSpeed ?? 1.0;
             const aspectRatioVal: SubtitleAspectRatio = currentTrans.aspectRatio || subSettings.aspectRatio || "16:9";
@@ -2306,7 +2241,10 @@ export const GlobalDefaultsModal: React.FC<GlobalDefaultsModalProps> = ({
                   activeVoiceId={selectedVoice.id}
                   currentModel={selectModelVal}
                   onSelectVoice={(voice) => {
-                    updateDubbing({ voiceId: voice.id });
+                    updateDubbing({
+                      voiceId: voice.id,
+                      ttsModel: resolveBatchModelForVoiceProfile(voice, currentDub.ttsModel),
+                    });
                     setIsDubbingVoiceModalOpen(false);
                   }}
                 />

@@ -31,6 +31,10 @@ import {
 import { downloadAudioBlob } from "../services/audio/masterExport";
 import { loadSubtitleSettings } from "../services/subtitle";
 import { recordCompletedJobToHistory } from "../services/history/historyManager";
+import {
+  buildDefaultExportPath,
+  saveLastExportDirFromFilePath,
+} from "../services/storage/exportDirMemory";
 import { DialogueEditor } from "../components/dialogue/DialogueEditor";
 import { DialogueStudio } from "../components/dialogue/DialogueStudio";
 import { DialogueInspector } from "../components/dialogue/DialogueInspector";
@@ -746,6 +750,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       title: `Câu ${currentSeg.index < 10 ? `0${currentSeg.index}` : currentSeg.index} · [${currentSeg.characterName}]`,
       durationSec: currentSeg.durationSec || 4.2,
       audioUrl: targetBlobUrl,
+      audioFilePath: currentSeg.audioFilePath,
       text: currentSeg.cleanText || currentSeg.rawText,
     };
 
@@ -960,7 +965,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         try {
           const { save } = await import("@tauri-apps/plugin-dialog");
           chosenPath = await save({
-            defaultPath: "VoxLab_HoiThoai_Master.wav",
+            defaultPath: buildDefaultExportPath("VoxLab_HoiThoai_Master.wav"),
             filters: [
               { name: "Audio WAV (*.wav)", extensions: ["wav"] },
               { name: "Audio MP3 (*.mp3)", extensions: ["mp3"] },
@@ -968,6 +973,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
             ],
           });
           if (!chosenPath) return;
+          saveLastExportDirFromFilePath(chosenPath);
         } catch (dialogErr) {
           console.warn("Tauri save dialog error:", dialogErr);
         }

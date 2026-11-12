@@ -23,6 +23,7 @@ import {
 import { AiError } from "../../ai/types";
 import type { LocalAiServices } from "../../ai/localAiServices";
 import { loadSubtitleSettings } from "../../subtitle/profiles";
+import { resolveBatchWhisperModelId } from "../batchModelResolver";
 
 export interface TranscriptionExecutorOptions {
   audioFilePath?: string;
@@ -85,7 +86,9 @@ export class TranscriptionExecutor {
     const transSnapshot: BatchTranscriptionSnapshot | undefined =
       job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
 
-    const effectiveWhisperModel = transSnapshot?.whisperModel || loadSubtitleSettings().whisperModel;
+    const effectiveWhisperModel = resolveBatchWhisperModelId(
+      transSnapshot?.whisperModel || loadSubtitleSettings().whisperModel
+    );
     const speechSpeed = transSnapshot?.speechSpeed ?? 1.0;
     const targetFormat = transSnapshot?.outputFormat || job.outputSnapshot?.outputSubtitleFormat || "srt";
 
