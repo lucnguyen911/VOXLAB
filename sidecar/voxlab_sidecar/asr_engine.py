@@ -5,6 +5,7 @@ Single source of truth: ensures a single shared ASR instance across all tasks (t
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from typing import Any
@@ -135,6 +136,13 @@ def resolve_whisper_model_dir(model_dir_or_id: str | None = None, models_dir: st
         search_bases.append(models_dir)
     if model_dir_or_id and os.path.isdir(model_dir_or_id):
         search_bases.append(model_dir_or_id)
+
+    data_dir = os.environ.get("VOXLAB_DATA_DIR", "").strip()
+    if data_dir:
+        search_bases.append(os.path.join(data_dir, "models"))
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        search_bases.append(os.path.abspath(os.path.join(exe_dir, "..", "..", "data", "models")))
 
     appdata = os.environ.get("APPDATA")
     if appdata:

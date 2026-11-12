@@ -116,6 +116,21 @@ class UnifiedAsrLifecycleTests(unittest.TestCase):
                     self.assertEqual(res["asrModelId"], "large-v3-turbo")
                     self.assertEqual(res["status"], "pass")
 
+    def test_resolve_whisper_model_dir_uses_voxlab_data_dir(self):
+        import os
+        import tempfile
+        from voxlab_sidecar.asr_engine import resolve_whisper_model_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            m_dir = os.path.join(tmp, "models", "faster-whisper-large-v3-turbo")
+            os.makedirs(m_dir, exist_ok=True)
+            with open(os.path.join(m_dir, "model.bin"), "wb") as f:
+                f.write(b"0")
+            with patch.dict(os.environ, {"VOXLAB_DATA_DIR": tmp}, clear=False):
+                resolved, cid = resolve_whisper_model_dir("large-v3-turbo")
+                self.assertEqual(resolved, m_dir)
+                self.assertEqual(cid, "large-v3-turbo")
+
 
 if __name__ == "__main__":
     unittest.main()

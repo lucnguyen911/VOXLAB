@@ -48,7 +48,7 @@ import {
   OPEN_APP_UPDATE_MODAL_EVENT,
   type UpdateCheckResult,
 } from "./services/updater/updaterService";
-import { AlertCircle, CheckCircle2, Loader2, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, RefreshCw, X } from "lucide-react";
 
 // Run synchronous migrations before components mount and read localStorage
 migratePunctuationPauseDefaults();
@@ -830,17 +830,16 @@ function LicenseStartupGate() {
       <div className={`h-screen w-screen flex flex-col overflow-hidden bg-background text-textPrimary select-none ${gateTheme}`}>
         <TopBar theme={gateTheme} minimal={true} />
         <div className="flex-1 flex items-center justify-center p-4">
-          <div className="bg-surface1 border border-borderDefault rounded-2xl px-8 py-7 shadow-2xl flex flex-col items-center gap-3 max-w-sm w-full">
-            <div className="w-11 h-11 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center text-accent">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div className="flex items-center gap-2 text-xs font-semibold text-textPrimary">
+          <div className="flex flex-col items-center gap-3.5">
+            <img
+              src="/app-icon.png?v=2"
+              alt="VoxLab"
+              className="w-12 h-12 rounded-xl shadow-lg shadow-accent/20 object-cover"
+            />
+            <div className="flex items-center gap-2 text-xs font-medium text-textMuted">
               <Loader2 className="w-4 h-4 animate-spin text-accent" />
-              <span>Đang xác thực bản quyền VoxLab...</span>
+              <span>Đang tải...</span>
             </div>
-            <p className="text-[11px] text-textMuted text-center">
-              Kiểm tra chữ ký phần cứng (HWID v3) và máy chủ bản quyền
-            </p>
           </div>
         </div>
       </div>

@@ -1,8 +1,99 @@
 use tauri::Manager;
 
+/// Probes whether `dir` can be created and written to by the current user process.
+pub fn is_dir_writable(dir: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(format!(".voxlab_write_probe_{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Copies small user-state files (license, encrypted keys, settings) one time from legacy
+/// `%APPDATA%\com.voxlab.app` into `<install_dir>\data` when upgrading from older builds.
+/// Never creates `legacy_dir` if absent.
+pub fn migrate_legacy_state_files_once(
+    legacy_dir: &std::path::Path,
+    target_dir: &std::path::Path,
+) {
+    if !legacy_dir.is_dir() || legacy_dir == target_dir {
+        return;
+    }
+    let marker = target_dir.join(".migrated_v1");
+    if marker.exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(target_dir);
+    for rel in [
+        "license.enc",
+        "device_profile.enc",
+        "gemini_keys.enc",
+        "batch_queue_v3.json",
+        "settings/ai_runtime.json",
+    ] {
+        let src = legacy_dir.join(rel);
+        let dst = target_dir.join(rel);
+        if src.is_file() && !dst.exists() {
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
+    let _ = std::fs::write(&marker, b"1");
+}
+
+/// Resolves `<install_dir>\data` next to `voxlab.exe` in production builds so all runtimes,
+/// caches (`scratch`), WebView2 profile, voices, and default models live inside the chosen
+/// installation folder (e.g. `F:\VoxLab\data`).
+pub fn resolve_portable_install_data_dir() -> Option<std::path::PathBuf> {
+    #[cfg(debug_assertions)]
+    {
+        None
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        static PORTABLE_DIR: std::sync::OnceLock<Option<std::path::PathBuf>> =
+            std::sync::OnceLock::new();
+        PORTABLE_DIR
+            .get_or_init(|| {
+                let exe = std::env::current_exe().ok()?;
+                let exe_dir = exe.parent()?;
+                let data_dir = exe_dir.join("data");
+                if !is_dir_writable(&data_dir) {
+                    return None;
+                }
+                if let Some(appdata) = std::env::var_os("APPDATA") {
+                    let legacy = std::path::PathBuf::from(appdata).join("com.voxlab.app");
+                    migrate_legacy_state_files_once(&legacy, &data_dir);
+                }
+                Some(data_dir)
+            })
+            .clone()
+    }
+}
+
+/// Centralized storage directory resolver for the entire host process.
+/// Uses `<install_dir>\data` in production builds (falling back to OS AppData only in dev mode
+/// or if the user forced installation into a non-writable system-locked directory).
+pub fn resolve_app_storage_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    if let Some(portable) = resolve_portable_install_data_dir() {
+        return Ok(portable);
+    }
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&dir);
+    Ok(dir)
+}
+
 #[tauri::command]
 fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = resolve_app_storage_dir(&app)?;
     Ok(dir.to_string_lossy().to_string())
 }
 
@@ -27,7 +118,7 @@ fn save_app_data_file(
     relative_path: String,
     content: String,
 ) -> Result<(), String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     let target_path = safe_app_data_path(&base_dir, &relative_path)?;
     // Atomic: temp file + fsync + rename-over (target never deleted first).
     fsio::atomic_write(&target_path, content.as_bytes())
@@ -35,7 +126,7 @@ fn save_app_data_file(
 
 #[tauri::command]
 fn read_app_data_file(app: tauri::AppHandle, relative_path: String) -> Result<String, String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     let target_path = safe_app_data_path(&base_dir, &relative_path)?;
     std::fs::read_to_string(&target_path).map_err(|e| e.to_string())
 }
@@ -48,13 +139,13 @@ use security::{LicenseSummary, SecurityService, APP_VERSION};
 
 #[tauri::command]
 fn get_license_summary(app: tauri::AppHandle) -> Result<LicenseSummary, String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     Ok(SecurityService::get_summary(&base_dir))
 }
 
 #[tauri::command]
 async fn activate_license(app: tauri::AppHandle, license_key: String) -> Result<LicenseSummary, String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         SecurityService::activate(&base_dir, &license_key, APP_VERSION)
     })
@@ -64,7 +155,7 @@ async fn activate_license(app: tauri::AppHandle, license_key: String) -> Result<
 
 #[tauri::command]
 async fn verify_license(app: tauri::AppHandle) -> Result<LicenseSummary, String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         SecurityService::verify(&base_dir, APP_VERSION)
     })
@@ -74,7 +165,7 @@ async fn verify_license(app: tauri::AppHandle) -> Result<LicenseSummary, String>
 
 #[tauri::command]
 async fn change_license_key(app: tauri::AppHandle, new_license_key: String) -> Result<LicenseSummary, String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         SecurityService::change_key(&base_dir, &new_license_key, APP_VERSION)
     })
@@ -91,7 +182,7 @@ fn clear_local_license_if_allowed(app: tauri::AppHandle) -> Result<(), String> {
     }
     #[cfg(debug_assertions)]
     {
-        let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let base_dir = resolve_app_storage_dir(&app)?;
         security::license_storage::clear_license_cache(&base_dir)
     }
 }
@@ -103,7 +194,7 @@ fn exit_application(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn save_gemini_keys_secure(app: tauri::AppHandle, payload_json: String) -> Result<(), String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     SecurityService::require_commercial_access_if_enabled(&base_dir, "vault.save_gemini_keys")?;
     security::license_storage::save_encrypted_secret_file(
         &base_dir,
@@ -114,7 +205,7 @@ fn save_gemini_keys_secure(app: tauri::AppHandle, payload_json: String) -> Resul
 
 #[tauri::command]
 fn load_gemini_keys_secure(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     SecurityService::require_commercial_access_if_enabled(&base_dir, "vault.load_gemini_keys")?;
     security::license_storage::load_encrypted_secret_file(
         &base_dir,
@@ -178,7 +269,7 @@ async fn native_http_request(
     timeout_sec: Option<u64>,
     request_id: Option<String>,
 ) -> Result<NativeHttpResponse, String> {
-    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base_dir = resolve_app_storage_dir(&app)?;
     SecurityService::require_commercial_access_if_enabled(&base_dir, "http.native_request")?;
     let req_id = request_id
         .map(|s| s.trim().to_string())
@@ -293,6 +384,15 @@ pub mod updater;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(not(debug_assertions))]
+    if let Some(portable_data) = resolve_portable_install_data_dir() {
+        let webview_dir = portable_data.join("webview");
+        let _ = std::fs::create_dir_all(&webview_dir);
+        if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview_dir);
+        }
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -366,4 +466,50 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn writable_dir_probe_creates_and_cleans_marker() {
+        let tmp = std::env::temp_dir().join(format!("voxlab_writable_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(is_dir_writable(&tmp));
+        assert!(tmp.is_dir());
+        let entries: Vec<_> = std::fs::read_dir(&tmp).unwrap().collect();
+        assert!(entries.is_empty(), "probe marker should be removed immediately");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn legacy_migration_copies_state_once_without_creating_missing_legacy_dir() {
+        let base = std::env::temp_dir().join(format!("voxlab_mig_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let missing_legacy = base.join("missing_legacy");
+        let target = base.join("portable_data");
+
+        migrate_legacy_state_files_once(&missing_legacy, &target);
+        assert!(!missing_legacy.exists(), "must never create missing legacy AppData folder");
+
+        std::fs::create_dir_all(missing_legacy.join("settings")).unwrap();
+        std::fs::write(missing_legacy.join("license.enc"), b"lic_bytes").unwrap();
+        std::fs::write(
+            missing_legacy.join("settings/ai_runtime.json"),
+            br#"{"customModelsDir":true,"modelsDir":"F:\\Models"}"#,
+        )
+        .unwrap();
+
+        migrate_legacy_state_files_once(&missing_legacy, &target);
+        assert_eq!(std::fs::read(target.join("license.enc")).unwrap(), b"lic_bytes");
+        assert!(target.join("settings/ai_runtime.json").is_file());
+
+        // Second invocation is a no-op because `.migrated_v1` marker exists
+        std::fs::write(missing_legacy.join("license.enc"), b"new_bytes").unwrap();
+        migrate_legacy_state_files_once(&missing_legacy, &target);
+        assert_eq!(std::fs::read(target.join("license.enc")).unwrap(), b"lic_bytes");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

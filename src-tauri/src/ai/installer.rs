@@ -693,8 +693,13 @@ where
             speed_mbps: None,
         });
 
-        let hf_xet_cache_dir = app_data_dir.join("scratch").join("hf-xet-cache");
+        let scratch_root = app_data_dir.join("scratch");
+        let hf_xet_cache_dir = scratch_root.join("hf-xet-cache");
+        let hf_cache_dir = scratch_root.join("hf-cache");
+        let tmp_dir = scratch_root.join("tmp");
         let _ = std::fs::create_dir_all(&hf_xet_cache_dir);
+        let _ = std::fs::create_dir_all(&hf_cache_dir);
+        let _ = std::fs::create_dir_all(&tmp_dir);
 
         let cfg_val = serde_json::json!({
             "model_id": spec.id,
@@ -723,9 +728,12 @@ where
             .args(["-u", "-"])
             .env_remove("HF_HUB_OFFLINE")
             .env_remove("TRANSFORMERS_OFFLINE")
+            .env("HF_HOME", &hf_cache_dir)
             .env("HF_XET_HIGH_PERFORMANCE", "1")
             .env("HF_XET_NUM_CONCURRENT_RANGE_GETS", "32")
             .env("HF_XET_CACHE", &hf_xet_cache_dir)
+            .env("TMP", &tmp_dir)
+            .env("TEMP", &tmp_dir)
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8");
 
@@ -850,6 +858,7 @@ where
     let uv_python_dir = runtimes_root.join("_python");
     let uv_cache_dir = app_data_dir.join("scratch").join("uv-cache");
     let wheelhouse_dir = app_data_dir.join("scratch").join("wheelhouse");
+    let tmp_dir = app_data_dir.join("scratch").join("tmp");
     let target_rt_dir = runtimes_root.join(runtime);
     let site_packages_dir = if cfg!(windows) {
         target_rt_dir.join("Lib").join("site-packages")
@@ -862,6 +871,7 @@ where
         .map_err(|e| AiError::new("IO_ERROR", e.to_string()))?;
     std::fs::create_dir_all(&wheelhouse_dir)
         .map_err(|e| AiError::new("IO_ERROR", e.to_string()))?;
+    let _ = std::fs::create_dir_all(&tmp_dir);
 
     // Shut down running sidecar for this runtime before mutating its site-packages
     sidecar_mgr.shutdown(runtime);
@@ -895,6 +905,8 @@ where
             ])
             .env("UV_PYTHON_INSTALL_DIR", &uv_python_dir)
             .env("UV_CACHE_DIR", &uv_cache_dir)
+            .env("TMP", &tmp_dir)
+            .env("TEMP", &tmp_dir)
             .env("UV_HTTP_TIMEOUT", "180")
             .env("UV_CONCURRENT_DOWNLOADS", "16")
             .env("UV_CONCURRENT_INSTALLS", "8")
@@ -1009,6 +1021,8 @@ where
         pip_cmd
             .env("UV_PYTHON_INSTALL_DIR", &uv_python_dir)
             .env("UV_CACHE_DIR", &uv_cache_dir)
+            .env("TMP", &tmp_dir)
+            .env("TEMP", &tmp_dir)
             .env("UV_HTTP_TIMEOUT", "300")
             .env("UV_CONCURRENT_DOWNLOADS", "16")
             .env("UV_CONCURRENT_INSTALLS", "8")

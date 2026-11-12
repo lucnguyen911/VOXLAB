@@ -127,34 +127,36 @@ pub fn fs_remove_file(path: String) -> Result<(), String> {
     }
 }
 
-/// Per-purpose scratch directory under the app cache dir (e.g. TTS chunk WAVs).
+/// Per-purpose scratch directory under `<storage_dir>/scratch` (e.g. TTS chunk WAVs).
 #[tauri::command]
 pub fn fs_scratch_dir(app: tauri::AppHandle, name: String) -> Result<String, String> {
-    use tauri::Manager;
     if name.is_empty() || name.contains(['/', '\\', '.']) {
         return Err("invalid scratch name".to_string());
     }
-    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("scratch").join(name);
+    let dir = crate::resolve_app_storage_dir(&app)?.join("scratch").join(name);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.to_string_lossy().to_string())
 }
 
-fn dir_size_bytes_excluding(path: &Path, exclude_dir_name: Option<&str>) -> u64 {
+fn dir_size_bytes_excluding(path: &Path, exclude_dir_names: &[&str]) -> u64 {
     let Ok(entries) = std::fs::read_dir(path) else {
         return 0;
     };
     let mut total: u64 = 0;
     for entry in entries.flatten() {
-        if let Some(ex) = exclude_dir_name {
-            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(ex) {
-                continue;
-            }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if exclude_dir_names
+            .iter()
+            .any(|ex| name_str.eq_ignore_ascii_case(ex))
+        {
+            continue;
         }
         let Ok(meta) = entry.metadata() else {
             continue;
         };
         if meta.is_dir() {
-            total = total.saturating_add(dir_size_bytes_excluding(&entry.path(), None));
+            total = total.saturating_add(dir_size_bytes_excluding(&entry.path(), &[]));
         } else {
             total = total.saturating_add(meta.len());
         }
@@ -163,7 +165,22 @@ fn dir_size_bytes_excluding(path: &Path, exclude_dir_name: Option<&str>) -> u64 
 }
 
 fn dir_size_bytes(path: &Path) -> u64 {
-    dir_size_bytes_excluding(path, None)
+    dir_size_bytes_excluding(path, &[])
+}
+
+fn clear_dir_contents_best_effort(path: &Path) {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            clear_dir_contents_best_effort(&p);
+            let _ = std::fs::remove_dir(&p);
+        } else {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -176,38 +193,40 @@ pub struct StorageStats {
 }
 
 #[tauri::command]
-pub fn fs_storage_stats(app: tauri::AppHandle) -> Result<StorageStats, String> {
-    use tauri::Manager;
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let _ = std::fs::create_dir_all(&app_data_dir);
-    let scratch_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("scratch");
-    let _ = std::fs::create_dir_all(&scratch_dir);
-    let scratch_bytes = dir_size_bytes(&scratch_dir);
-    // Exclude "models" directory since AI models have their own dedicated storage tab.
-    let app_data_only_bytes = dir_size_bytes_excluding(&app_data_dir, Some("models"));
-    let total_bytes = if scratch_dir.starts_with(&app_data_dir) {
-        app_data_only_bytes
-    } else {
-        app_data_only_bytes.saturating_add(scratch_bytes)
-    };
-    Ok(StorageStats {
-        app_data_path: app_data_dir.to_string_lossy().to_string(),
-        app_data_bytes: total_bytes,
-        scratch_path: scratch_dir.to_string_lossy().to_string(),
-        scratch_bytes,
+pub async fn fs_storage_stats(app: tauri::AppHandle) -> Result<StorageStats, String> {
+    let app_data_dir = crate::resolve_app_storage_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = std::fs::create_dir_all(&app_data_dir);
+        let scratch_dir = app_data_dir.join("scratch");
+        let _ = std::fs::create_dir_all(&scratch_dir);
+        let scratch_bytes = dir_size_bytes(&scratch_dir);
+        // Exclude heavy runtime/webview/models trees when computing lightweight app state size.
+        let app_data_only_bytes =
+            dir_size_bytes_excluding(&app_data_dir, &["models", "runtimes", "webview", "scratch"]);
+        let total_bytes = app_data_only_bytes.saturating_add(scratch_bytes);
+        Ok(StorageStats {
+            app_data_path: app_data_dir.to_string_lossy().to_string(),
+            app_data_bytes: total_bytes,
+            scratch_path: scratch_dir.to_string_lossy().to_string(),
+            scratch_bytes,
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn fs_clear_scratch(app: tauri::AppHandle) -> Result<u64, String> {
-    use tauri::Manager;
-    let scratch_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("scratch");
-    let freed = dir_size_bytes(&scratch_dir);
-    if scratch_dir.exists() {
-        let _ = std::fs::remove_dir_all(&scratch_dir);
-    }
-    std::fs::create_dir_all(&scratch_dir).map_err(|e| e.to_string())?;
-    Ok(freed)
+pub async fn fs_clear_scratch(app: tauri::AppHandle) -> Result<u64, String> {
+    let scratch_dir = crate::resolve_app_storage_dir(&app)?.join("scratch");
+    tauri::async_runtime::spawn_blocking(move || {
+        let before = dir_size_bytes(&scratch_dir);
+        clear_dir_contents_best_effort(&scratch_dir);
+        std::fs::create_dir_all(&scratch_dir).map_err(|e| e.to_string())?;
+        let after = dir_size_bytes(&scratch_dir);
+        Ok(before.saturating_sub(after))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

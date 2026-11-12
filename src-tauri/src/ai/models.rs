@@ -169,6 +169,14 @@ pub fn is_engine_runtime_installed(
 
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
+            sp_candidates.push(
+                exe_dir
+                    .join("data")
+                    .join("runtimes")
+                    .join(runtime)
+                    .join("Lib")
+                    .join("site-packages"),
+            );
             let stem = format!("voxlab-sidecar-{}", runtime);
             sp_candidates.push(exe_dir.join("sidecar").join(&stem).join("site-packages"));
             sp_candidates.push(

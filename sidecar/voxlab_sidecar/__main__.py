@@ -211,18 +211,26 @@ def _attach_runtime_site_packages(runtime: str) -> None:
         "qwen": ".venv-qwen",
     }
     venv_name = venv_map.get(runtime, ".venv")
-    appdata = os.environ.get("APPDATA", "")
-    user_rt_sp = (
-        os.path.join(appdata, "com.voxlab.app", "runtimes", runtime, "Lib", "site-packages")
-        if appdata
-        else ""
-    )
-    if user_rt_sp and os.path.isdir(user_rt_sp):
-        if user_rt_sp not in sys.path:
-            sys.path.append(user_rt_sp)
-        _register_sp_dlls(user_rt_sp)
-        return
     exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+
+    rt_candidates: list[str] = []
+    data_dir = os.environ.get("VOXLAB_DATA_DIR", "").strip()
+    if data_dir:
+        rt_candidates.append(os.path.join(data_dir, "runtimes", runtime, "Lib", "site-packages"))
+    rt_candidates.append(
+        os.path.abspath(os.path.join(exe_dir, "..", "..", "data", "runtimes", runtime, "Lib", "site-packages"))
+    )
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        rt_candidates.append(os.path.join(appdata, "com.voxlab.app", "runtimes", runtime, "Lib", "site-packages"))
+
+    for user_rt_sp in rt_candidates:
+        if user_rt_sp and os.path.isdir(user_rt_sp):
+            if user_rt_sp not in sys.path:
+                sys.path.append(user_rt_sp)
+            _register_sp_dlls(user_rt_sp)
+            return
+
     candidates = [
         os.path.join(exe_dir, "site-packages"),
         os.path.join(exe_dir, "_internal", "site-packages"),

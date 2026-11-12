@@ -7,7 +7,7 @@ use serde_json::Value;
 use sidecar::{default_resolver, AiError, ProgressEvent, RuntimeStatus, SidecarManager};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 pub struct AiState(pub Arc<SidecarManager>);
 
@@ -54,9 +54,11 @@ pub fn init(app: &AppHandle) -> AiState {
     let sink = Arc::new(move |e: ProgressEvent| {
         let _ = handle.emit("ai://progress", e);
     });
-    AiState(Arc::new(SidecarManager::new(
+    let storage_dir = crate::resolve_app_storage_dir(app).ok();
+    AiState(Arc::new(SidecarManager::new_with_data_dir(
         default_resolver(sidecar_root()),
         sink,
+        storage_dir,
     )))
 }
 
@@ -72,9 +74,7 @@ pub async fn ai_request(
     request_id: Option<String>,
 ) -> Result<Value, AiError> {
     if is_commercial_ai_method(&method) {
-        let base_dir = app
-            .path()
-            .app_data_dir()
+        let base_dir = crate::resolve_app_storage_dir(&app)
             .unwrap_or_else(|_| std::env::temp_dir().join("voxlab_security"));
         crate::security::SecurityService::require_commercial_access_if_enabled(&base_dir, &method)
             .map_err(|msg| AiError::new("LICENSE_REQUIRED", msg))?;
@@ -143,7 +143,7 @@ fn resolve_configured_models_dir(
             return Ok(PathBuf::from(trimmed));
         }
     }
-    if let Ok(app_data) = app.path().app_data_dir() {
+    if let Ok(app_data) = crate::resolve_app_storage_dir(app) {
         let settings_file = app_data.join("settings").join("ai_runtime.json");
         if let Ok(raw) = std::fs::read_to_string(&settings_file) {
             if let Some(custom_dir) = parse_custom_models_dir_from_json(&raw) {
@@ -156,10 +156,8 @@ fn resolve_configured_models_dir(
 
 #[tauri::command]
 pub fn ai_models_dir(app: AppHandle) -> Result<String, AiError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AiError::new("INTERNAL", e.to_string()))?
+    let dir = crate::resolve_app_storage_dir(&app)
+        .map_err(|e| AiError::new("INTERNAL", e))?
         .join("models");
     std::fs::create_dir_all(&dir).map_err(|e| AiError::new("INTERNAL", e.to_string()))?;
     Ok(dir.to_string_lossy().to_string())
@@ -170,7 +168,7 @@ pub fn ai_scan_models(
     app: AppHandle,
     models_dir: Option<String>,
 ) -> Result<Vec<models::ModelStatus>, AiError> {
-    let app_data = app.path().app_data_dir().ok();
+    let app_data = crate::resolve_app_storage_dir(&app).ok();
     let dev_root = sidecar_root();
     let dir = resolve_configured_models_dir(&app, models_dir)?;
     Ok(models::scan_with_runtime(
@@ -192,10 +190,8 @@ pub async fn ai_install_model(
     model_id: String,
     models_dir: Option<String>,
 ) -> Result<models::ModelStatus, AiError> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AiError::new("INTERNAL", e.to_string()))?;
+    let app_data = crate::resolve_app_storage_dir(&app)
+        .map_err(|e| AiError::new("INTERNAL", e))?;
     crate::security::SecurityService::require_commercial_access_if_enabled(
         &app_data,
         "ai.install_model",
@@ -231,7 +227,7 @@ pub fn ai_cancel_model_install(model_id: Option<String>) -> Result<bool, AiError
 
 #[tauri::command]
 pub fn ai_bootstrap_status(app: AppHandle) -> Result<installer::RuntimeBootstrapStatus, AiError> {
-    let app_data = app.path().app_data_dir().ok();
+    let app_data = crate::resolve_app_storage_dir(&app).ok();
     let dev_root = sidecar_root();
     Ok(installer::check_bootstrap_status(
         app_data.as_deref(),
@@ -244,10 +240,8 @@ pub async fn ai_bootstrap_runtimes(
     app: AppHandle,
     state: State<'_, AiState>,
 ) -> Result<installer::RuntimeBootstrapStatus, AiError> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AiError::new("INTERNAL", e.to_string()))?;
+    let app_data = crate::resolve_app_storage_dir(&app)
+        .map_err(|e| AiError::new("INTERNAL", e))?;
     crate::security::SecurityService::require_commercial_access_if_enabled(
         &app_data,
         "ai.bootstrap_runtimes",

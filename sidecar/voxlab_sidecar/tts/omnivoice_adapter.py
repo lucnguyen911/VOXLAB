@@ -38,16 +38,24 @@ _OMNIVOICE_EXTRA_SPECS = (
 
 
 def _find_default_sample() -> str | None:
+    data_dir = os.environ.get("VOXLAB_DATA_DIR", "").strip()
+    if data_dir:
+        p = os.path.join(data_dir, "voices", "samples", "default_local.mp3")
+        if os.path.isfile(p):
+            return p
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        portable_p = os.path.abspath(os.path.join(exe_dir, "..", "..", "data", "voices", "samples", "default_local.mp3"))
+        if os.path.isfile(portable_p):
+            return portable_p
+        frozen_p = os.path.join(exe_dir, "models", "default_local.mp3")
+        if os.path.isfile(frozen_p):
+            return frozen_p
     appdata = os.environ.get("APPDATA")
     if appdata:
         p = os.path.join(appdata, "com.voxlab.app", "voices", "samples", "default_local.mp3")
         if os.path.isfile(p):
             return p
-    if getattr(sys, "frozen", False):
-        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-        frozen_p = os.path.join(exe_dir, "models", "default_local.mp3")
-        if os.path.isfile(frozen_p):
-            return frozen_p
     base = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "public", "audio", "samples", "default_local.mp3")
     )

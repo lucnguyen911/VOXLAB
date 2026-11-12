@@ -16,7 +16,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 pub const VOXLAB_APP_ID: &str = "voxlab";
 
@@ -257,9 +257,7 @@ pub async fn download_and_install_update(
 ) -> Result<(), String> {
     cancel_flag().store(false, AtomicOrdering::SeqCst);
 
-    let app_data = app
-        .path()
-        .app_data_dir()
+    let app_data = crate::resolve_app_storage_dir(&app)
         .map_err(|e| format!("Không thể xác định thư mục dữ liệu ứng dụng: {}", e))?;
 
     let sidecar_mgr = state.0.clone();

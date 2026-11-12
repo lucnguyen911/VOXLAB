@@ -30,8 +30,8 @@ export function triggerAppUpdateModal(info: UpdateCheckResult): void {
 export async function checkAppUpdate(): Promise<UpdateCheckResult> {
   if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) {
     return {
-      currentVersion: "1.0.2",
-      latestVersion: "1.0.2",
+      currentVersion: "1.0.3",
+      latestVersion: "1.0.3",
       updateAvailable: false,
       isForced: false,
     };

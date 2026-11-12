@@ -75,7 +75,12 @@ struct SidecarProcess {
 }
 
 impl SidecarProcess {
-    fn spawn(runtime: &str, spec: &RuntimeSpec, sink: ProgressSink) -> Result<Self, AiError> {
+    fn spawn(
+        runtime: &str,
+        spec: &RuntimeSpec,
+        sink: ProgressSink,
+        data_dir: Option<&std::path::Path>,
+    ) -> Result<Self, AiError> {
         if !spec.program.exists() {
             return Err(AiError::new(
                 "SIDECAR_NOT_FOUND",
@@ -100,6 +105,20 @@ impl SidecarProcess {
             .env("VOXLAB_REQUIRE_HOST_AUTH", "1")
             .env("VOXLAB_SPAWN_SEED", &spawn_seed_hex)
             .env("VOXLAB_HOST_PID", host_pid.to_string());
+        if let Some(d) = data_dir {
+            let scratch = d.join("scratch");
+            let tmp_dir = scratch.join("tmp");
+            let hf_dir = scratch.join("hf-cache");
+            let torch_dir = scratch.join("torch-cache");
+            let _ = std::fs::create_dir_all(&tmp_dir);
+            let _ = std::fs::create_dir_all(&hf_dir);
+            let _ = std::fs::create_dir_all(&torch_dir);
+            cmd.env("VOXLAB_DATA_DIR", d)
+                .env("HF_HOME", &hf_dir)
+                .env("TORCH_HOME", &torch_dir)
+                .env("TMP", &tmp_dir)
+                .env("TEMP", &tmp_dir);
+        }
         if let Some(cwd) = &spec.cwd {
             cmd.current_dir(cwd);
         }
@@ -345,15 +364,25 @@ pub struct SidecarManager {
     runtimes: Mutex<HashMap<String, SidecarProcess>>,
     resolver: RuntimeResolver,
     sink: ProgressSink,
+    data_dir: Option<PathBuf>,
     counter: AtomicU64,
 }
 
 impl SidecarManager {
     pub fn new(resolver: RuntimeResolver, sink: ProgressSink) -> Self {
+        Self::new_with_data_dir(resolver, sink, None)
+    }
+
+    pub fn new_with_data_dir(
+        resolver: RuntimeResolver,
+        sink: ProgressSink,
+        data_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
             runtimes: Mutex::new(HashMap::new()),
             resolver,
             sink,
+            data_dir,
             counter: AtomicU64::new(0),
         }
     }
@@ -384,7 +413,12 @@ impl SidecarManager {
                 // Crash recovery: a dead process is replaced transparently on next use.
                 map.remove(runtime);
                 let spec = (self.resolver)(runtime)?;
-                let proc = SidecarProcess::spawn(runtime, &spec, self.sink.clone())?;
+                let proc = SidecarProcess::spawn(
+                    runtime,
+                    &spec,
+                    self.sink.clone(),
+                    self.data_dir.as_deref(),
+                )?;
                 map.insert(runtime.to_string(), proc);
             }
             let proc = map.get_mut(runtime).expect("runtime present");
