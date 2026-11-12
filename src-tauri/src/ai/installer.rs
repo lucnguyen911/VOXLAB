@@ -509,6 +509,43 @@ fn resolve_runtime_python(
     None
 }
 
+fn build_hf_downloader_cfg_preamble(
+    model_id: &str,
+    repo_id: &str,
+    dest_dir: &Path,
+    allow_patterns: &Option<Vec<&str>>,
+    approx_size_mb: u32,
+) -> String {
+    let cfg_val = serde_json::json!({
+        "model_id": model_id,
+        "repo_id": repo_id,
+        "dest_dir": dest_dir.to_string_lossy(),
+        "allow_patterns": allow_patterns,
+        "fallback_total_mb": approx_size_mb,
+    });
+    let mut cfg_json = serde_json::to_string(&cfg_val).unwrap_or_else(|_| "{}".into());
+    let mut hex_cfg = String::with_capacity(cfg_json.len() * 2);
+    for &b in cfg_json.as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex_cfg, "{:02x}", b);
+    }
+    unsafe {
+        for b in cfg_json.as_bytes_mut() {
+            std::ptr::write_volatile(b, 0);
+        }
+    }
+    let preamble = format!(
+        "import json as _vxl_json\n_VOXLAB_CFG = _vxl_json.loads(bytes.fromhex(\"{}\").decode(\"utf-8\"))\n",
+        hex_cfg
+    );
+    unsafe {
+        for b in hex_cfg.as_bytes_mut() {
+            std::ptr::write_volatile(b, 0);
+        }
+    }
+    preamble
+}
+
 pub fn install_model_blocking<F>(
     spec: &'static ModelSpec,
     models_dir: &Path,
@@ -701,22 +738,21 @@ where
         let _ = std::fs::create_dir_all(&hf_cache_dir);
         let _ = std::fs::create_dir_all(&tmp_dir);
 
-        let cfg_val = serde_json::json!({
-            "model_id": spec.id,
-            "repo_id": repo_id,
-            "dest_dir": dest_dir.to_string_lossy(),
-            "allow_patterns": allow_patterns,
-            "fallback_total_mb": spec.approx_size_mb,
-        });
-        let mut cfg_json = serde_json::to_string(&cfg_val).unwrap_or_else(|_| "{}".into());
+        let mut preamble = build_hf_downloader_cfg_preamble(
+            spec.id,
+            &repo_id,
+            &dest_dir,
+            &allow_patterns,
+            spec.approx_size_mb,
+        );
         let py_body = crate::security::obf::decode_hf_downloader_py();
-        let mut full_script = format!("_VOXLAB_CFG = {}\n{}", cfg_json, py_body.as_str_lossy());
+        let mut full_script = format!("{}{}", preamble, py_body.as_str_lossy());
 
         unsafe {
             for b in repo_id.as_bytes_mut() {
                 std::ptr::write_volatile(b, 0);
             }
-            for b in cfg_json.as_bytes_mut() {
+            for b in preamble.as_bytes_mut() {
                 std::ptr::write_volatile(b, 0);
             }
         }
@@ -1379,5 +1415,50 @@ mod tests {
         assert!(st_gpu_1.missing_runtimes.is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn hf_downloader_preamble_handles_null_allow_patterns_and_windows_paths() {
+        let base_models_dir = Path::new(r"F:\Model AI Local\Thư mục 'đặc biệt'");
+        let dev_py = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../sidecar/.venv/Scripts/python.exe");
+
+        for spec in MODELS {
+            let repo_id = models::decode_model_source_repo(spec.id)
+                .expect("every registered model must have an obfuscated HF repo");
+            let dest_dir = base_models_dir.join(spec.id);
+            let allow = allow_patterns_for_model(spec.id);
+            let preamble = build_hf_downloader_cfg_preamble(
+                spec.id,
+                &repo_id,
+                &dest_dir,
+                &allow,
+                spec.approx_size_mb,
+            );
+            assert!(
+                !preamble.contains("null"),
+                "preamble must never emit raw JSON null into Python source"
+            );
+
+            if dev_py.is_file() {
+                let verify_script = format!(
+                    "{}\nassert _VOXLAB_CFG['model_id'] == {:?}\nassert _VOXLAB_CFG['dest_dir'] == {:?}\nassert (_VOXLAB_CFG['allow_patterns'] is None) == {}\n",
+                    preamble,
+                    spec.id,
+                    dest_dir.to_string_lossy(),
+                    if allow.is_none() { "True" } else { "False" }
+                );
+                let out = Command::new(&dev_py)
+                    .args(["-c", &verify_script])
+                    .output()
+                    .expect("spawn python for preamble verification");
+                assert!(
+                    out.status.success(),
+                    "Python failed to parse downloader preamble for {}: {}",
+                    spec.id,
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
     }
 }
