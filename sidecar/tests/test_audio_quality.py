@@ -4490,6 +4490,80 @@ class AudioQualityTest(unittest.TestCase):
         issues = audio_quality.detect_phrase_internal_pauses(text, reanchored, wave, sr, speed=0.95)
         self.assertEqual(issues, [], f"Expected zero false abnormal pause on 'can jog', got {issues}")
 
+    def test_v420_spelled_decimal_asr_mishearing_never_triggers_false_missing_words(self):
+        # Regression: When script writes numbers as words ('eight point five') and Whisper ASR mishears
+        # unreleased /t/ as '0.5', '.5', 'a 0.5', or '0.5x', Post-QC must NEVER emit false MISSING_WORD
+        # warnings ('an eight five', 'at eight five', 'eight five times'), while preserving real missing
+        # content words, real swallowed 'dollars', and real word repetitions.
+        clean_cases = [
+            (
+                "delivering eight point five boost",
+                [("delivering", 0.10, 0.48, 0.99), ("0.5", 0.48, 0.96, 0.91), ("boost", 0.96, 1.32, 0.99)],
+            ),
+            (
+                "delivering eight point five boost",
+                [("delivering", 0.10, 0.48, 0.99), (".5", 0.48, 0.96, 0.91), ("boost", 0.96, 1.32, 0.99)],
+            ),
+            (
+                "delivering an eight point five boost",
+                [("delivering", 0.10, 0.48, 0.99), ("0.5", 0.48, 1.04, 0.91), ("boost", 1.04, 1.40, 0.99)],
+            ),
+            (
+                "priced at eight point five per month",
+                [
+                    ("priced", 0.10, 0.45, 0.99),
+                    ("a", 0.45, 0.56, 0.84),
+                    ("0.5", 0.56, 1.04, 0.92),
+                    ("per", 1.04, 1.22, 0.99),
+                    ("month", 1.22, 1.55, 0.99),
+                ],
+            ),
+            (
+                "grew eight point five times faster",
+                [("grew", 0.10, 0.38, 0.99), ("0.5x", 0.38, 0.92, 0.92), ("faster", 0.92, 1.30, 0.99)],
+            ),
+            (
+                "Tesla's eight point five million dollar line",
+                [("Tesla", 0.10, 0.44, 0.96), ("$0.5M", 0.44, 1.28, 0.89), ("line", 1.28, 1.62, 0.99)],
+            ),
+        ]
+        for txt, toks in clean_cases:
+            asr = [
+                {"word": " " + w, "startSec": s, "endSec": e, "probability": p}
+                for w, s, e, p in toks
+            ]
+            raw = audio_quality.analyze_word_alignment_issues(txt, asr, language="en", core_scope=True)
+            core = audio_quality._reduce_to_core_defects(raw, asr)
+            self.assertEqual(core, [], f"Expected 0 false warnings for '{txt}', got {core}")
+
+        # Real missing content word immediately before a misheard number MUST still flag ONLY the content word
+        asr_missing_content = [
+            {"word": " 0.5", "startSec": 0.48, "endSec": 0.96, "probability": 0.94},
+            {"word": " boost", "startSec": 0.96, "endSec": 1.32, "probability": 0.99},
+        ]
+        raw_miss = audio_quality.analyze_word_alignment_issues(
+            "delivering eight point five boost", asr_missing_content, language="en", core_scope=True
+        )
+        core_miss = audio_quality._reduce_to_core_defects(raw_miss, asr_missing_content)
+        self.assertEqual(len(core_miss), 1, core_miss)
+        self.assertEqual(core_miss[0]["code"], "MISSING_WORD")
+        self.assertEqual(core_miss[0]["words"], ["delivering"])
+
+        # Real word repetition inside a misheard number MUST still be reported
+        asr_rep_num = [
+            {"word": " delivering", "startSec": 0.10, "endSec": 0.48, "probability": 0.99},
+            {"word": " zero", "startSec": 0.48, "endSec": 0.68, "probability": 0.95},
+            {"word": " point", "startSec": 0.68, "endSec": 0.88, "probability": 0.95},
+            {"word": " point", "startSec": 0.88, "endSec": 1.08, "probability": 0.95},
+            {"word": " five", "startSec": 1.08, "endSec": 1.30, "probability": 0.95},
+        ]
+        raw_rep = audio_quality.analyze_word_alignment_issues(
+            "delivering eight point five", asr_rep_num, language="en", core_scope=True
+        )
+        core_rep = audio_quality._reduce_to_core_defects(raw_rep, asr_rep_num)
+        self.assertEqual(len(core_rep), 1, core_rep)
+        self.assertIn(core_rep[0]["code"], ("REPEATED_WORD", "SUSPECTED_STUTTER"))
+
 
 if __name__ == "__main__":
     unittest.main()

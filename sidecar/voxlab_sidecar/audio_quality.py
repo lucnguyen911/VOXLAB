@@ -1848,8 +1848,12 @@ def measure_boundary_silence_sec(
 
 def clean_word(word: str) -> str:
     """Strip whitespace and punctuation for string comparison.
-    Preserves decimal notation (e.g. '0.8', '13,5' -> '13.5').
+    Preserves decimal notation (e.g. '0.8', '.5' -> '0.5', '13,5' -> '13.5').
     """
+    raw_trimmed = word.strip(" ,!?;:—–…()[]\"'“”„«»¿¡$€£¥₫").lower()
+    m_lead_dec = re.fullmatch(r"(-?)\.(\d+)%?", raw_trimmed.rstrip("."))
+    if m_lead_dec:
+        return f"{m_lead_dec.group(1)}0.{m_lead_dec.group(2)}"
     cleaned = word.strip(" .,!?;:—–-…()[]\"'“”„«»¿¡$€£¥₫").lower()
     if re.fullmatch(r"-?\d+(?:[.,]\d+)+", cleaned):
         return cleaned.replace(",", ".")
@@ -3955,17 +3959,26 @@ def _reduce_to_core_defects(issues: list[dict[str, Any]], asr_words: list[dict[s
             continue
         # Number reading (digits, number words, currency) is outside the QC scope
         # (stutters and repetitions on a number are still reported: they are reading defects, not number checks)
-        scoped_words = (
-            words[:1] if code in ("SUSPECTED_MISPRONUNCIATION", "PARTIAL_PRONUNCIATION")
-            else words if code in ("MISSING_WORD", "SUSPECTED_SWALLOWED")
-            else []
-        )
-        if (
-            scoped_words
-            and not iss.get("verifiedCurrencyUnitOmission")
-            and all(_is_numeric_scope_word(w) for w in scoped_words)
-        ):
-            continue
+        if code in ("SUSPECTED_MISPRONUNCIATION", "PARTIAL_PRONUNCIATION"):
+            if words and not iss.get("verifiedCurrencyUnitOmission") and _is_numeric_scope_word(words[0]):
+                continue
+        elif code in ("MISSING_WORD", "SUSPECTED_SWALLOWED") and not iss.get("verifiedCurrencyUnitOmission"):
+            if words:
+                non_num_words = [w for w in words if not _is_numeric_scope_word(w)]
+                if not non_num_words:
+                    continue
+                if len(non_num_words) < len(words):
+                    words = non_num_words
+                    phrase_clean = " ".join(words)
+                    iss = {
+                        **iss,
+                        "words": words,
+                        "message": (
+                            f'Nghi vấn nuốt chữ tại từ "{words[0]}" — khoảng {ts}. Vui lòng nghe kiểm tra.'
+                            if len(words) == 1 and code == "MISSING_WORD"
+                            else f'Nghi vấn đọc thiếu "{phrase_clean}" — khoảng {ts}. Vui lòng nghe lại.'
+                        ),
+                    }
         if code == "SUSPECTED_STUTTER" and words and _is_adjacent_duplicate_in_asr(asr_words, iss, words[0]):
             # The same whole word spoken twice ('pump pump') is a repetition, not a stumble
             kept.append({
@@ -4547,11 +4560,33 @@ def detect_misplaced_punctuation_pauses(
         return []
     source_words, delimiters = tokenize_text_with_delimiters(text)
     src_clean = [clean_word(w) for w in source_words]
-    asr_clean = [clean_word(str(w.get("word", ""))) for w in asr_words]
+    asr_raw = [str(w.get("word", "")) for w in asr_words]
+    asr_clean = [clean_word(w) for w in asr_raw]
+    eff_lang = resolve_script_language(text, None)
+    src_spans = _collapse_multiplied_letter_spans(
+        collapse_number_tokens(source_words, eff_lang, delimiters=delimiters),
+        source_words,
+        delimiters=delimiters,
+        counterpart_clean=set(asr_clean),
+    )
+    asr_spans = _collapse_multiplied_letter_spans(
+        collapse_number_tokens(asr_raw, eff_lang),
+        asr_raw,
+        counterpart_clean=set(src_clean),
+    )
     src_to_asr: dict[int, int] = {}
     for block in difflib.SequenceMatcher(None, src_clean, asr_clean, autojunk=False).get_matching_blocks():
         for off in range(block.size):
             src_to_asr[block.a + off] = block.b + off
+    for tag_m, s_i1_m, s_i2_m, a_j1_m, a_j2_m in difflib.SequenceMatcher(
+        None, [s.canonical for s in src_spans], [a.canonical for a in asr_spans], autojunk=False
+    ).get_opcodes():
+        if tag_m == "equal":
+            for off in range(s_i2_m - s_i1_m):
+                s_sp = src_spans[s_i1_m + off]
+                a_sp = asr_spans[a_j1_m + off]
+                if not s_sp.is_number and not a_sp.is_number and (s_sp.orig_end - s_sp.orig_start) == 1 and (a_sp.orig_end - a_sp.orig_start) == 1:
+                    src_to_asr.setdefault(s_sp.orig_start, a_sp.orig_start)
 
     issues: list[dict[str, Any]] = []
     for i in range(1, len(source_words) - 1):
@@ -4559,6 +4594,8 @@ def detect_misplaced_punctuation_pauses(
         if not re.search(r"[,;:]", punct) or re.search(r"[.!?]", punct):
             continue
         if has_punctuation_boundary(delimiters[i], source_words[i]):
+            continue
+        if _is_numeric_scope_word(src_clean[i - 1]) or _is_numeric_scope_word(src_clean[i]):
             continue
         j_prev, j_cur = src_to_asr.get(i - 1), src_to_asr.get(i)
         if j_prev is None or j_cur is None or j_cur != j_prev + 1 or j_cur + 1 >= len(asr_words):
@@ -6406,6 +6443,62 @@ def analyze_word_alignment_issues(
                         for idx_cov in range(sp.orig_start, sp_next.orig_end):
                             matched_src_indices.add(idx_cov)
 
+            # In core QC scope, number value mishearings (e.g. "eight point five" -> "0.5" or ".5")
+            # must never inflate raw word-count diffs (4 > 1) or contaminate adjacent words with MISSING_WORD,
+            # while still checking for swallowed currency units ("dollar"/"dollars") and stutters/repeats.
+            paired_src_num_indices: set[int] = set()
+            paired_asr_num_indices: set[int] = set()
+            mismatched_src_num_starts: set[int] = set()
+            if core_scope:
+                unmatched_src_nums = [
+                    src_spans[k_sp]
+                    for k_sp in range(s_i1, s_i2)
+                    if src_spans[k_sp].is_number
+                    and any(idx_c not in matched_src_indices for idx_c in range(src_spans[k_sp].orig_start, src_spans[k_sp].orig_end))
+                ]
+                cand_asr_nums = [asr_spans[k_a] for k_a in range(a_j1, a_j2) if asr_spans[k_a].is_number]
+                if unmatched_src_nums and cand_asr_nums:
+                    pair_count = min(len(unmatched_src_nums), len(cand_asr_nums))
+                    for p_idx in range(pair_count):
+                        s_num = unmatched_src_nums[p_idx]
+                        a_num = cand_asr_nums[p_idx]
+                        if slice_budget is not None:
+                            curr_iss, curr_asr_set = _verify_equal_currency_span(
+                                source_words=source_words,
+                                source_words_clean=source_words_clean,
+                                s_span=s_num,
+                                a_span=a_num,
+                                asr_words=asr_words,
+                                eff_speed=eff_speed,
+                                audio_data=audio_data,
+                                sample_rate=sample_rate,
+                                whisper_model=whisper_model,
+                                language=language,
+                                total_dur=total_dur,
+                                slice_budget=slice_budget,
+                                secondary_reasons=secondary_reasons,
+                            )
+                            if curr_iss is not None:
+                                issues.append(curr_iss)
+                                swallowed_currency_asr_indices.update(curr_asr_set)
+                        for idx_cov in range(s_num.orig_start, s_num.orig_end):
+                            matched_src_indices.add(idx_cov)
+                            paired_src_num_indices.add(idx_cov)
+                        for j_cov in range(a_num.orig_start, a_num.orig_end):
+                            paired_asr_num_indices.add(j_cov)
+                            asr_to_source[j_cov] = s_num.orig_start
+                        if not are_number_expressions_equivalent(s_num.canonical, a_num.canonical, language):
+                            mismatched_src_num_starts.add(s_num.orig_start)
+                    if (
+                        len(unmatched_src_nums) == 1
+                        and len(cand_asr_nums) == 2
+                        and cand_asr_nums[0].orig_end == cand_asr_nums[1].orig_start
+                        and cand_asr_nums[0].canonical != cand_asr_nums[1].canonical
+                    ):
+                        for j_cov in range(cand_asr_nums[1].orig_start, cand_asr_nums[1].orig_end):
+                            paired_asr_num_indices.add(j_cov)
+                            asr_to_source[j_cov] = unmatched_src_nums[0].orig_start
+
             has_asr_decimal_notation = any(
                 bool(re.search(r"(?:^|\d)[.,]\d", str(asr_words[k].get("word", "")).strip()))
                 for k in range(j1, min(j2, len(asr_words)))
@@ -6421,13 +6514,21 @@ def analyze_word_alignment_issues(
                 if not sw:
                     continue
                 if sw in WEAK_CLITIC_ARTICLES:
-                    # Only exempt an article inside a replacement span if it merged with an adjacent source token in ASR
+                    # Exempt an article inside a replacement span if it merged with an adjacent source token in ASR
+                    # OR when 'a'/'an' immediately precedes a vowel-onset / ASR-misheard number token (e.g. 'an eight point five' -> '0.5')
                     prev_sc = source_words_clean[idx - 1] if idx > 0 else ""
                     next_sc = source_words_clean[idx + 1] if idx + 1 < len(source_words_clean) else ""
                     if any(
                         (prev_sc and (aw == prev_sc + sw or are_words_equivalent(prev_sc + sw, aw)))
                         or (next_sc and (aw == sw + next_sc or are_words_equivalent(sw + next_sc, aw)))
                         for aw in asr_slice_clean
+                    ):
+                        continue
+                    if (
+                        core_scope
+                        and sw in ("a", "an")
+                        and (idx + 1) in mismatched_src_num_starts
+                        and not any(j_b < min(paired_asr_num_indices) for j_b in range(j1, j2) if j_b not in paired_asr_num_indices)
                     ):
                         continue
                 if sw in ("point", "dot", "phẩy", "phay", "chấm", "cham") and has_asr_decimal_notation:
@@ -6446,8 +6547,103 @@ def analyze_word_alignment_issues(
             t_end = float(asr_words[min(len(asr_words) - 1, j2 - 1)].get("endSec", 0.0)) if asr_words else 0.0
             ts = format_timestamp(t_start)
 
+            if paired_asr_num_indices:
+                rem_src_indices = [idx for idx in range(i1, i2) if idx not in paired_src_num_indices]
+                rem_asr_indices = [
+                    j_r for j_r in range(j1, j2)
+                    if j_r not in paired_asr_num_indices and asr_words_clean[j_r]
+                ]
+                if len(rem_src_indices) == 1 and len(rem_asr_indices) == 1 and unrepresented_content_indices:
+                    s_rem = rem_src_indices[0]
+                    a_rem = rem_asr_indices[0]
+                    sw_rem = source_words_clean[s_rem]
+                    aw_rem = asr_words_clean[a_rem]
+                    raw_sw_rem = re.sub(r"^[^\w\u00C0-\u1EF9]+|[^\w\u00C0-\u1EF9]+$", "", source_words[s_rem]) or sw_rem
+                    w_rem_obj = asr_words[a_rem]
+                    t_s_rem = float(w_rem_obj.get("startSec", t_start))
+                    t_e_rem = float(w_rem_obj.get("endSec", t_end))
+                    p_rem = float(w_rem_obj.get("probability", 1.0))
+                    ts_rem = format_timestamp(t_s_rem)
+                    if p_rem < 0.45:
+                        issues.append({
+                            "severity": "unverified",
+                            "code": "UNVERIFIED_WORD",
+                            "message": f"Chưa thể xác minh phát âm từ '{raw_sw_rem}' (ASR ghi nhận '{aw_rem}' với độ tin cậy thấp {p_rem:.2f}) — khoảng {ts_rem}.",
+                            "words": [sw_rem, aw_rem],
+                            "timeRange": [round(t_s_rem, 3), round(t_e_rem, 3)],
+                        })
+                    elif not _verify_asr_substitution_with_lexicon(
+                        raw_src_word=raw_sw_rem,
+                        src_clean=sw_rem,
+                        t_start=t_s_rem,
+                        t_end=t_e_rem,
+                        w_prob=p_rem,
+                        audio_data=audio_data,
+                        sample_rate=sample_rate,
+                        whisper_model=whisper_model,
+                        language=language,
+                        total_dur=total_dur,
+                        slice_budget=slice_budget,
+                        secondary_reasons=secondary_reasons,
+                    ):
+                        issues.append({
+                            "severity": "warning",
+                            "code": "SUSPECTED_MISPRONUNCIATION",
+                            "message": f"Nghi vấn phát âm sai từ '{sw_rem}' (ASR ghi nhận '{aw_rem}') — khoảng {ts_rem}. Vui lòng nghe lại.",
+                            "words": [sw_rem, aw_rem],
+                            "timeRange": [round(t_s_rem, 3), round(t_e_rem, 3)],
+                        })
+                    else:
+                        asr_to_source[a_rem] = s_rem
+                    unrepresented_content_indices = []
+                elif len(rem_asr_indices) == 0 and len(unrepresented_content_indices) == 1:
+                    om_idx = unrepresented_content_indices[0]
+                    om_sw = source_words_clean[om_idx]
+                    num_j_first = min(paired_asr_num_indices)
+                    if num_j_first > 0 and num_j_first < len(asr_words):
+                        w_prev_om = asr_words[num_j_first - 1]
+                        w_next_om = asr_words[num_j_first]
+                        om_dec, om_rsn = _verify_omitted_word_evidence(
+                            src_clean=om_sw,
+                            w_prev=w_prev_om,
+                            w_next=w_next_om,
+                            audio_data=audio_data,
+                            sample_rate=sample_rate,
+                            whisper_model=whisper_model,
+                            language=language,
+                            total_dur=total_dur,
+                            eff_speed=eff_speed,
+                            slice_budget=slice_budget,
+                            secondary_reasons=secondary_reasons,
+                        )
+                        t_om0 = float(w_prev_om.get("endSec", t_start))
+                        t_om1 = float(w_next_om.get("startSec", t_om0))
+                        ts_om = format_timestamp(t_om0)
+                        if om_dec == "missing":
+                            issues.append({
+                                "severity": "warning",
+                                "code": "MISSING_WORD",
+                                "message": f'Nghi vấn nuốt chữ tại từ "{om_sw}" — khoảng {ts_om}. Vui lòng nghe kiểm tra.',
+                                "words": [om_sw],
+                                "timeRange": [round(t_om0, 3), round(max(t_om0, t_om1), 3)],
+                            })
+                        elif om_dec == "unverified":
+                            issues.append({
+                                "severity": "unverified",
+                                "code": "UNVERIFIED_WORD",
+                                "omissionCandidate": True,
+                                "message": f'Chưa thể xác minh từ "{om_sw}" — khoảng {ts_om}.',
+                                "words": [om_sw],
+                                "timeRange": [round(t_om0, 3), round(max(t_om0, t_om1), 3)],
+                                "unverifiedReason": om_rsn,
+                            })
+                        unrepresented_content_indices = []
+
+            eff_src_len = len(range(i1, i2)) - len(paired_src_num_indices) + (1 if paired_src_num_indices else 0)
+            eff_asr_len = len(range(j1, j2)) - len(paired_asr_num_indices) + (1 if paired_asr_num_indices else 0)
+
             # Case 1: Many-to-one / Many-to-few mismatch (e.g. "response mobile" -> "responsible")
-            if (i2 - i1) > (j2 - j1) and unrepresented_content_indices:
+            if eff_src_len > eff_asr_len and unrepresented_content_indices:
                 ctx_span = extract_context_span(source_words, i1, i2)
                 asr_slice_str = " ".join(asr_slice_clean)
                 issues.append({
@@ -6636,7 +6832,7 @@ def analyze_word_alignment_issues(
                         continue
 
             # Case 2d: Equal-length multi-word replacement where individual word pairs differ
-            if (i2 - i1) == (j2 - j1) and (i2 - i1) >= 2:
+            if not paired_asr_num_indices and (i2 - i1) == (j2 - j1) and (i2 - i1) >= 2:
                 for k_off in range(i2 - i1):
                     s_idx_k = i1 + k_off
                     a_idx_k = j1 + k_off
@@ -6717,7 +6913,15 @@ def analyze_word_alignment_issues(
                     })
 
             # Case 4: More words in ASR than in source (e.g. repetition or extra words inside replacement span)
-            if (j2 - j1) > (i2 - i1):
+            has_local_asr_repeat = any(
+                asr_words_clean[j_chk]
+                and (
+                    (j_chk > 0 and asr_words_clean[j_chk] == asr_words_clean[j_chk - 1])
+                    or (j_chk + 1 < len(asr_words_clean) and asr_words_clean[j_chk] == asr_words_clean[j_chk + 1])
+                )
+                for j_chk in range(j1, j2)
+            )
+            if eff_asr_len > eff_src_len or (paired_asr_num_indices and has_local_asr_repeat):
                 for j in range(j1, j2):
                     w_obj = asr_words[j]
                     w_clean = asr_words_clean[j]
@@ -6786,7 +6990,8 @@ def analyze_word_alignment_issues(
                                 "timeRange": [round(rep_start, 3), round(t_end_w, 3)],
                             })
                     elif (
-                        source_words_clean.count(w_clean) == 0
+                        j not in paired_asr_num_indices
+                        and source_words_clean.count(w_clean) == 0
                         and (t_end_w - t_start_w) >= 0.03
                         and p >= 0.55
                         and (len(w_clean) >= 2 or w_clean in ("a", "i"))

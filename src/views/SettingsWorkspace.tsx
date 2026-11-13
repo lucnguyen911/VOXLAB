@@ -997,7 +997,7 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   const [isLicenseModalOpen, setIsLicenseModalOpen] = useState(false);
   const [isVerifyingLicense, setIsVerifyingLicense] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
-  const [currentAppVersion, setCurrentAppVersion] = useState("1.0.7");
+  const [currentAppVersion, setCurrentAppVersion] = useState("1.0.0");
   const [licenseToast, setLicenseToast] = useState<{
     type: "success" | "error";
     message: string;

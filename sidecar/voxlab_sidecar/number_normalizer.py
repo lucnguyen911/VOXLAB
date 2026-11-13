@@ -1,6 +1,7 @@
 """Full Number Normalizer implementation for VoxLab sidecar."""
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import re
 from typing import NamedTuple
 
@@ -20,6 +21,7 @@ EN_SCALES = {
     "million": 1_000_000,
     "milion": 1_000_000,  # common transcription/script spelling of million
     "billion": 1_000_000_000,
+    "trillion": 1_000_000_000_000,
 }
 
 EN_ORDINALS = {
@@ -30,6 +32,7 @@ EN_ORDINALS = {
     "twentieth": 20, "thirtieth": 30, "fortieth": 40, "fiftieth": 50,
     "sixtieth": 60, "seventieth": 70, "eightieth": 80, "ninetieth": 90,
     "hundredth": 100, "thousandth": 1000, "millionth": 1000000, "billionth": 1000000000,
+    "trillionth": 1000000000000,
 }
 
 VI_ONES = {
@@ -106,10 +109,46 @@ def is_ip_address(s: str) -> bool:
     return False
 
 
+def _scale_decimal_string(num_str: str, scale: int) -> str:
+    """Multiplies a normalized integer/decimal string by `scale` without float rounding error."""
+    try:
+        scaled = Decimal(num_str) * Decimal(scale)
+        if scaled == scaled.to_integral_value():
+            return str(int(scaled))
+        norm = format(scaled.normalize(), "f")
+        return norm if "." not in norm else norm.rstrip("0").rstrip(".")
+    except (InvalidOperation, ValueError):
+        return num_str
+
+
+_CURRENCY_COMPACT_SCALES = {
+    "k": 1_000,
+    "m": 1_000_000,
+    "b": 1_000_000_000,
+    "t": 1_000_000_000_000,
+}
+
+
 def normalize_digit_string(token: str) -> str:
-    """Normalizes string containing digits: e.g. '1,000' -> '1000', '10:30' -> '10:30'.
+    """Normalizes string containing digits: e.g. '1,000' -> '1000', '.5' -> '0.5', '10:30' -> '10:30'.
     Preserves IP addresses, version numbers like '2.0', decimals '3.14'.
     """
+    raw_trimmed = token.strip(" ,!?;:—–…()[]\"'“”„«»¿¡").lower()
+    raw_no_trail_dot = raw_trimmed.rstrip(".")
+    m_curr_compact = re.fullmatch(r"(-?)[$€£](-?\d+(?:\.\d+)?)([kmbt])", raw_no_trail_dot)
+    if not m_curr_compact:
+        m_curr_compact = re.fullmatch(r"[$€£](-?)(\d+(?:\.\d+)?)([kmbt])", raw_no_trail_dot)
+    if m_curr_compact:
+        sign = "-" if "-" in (m_curr_compact.group(1), m_curr_compact.group(2)[:1]) else ""
+        mag = m_curr_compact.group(2).lstrip("-")
+        return _scale_decimal_string(f"{sign}{mag}", _CURRENCY_COMPACT_SCALES[m_curr_compact.group(3)])
+
+    m_lead_dec = re.fullmatch(r"(-?)(?:[$€£¥₫])?\.(\d+)(%?)", raw_no_trail_dot)
+    if not m_lead_dec:
+        m_lead_dec = re.fullmatch(r"(?:[$€£¥₫])(-?)\.(\d+)(%?)", raw_no_trail_dot)
+    if m_lead_dec:
+        return f"{m_lead_dec.group(1)}0.{m_lead_dec.group(2)}{m_lead_dec.group(3)}"
+
     cleaned = clean_token(token)
     if re.match(r"^[$€£¥₫]-?\d", cleaned):
         cleaned = cleaned[1:]
@@ -155,7 +194,10 @@ def normalize_digit_string(token: str) -> str:
 
 
 def is_decimal_number_string(s: str) -> bool:
-    """Checks whether token represents a decimal number string like '3.14' or '-0.8'."""
+    """Checks whether token represents a decimal number string like '3.14', '.5', or '-0.8'."""
+    raw_no_trail_dot = s.strip(" ,!?;:—–…()[]\"'“”„«»¿¡$€£¥₫").lower().rstrip(".")
+    if re.fullmatch(r"-?\.\d+", raw_no_trail_dot):
+        return True
     cleaned = clean_token(s)
     if re.fullmatch(r"-?\d+,\d+", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+", cleaned):
         cleaned = cleaned.replace(",", ".")
@@ -163,7 +205,11 @@ def is_decimal_number_string(s: str) -> bool:
 
 
 def split_decimal_parts(s: str) -> tuple[str, str] | None:
-    """Splits decimal string into (whole_part, frac_part), e.g. '0.8' -> ('0', '8')."""
+    """Splits decimal string into (whole_part, frac_part), e.g. '0.8' -> ('0', '8'), '.5' -> ('0', '5')."""
+    raw_no_trail_dot = s.strip(" ,!?;:—–…()[]\"'“”„«»¿¡$€£¥₫").lower().rstrip(".")
+    m_lead = re.fullmatch(r"(-?)\.(\d+)", raw_no_trail_dot)
+    if m_lead:
+        return f"{m_lead.group(1)}0", m_lead.group(2)
     cleaned = clean_token(s)
     if re.fullmatch(r"-?\d+,\d+", cleaned) and not re.fullmatch(r"-?\d{1,3}(,\d{3})+", cleaned):
         cleaned = cleaned.replace(",", ".")
@@ -440,7 +486,7 @@ def parse_english_number_phrase(
             idx += 1
             if hit_boundary:
                 break
-        elif w in ("thousand", "million", "milion", "billion"):
+        elif w in ("thousand", "million", "milion", "billion", "trillion"):
             scale = EN_SCALES[w]
             if min_scale_applied is not None and scale >= min_scale_applied:
                 break
@@ -463,7 +509,7 @@ def parse_english_number_phrase(
             and clean_token(words[idx + 1]) in (EN_ONES | EN_TENS | EN_ORDINALS)
         ):
             # Look ahead past the <100 value after 'and': if it is followed by 'hundred',
-            # 'thousand', 'million', or 'billion' (e.g. "eleven thousand five hundred and thirteen thousand five hundred"),
+            # 'thousand', 'million', 'billion', or 'trillion' (e.g. "eleven thousand five hundred and thirteen thousand five hundred"),
             # then 'and' is a coordinating conjunction between two separate numbers, NOT an internal number connector.
             next_num_w = clean_token(words[idx + 1])
             after_next_idx = idx + 2
@@ -478,7 +524,7 @@ def parse_english_number_phrase(
                 after_scale_w = clean_token(words[after_next_idx])
                 if after_scale_w == "hundred":
                     break
-                if after_scale_w in ("thousand", "million", "milion", "billion"):
+                if after_scale_w in ("thousand", "million", "milion", "billion", "trillion"):
                     next_scale = EN_SCALES[after_scale_w]
                     if (
                         current < 100
@@ -761,10 +807,28 @@ def parse_vietnamese_number_phrase(
 
 ALL_SCALES = {**EN_SCALES, **VI_SCALES}
 
+THREE_WORD_UNIT_MAP = {
+    ("miles", "per", "hour"): "mph",
+    ("mile", "per", "hour"): "mph",
+    ("kilometers", "per", "hour"): "kmh",
+    ("kilometres", "per", "hour"): "kmh",
+    ("kilometer", "per", "hour"): "kmh",
+    ("kilometre", "per", "hour"): "kmh",
+    ("frames", "per", "second"): "fps",
+    ("frame", "per", "second"): "fps",
+    ("megabits", "per", "second"): "mbps",
+    ("gigabits", "per", "second"): "gbps",
+}
+
 MULTI_WORD_UNIT_MAP = {
     "kilowatt": "kwh",
     "megawatt": "mwh",
     "gigawatt": "gwh",
+}
+
+DEGREE_SCALE_UNIT_MAP = {
+    "celsius": "c",
+    "fahrenheit": "f",
 }
 
 HYPHENATED_UNIT_MAP = {
@@ -825,6 +889,39 @@ SINGLE_WORD_UNIT_MAP = {
     "millimeters": "mm",
     "millimetre": "mm",
     "millimetres": "mm",
+    "meter": "m",
+    "meters": "m",
+    "metre": "m",
+    "metres": "m",
+    "milliliter": "ml",
+    "milliliters": "ml",
+    "millilitre": "ml",
+    "millilitres": "ml",
+    "pound": "lb",
+    "pounds": "lb",
+    "lbs": "lb",
+    "ounce": "oz",
+    "ounces": "oz",
+    "inch": "in",
+    "inches": "in",
+    "foot": "ft",
+    "feet": "ft",
+    "millisecond": "ms",
+    "milliseconds": "ms",
+    "second": "s",
+    "seconds": "s",
+    "sec": "s",
+    "secs": "s",
+    "minute": "min",
+    "minutes": "min",
+    "mins": "min",
+    "hour": "h",
+    "hours": "h",
+    "hr": "h",
+    "hrs": "h",
+    "times": "x",
+    "degree": "deg",
+    "degrees": "deg",
 }
 
 ROMAN_NUMERALS_MAP = {
@@ -918,7 +1015,20 @@ def collapse_number_tokens(
         nonlocal idx
         while idx < n and spans and spans[-1].is_number:
             next_c = clean_token(words[idx])
-            if next_c in ("percent", "%") and not spans[-1].canonical.endswith("%"):
+            if (
+                next_c in ALL_SCALES
+                and next_c not in ("hundred", "trăm", "tram")
+                and not has_boundary_before(idx)
+                and re.fullmatch(r"-?\d+\.\d+", spans[-1].canonical)
+            ):
+                spans[-1] = NormalizedSpan(
+                    canonical=_scale_decimal_string(spans[-1].canonical, ALL_SCALES[next_c]),
+                    orig_start=spans[-1].orig_start,
+                    orig_end=idx + 1,
+                    is_number=True,
+                )
+                idx += 1
+            elif next_c in ("percent", "%") and not spans[-1].canonical.endswith("%"):
                 spans[-1] = NormalizedSpan(
                     canonical=f"{spans[-1].canonical}%",
                     orig_start=spans[-1].orig_start,
@@ -1002,6 +1112,40 @@ def collapse_number_tokens(
 
         raw_w = words[idx]
         cleaned = clean_token(raw_w)
+
+        # Three-word rate units: "miles per hour" -> "mph", "frames per second" -> "fps"
+        if idx + 2 < n:
+            tri_key = (cleaned, clean_token(words[idx + 1]), clean_token(words[idx + 2]))
+            if tri_key in THREE_WORD_UNIT_MAP:
+                spans.append(NormalizedSpan(
+                    canonical=THREE_WORD_UNIT_MAP[tri_key],
+                    orig_start=idx,
+                    orig_end=idx + 3,
+                    is_number=False,
+                ))
+                idx += 3
+                continue
+
+        if cleaned in ("km/h", "km/hr"):
+            spans.append(NormalizedSpan(
+                canonical="kmh",
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            idx += 1
+            continue
+
+        # Multi-word temperature units: "degrees celsius" -> "c", "degrees fahrenheit" -> "f"
+        if cleaned in ("degree", "degrees") and idx + 1 < n and clean_token(words[idx + 1]) in DEGREE_SCALE_UNIT_MAP:
+            spans.append(NormalizedSpan(
+                canonical=DEGREE_SCALE_UNIT_MAP[clean_token(words[idx + 1])],
+                orig_start=idx,
+                orig_end=idx + 2,
+                is_number=False,
+            ))
+            idx += 2
+            continue
 
         # Multi-word energy units: "kilowatt hours" -> "kwh"
         if cleaned in MULTI_WORD_UNIT_MAP and idx + 1 < n and clean_token(words[idx + 1]) in ("hour", "hours"):
@@ -1125,8 +1269,29 @@ def collapse_number_tokens(
             idx += 1
             continue
 
-        # Single-token number + letter/unit suffix (e.g. "25d" -> ["25", "d"], "4k" -> ["4", "k"], "10kwh" -> ["10", "kwh"])
-        m_num_alpha = re.fullmatch(r"(-?\d+(?:,\d{3})*(?:\.\d+)?)([a-z]{1,4})", cleaned)
+        # Single-token temperature / degree notation (e.g. "8.5°C" -> ["8.5", "c"], "8.5°" -> ["8.5", "deg"])
+        raw_no_trail = raw_w.strip(" ,!?;:—–…()[]\"'“”„«»¿¡").lower().rstrip(".")
+        m_num_deg = re.fullmatch(r"(-?(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+))°([cf])?", raw_no_trail)
+        if m_num_deg:
+            num_part = normalize_digit_string(m_num_deg.group(1))
+            deg_unit = m_num_deg.group(2) or "deg"
+            spans.append(NormalizedSpan(
+                canonical=num_part,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            spans.append(NormalizedSpan(
+                canonical=deg_unit,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            idx += 1
+            continue
+
+        # Single-token number + letter/unit suffix (e.g. "25d" -> ["25", "d"], ".5x" -> ["0.5", "x"], "10kwh" -> ["10", "kwh"])
+        m_num_alpha = re.fullmatch(r"(-?(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+))([a-z]{1,4})", raw_no_trail)
         if m_num_alpha and m_num_alpha.group(2) not in ("st", "nd", "rd", "th"):
             num_part = normalize_digit_string(m_num_alpha.group(1))
             raw_suffix = m_num_alpha.group(2)
@@ -1272,16 +1437,16 @@ def collapse_number_tokens(
                     combined_digit = f"{combined_digit}.{m_bpe_frac.group(1)}"
                     end_idx += 1
 
-            # Combine integer digit token with immediately following scale word (e.g. ["770", "million"] -> "770000000")
+            # Combine integer or decimal digit token with immediately following scale word
+            # (e.g. ["770", "million"] -> "770000000", ["1.5", "million"] -> "1500000")
             if (
-                not is_leading_dot_frac
-                and end_idx < n
+                end_idx < n
                 and not has_trailing_boundary(words[end_idx - 1])
-                and re.fullmatch(r"-?\d+", combined_digit)
+                and re.fullmatch(r"-?\d+(?:\.\d+)?", combined_digit)
             ):
                 scale_w = clean_token(words[end_idx])
                 if scale_w in ALL_SCALES and scale_w not in ("hundred", "trăm", "tram"):
-                    combined_digit = str(int(combined_digit) * ALL_SCALES[scale_w])
+                    combined_digit = _scale_decimal_string(combined_digit, ALL_SCALES[scale_w])
                     end_idx += 1
 
             spans.append(NormalizedSpan(

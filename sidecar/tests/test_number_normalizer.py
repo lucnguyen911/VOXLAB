@@ -419,6 +419,39 @@ class NumberNormalizerTest(unittest.TestCase):
         pronoun_tokens = [s.canonical for s in collapse_number_tokens("I think I can".split(), "en")]
         self.assertEqual(pronoun_tokens, ["i", "think", "i", "can"])
 
+    def test_leading_dot_decimals_decimal_scales_and_units_v420(self):
+        # Leading-dot decimals emitted by Whisper ('.5', '-.5', '$.50', '.5%')
+        self.assertEqual(normalize_digit_string(".5"), "0.5")
+        self.assertEqual(normalize_digit_string("-.5"), "-0.5")
+        self.assertEqual(normalize_digit_string("$.50"), "0.50")
+        self.assertEqual(normalize_digit_string(".5%"), "0.5%")
+        self.assertTrue(are_number_expressions_equivalent("zero point five", ".5", "en"))
+
+        # Decimal + scale words & compact currency scales
+        self.assertTrue(are_number_expressions_equivalent("one point five million", "1,500,000", "en"))
+        self.assertTrue(are_number_expressions_equivalent("one point five million dollars", "$1.5M", "en"))
+        self.assertTrue(are_number_expressions_equivalent("eight point five thousand", "8,500", "en"))
+        self.assertTrue(are_number_expressions_equivalent("hai phẩy năm triệu", "2.500.000", "vi"))
+        self.assertTrue(are_number_expressions_equivalent("two trillion", "$2T", "en"))
+
+        # Multiplier 'times' <-> 'x', temperatures, and rate units
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("eight point five times".split(), "en")],
+            [s.canonical for s in collapse_number_tokens(["8.5x"], "en")],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens([".5x"], "en")],
+            ["0.5", "x"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("sixty miles per hour".split(), "en")],
+            [s.canonical for s in collapse_number_tokens(["60mph"], "en")],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("twenty five degrees celsius".split(), "en")],
+            [s.canonical for s in collapse_number_tokens(["25°C"], "en")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
