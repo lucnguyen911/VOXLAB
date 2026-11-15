@@ -130,9 +130,9 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
     const isSome = isTaskSomeEnabled(task);
 
     return (
-      <th className="py-2.5 px-2 w-[10%] text-center border-r border-borderDefault select-none">
+      <th className="py-2.5 px-1 @[960px]:px-2 w-[68px] @[960px]:w-[84px] @[1140px]:w-[96px] text-center border-r border-borderDefault select-none overflow-hidden">
         <div className="flex flex-col items-center justify-center gap-1 min-h-[46px]">
-          <span className="text-xs font-bold text-textPrimary">{label}</span>
+          <span className="text-[11px] @[960px]:text-xs font-bold text-textPrimary whitespace-nowrap">{label}</span>
           <input
             type="checkbox"
             ref={(el) => {
@@ -149,13 +149,13 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
+    <div className="@container flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
       <div className="flex-1 overflow-auto">
-        <table className="w-full min-w-[960px] text-left border-collapse table-fixed border-b border-borderDefault">
+        <table className="w-full min-w-[660px] text-left border-collapse table-fixed border-b border-borderDefault">
           <thead className="sticky top-0 bg-surface2 border-b border-borderDefault z-20 text-[13px] font-bold text-textSecondary">
             <tr>
               {/* Column 1: Row Selection Checkbox */}
-              <th className="py-2.5 px-2 w-[4%] text-center border-r border-borderDefault">
+              <th className="py-2.5 px-1.5 w-[36px] @[960px]:w-[42px] text-center border-r border-borderDefault overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">
                   <input
                     type="checkbox"
@@ -171,12 +171,12 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
               </th>
 
               {/* Column 2: Index */}
-              <th className="py-2.5 px-2 w-[3.5%] text-center font-mono border-r border-borderDefault text-sm font-bold text-textSecondary">
+              <th className="py-2.5 px-1.5 w-[34px] @[960px]:w-[40px] text-center font-mono border-r border-borderDefault text-sm font-bold text-textSecondary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">#</div>
               </th>
 
               {/* Column 3: File Name */}
-              <th className="py-2.5 px-3.5 w-[26.5%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-3 w-auto text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Tên tệp</div>
               </th>
 
@@ -188,13 +188,16 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
               {renderTaskHeader("dubbing", "Lồng tiếng")}
 
               {/* Column 9: Status */}
-              <th className="py-2.5 px-3 w-[10%] text-center border-r border-borderDefault text-xs font-bold text-textPrimary">
+              <th className="py-2.5 px-2 w-[92px] @[960px]:w-[108px] text-center border-r border-borderDefault text-xs font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Trạng thái</div>
               </th>
 
               {/* Column 10: Actions */}
-              <th className="py-2.5 px-2 w-[6%] text-center text-xs font-bold text-textPrimary">
-                <div className="flex items-center justify-center min-h-[46px]">Thao tác</div>
+              <th className="py-2.5 px-1.5 w-[52px] @[960px]:w-[68px] text-center text-xs font-bold text-textPrimary overflow-hidden">
+                <div className="flex items-center justify-center min-h-[46px]">
+                  <span className="@[960px]:hidden">Xóa</span>
+                  <span className="hidden @[960px]:inline">Thao tác</span>
+                </div>
               </th>
             </tr>
           </thead>
@@ -218,7 +221,7 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                   }`}
                 >
                   {/* Column 1: Row Checkbox */}
-                  <td className="py-2.5 px-2 text-center border-r border-borderDefault">
+                  <td className="py-2.5 px-1.5 text-center border-r border-borderDefault overflow-hidden">
                     <div className="flex items-center justify-center">
                       <input
                         type="checkbox"
@@ -230,12 +233,12 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                   </td>
 
                   {/* Column 2: Index */}
-                  <td className="py-2.5 px-2 text-center text-[11px] text-textMuted font-mono border-r border-borderDefault">
+                  <td className="py-2.5 px-1.5 text-center text-[11px] text-textMuted font-mono border-r border-borderDefault overflow-hidden">
                     {index + 1}
                   </td>
 
                   {/* Column 3: File Name & Warning */}
-                  <td className="py-2.5 px-3.5 border-r border-borderDefault">
+                  <td className="py-2.5 px-3 border-r border-borderDefault overflow-hidden">
                     <div className="flex items-center gap-2 min-w-0">
                       {renderFileIcon(job.fileKind)}
                       <div className="min-w-0">
@@ -261,7 +264,7 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                   </td>
 
                   {/* Column 4: TTS */}
-                  <td className="py-2.5 px-2 text-center border-r border-borderDefault">
+                  <td className="py-2.5 px-1 @[960px]:px-2 text-center border-r border-borderDefault overflow-hidden">
                     <TaskMatrixCell
                       job={job}
                       task="tts"
@@ -273,7 +276,7 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                   </td>
 
                   {/* Column 5: Dialogue */}
-                  <td className="py-2.5 px-2 text-center border-r border-borderDefault">
+                  <td className="py-2.5 px-1 @[960px]:px-2 text-center border-r border-borderDefault overflow-hidden">
                     <TaskMatrixCell
                       job={job}
                       task="dialogue"
@@ -297,7 +300,7 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                   </td>
 
                   {/* Column 6: Transcription */}
-                  <td className="py-2.5 px-2 text-center border-r border-borderDefault">
+                  <td className="py-2.5 px-1 @[960px]:px-2 text-center border-r border-borderDefault overflow-hidden">
                     <TaskMatrixCell
                       job={job}
                       task="transcription"
@@ -309,7 +312,7 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                   </td>
 
                   {/* Column 7: Translation */}
-                  <td className="py-2.5 px-2 text-center border-r border-borderDefault">
+                  <td className="py-2.5 px-1 @[960px]:px-2 text-center border-r border-borderDefault overflow-hidden">
                     <TaskMatrixCell
                       job={job}
                       task="translation"
@@ -321,7 +324,7 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                   </td>
 
                   {/* Column 8: Dubbing */}
-                  <td className="py-2.5 px-2 text-center border-r border-borderDefault">
+                  <td className="py-2.5 px-1 @[960px]:px-2 text-center border-r border-borderDefault overflow-hidden">
                     <TaskMatrixCell
                       job={job}
                       task="dubbing"
@@ -333,12 +336,12 @@ export const FileTaskMatrixTable: React.FC<FileTaskMatrixTableProps> = ({
                   </td>
 
                   {/* Column 9: Job Status */}
-                  <td className="py-2.5 px-3 text-center border-r border-borderDefault">
+                  <td className="py-2.5 px-2 text-center border-r border-borderDefault overflow-hidden">
                     {renderJobStatusBadge(job)}
                   </td>
 
                   {/* Column 10: Row Actions (Single-file Delete) */}
-                  <td className="py-2.5 px-2 text-center">
+                  <td className="py-2.5 px-1.5 text-center overflow-hidden">
                     <div className="flex items-center justify-center">
                       <button
                         type="button"

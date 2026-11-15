@@ -15,6 +15,14 @@ EN_TENS = {
     "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90
 }
+EN_DECADE_PLURALS = {
+    "twenties": 20, "thirties": 30, "forties": 40, "fifties": 50,
+    "sixties": 60, "seventies": 70, "eighties": 80, "nineties": 90,
+}
+_ERA_PREFIX_MODIFIERS = {
+    "the", "early", "mid", "late", "in",
+    "his", "her", "their", "my", "our", "your",
+}
 EN_SCALES = {
     "hundred": 100,
     "thousand": 1_000,
@@ -312,35 +320,77 @@ def parse_english_number_phrase(
                 time_str = f"{h_val}:{m_val:02d}"
                 return time_str, offset + 1 + m_consumed
 
-    # 3. Year format: e.g. "twenty twenty six" -> "2026", "nineteen ninety five" -> "1995"
+    # 3. Year & plural decade/century format:
+    # e.g. "twenty twenty six" -> "2026", "nineteen eighties" -> "1980s", "nineteen hundreds" -> "1900s"
     if idx + 1 < n and not is_word_boundary(idx):
         w1 = clean_token(words[idx])
         c_val = None
-        if w1 in ("nineteen", "twenty"):
+        if w1 in ("sixteen", "seventeen", "eighteen", "nineteen", "twenty"):
             c_val = EN_ONES.get(w1) or EN_TENS.get(w1)
         if c_val is not None:
             w2 = clean_token(words[idx + 1])
-            y_val = None
-            y_consumed = 0
-            if w2 in ("oh", "zero") and idx + 2 < n and not is_word_boundary(idx + 1):
-                w3 = clean_token(words[idx + 2])
-                if w3 in EN_ONES and 1 <= EN_ONES[w3] <= 9:
-                    y_val = EN_ONES[w3]
-                    y_consumed = 2
-            elif w2 in EN_ONES and 10 <= EN_ONES[w2] <= 19:
-                y_val = EN_ONES[w2]
-                y_consumed = 1
-            elif w2 in EN_TENS:
-                y_val = EN_TENS[w2]
-                y_consumed = 1
-                if idx + 2 < n and not is_word_boundary(idx + 1):
+            if not is_neg and w2 in EN_DECADE_PLURALS:
+                return f"{c_val * 100 + EN_DECADE_PLURALS[w2]}s", offset + 2
+            if not is_neg and w2 == "tens" and c_val in (19, 20):
+                return f"{c_val * 100 + 10}s", offset + 2
+            if not is_neg and w2 == "hundreds" and c_val in (16, 17, 18, 19):
+                return f"{c_val * 100}s", offset + 2
+            if c_val in (19, 20):
+                y_val = None
+                y_consumed = 0
+                if w2 in ("oh", "zero") and idx + 2 < n and not is_word_boundary(idx + 1):
                     w3 = clean_token(words[idx + 2])
                     if w3 in EN_ONES and 1 <= EN_ONES[w3] <= 9:
-                        y_val += EN_ONES[w3]
+                        y_val = EN_ONES[w3]
                         y_consumed = 2
-            if y_val is not None:
-                year_str = str(c_val * 100 + y_val)
-                return year_str, offset + 1 + y_consumed
+                elif w2 in EN_ONES and 10 <= EN_ONES[w2] <= 19:
+                    y_val = EN_ONES[w2]
+                    y_consumed = 1
+                elif w2 in EN_TENS:
+                    y_val = EN_TENS[w2]
+                    y_consumed = 1
+                    if idx + 2 < n and not is_word_boundary(idx + 1):
+                        w3 = clean_token(words[idx + 2])
+                        if w3 in EN_ONES and 1 <= EN_ONES[w3] <= 9:
+                            y_val += EN_ONES[w3]
+                            y_consumed = 2
+                if y_val is not None:
+                    year_str = str(c_val * 100 + y_val)
+                    return year_str, offset + 1 + y_consumed
+        elif (
+            not is_neg
+            and offset == 0
+            and w1 == "two"
+            and clean_token(words[idx + 1]) == "thousands"
+            and start_idx > 0
+            and clean_token(words[start_idx - 1]) in _ERA_PREFIX_MODIFIERS
+        ):
+            return "2000s", 2
+
+    # 3a. Standalone plural decades ('eighties' -> '80s')
+    if offset == 0 and not is_neg and w0 in EN_DECADE_PLURALS:
+        return f"{EN_DECADE_PLURALS[w0]}s", 1
+
+    # 3a-ii. Standalone fractional quantifiers with explicit scale word:
+    # e.g. "half a million" / "a half million" -> "500000", "a quarter [of a] billion" -> "250000000"
+    if offset == 0 and not is_neg and idx + 2 < n and not is_word_boundary(idx) and not is_word_boundary(idx + 1):
+        fw0 = clean_token(words[idx])
+        fw1 = clean_token(words[idx + 1])
+        fw2 = clean_token(words[idx + 2])
+        if (fw0, fw1) in (("half", "a"), ("a", "half")) and fw2 in EN_SCALES and fw2 != "hundred":
+            return _scale_decimal_string("0.5", EN_SCALES[fw2]), 3
+        if (fw0, fw1) == ("a", "quarter") and fw2 in EN_SCALES and fw2 != "hundred":
+            return _scale_decimal_string("0.25", EN_SCALES[fw2]), 3
+        if (
+            idx + 4 < n
+            and (fw0, fw1, fw2) == ("a", "quarter", "of")
+            and clean_token(words[idx + 3]) in ("a", "an")
+            and not is_word_boundary(idx + 2)
+            and not is_word_boundary(idx + 3)
+        ):
+            fw4 = clean_token(words[idx + 4])
+            if fw4 in EN_SCALES and fw4 != "hundred":
+                return _scale_decimal_string("0.25", EN_SCALES[fw4]), 5
 
     # 3b. Spoken digit-by-digit sequence: e.g. "four six eight zero" -> "4680"
     en_single_digits = {
@@ -512,6 +562,20 @@ def parse_english_number_phrase(
             # 'thousand', 'million', 'billion', or 'trillion' (e.g. "eleven thousand five hundred and thirteen thousand five hundred"),
             # then 'and' is a coordinating conjunction between two separate numbers, NOT an internal number connector.
             next_num_w = clean_token(words[idx + 1])
+            if (
+                next_num_w == "half"
+                or (
+                    next_num_w in ("a", "one")
+                    and idx + 2 < n
+                    and clean_token(words[idx + 2]) in ("half", "quarter", "fourth")
+                )
+                or (
+                    next_num_w == "three"
+                    and idx + 2 < n
+                    and clean_token(words[idx + 2]) in ("quarters", "fourths")
+                )
+            ):
+                break
             after_next_idx = idx + 2
             if (
                 next_num_w in EN_TENS
@@ -549,6 +613,35 @@ def parse_english_number_phrase(
         if is_ordinal:
             res = format_ordinal(total)
             return f"-{res}" if is_neg else res, offset + words_consumed
+        # Mixed number + spoken English fraction ('six and a half', 'one and a quarter', 'three and three quarters')
+        if idx > 0 and idx < n and not is_word_boundary(idx - 1) and clean_token(words[idx]) == "and" and not is_word_boundary(idx):
+            frac_suffix = None
+            frac_words = 0
+            if idx + 1 < n and clean_token(words[idx + 1]) == "half":
+                frac_suffix = "5"
+                frac_words = 2
+            elif idx + 2 < n and not is_word_boundary(idx + 1):
+                fw1 = clean_token(words[idx + 1])
+                fw2 = clean_token(words[idx + 2])
+                if fw1 in ("a", "one") and fw2 == "half":
+                    frac_suffix = "5"
+                    frac_words = 3
+                elif fw1 in ("a", "one") and fw2 in ("quarter", "fourth"):
+                    frac_suffix = "25"
+                    frac_words = 3
+                elif fw1 == "three" and fw2 in ("quarters", "fourths"):
+                    frac_suffix = "75"
+                    frac_words = 3
+            if frac_suffix is not None:
+                dec_res = f"{'-' if is_neg else ''}{total}.{frac_suffix}"
+                after_f = idx + frac_words
+                if (
+                    after_f < n
+                    and not is_word_boundary(after_f - 1)
+                    and clean_token(words[after_f]) in ("percent", "%")
+                ):
+                    return f"{dec_res}%", offset + words_consumed + frac_words + 1
+                return dec_res, offset + words_consumed + frac_words
         if idx < n and clean_token(words[idx]) in ("percent", "%"):
             return f"{total}%", offset + words_consumed + 1
         res = f"-{total}" if is_neg else str(total)
@@ -797,6 +890,19 @@ def parse_vietnamese_number_phrase(
 
     if valid_number_found:
         total += current
+        if idx < n and not is_word_boundary(idx - 1) and clean_token(words[idx]) in ("rưỡi", "ruoi"):
+            prev_tok_c = clean_token(words[idx - 1])
+            words_consumed += 1
+            idx += 1
+            if prev_tok_c in VI_SCALES and current == 0:
+                total += VI_SCALES[prev_tok_c] // 2
+            elif prev_tok_c in ("trăm", "tram") and total >= 100 and total % 100 == 0:
+                total += 50
+            else:
+                frac_str = f"{'-' if is_neg else ''}{total}.5"
+                if idx + 1 < n and clean_token(words[idx]) in ("phần", "phan") and clean_token(words[idx + 1]) in ("trăm", "tram"):
+                    return f"{frac_str}%", offset + words_consumed + 2
+                return frac_str, offset + words_consumed
         if idx + 1 < n and clean_token(words[idx]) in ("phần", "phan") and clean_token(words[idx + 1]) in ("trăm", "tram"):
             return f"{total}%", offset + words_consumed + 2
         res = f"-{total}" if is_neg else str(total)
@@ -1085,6 +1191,64 @@ def collapse_number_tokens(
                     is_number=True,
                 )
                 idx += 1
+            elif (
+                next_c == "and"
+                and not has_boundary_before(idx)
+                and re.fullmatch(r"-?\d+", spans[-1].canonical)
+            ):
+                frac_suffix = ""
+                frac_consumed = 0
+                if (
+                    idx + 2 < n
+                    and clean_token(words[idx + 1]) in ("a", "one")
+                    and clean_token(words[idx + 2]) == "half"
+                ):
+                    frac_suffix, frac_consumed = ".5", 3
+                elif idx + 1 < n and clean_token(words[idx + 1]) == "half":
+                    frac_suffix, frac_consumed = ".5", 2
+                elif (
+                    idx + 2 < n
+                    and clean_token(words[idx + 1]) in ("a", "one")
+                    and clean_token(words[idx + 2]) in ("quarter", "fourth")
+                ):
+                    frac_suffix, frac_consumed = ".25", 3
+                elif (
+                    idx + 2 < n
+                    and clean_token(words[idx + 1]) == "three"
+                    and clean_token(words[idx + 2]) in ("quarters", "fourths")
+                ):
+                    frac_suffix, frac_consumed = ".75", 3
+                if frac_consumed > 0:
+                    spans[-1] = NormalizedSpan(
+                        canonical=f"{spans[-1].canonical}{frac_suffix}",
+                        orig_start=spans[-1].orig_start,
+                        orig_end=idx + frac_consumed,
+                        is_number=True,
+                    )
+                    idx += frac_consumed
+                else:
+                    break
+            elif (
+                next_c in ("rưỡi", "ruoi")
+                and not has_boundary_before(idx)
+                and re.fullmatch(r"-?\d+", spans[-1].canonical)
+            ):
+                base_int = int(spans[-1].canonical)
+                prev_tok_c = clean_token(words[idx - 1]) if idx > 0 else ""
+                if prev_tok_c in VI_SCALES:
+                    new_canon = str(base_int + (VI_SCALES[prev_tok_c] // 2))
+                elif prev_tok_c in ("trăm", "tram") and abs(base_int) >= 100 and base_int % 100 == 0:
+                    step_half = 50 if base_int >= 0 else -50
+                    new_canon = str(base_int + step_half)
+                else:
+                    new_canon = f"{spans[-1].canonical}.5"
+                spans[-1] = NormalizedSpan(
+                    canonical=new_canon,
+                    orig_start=spans[-1].orig_start,
+                    orig_end=idx + 1,
+                    is_number=True,
+                )
+                idx += 1
             else:
                 break
 
@@ -1286,6 +1450,61 @@ def collapse_number_tokens(
                 orig_start=idx,
                 orig_end=idx + 1,
                 is_number=False,
+            ))
+            idx += 1
+            continue
+
+        # Plural decades & era-hyphenated decades ("1980s", "'80s", "the 80s", "mid-eighties", "late-'90s")
+        raw_keep_apos = raw_w.strip(" ,!?;:—–…()[]\"“”„«»¿¡").lower().rstrip(".")
+        m_dec4 = re.fullmatch(r"((?:1[6-9]|20)\d0)['’]?s", raw_keep_apos)
+        if m_dec4:
+            spans.append(NormalizedSpan(
+                canonical=f"{m_dec4.group(1)}s",
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            idx += 1
+            continue
+
+        m_dec2 = re.fullmatch(r"(['’]?)([2-9]0)(['’]?s)", raw_keep_apos)
+        if m_dec2 and (
+            bool(m_dec2.group(1))
+            or "'" in m_dec2.group(3)
+            or "’" in m_dec2.group(3)
+            or (idx > 0 and clean_token(words[idx - 1]) in _ERA_PREFIX_MODIFIERS)
+        ):
+            spans.append(NormalizedSpan(
+                canonical=f"{m_dec2.group(2)}s",
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
+            ))
+            idx += 1
+            continue
+
+        m_era_hyph = re.fullmatch(
+            r"(early|mid|late)-(['’]?(?:(?:1[6-9]|20)\d0|[2-9]0)['’]?s|twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties)",
+            raw_keep_apos,
+        )
+        if m_era_hyph:
+            era_prefix = m_era_hyph.group(1)
+            dec_raw = m_era_hyph.group(2).lstrip("'’")
+            if dec_raw in EN_DECADE_PLURALS:
+                dec_norm = f"{EN_DECADE_PLURALS[dec_raw]}s"
+            else:
+                dec_norm = re.sub(r"['’]s$", "s", dec_raw)
+            spans.append(NormalizedSpan(
+                canonical=era_prefix,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=False,
+            ))
+            spans.append(NormalizedSpan(
+                canonical=dec_norm,
+                orig_start=idx,
+                orig_end=idx + 1,
+                is_number=True,
             ))
             idx += 1
             continue

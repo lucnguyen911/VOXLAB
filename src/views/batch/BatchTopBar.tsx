@@ -54,7 +54,7 @@ export const BatchTopBar: React.FC<BatchTopBarProps> = ({
   onStartFromList,
 }) => {
   return (
-    <div className="h-12 px-4 border-b border-borderDefault bg-panel flex items-center justify-between flex-shrink-0 z-10 shadow-xs gap-3 select-none">
+    <div className="@container min-h-12 py-1.5 px-3.5 border-b border-borderDefault bg-panel flex flex-wrap items-center justify-between flex-shrink-0 z-10 shadow-xs gap-2 select-none">
       {/* Left: 4 View Switcher Tabs */}
       <BatchViewTabs
         activeView={activeView}
@@ -63,9 +63,9 @@ export const BatchTopBar: React.FC<BatchTopBarProps> = ({
       />
 
       {/* Right: Dynamic Primary Action Button & Status Diagnostics */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 @[900px]:gap-3 flex-wrap justify-end">
         {activeView !== "list" && (
-          <div className="text-right hidden sm:block">
+          <div className="text-right hidden @[860px]:block">
             {activeView === "queued" ? (
               <>
                 <div className="text-[11px] text-textMuted font-medium">
@@ -98,33 +98,34 @@ export const BatchTopBar: React.FC<BatchTopBarProps> = ({
 
         {/* Primary Action Button per view */}
         {activeView === "list" ? (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 @[900px]:gap-2">
             <button
               type="button"
               onClick={onStageToQueue}
               disabled={selectedJobCount === 0}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all whitespace-nowrap ${
+              className={`flex items-center gap-1.5 px-2.5 @[900px]:px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all whitespace-nowrap ${
                 selectedJobCount === 0
                   ? "bg-surface3 text-textMuted cursor-not-allowed border-borderDefault opacity-60"
                   : "bg-surface2 hover:bg-surface3 text-textPrimary border-borderDefault cursor-pointer active:scale-98"
               }`}
               title="Giải quyết phụ thuộc và chuyển các tệp đã chọn sang Hàng đợi"
             >
-              <ListPlus className="w-3.5 h-3.5 text-accent" />
-              <span>Chuyển sang hàng đợi ({selectedJobCount})</span>
+              <ListPlus className="w-3.5 h-3.5 text-accent shrink-0" />
+              <span className="@[860px]:hidden">Hàng đợi ({selectedJobCount})</span>
+              <span className="hidden @[860px]:inline">Chuyển sang hàng đợi ({selectedJobCount})</span>
             </button>
             <button
               type="button"
               onClick={onStartFromList || onStageToQueue}
               disabled={selectedJobCount === 0}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap ${
+              className={`flex items-center gap-1.5 px-3 @[900px]:px-3.5 py-1.5 text-xs font-bold rounded-lg shadow-sm transition-all whitespace-nowrap ${
                 selectedJobCount === 0
                   ? "bg-surface3 text-textMuted cursor-not-allowed border border-borderDefault opacity-60"
                   : "bg-accent hover:bg-accentHover text-slate-950 shadow-accent/20 cursor-pointer active:scale-98"
               }`}
               title="Chuyển các tệp đã chọn vào hàng đợi và bắt đầu xử lý ngay"
             >
-              <Play className="w-3.5 h-3.5 fill-current" />
+              <Play className="w-3.5 h-3.5 fill-current shrink-0" />
               <span>Bắt đầu xử lý ({selectedJobCount})</span>
             </button>
           </div>

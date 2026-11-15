@@ -2214,17 +2214,20 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
       />
 
       {/* Top Workspace Header Bar */}
-      <div className="h-12 border-b border-borderDefault bg-surface1 px-4 flex items-center justify-between flex-shrink-0 z-20">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent">
+      <div className="min-h-12 py-1.5 border-b border-borderDefault bg-surface1 px-3.5 flex flex-wrap items-center justify-between gap-2 flex-shrink-0 z-20">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shrink-0">
             <Languages className="w-4 h-4" />
           </div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-bold text-textPrimary">
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-sm font-bold text-textPrimary whitespace-nowrap">
               {t.nav.dubbing}
             </h2>
             {sourceMediaName && (
-              <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-surface2 text-textSecondary border border-borderDefault">
+              <span
+                className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-surface2 text-textSecondary border border-borderDefault max-w-[200px] sm:max-w-[320px] truncate"
+                title={sourceMediaName}
+              >
                 {sourceMediaName}
               </span>
             )}
@@ -2235,10 +2238,10 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-semibold transition-colors cursor-pointer shadow-2xs whitespace-nowrap"
             title="Tải lên tệp hoặc thư mục phụ đề (.srt, .vtt, .txt)"
           >
-            <UploadCloud className="w-3.5 h-3.5 text-accent" />
+            <UploadCloud className="w-3.5 h-3.5 text-accent shrink-0" />
             <span>Tải Lên</span>
           </button>
         </div>
@@ -2303,7 +2306,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className="flex-1 flex flex-col overflow-hidden relative min-w-0"
+          className="@container flex-1 flex flex-col overflow-hidden relative min-w-0"
         >
           {/* Drag and Drop Active Overlay when cues exist */}
           {isDragging && originalCues.length > 0 && (
@@ -2376,7 +2379,7 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
         </div>
 
         {/* Right Inspector Panel: Subtitle Translation & Dubbing Controls */}
-        <aside className="w-[380px] border-l border-borderDefault bg-surface1 select-none flex-shrink-0 flex flex-col h-full overflow-hidden text-xs">
+        <aside className="w-[clamp(276px,28vw,380px)] border-l border-borderDefault bg-surface1 select-none flex-shrink-0 flex flex-col h-full overflow-hidden text-xs">
           {/* PHẦN 1: DỊCH PHỤ ĐỀ (Vừa vặn nội dung, không thừa khoảng trống) */}
           <div className="flex-shrink-0 border-b border-borderDefault flex flex-col bg-surface1">
             <div className="p-3.5 pb-2 space-y-2.5">

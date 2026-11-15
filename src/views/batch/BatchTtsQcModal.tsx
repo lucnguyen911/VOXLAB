@@ -28,12 +28,20 @@ import {
   validateChunkAudioQuality,
   countChunkQualityIssues,
   getIssueShortLabel,
+  formatIssueTimestamp,
   isChunkError,
   isChunkWarning,
   isChunkChecking,
   isChunkUnverified,
   getChunkBadgeInfo,
+  QUALITY_VALIDATOR_VERSION,
+  getChunkAudioSignature,
+  pickNextOutdatedChunk,
+  resolveAutoRevalidatedReview,
+  didQualityReviewMeaningfullyChange,
 } from "../../services/audio/qualityValidator";
+import { checkAsrReadiness } from "../../services/ai/asrReadiness";
+import { BatchOrchestrator } from "../../services/batch/batchOrchestrator";
 import {
   getSharedAiServices,
   tauriAiFs,
@@ -145,14 +153,29 @@ type StudioChunkRow = BatchQcChunkItem & {
   status: "ready" | "generating" | "modified";
 };
 
+function sanitizeLoadedQcChunks(raw?: BatchQcChunkItem[]): StudioChunkRow[] {
+  if (!raw || raw.length === 0) return [];
+  return raw.map((c) => ({
+    ...c,
+    status: "ready" as const,
+    ...(c.qualityReview?.status === "checking"
+      ? {
+          qualityReview: {
+            ...c.qualityReview,
+            status: "unverified" as const,
+            validatorVersion: "0.0.0",
+          },
+        }
+      : {}),
+  }));
+}
+
 export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
   job,
   isOpen,
   onClose,
   onSaveUpdatedJob,
 }) => {
-  if (!isOpen) return null;
-
   // Determine available tasks that ran or produced artifacts on this job
   const availableTasks = React.useMemo<BatchTaskType[]>(() => {
     const found: BatchTaskType[] = [];
@@ -207,9 +230,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
 
   // Chunks state matching TTS / Dialogue Studio
   const [chunks, setChunks] = useState<StudioChunkRow[]>(() =>
-    targetStep?.qcChunks
-      ? targetStep.qcChunks.map((c) => ({ ...c, status: "ready" as const }))
-      : []
+    sanitizeLoadedQcChunks(targetStep?.qcChunks)
   );
 
   // Subtitle cues state for Transcription / Translation
@@ -232,21 +253,83 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
     message: string;
   } | null>(null);
 
+  const [currentAsrModel, setCurrentAsrModel] = useState<string>(
+    () => loadSubtitleSettings().whisperModel
+  );
+  const [isAsrReady, setIsAsrReady] = useState<boolean>(true);
+  const [isBatchQueueIdle, setIsBatchQueueIdle] = useState<boolean>(
+    () => BatchOrchestrator.getInstance().getQueueStatus() === "idle"
+  );
+
+  const inFlightValidationsRef = useRef<Set<string>>(new Set());
+  const chunksRef = useRef<StudioChunkRow[]>(chunks);
+  chunksRef.current = chunks;
+  const preCheckReviewsRef = useRef<Record<string, BatchQcChunkItem["qualityReview"]>>({});
+  const jobRef = useRef<BatchJob>(job);
+  jobRef.current = job;
+  const onSaveUpdatedJobRef = useRef(onSaveUpdatedJob);
+  onSaveUpdatedJobRef.current = onSaveUpdatedJob;
+  const modalSessionRef = useRef(0);
+  const hasUnpersistedVersionStampRef = useRef(false);
+
   // BottomAudioPlayer state (identical to TTS / Dialogue workspace)
   const [activeTrack, setActiveTrack] = useState<ActiveAudioTrack | null>(null);
   const [isPlayingTrack, setIsPlayingTrack] = useState(false);
 
   useEffect(() => {
-    const step = job.stepResults[activeTask];
-    if (step?.qcChunks && step.qcChunks.length > 0) {
-      setChunks(step.qcChunks.map((c) => ({ ...c, status: "ready" as const })));
-      setSelectedChunkId(step.qcChunks[0].id);
-    } else {
-      setChunks([]);
-      setSelectedChunkId(null);
+    const handleAsrChange = (e: Event) => {
+      const custom = e as CustomEvent<string>;
+      const model = custom.detail || loadSubtitleSettings().whisperModel;
+      setCurrentAsrModel(model);
+      inFlightValidationsRef.current.clear();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("voxlab_asr_model_changed", handleAsrChange);
+      return () => window.removeEventListener("voxlab_asr_model_changed", handleAsrChange);
     }
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    checkAsrReadiness(currentAsrModel)
+      .then((res) => {
+        if (!cancelled) {
+          setIsAsrReady(res.ready);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentAsrModel, isOpen]);
+
+  useEffect(() => {
+    const unsubscribe = BatchOrchestrator.getInstance().subscribe((_jobs, qStatus) => {
+      setIsBatchQueueIdle(qStatus === "idle");
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      modalSessionRef.current += 1;
+      inFlightValidationsRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    modalSessionRef.current += 1;
+    inFlightValidationsRef.current.clear();
+    preCheckReviewsRef.current = {};
+    hasUnpersistedVersionStampRef.current = false;
+    const step = jobRef.current.stepResults[activeTask];
+    const nextRows = sanitizeLoadedQcChunks(step?.qcChunks);
+    chunksRef.current = nextRows;
+    setChunks(nextRows);
+    setSelectedChunkId(nextRows[0]?.id || null);
     setHasUnsavedChanges(false);
-  }, [activeTask, job.id]);
+  }, [activeTask, job.id, isOpen]);
 
   // Load subtitle file when viewing a subtitle step or when a voice step has no qcChunks
   useEffect(() => {
@@ -351,58 +434,109 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
     setHasUnsavedChanges(true);
   };
 
-  const persistJobChunksState = (nextChunks: StudioChunkRow[]) => {
-    if (!targetStep) return;
-    const nextStats = countChunkQualityIssues(nextChunks);
-    const hasWarnOrErr = nextStats.errorCount > 0 || nextStats.warningCount > 0;
-    const warningMsg = hasWarnOrErr
-      ? isDialogue
-        ? `Hậu kiểm chất lượng Hội thoại: ${nextStats.errorCount} lượt lỗi, ${nextStats.warningCount} lượt cảnh báo.`
-        : `Hậu kiểm chất lượng TTS: ${nextStats.errorCount} đoạn lỗi, ${nextStats.warningCount} đoạn cảnh báo.`
-      : undefined;
+  const persistJobChunksState = useCallback(
+    (nextChunks: StudioChunkRow[]) => {
+      const currentJob = jobRef.current;
+      const currentStep = currentJob.stepResults[activeTask];
+      if (!currentStep) return;
 
-    const cleanQcChunks: BatchQcChunkItem[] = nextChunks.map(
-      ({ status: _st, ...rest }) => rest
-    );
+      // Never persist transient "checking" states into stored job history
+      const sanitizedForPersist: StudioChunkRow[] = nextChunks.map((c) => {
+        if (c.qualityReview?.status !== "checking") return c;
+        const fallbackReview =
+          preCheckReviewsRef.current[c.id] ?? {
+            ...c.qualityReview,
+            status: "unverified" as const,
+            validatorVersion: "0.0.0",
+          };
+        return { ...c, qualityReview: fallbackReview };
+      });
 
-    const updatedStepResults = {
-      ...job.stepResults,
-      [activeTask]: {
-        ...targetStep,
-        status: (hasWarnOrErr
-          ? "completed_with_warning"
-          : "completed") as BatchStepResult["status"],
-        warning: warningMsg,
-        qcChunks: cleanQcChunks,
-        qcStats: {
-          totalChunks: nextChunks.length,
-          errorCount: nextStats.errorCount,
-          warningCount: nextStats.warningCount,
-          passCount: nextStats.passCount,
-          unverifiedCount: nextStats.unverifiedCount,
+      const nextStats = countChunkQualityIssues(sanitizedForPersist);
+      const hasWarnOrErr = nextStats.errorCount > 0 || nextStats.warningCount > 0;
+      const warningMsg = hasWarnOrErr
+        ? isDialogue
+          ? `Hậu kiểm chất lượng Hội thoại: ${nextStats.errorCount} lượt lỗi, ${nextStats.warningCount} lượt cảnh báo.`
+          : activeTask === "dubbing"
+          ? `Hậu kiểm chất lượng Lồng tiếng: ${nextStats.errorCount} đoạn lỗi, ${nextStats.warningCount} đoạn cảnh báo.`
+          : `Hậu kiểm chất lượng TTS: ${nextStats.errorCount} đoạn lỗi, ${nextStats.warningCount} đoạn cảnh báo.`
+        : undefined;
+
+      const cleanQcChunks: BatchQcChunkItem[] = sanitizedForPersist.map(
+        ({ status: _st, ...rest }) => rest
+      );
+
+      const updatedStepResults = {
+        ...currentJob.stepResults,
+        [activeTask]: {
+          ...currentStep,
+          status: (hasWarnOrErr
+            ? "completed_with_warning"
+            : "completed") as BatchStepResult["status"],
+          warning: warningMsg,
+          qcChunks: cleanQcChunks,
+          qcStats: {
+            totalChunks: sanitizedForPersist.length,
+            errorCount: nextStats.errorCount,
+            warningCount: nextStats.warningCount,
+            passCount: nextStats.passCount,
+            unverifiedCount: nextStats.unverifiedCount,
+          },
         },
-      },
-    };
+      };
 
-    const allSteps = Object.values(updatedStepResults).filter(
-      Boolean
-    ) as BatchStepResult[];
-    const anyStepHasWarning = allSteps.some(
-      (sr) => sr.status === "completed_with_warning" || Boolean(sr.warning)
-    );
-    const combinedWarnings = allSteps
-      .map((sr) => sr.warning)
-      .filter(Boolean)
-      .join(" | ");
+      const allSteps = Object.values(updatedStepResults).filter(
+        Boolean
+      ) as BatchStepResult[];
+      const anyStepHasWarning = allSteps.some(
+        (sr) => sr.status === "completed_with_warning" || Boolean(sr.warning)
+      );
+      const combinedWarnings = allSteps
+        .map((sr) => sr.warning)
+        .filter(Boolean)
+        .join(" | ");
 
-    const updatedJob: BatchJob = {
-      ...job,
-      status: anyStepHasWarning ? "completed_with_warning" : "completed",
-      warningMessage: combinedWarnings || undefined,
-      stepResults: updatedStepResults,
-    };
-    onSaveUpdatedJob(updatedJob);
-  };
+      const updatedJob: BatchJob = {
+        ...currentJob,
+        status: anyStepHasWarning ? "completed_with_warning" : "completed",
+        warningMessage: combinedWarnings || undefined,
+        stepResults: updatedStepResults,
+      };
+      hasUnpersistedVersionStampRef.current = false;
+      onSaveUpdatedJobRef.current(updatedJob);
+    },
+    [activeTask, isDialogue]
+  );
+
+  const getTaskValidationParams = useCallback(
+    (task: BatchTaskType, targetJob: BatchJob) => {
+      const ttsSnapshot =
+        targetJob.effectiveConfigSnapshot?.tasks.tts ||
+        targetJob.configOverrides.tts;
+      const dialogueSnapshot =
+        targetJob.effectiveConfigSnapshot?.tasks.dialogue ||
+        targetJob.configOverrides.dialogue;
+      const dubSnapshot =
+        targetJob.effectiveConfigSnapshot?.tasks.dubbing ||
+        targetJob.configOverrides.dubbing;
+
+      const rawSpeed =
+        task === "dialogue"
+          ? dialogueSnapshot?.speed
+          : task === "dubbing"
+          ? dubSnapshot?.speed
+          : ttsSnapshot?.speed;
+      const speed = rawSpeed && rawSpeed !== 1 ? rawSpeed : undefined;
+      const projectId =
+        task === "dialogue"
+          ? "dialogue"
+          : task === "dubbing"
+          ? "dubbing"
+          : "current";
+      return { speed, projectId };
+    },
+    []
+  );
 
   const regenerateSingleChunk = async (
     targetChunk: StudioChunkRow
@@ -446,18 +580,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       isOnlineVoice,
       audioExt,
     } = resolveBatchVoiceTarget(rawVoiceId, rawModel);
-    const rawSpeed = isDialogue
-      ? dialogueSnapshot?.speed
-      : activeTask === "dubbing"
-      ? dubSnapshot?.speed
-      : ttsSnapshot?.speed;
-    const speed = rawSpeed && rawSpeed !== 1 ? rawSpeed : undefined;
-
-    const projectId = isDialogue
-      ? "dialogue"
-      : activeTask === "dubbing"
-      ? "dubbing"
-      : "current";
+    const { speed, projectId } = getTaskValidationParams(activeTask, job);
     const effectiveRules = getEffectiveRules(projectId);
     const advancedSettings = !isOnlineVoice
       ? getEngineAdvancedSettings(model)
@@ -533,6 +656,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       }
     }
 
+    const nextAudioRevision = (targetChunk.audioRevision ?? 0) + 1;
     const checkable: ChunkItem = {
       id: targetChunk.id,
       index: targetChunk.index,
@@ -542,6 +666,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       pauseAfterMs: "auto",
       audioUrl: synthResult.outputPath,
       audioFilePath: synthResult.outputPath,
+      audioRevision: nextAudioRevision,
       status: "ready",
     };
 
@@ -550,7 +675,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       undefined,
       ai,
       speed,
-      undefined,
+      currentAsrModel,
       projectId
     );
 
@@ -559,11 +684,236 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       status: "ready",
       durationSec: synthResult.durationSec,
       audioFilePath: synthResult.outputPath,
+      audioRevision: nextAudioRevision,
       qualityReview,
       acknowledgedAt: undefined,
       acknowledgedAudioSignature: undefined,
     };
   };
+
+  // Sequential background re-validation when opening an existing job whose QC version or ASR model is outdated
+  useEffect(() => {
+    if (
+      !isOpen ||
+      !isVoiceTask ||
+      !isAsrReady ||
+      !isBatchQueueIdle ||
+      isGenerating ||
+      isRebuildingMaster ||
+      chunks.length === 0
+    ) {
+      return;
+    }
+
+    if (inFlightValidationsRef.current.size > 0) {
+      return;
+    }
+
+    const candidate = pickNextOutdatedChunk(
+      chunks,
+      inFlightValidationsRef.current,
+      currentAsrModel,
+      isAsrReady
+    );
+    if (!candidate || !candidate.audioFilePath) {
+      return;
+    }
+
+    const captureSession = modalSessionRef.current;
+    const captureTask = activeTask;
+    const captureAsrModel = currentAsrModel;
+    const captureAsrReady = isAsrReady;
+
+    const timer = setTimeout(async () => {
+      if (modalSessionRef.current !== captureSession) return;
+      if (inFlightValidationsRef.current.size > 0) return;
+
+      const outdatedChunk = pickNextOutdatedChunk(
+        chunksRef.current,
+        inFlightValidationsRef.current,
+        captureAsrModel,
+        captureAsrReady
+      );
+      if (!outdatedChunk || !outdatedChunk.audioFilePath) return;
+
+      const audioSig = getChunkAudioSignature(outdatedChunk);
+      if (!audioSig) return;
+
+      const inFlightKey = `${audioSig}::${captureAsrModel}`;
+      inFlightValidationsRef.current.add(inFlightKey);
+      const prevReview = outdatedChunk.qualityReview;
+      preCheckReviewsRef.current[outdatedChunk.id] = prevReview;
+
+      setChunks((prev) =>
+        prev.map((c) => {
+          if (
+            c.id === outdatedChunk.id &&
+            c.status === "ready" &&
+            c.text === outdatedChunk.text &&
+            getChunkAudioSignature(c) === audioSig
+          ) {
+            return {
+              ...c,
+              qualityReview: {
+                status: "checking",
+                issues: prevReview?.issues || [],
+                summary: "Đang hậu kiểm lại âm thanh...",
+                checkedAt: prevReview?.checkedAt || Date.now(),
+                text: c.text,
+                validatorVersion: QUALITY_VALIDATOR_VERSION,
+                asrModelId: captureAsrModel,
+                audioSignature: audioSig,
+              },
+            };
+          }
+          return c;
+        })
+      );
+
+      try {
+        const { speed, projectId } = getTaskValidationParams(
+          captureTask,
+          jobRef.current
+        );
+        const checkable: ChunkItem = {
+          id: outdatedChunk.id,
+          index: outdatedChunk.index,
+          text: outdatedChunk.text,
+          originalText: outdatedChunk.originalText || outdatedChunk.text,
+          durationSec: outdatedChunk.durationSec,
+          pauseAfterMs: "auto",
+          audioUrl: outdatedChunk.audioFilePath,
+          audioFilePath: outdatedChunk.audioFilePath,
+          audioRevision: outdatedChunk.audioRevision,
+          status: "ready",
+        };
+
+        const rawReview = await validateChunkAudioQuality(
+          checkable,
+          undefined,
+          undefined,
+          speed,
+          captureAsrModel,
+          projectId
+        );
+
+        if (modalSessionRef.current !== captureSession) {
+          return;
+        }
+
+        const finalReview = resolveAutoRevalidatedReview(
+          prevReview,
+          rawReview,
+          captureAsrModel,
+          audioSig
+        );
+
+        if (modalSessionRef.current === captureSession) {
+          inFlightValidationsRef.current.delete(inFlightKey);
+          delete preCheckReviewsRef.current[outdatedChunk.id];
+        }
+
+        const nextList = chunksRef.current.map((c) => {
+          if (
+            c.id === outdatedChunk.id &&
+            c.status === "ready" &&
+            c.text === outdatedChunk.text &&
+            getChunkAudioSignature(c) === audioSig
+          ) {
+            return { ...c, qualityReview: finalReview };
+          }
+          return c;
+        });
+
+        chunksRef.current = nextList;
+        setChunks(nextList);
+
+        const meaningfulChange = didQualityReviewMeaningfullyChange(
+          prevReview,
+          finalReview
+        );
+        const remainingOutdated = pickNextOutdatedChunk(
+          nextList,
+          inFlightValidationsRef.current,
+          captureAsrModel,
+          captureAsrReady
+        );
+
+        if (meaningfulChange || !remainingOutdated) {
+          persistJobChunksState(nextList);
+        } else {
+          hasUnpersistedVersionStampRef.current = true;
+        }
+      } catch {
+        if (modalSessionRef.current === captureSession) {
+          inFlightValidationsRef.current.delete(inFlightKey);
+          delete preCheckReviewsRef.current[outdatedChunk.id];
+          setChunks((prev) =>
+            prev.map((c) => {
+              if (
+                c.id === outdatedChunk.id &&
+                c.status === "ready" &&
+                c.qualityReview?.status === "checking"
+              ) {
+                return {
+                  ...c,
+                  qualityReview: prevReview ?? {
+                    status: "unverified",
+                    issues: [],
+                    summary: "Không thể hậu kiểm lại âm thanh.",
+                    checkedAt: Date.now(),
+                    text: c.text,
+                    validatorVersion: "0.0.0",
+                  },
+                };
+              }
+              return c;
+            })
+          );
+        }
+      } finally {
+        if (modalSessionRef.current === captureSession) {
+          inFlightValidationsRef.current.delete(inFlightKey);
+          delete preCheckReviewsRef.current[outdatedChunk.id];
+        }
+      }
+    }, 120);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [
+    chunks,
+    isOpen,
+    isVoiceTask,
+    isBatchQueueIdle,
+    isGenerating,
+    isRebuildingMaster,
+    currentAsrModel,
+    isAsrReady,
+    activeTask,
+    getTaskValidationParams,
+    persistJobChunksState,
+  ]);
+
+  const handleCloseModal = useCallback(() => {
+    setIsPlayingTrack(false);
+    if (hasUnpersistedVersionStampRef.current) {
+      persistJobChunksState(chunksRef.current);
+    }
+    onClose();
+  }, [onClose, persistJobChunksState]);
+
+  const handleSwitchTask = useCallback(
+    (nextTask: BatchTaskType) => {
+      if (nextTask === activeTask) return;
+      if (hasUnpersistedVersionStampRef.current) {
+        persistJobChunksState(chunksRef.current);
+      }
+      setActiveTask(nextTask);
+    },
+    [activeTask, persistJobChunksState]
+  );
 
   const handleRegenerateChunk = async (chunkId: string) => {
     const target = chunks.find((c) => c.id === chunkId);
@@ -798,6 +1148,8 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
     }
   };
 
+  if (!isOpen) return null;
+
   const isMasterPlaying =
     activeTrack?.id === `master-${job.id}` && isPlayingTrack;
 
@@ -823,7 +1175,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
                     <button
                       key={tKey}
                       type="button"
-                      onClick={() => setActiveTask(tKey)}
+                      onClick={() => handleSwitchTask(tKey)}
                       className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium transition-all whitespace-nowrap cursor-pointer ${
                         isActive
                           ? "bg-surface1 text-textPrimary font-semibold shadow-2xs"
@@ -898,10 +1250,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
 
             <button
               type="button"
-              onClick={() => {
-                setIsPlayingTrack(false);
-                onClose();
-              }}
+              onClick={handleCloseModal}
               className="p-1.5 text-textMuted hover:text-textPrimary rounded-lg hover:bg-surface2 transition-colors cursor-pointer ml-1"
               title="Đóng"
             >
@@ -1326,13 +1675,7 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
                                     Array.isArray(iss.timeRange) &&
                                     iss.timeRange.length === 2;
                                   const timeStr = hasTime
-                                    ? `${Math.floor(iss.timeRange![0] / 60)
-                                        .toString()
-                                        .padStart(2, "0")}:${Math.floor(
-                                        iss.timeRange![0] % 60
-                                      )
-                                        .toString()
-                                        .padStart(2, "0")}`
+                                    ? formatIssueTimestamp(iss.timeRange![0])
                                     : "";
                                   return (
                                     <div
@@ -1346,11 +1689,37 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
                                             <span className="font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded text-[11px]">
                                               {shortLabel}
                                             </span>
-                                            {timeStr && (
-                                              <span className="text-[11px] font-mono text-textMuted bg-surface2 px-1 py-0.5 rounded">
-                                                {timeStr}
-                                              </span>
-                                            )}
+                                            {timeStr &&
+                                              (chunk.audioFilePath ? (
+                                                <button
+                                                  type="button"
+                                                  title="Nhấn để nghe tại mốc thời gian này"
+                                                  onClick={() => {
+                                                    setSelectedChunkId(chunk.id);
+                                                    setActiveTrack({
+                                                      id: chunk.id,
+                                                      chunkIndex: chunk.index,
+                                                      voiceName: chunk.characterName
+                                                        ? `[${chunk.characterName}]`
+                                                        : chunk.voiceId || "Giọng TTS",
+                                                      title: `Đoạn ${String(chunk.index).padStart(2, "0")}`,
+                                                      durationSec: chunk.durationSec || 2.5,
+                                                      audioUrl: chunk.audioFilePath,
+                                                      text: chunk.text,
+                                                      seekToSec: Math.max(0, iss.timeRange![0] - 0.35),
+                                                      seekNonce: Date.now(),
+                                                    });
+                                                    setIsPlayingTrack(true);
+                                                  }}
+                                                  className="text-[11px] font-mono text-amber-700 dark:text-amber-300 bg-surface2 hover:bg-amber-500/20 px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                                                >
+                                                  {timeStr}
+                                                </button>
+                                              ) : (
+                                                <span className="text-[11px] font-mono text-textMuted bg-surface2 px-1 py-0.5 rounded">
+                                                  {timeStr}
+                                                </span>
+                                              ))}
                                             {iss.words && iss.words.length > 0 && (
                                               <span className="text-[11px] text-textSecondary italic">
                                                 (Từ: {iss.words.join(", ")})

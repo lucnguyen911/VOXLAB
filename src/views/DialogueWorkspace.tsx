@@ -58,7 +58,8 @@ import {
   QUALITY_VALIDATOR_VERSION,
   validateChunkAudioQuality,
   getChunkAudioSignature,
-  isReviewOutdated,
+  pickNextOutdatedChunk,
+  resolveAutoRevalidatedReview,
   countChunkQualityIssues,
   isChunkError,
 } from "../services/audio/qualityValidator";
@@ -506,13 +507,11 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     if (inFlightValidationsRef.current.size > 0) return;
     if (segments.some((s) => s.qualityReview?.status === "checking")) return;
 
-    const outdatedSeg = segments.find(
-      (s) =>
-        s.status === "ready" &&
-        Boolean(s.audioFilePath || s.audioBlobUrl) &&
-        s.qualityReview?.status !== "checking" &&
-        isReviewOutdated(s, undefined, isAsrReady) &&
-        !inFlightValidationsRef.current.has(`${getChunkAudioSignature(s)}::${currentAsrModel}`)
+    const outdatedSeg = pickNextOutdatedChunk(
+      segments,
+      inFlightValidationsRef.current,
+      currentAsrModel,
+      isAsrReady
     );
 
     if (!outdatedSeg) return;
@@ -553,13 +552,19 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       try {
         const lang = outdatedSeg.effectiveVoiceSnapshot?.language;
         const speed = outdatedSeg.effectiveVoiceSnapshot?.speed;
-        const review = await validateChunkAudioQuality(
+        const rawReview = await validateChunkAudioQuality(
           outdatedSeg,
           lang,
           undefined,
           speed,
           currentAsrModel,
           "dialogue"
+        );
+        const review = resolveAutoRevalidatedReview(
+          outdatedSeg.qualityReview,
+          rawReview,
+          currentAsrModel,
+          audioSig
         );
 
         inFlightValidationsRef.current.delete(inFlightKey);

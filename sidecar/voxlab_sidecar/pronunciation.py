@@ -816,11 +816,18 @@ def prepare_spoken_text_and_mapping(
             # Normalize ALL-CAPS segments (e.g. "THE TEN THOUSAND DOLLAR MONEY EQUATION.")
             # to natural sentence casing in spoken_text so TTS does not inflate title pauses,
             # while strictly preserving sourceText in UI and SRT.
-            if _is_at_sentence_start(t_start) or tok_str == "TESLA":
+            if lang_code == "en" and tok_str == "GIGA":
+                norm_word = "Gigga" if _is_at_sentence_start(t_start) else "gigga"
+            elif _is_at_sentence_start(t_start) or tok_str == "TESLA":
                 norm_word = tok_str[0].upper() + tok_str[1:].lower()
             else:
                 norm_word = tok_str.lower()
             claimed_spans.append((t_start, t_end, norm_word, None))
+        elif lang_code == "en" and tok_str.lower() == "giga":
+            # Option 4A: Guide English TTS toward hard velar /ɡ/ on standalone "Giga"
+            # without altering sourceText or overriding custom user pronunciation rules.
+            giga_spoken = "Gigga" if tok_str[0].isupper() else "gigga"
+            claimed_spans.append((t_start, t_end, giga_spoken, None))
         else:
             m_sci = re.fullmatch(
                 r"(piezo|magneto|thermo|electro|chemo|mechano|tribo|acousto|vibro)"

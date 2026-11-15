@@ -9,20 +9,135 @@ import importlib.util
 import os
 import platform
 import sys
+import importlib
 import time
 import types
-from typing import Any
+from typing import Any, Callable
 
 # Hard guarantee: the sidecar never downloads anything implicitly (Gate E §3).
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
-from .protocol import Writer  # noqa: E402
+from .protocol import Writer, log  # noqa: E402
 from .server import RequestContext, Server  # noqa: E402
 from .stdio import isolate_protocol_streams  # noqa: E402
 from .tts import adapters_for_runtime  # noqa: E402
 from .tts.service import TtsService  # noqa: E402
+
+
+_DEFAULT_DEV_RELOAD_DEPENDENTS: dict[str, tuple[str, ...]] = {
+    "voxlab_sidecar.number_normalizer": (
+        "voxlab_sidecar.audio_quality",
+        "voxlab_sidecar.audio_ops",
+        "voxlab_sidecar.subtitle_optimizer",
+    ),
+    "voxlab_sidecar.pronunciation": (
+        "voxlab_sidecar.audio_quality",
+        "voxlab_sidecar.audio_ops",
+        "voxlab_sidecar.subtitle_optimizer",
+    ),
+    "voxlab_sidecar.audio_quality": (
+        "voxlab_sidecar.audio_ops",
+        "voxlab_sidecar.subtitle_optimizer",
+    ),
+    "voxlab_sidecar.audio_ops": (
+        "voxlab_sidecar.subtitle_optimizer",
+    ),
+}
+
+
+def _create_dev_module_reloader(
+    modules: list[types.ModuleType] | tuple[types.ModuleType, ...],
+    cascade_deps: dict[str, tuple[str, ...]] | None = None,
+) -> Callable[[], list[str]]:
+    """Create a dev-only module reloader that propagates upstream edits topologically."""
+    tracked = list(modules)
+    tracked_names = {m.__name__ for m in tracked}
+    by_suffix: dict[str, list[str]] = {}
+    for mod in tracked:
+        by_suffix.setdefault(mod.__name__.rsplit(".", 1)[-1], []).append(mod.__name__)
+
+    mod_mtimes: dict[str, float] = {}
+    for mod in tracked:
+        mod_file = getattr(mod, "__file__", None)
+        if mod_file and os.path.exists(mod_file):
+            mod_mtimes[mod.__name__] = os.path.getmtime(mod_file)
+
+    def _resolve_dependents(mod_name: str) -> list[str]:
+        if cascade_deps is not None:
+            return list(cascade_deps.get(mod_name, ()))
+        if mod_name in _DEFAULT_DEV_RELOAD_DEPENDENTS:
+            return list(_DEFAULT_DEV_RELOAD_DEPENDENTS[mod_name])
+        short_name = mod_name.rsplit(".", 1)[-1]
+        default_targets = _DEFAULT_DEV_RELOAD_DEPENDENTS.get(f"voxlab_sidecar.{short_name}", ())
+        resolved: list[str] = []
+        for target in default_targets:
+            if target in tracked_names:
+                resolved.append(target)
+            else:
+                target_short = target.rsplit(".", 1)[-1]
+                resolved.extend(by_suffix.get(target_short, ()))
+        return resolved
+
+    def _refresh() -> list[str]:
+        if getattr(sys, "frozen", False):
+            return []
+
+        changed: list[str] = []
+        latest_mtimes: dict[str, float] = {}
+        for mod in tracked:
+            mod_file = getattr(mod, "__file__", None)
+            if mod_file and os.path.exists(mod_file):
+                cur_mtime = os.path.getmtime(mod_file)
+                latest_mtimes[mod.__name__] = cur_mtime
+                if cur_mtime > mod_mtimes.get(mod.__name__, 0.0):
+                    changed.append(mod.__name__)
+
+        if not changed:
+            return []
+
+        dirty: set[str] = set(changed)
+        queue = list(changed)
+        while queue:
+            upstream = queue.pop(0)
+            for downstream in _resolve_dependents(upstream):
+                if downstream not in dirty:
+                    dirty.add(downstream)
+                    queue.append(downstream)
+
+        reloaded: list[str] = []
+        for mod in tracked:
+            mod_name = mod.__name__
+            if mod_name not in dirty:
+                continue
+            try:
+                importlib.reload(mod)
+                if mod_name in latest_mtimes:
+                    mod_mtimes[mod_name] = latest_mtimes[mod_name]
+                reloaded.append(mod_name)
+            except Exception as exc:
+                log(f"[dev-reload] Failed to reload {mod_name}: {exc}")
+
+        if any(
+            name == "voxlab_sidecar.audio_ops"
+            or name.endswith(".audio_ops")
+            or name == "audio_ops"
+            for name in reloaded
+        ):
+            for mod in tracked:
+                if (
+                    mod.__name__ == "voxlab_sidecar.audio_quality"
+                    or mod.__name__.endswith(".audio_quality")
+                    or mod.__name__ == "audio_quality"
+                ):
+                    cache = getattr(mod, "_RECENT_PRIMARY_ASR_CACHE", None)
+                    if cache is not None and hasattr(cache, "clear"):
+                        cache.clear()
+
+        return reloaded
+
+    return _refresh
 
 
 def system_info(runtime: str, asr, tts: TtsService) -> dict:
@@ -501,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
     server = Server(Writer(protocol_out), runtime=args.runtime)
     tts = TtsService(adapters_for_runtime(args.runtime))
     asr = None
+    ensure_fresh_qc_modules: Callable[[], list[str]] | None = None
     if args.runtime == "core":
         from .asr_engine import AsrEngine
 
@@ -508,32 +624,16 @@ def main(argv: list[str] | None = None) -> int:
         server.register_heavy("asr.load", asr.load)
         server.register_heavy("asr.transcribe", asr.transcribe)
         server.register_heavy("asr.unload", asr.unload)
-        import importlib
         from . import audio_ops
         from . import number_normalizer
         from . import pronunciation
         from . import audio_quality
         from . import subtitle_optimizer
 
-        _mod_mtimes: dict[str, float] = {}
-        for _m_obj in (audio_ops, number_normalizer, pronunciation, audio_quality, subtitle_optimizer):
-            _f = getattr(_m_obj, "__file__", None)
-            if _f and os.path.exists(_f):
-                _mod_mtimes[_m_obj.__name__] = os.path.getmtime(_f)
-
-        def _ensure_fresh_qc_modules() -> None:
-            if getattr(sys, "frozen", False):
-                return
-            for _m_obj in (audio_ops, number_normalizer, pronunciation, audio_quality, subtitle_optimizer):
-                _f = getattr(_m_obj, "__file__", None)
-                if _f and os.path.exists(_f):
-                    _cur_mtime = os.path.getmtime(_f)
-                    if _cur_mtime > _mod_mtimes.get(_m_obj.__name__, 0.0):
-                        try:
-                            importlib.reload(_m_obj)
-                            _mod_mtimes[_m_obj.__name__] = _cur_mtime
-                        except Exception:
-                            pass
+        _ensure_fresh_qc_modules = _create_dev_module_reloader(
+            [number_normalizer, pronunciation, audio_quality, audio_ops, subtitle_optimizer]
+        )
+        ensure_fresh_qc_modules = _ensure_fresh_qc_modules
 
         def validate_quality_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
             _ensure_fresh_qc_modules()
@@ -567,7 +667,11 @@ def main(argv: list[str] | None = None) -> int:
             _ensure_fresh_qc_modules()
             return audio_ops.enforce_punctuation_pauses(_m, params, ctx)
 
-        server.register_heavy("audio.assemble", audio_ops.assemble)
+        def assemble_handler(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, Any]:
+            _ensure_fresh_qc_modules()
+            return audio_ops.assemble(_m, params, ctx)
+
+        server.register_heavy("audio.assemble", assemble_handler)
         server.register_light("audio.probe", probe_handler)
         server.register_heavy("audio.enforce_punctuation_pauses", enforce_pauses_handler)
         server.register_heavy("audio.validate_quality", validate_quality_handler)
@@ -631,10 +735,50 @@ def main(argv: list[str] | None = None) -> int:
     server.register_light("system.info", lambda _p: system_info(args.runtime, asr, tts))
     server.register_light("tts.engines", tts.engines)
     server.register_heavy("tts.load", tts.load)
-    server.register_heavy("tts.synthesize", tts.synthesize)
+    _tts_fallback_reloader: Callable[[], list[str]] | None = None
+    _tts_fallback_mods: list[types.ModuleType] = [
+        sys.modules[n]
+        for n in (
+            "voxlab_sidecar.number_normalizer",
+            "voxlab_sidecar.pronunciation",
+            "voxlab_sidecar.audio_ops",
+        )
+        if n in sys.modules
+    ]
+    if _tts_fallback_mods:
+        _tts_fallback_reloader = _create_dev_module_reloader(_tts_fallback_mods)
+
+    def _refresh_tts_modules() -> None:
+        if getattr(sys, "frozen", False):
+            return
+        if ensure_fresh_qc_modules is not None:
+            ensure_fresh_qc_modules()
+            return
+        nonlocal _tts_fallback_reloader
+        if _tts_fallback_reloader is not None:
+            _tts_fallback_reloader()
+        newly_loaded = [
+            sys.modules[n]
+            for n in (
+                "voxlab_sidecar.number_normalizer",
+                "voxlab_sidecar.pronunciation",
+                "voxlab_sidecar.audio_ops",
+            )
+            if n in sys.modules and all(m.__name__ != n for m in _tts_fallback_mods)
+        ]
+        if newly_loaded:
+            _tts_fallback_mods.extend(newly_loaded)
+            _tts_fallback_reloader = _create_dev_module_reloader(_tts_fallback_mods)
+
+    def synthesize_handler(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, Any]:
+        _refresh_tts_modules()
+        return tts.synthesize(_m, params, ctx)
+
+    server.register_heavy("tts.synthesize", synthesize_handler)
     server.register_heavy("tts.unload", tts.unload)
 
     def edge_preview_handler(_m: str, params: dict, ctx: RequestContext) -> dict:
+        _refresh_tts_modules()
         from .edge_tts_engine import synthesize_edge_tts
         from .tts.service import prepare_spoken_text_for_tts
         ctx.progress(10.0, "connecting")

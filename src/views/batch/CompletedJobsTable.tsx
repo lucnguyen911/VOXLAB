@@ -42,38 +42,44 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
   onClearCompletedJobs,
 }) => {
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
+    <div className="@container flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
       <div className="flex-1 overflow-auto">
-        <table className="w-full min-w-[960px] text-left border-collapse table-fixed border-b border-borderDefault">
+        <table className="w-full min-w-[640px] text-left border-collapse table-fixed border-b border-borderDefault">
           <thead className="sticky top-0 bg-surface2 border-b border-borderDefault z-20 text-[13px] font-bold text-textSecondary">
             <tr>
               {/* Column 1: # */}
-              <th className="py-2.5 px-3 w-[4%] text-center border-r border-borderDefault">
+              <th className="py-2.5 px-2 w-[42px] @[960px]:w-[48px] text-center border-r border-borderDefault overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">#</div>
               </th>
 
               {/* Column 2: File Name */}
-              <th className="py-2.5 px-3.5 w-[26%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-3.5 w-auto text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Tên tệp</div>
               </th>
 
               {/* Column 3: Workflow Sequence */}
-              <th className="py-2.5 px-3 w-[20%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-2 w-[124px] @[920px]:w-[168px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Chuỗi tác vụ</div>
               </th>
 
               {/* Column 4: Quality / QC Status */}
-              <th className="py-2.5 px-3 w-[18%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
-                <div className="flex items-center justify-center min-h-[46px]">Chất lượng (QC)</div>
+              <th className="py-2.5 px-2 w-[132px] @[920px]:w-[164px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
+                <div className="flex items-center justify-center min-h-[46px]">
+                  <span className="@[920px]:hidden">QC</span>
+                  <span className="hidden @[920px]:inline">Chất lượng (QC)</span>
+                </div>
               </th>
 
               {/* Column 5: Output Artifacts */}
-              <th className="py-2.5 px-3 w-[13%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
-                <div className="flex items-center justify-center min-h-[46px]">Kết quả xuất</div>
+              <th className="py-2.5 px-2 w-[88px] @[920px]:w-[112px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
+                <div className="flex items-center justify-center min-h-[46px]">
+                  <span className="@[920px]:hidden">Xuất</span>
+                  <span className="hidden @[920px]:inline">Kết quả xuất</span>
+                </div>
               </th>
 
               {/* Column 6: Actions */}
-              <th className="py-2.5 px-2 w-[19%] text-center text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-2 w-[112px] @[880px]:w-[164px] @[1060px]:w-[236px] text-center text-sm font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Thao tác</div>
               </th>
             </tr>
@@ -121,12 +127,12 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
                   }`}
                 >
                   {/* Column 1: # */}
-                  <td className="py-3 px-3 text-center text-textMuted font-mono border-r border-borderDefault">
+                  <td className="py-3 px-2 text-center text-textMuted font-mono border-r border-borderDefault overflow-hidden">
                     {index + 1}
                   </td>
 
                   {/* Column 2: File Name */}
-                  <td className="py-3 px-3.5 border-r border-borderDefault">
+                  <td className="py-3 px-3.5 border-r border-borderDefault overflow-hidden">
                     <div className="flex items-center gap-2 min-w-0">
                       {renderFileIcon(job.fileKind)}
                       <div className="min-w-0">
@@ -147,8 +153,8 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
                   </td>
 
                   {/* Column 3: Workflow Sequence */}
-                  <td className="py-3 px-3 border-r border-borderDefault">
-                    <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                  <td className="py-3 px-2 border-r border-borderDefault overflow-hidden">
+                    <div className="flex items-center justify-center gap-1 flex-wrap">
                       {job.executionSequence.map((task) => {
                         const step = job.stepResults[task];
                         const stepStatus = step?.status || "completed";
@@ -175,7 +181,7 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
                         return (
                           <div
                             key={task}
-                            className={`px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 ${badgeColor}`}
+                            className={`px-1.5 @[920px]:px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 whitespace-nowrap ${badgeColor}`}
                           >
                             <span>{taskName}</span>
                             {stepStatus !== "skipped" && <span>✓</span>}
@@ -186,26 +192,26 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
                   </td>
 
                   {/* Column 4: Quality / QC Status */}
-                  <td className="py-3 px-3 border-r border-borderDefault text-center">
+                  <td className="py-3 px-2 border-r border-borderDefault text-center overflow-hidden">
                     <div className="flex flex-col items-center justify-center gap-1">
                       {qcStep ? (
                         errCount > 0 ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-danger/15 text-danger border border-danger/30">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-danger/15 text-danger border border-danger/30 max-w-full truncate">
                             <AlertCircle className="w-3 h-3 shrink-0" />
-                            <span>
-                              {errCount} đoạn lỗi
+                            <span className="truncate">
+                              {errCount} lỗi
                               {warnCount > 0 ? `, ${warnCount} cảnh báo` : ""}
                             </span>
                           </span>
                         ) : warnCount > 0 ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-warning/15 text-warning border border-warning/30">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-warning/15 text-warning border border-warning/30 max-w-full truncate">
                             <AlertTriangle className="w-3 h-3 shrink-0" />
-                            <span>{warnCount} đoạn cảnh báo</span>
+                            <span className="truncate">{warnCount} cảnh báo</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 max-w-full truncate">
                             <CheckCircle2 className="w-3 h-3 shrink-0" />
-                            <span>Đạt chuẩn ({qcStep.qcChunks?.length || 0} câu)</span>
+                            <span className="truncate">Đạt chuẩn ({qcStep.qcChunks?.length || 0} câu)</span>
                           </span>
                         )
                       ) : job.warningMessage ? (
@@ -217,7 +223,7 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
                           <span className="truncate">{job.warningMessage}</span>
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
                           <CheckCircle2 className="w-3 h-3 shrink-0" />
                           <span>Hoàn tất</span>
                         </span>
@@ -226,8 +232,8 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
                   </td>
 
                   {/* Column 5: Output Artifacts */}
-                  <td className="py-3 px-3 border-r border-borderDefault text-center">
-                    <div className="font-mono font-semibold text-textPrimary">
+                  <td className="py-3 px-2 border-r border-borderDefault text-center overflow-hidden">
+                    <div className="font-mono font-semibold text-textPrimary whitespace-nowrap">
                       {job.artifacts.ownedArtifactPaths.length} tệp
                     </div>
                     {artifactExts.length > 0 && (
@@ -238,22 +244,22 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
                   </td>
 
                   {/* Column 6: Actions */}
-                  <td className="py-3 px-2 text-center">
-                    <div className="flex items-center justify-center gap-1.5">
+                  <td className="py-3 px-2 text-center overflow-hidden">
+                    <div className="flex items-center justify-center gap-1 @[920px]:gap-1.5">
                       <button
                         type="button"
                         onClick={handleOpenJobFolder}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer whitespace-nowrap"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer whitespace-nowrap shrink-0"
                         title="Mở thư mục lưu tệp kết quả xuất"
                       >
                         <FolderOpen className="w-3.5 h-3.5 text-accent shrink-0" />
-                        <span>Mở thư mục</span>
+                        <span className="hidden @[1060px]:inline">Mở thư mục</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => onInspectJob(job)}
-                        className={`inline-flex items-center gap-1 px-2 py-1 rounded font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                        className={`inline-flex items-center gap-1 px-2 py-1 rounded font-semibold border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                           errCount > 0
                             ? "bg-danger/15 hover:bg-danger/25 text-danger border-danger/35"
                             : warnCount > 0
@@ -263,14 +269,14 @@ export const CompletedJobsTable: React.FC<CompletedJobsTableProps> = ({
                         title="Xem chi tiết các tác vụ (TTS, Hội thoại, Phụ đề...), chỉnh sửa câu chữ, tạo lại câu cảnh báo và nghe thử"
                       >
                         <Eye className="w-3.5 h-3.5 shrink-0" />
-                        <span>Chi tiết</span>
+                        <span className="hidden @[880px]:inline">Chi tiết</span>
                       </button>
 
                       {onDeleteJob && (
                         <button
                           type="button"
                           onClick={() => onDeleteJob(job.id)}
-                          className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                          className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer shrink-0"
                           title="Xóa tệp khỏi danh sách hoàn tất (không xóa tệp trên ổ đĩa)"
                         >
                           <Trash2 className="w-3.5 h-3.5" />

@@ -178,11 +178,11 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-background select-none">
+    <div className="@container flex-1 flex flex-col h-full overflow-hidden bg-background select-none">
       {/* 1. Unified Compact Top Bar: Filter Tabs + Search + Refresh */}
-      <div className="h-12 px-4 border-b border-borderDefault bg-panel flex items-center justify-between flex-shrink-0 z-10 shadow-xs gap-3">
+      <div className="min-h-12 py-1.5 px-3.5 border-b border-borderDefault bg-panel flex flex-wrap items-center justify-between flex-shrink-0 z-10 shadow-xs gap-2">
         {/* Left: Filter Pills */}
-        <div className="flex items-center gap-1 bg-surface1 p-1 rounded-xl border border-borderDefault overflow-x-auto scrollbar-none">
+        <div className="flex items-center gap-0.5 @[900px]:gap-1 bg-surface1 p-1 rounded-xl border border-borderDefault overflow-x-auto scrollbar-none max-w-full">
           {(
             [
               { key: "all", label: "Tất cả", count: filterCounts.all },
@@ -199,7 +199,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                 key={filter.key}
                 type="button"
                 onClick={() => setActiveFilter(filter.key)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
+                className={`flex items-center gap-1.5 px-2 @[900px]:px-2.5 py-1 rounded-lg text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
                   isActive
                     ? "bg-surface3 text-textPrimary shadow-2xs"
                     : "text-textMuted hover:text-textPrimary hover:bg-surface2/60"
@@ -219,8 +219,8 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
         </div>
 
         {/* Right: Search Input + Refresh */}
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="relative w-56 lg:w-72">
+        <div className="flex items-center gap-2 flex-1 @[860px]:flex-initial justify-end min-w-[180px]">
+          <div className="relative flex-1 @[860px]:flex-initial w-40 @[860px]:w-56 @[1080px]:w-72 max-w-[300px]">
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-textMuted" />
             <input
               type="text"
@@ -248,45 +248,45 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
             title="Kiểm tra lại trạng thái tệp trên ổ đĩa"
           >
             <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-accent" : ""}`} />
-            <span className="hidden sm:inline">Làm mới</span>
+            <span className="hidden @[920px]:inline">Làm mới</span>
           </button>
         </div>
       </div>
 
       {/* 2. Center Table Container */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-4 py-3">
-        <div className="flex-1 min-h-0 bg-surface1 rounded-xl border border-borderDefault flex flex-col overflow-hidden shadow-xs">
+        <div className="@container flex-1 min-h-0 bg-surface1 rounded-xl border border-borderDefault flex flex-col overflow-hidden shadow-xs">
           <div className="flex-1 overflow-auto">
-            <table className="w-full min-w-[960px] text-left border-collapse table-fixed border-b border-borderDefault">
+            <table className="w-full min-w-[640px] text-left border-collapse table-fixed border-b border-borderDefault">
               <thead className="sticky top-0 bg-surface2 border-b border-borderDefault z-20 text-[13px] font-bold text-textSecondary">
                 <tr>
                   {/* Column 1: # */}
-                  <th className="py-2.5 px-3 w-[4%] text-center border-r border-borderDefault">
+                  <th className="py-2.5 px-2 w-[42px] @[960px]:w-[48px] text-center border-r border-borderDefault overflow-hidden">
                     <div className="flex items-center justify-center min-h-[46px]">#</div>
                   </th>
 
                   {/* Column 2: Name */}
-                  <th className="py-2.5 px-3.5 w-[37%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-3.5 w-auto text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                     <div className="flex items-center justify-center min-h-[46px]">Tên</div>
                   </th>
 
                   {/* Column 3: Tasks */}
-                  <th className="py-2.5 px-3 w-[16%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-2 w-[118px] @[900px]:w-[152px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                     <div className="flex items-center justify-center min-h-[46px]">Tác vụ</div>
                   </th>
 
                   {/* Column 4: Status */}
-                  <th className="py-2.5 px-3 w-[12%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-2 w-[114px] @[900px]:w-[126px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                     <div className="flex items-center justify-center min-h-[46px]">Trạng thái</div>
                   </th>
 
                   {/* Column 5: Created Date & Time */}
-                  <th className="py-2.5 px-3 w-[14%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-2 w-[106px] @[920px]:w-[164px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                     <div className="flex items-center justify-center min-h-[46px]">Thời gian</div>
                   </th>
 
                   {/* Column 6: Actions */}
-                  <th className="py-2.5 px-2 w-[17%] text-center text-sm font-bold text-textPrimary">
+                  <th className="py-2.5 px-2 w-[114px] @[860px]:w-[158px] @[1040px]:w-[238px] text-center text-sm font-bold text-textPrimary overflow-hidden">
                     <div className="flex items-center justify-center min-h-[46px]">Thao tác</div>
                   </th>
                 </tr>
@@ -330,6 +330,9 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                     const exactDateTime =
                       (job.timestamp ? formatHistoryCreatedAt(job.timestamp) : "") ||
                       job.createdAt;
+                    const [datePart, timePart] = exactDateTime.includes(" · ")
+                      ? exactDateTime.split(" · ")
+                      : [exactDateTime, ""];
 
                     return (
                       <tr
@@ -341,12 +344,12 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                         }`}
                       >
                         {/* Column 1: # */}
-                        <td className="py-3 px-3 align-middle text-center text-textSecondary font-mono font-semibold border-r border-borderDefault">
+                        <td className="py-3 px-2 align-middle text-center text-textSecondary font-mono font-semibold border-r border-borderDefault overflow-hidden">
                           {index + 1}
                         </td>
 
                         {/* Column 2: File Name */}
-                        <td className="py-3 px-3.5 align-middle border-r border-borderDefault">
+                        <td className="py-3 px-3.5 align-middle border-r border-borderDefault overflow-hidden">
                           <div className="flex items-center gap-2.5 min-w-0">
                             <div className="w-7 h-7 rounded-lg bg-surface2 border border-borderDefault flex items-center justify-center shrink-0">
                               {renderSourceIcon(job.title, job.category)}
@@ -362,13 +365,13 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                           </div>
                         </td>
 
-                        {/* Column 3: Tasks (left-aligned inside centered track) */}
-                        <td className="py-3 px-3 align-middle border-r border-borderDefault">
-                          <div className="w-[142px] max-w-full mx-auto flex flex-wrap items-center justify-start gap-1.5">
+                        {/* Column 3: Tasks (responsive wrap inside centered track) */}
+                        <td className="py-3 px-2 align-middle border-r border-borderDefault overflow-hidden">
+                          <div className="max-w-full mx-auto flex flex-wrap items-center justify-center gap-1">
                             {displayTasks.map((taskKey) => (
                               <span
                                 key={taskKey}
-                                className="inline-flex items-center justify-center h-6 px-2.5 rounded-md text-[11px] font-semibold bg-surface2 border border-borderDefault text-textSecondary whitespace-nowrap"
+                                className="inline-flex items-center justify-center h-6 px-2 @[900px]:px-2.5 rounded-md text-[11px] font-semibold bg-surface2 border border-borderDefault text-textSecondary whitespace-nowrap"
                               >
                                 {TASK_LABELS[taskKey] || taskKey}
                               </span>
@@ -377,11 +380,11 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                         </td>
 
                         {/* Column 4: Status */}
-                        <td className="py-3 px-3 align-middle border-r border-borderDefault text-center">
+                        <td className="py-3 px-2 align-middle border-r border-borderDefault text-center overflow-hidden">
                           <div className="flex items-center justify-center">
                             {statusDisplay.tone === "completed" && (
                               <span
-                                className="inline-flex items-center justify-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 whitespace-nowrap"
+                                className="inline-flex items-center justify-center gap-1 h-6 px-2 @[900px]:px-2.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 whitespace-nowrap"
                                 title={statusDisplay.tooltip}
                               >
                                 <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
@@ -390,7 +393,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                             )}
                             {statusDisplay.tone === "warning" && (
                               <span
-                                className="inline-flex items-center justify-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 whitespace-nowrap"
+                                className="inline-flex items-center justify-center gap-1 h-6 px-2 @[900px]:px-2.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 whitespace-nowrap"
                                 title={statusDisplay.tooltip}
                               >
                                 <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
@@ -399,7 +402,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                             )}
                             {statusDisplay.tone === "error" && (
                               <span
-                                className="inline-flex items-center justify-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-semibold bg-danger/15 text-danger border border-danger/30 whitespace-nowrap"
+                                className="inline-flex items-center justify-center gap-1 h-6 px-2 @[900px]:px-2.5 rounded-full text-[11px] font-semibold bg-danger/15 text-danger border border-danger/30 whitespace-nowrap"
                                 title={statusDisplay.tooltip}
                               >
                                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
@@ -408,7 +411,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                             )}
                             {statusDisplay.tone === "missing" && (
                               <span
-                                className="inline-flex items-center justify-center gap-1.5 h-6 px-2.5 rounded-full text-[11px] font-medium bg-surface2 text-textSecondary border border-borderDefault whitespace-nowrap"
+                                className="inline-flex items-center justify-center gap-1 h-6 px-2 @[900px]:px-2.5 rounded-full text-[11px] font-medium bg-surface2 text-textSecondary border border-borderDefault whitespace-nowrap"
                                 title={statusDisplay.tooltip}
                               >
                                 <AlertTriangle className="w-3.5 h-3.5 text-textMuted shrink-0" />
@@ -419,20 +422,32 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                         </td>
 
                         {/* Column 5: Created Date & Time */}
-                        <td className="py-3 px-3 align-middle border-r border-borderDefault text-center">
-                          <span className="font-mono font-semibold text-textPrimary text-xs whitespace-nowrap">
-                            {exactDateTime}
-                          </span>
+                        <td className="py-3 px-2 align-middle border-r border-borderDefault text-center overflow-hidden">
+                          {timePart ? (
+                            <div className="flex flex-col @[920px]:flex-row items-center justify-center @[920px]:gap-1 font-mono leading-tight">
+                              <span className="font-semibold text-textPrimary text-[11px] @[920px]:text-xs whitespace-nowrap">
+                                {datePart}
+                              </span>
+                              <span className="hidden @[920px]:inline text-textMuted">·</span>
+                              <span className="font-medium @[920px]:font-semibold text-textSecondary @[920px]:text-textPrimary text-[10px] @[920px]:text-xs whitespace-nowrap">
+                                {timePart}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="font-mono font-semibold text-textPrimary text-xs whitespace-nowrap">
+                              {exactDateTime}
+                            </span>
+                          )}
                         </td>
 
                         {/* Column 6: Actions */}
-                        <td className="py-3 px-2 align-middle text-center">
-                          <div className="flex items-center justify-center gap-1.5">
+                        <td className="py-3 px-2 align-middle text-center overflow-hidden">
+                          <div className="flex items-center justify-center gap-1 @[900px]:gap-1.5">
                             <button
                               type="button"
                               onClick={() => handleOpenPreview(job)}
                               disabled={!hasArtifacts}
-                              className={`inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-lg text-xs font-semibold border transition-colors whitespace-nowrap ${
+                              className={`inline-flex items-center justify-center gap-1 h-7 px-2 @[860px]:px-2.5 rounded-lg text-xs font-semibold border transition-colors whitespace-nowrap shrink-0 ${
                                 hasArtifacts
                                   ? "bg-accent/15 hover:bg-accent/25 text-accent border-accent/35 cursor-pointer"
                                   : "bg-surface2 text-textMuted border-borderDefault opacity-45 cursor-not-allowed"
@@ -444,7 +459,7 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                               }
                             >
                               <Eye className="w-3.5 h-3.5 shrink-0" />
-                              <span>Xem</span>
+                              <span className="hidden @[860px]:inline">Xem</span>
                             </button>
 
                             <button
@@ -455,11 +470,11 @@ export const HistoryWorkspace: React.FC<HistoryWorkspaceProps> = ({
                                 );
                                 void handleOpenFolder(job.outputDirectory, existingArt?.filePath);
                               }}
-                              className="inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-lg text-xs font-medium bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer whitespace-nowrap"
+                              className="inline-flex items-center justify-center gap-1 h-7 px-2 @[1040px]:px-2.5 rounded-lg text-xs font-medium bg-surface3 hover:bg-surface2 text-textPrimary border border-borderDefault transition-colors cursor-pointer whitespace-nowrap shrink-0"
                               title="Mở thư mục chứa kết quả xuất trên ổ đĩa"
                             >
                               <FolderOpen className="w-3.5 h-3.5 text-accent shrink-0" />
-                              <span>Mở thư mục</span>
+                              <span className="hidden @[1040px]:inline">Mở thư mục</span>
                             </button>
 
                             <button

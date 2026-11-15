@@ -493,5 +493,27 @@ describe("Context-Aware Acronym Pronunciation & 3-Representation Contract", () =
     assert.equal(chunks.length, 1);
     assert.equal(chunks[0].text, script);
   });
+
+  it("A9: Hard-G spoken guidance for standalone English 'Giga' preserves sourceText and respects custom rules", () => {
+    const res = prepareSpokenText("Modeling Giga Texas and Gigafactory", { language: "en" });
+    assert.equal(res.sourceText, "Modeling Giga Texas and Gigafactory");
+    assert.equal(res.spokenText, "Modeling Gigga Texas and Gigafactory");
+    assert.deepEqual(res.pronunciationMapping, []);
+
+    const capsRes = prepareSpokenText("MODELING GIGA TEXAS.", { language: "en" });
+    assert.equal(capsRes.spokenText, "Modeling gigga texas.");
+
+    const capsStartRes = prepareSpokenText("GIGA TEXAS IS HUGE.", { language: "en" });
+    assert.equal(capsStartRes.spokenText, "Gigga texas is huge.");
+
+    const customRes = prepareSpokenText("Modeling Giga Texas", {
+      language: "en",
+      rules: [makeRule({ sourceText: "Giga", spokenText: "Jiga", scope: "project" })],
+    });
+    assert.equal(customRes.spokenText, "Modeling Jiga Texas");
+
+    const viRes = prepareSpokenText("Mô hình Giga Texas", { language: "vi" });
+    assert.equal(viRes.spokenText, "Mô hình Giga Texas");
+  });
 });
 

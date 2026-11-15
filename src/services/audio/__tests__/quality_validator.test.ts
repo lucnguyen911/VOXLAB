@@ -11,6 +11,7 @@ import {
   isReviewCurrent,
   isReviewOutdated,
   QUALITY_VALIDATOR_VERSION,
+  formatIssueTimestamp,
   MAX_AUTO_VALIDATION_RETRIES,
   validateChunkAudioQuality,
   getIssueShortLabel,
@@ -18,6 +19,9 @@ import {
   getChunkAudioSignature,
   isChunkConfirmed,
   hasChunkQualityWarningReview,
+  pickNextOutdatedChunk,
+  resolveAutoRevalidatedReview,
+  didQualityReviewMeaningfullyChange,
 } from "../qualityValidator";
 import { validateMasterBoundaries, validateChunksForExport } from "../masterExport";
 import { replacePauseTokensWithBoundary, stripPauseTokens } from "../../pause";
@@ -808,7 +812,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "4.2.0");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "4.4.6");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -820,7 +824,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "4.2.0");
+    assert.equal(review.validatorVersion, "4.4.6");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
@@ -1316,8 +1320,8 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(isReviewOutdated(v300Chunk, "large-v3-turbo", true), true);
   });
 
-  it("V30: v4.2.0 invalidates v3.1.0 - v4.0.0 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "4.2.0");
+  it("V30: v4.4.6 invalidates v3.1.0 - v4.4.5 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
+    assert.equal(QUALITY_VALIDATOR_VERSION, "4.4.6");
 
     const v310Chunk: ChunkItem = {
       id: "chunk_v30_old",
@@ -1340,6 +1344,16 @@ describe("Audio Quality Validator Tests", () => {
       },
     };
     assert.equal(isReviewOutdated(v310Chunk, "large-v3-turbo", true), true);
+
+    const v440Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v30_v440",
+      qualityReview: {
+        ...v310Chunk.qualityReview!,
+        validatorVersion: "4.4.0",
+      },
+    };
+    assert.equal(isReviewOutdated(v440Chunk, "large-v3-turbo", true), true);
 
     const mixedWarningChunk: ChunkItem = {
       id: "chunk_v30_mixed",
@@ -1468,6 +1482,49 @@ describe("Audio Quality Validator Tests", () => {
       qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "4.0.0" },
     };
     assert.equal(isReviewOutdated(v400Chunk, "large-v3-turbo", true), true);
+
+    // v4.3.0 eliminates rate-unit/stop-closure/Giga FPs & catches attributive percent+noun pauses: v4.2.0 reviews must be re-checked
+    const v420Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v420_old",
+      qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "4.2.0" },
+    };
+    assert.equal(isReviewOutdated(v420Chunk, "large-v3-turbo", true), true);
+
+    const v430Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v430_old",
+      qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "4.3.0" },
+    };
+    assert.equal(isReviewOutdated(v430Chunk, "large-v3-turbo", true), true);
+
+    const v441Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v441_old",
+      qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "4.4.1" },
+    };
+    assert.equal(isReviewOutdated(v441Chunk, "large-v3-turbo", true), true);
+
+    const v442Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v442_old",
+      qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "4.4.2" },
+    };
+    assert.equal(isReviewOutdated(v442Chunk, "large-v3-turbo", true), true);
+
+    const v443Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v443_old",
+      qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "4.4.3" },
+    };
+    assert.equal(isReviewOutdated(v443Chunk, "large-v3-turbo", true), true);
+
+    const v445Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v445_old",
+      qualityReview: { ...v310Chunk.qualityReview!, validatorVersion: "4.4.5" },
+    };
+    assert.equal(isReviewOutdated(v445Chunk, "large-v3-turbo", true), true);
   });
 
   it("V31: manual pause tokens become a phrase boundary for QC so intentional pauses are not abnormal", () => {
@@ -1478,7 +1535,7 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(replacePauseTokensWithBoundary(""), "");
   });
 
-  it("V32: subtitle Whisper dropdown changes do not invalidate current v4.2.0 reviews when background queue omits currentAsrModel", () => {
+  it("V32: subtitle Whisper dropdown changes do not invalidate current v4.4.6 reviews when background queue omits currentAsrModel", () => {
     const verifiedChunk: ChunkItem = {
       id: "chunk_v32_decoupled",
       index: 1,
@@ -1494,7 +1551,7 @@ describe("Audio Quality Validator Tests", () => {
         summary: "Đạt",
         checkedAt: Date.now(),
         text: "Already verified chunk with Turbo.",
-        validatorVersion: "4.2.0",
+        validatorVersion: "4.4.6",
         asrModelId: "large-v3-turbo",
         audioSignature: "C:\\scratch\\tts\\chunk_decoupled.wav::4.2",
       },
@@ -1505,6 +1562,206 @@ describe("Audio Quality Validator Tests", () => {
     // Explicit model check still preserves unit-tested contract
     assert.equal(isReviewOutdated(verifiedChunk, "large-v3-turbo", true), false);
     assert.equal(isReviewOutdated(verifiedChunk, "large-v3", true), true);
+  });
+
+  it("V33: formatIssueTimestamp truncates tenths and rolls over cleanly at minute boundaries", () => {
+    assert.equal(formatIssueTimestamp(0), "00:00.0");
+    assert.equal(formatIssueTimestamp(-0.5), "00:00.0");
+    assert.equal(formatIssueTimestamp(0.95), "00:00.9");
+    assert.equal(formatIssueTimestamp(6.68), "00:06.6");
+    assert.equal(formatIssueTimestamp(59.99), "00:59.9");
+    assert.equal(formatIssueTimestamp(60.0), "01:00.0");
+    assert.equal(formatIssueTimestamp(71.34), "01:11.3");
+  });
+
+  it("V34: maps intra_word ABNORMAL_PAUSE to 'Nghỉ bất thường' and formats 00:01.3 timestamp", () => {
+    const intraPauseChunk: ChunkItem = {
+      id: "chunk_v34_intra_word",
+      index: 1,
+      text: "where we test whether this eighteen cent per mile endgame crushes monthly car bills.",
+      originalText: "where we test whether this eighteen cent per mile endgame crushes monthly car bills.",
+      status: "ready",
+      durationSec: 5.567,
+      audioFilePath: "C:\\scratch\\tts\\chunk_18.wav",
+      pauseAfterMs: "auto",
+      qualityReview: {
+        status: "warning",
+        issues: [
+          {
+            severity: "warning",
+            code: "ABNORMAL_PAUSE",
+            message: 'Ngắt nghỉ bất thường ngay trong từ "eighteen" (0.27s) — khoảng 00:01.3. Vui lòng nghe lại.',
+            words: ["eighteen"],
+            timeRange: [1.38, 1.65],
+          },
+        ],
+        summary: 'Ngắt nghỉ bất thường ngay trong từ "eighteen" (0.27s) — khoảng 00:01.3. Vui lòng nghe lại.',
+        checkedAt: Date.now(),
+        text: "where we test whether this eighteen cent per mile endgame crushes monthly car bills.",
+        validatorVersion: "4.4.6",
+        asrModelId: "large-v3-turbo",
+        audioSignature: "C:\\scratch\\tts\\chunk_18.wav::5.567",
+      },
+    };
+
+    const badge = getChunkBadgeInfo(intraPauseChunk);
+    assert.ok(badge);
+    assert.equal(badge.status, "warning");
+    assert.equal(badge.primaryLabel, "Nghỉ bất thường");
+    assert.equal(formatIssueTimestamp(intraPauseChunk.qualityReview!.issues[0].timeRange![0]), "00:01.3");
+  });
+
+  it("V35: pickNextOutdatedChunk prioritizes non-pass outdated chunks and didQualityReviewMeaningfullyChange compares substance", () => {
+    const outdatedPass: ChunkItem = {
+      id: "c_pass",
+      index: 1,
+      text: "First outdated pass",
+      originalText: "First outdated pass",
+      durationSec: 2,
+      pauseAfterMs: "auto",
+      status: "ready",
+      audioFilePath: "C:/tmp/c_pass.wav",
+      qualityReview: {
+        status: "pass",
+        issues: [],
+        summary: "Đạt chuẩn",
+        checkedAt: 100,
+        text: "First outdated pass",
+        validatorVersion: "4.4.4",
+        asrModelId: "tiny",
+      },
+    };
+    const outdatedWarn: ChunkItem = {
+      id: "c_warn",
+      index: 2,
+      text: "Second outdated warning",
+      originalText: "Second outdated warning",
+      durationSec: 2,
+      pauseAfterMs: "auto",
+      status: "ready",
+      audioFilePath: "C:/tmp/c_warn.wav",
+      qualityReview: {
+        status: "warning",
+        issues: [{ severity: "warning", code: "MINOR_STUTTER", message: "Warn", timeRange: [1, 2] }],
+        summary: "Nghi vấn",
+        checkedAt: 100,
+        text: "Second outdated warning",
+        validatorVersion: "4.4.4",
+        asrModelId: "tiny",
+      },
+    };
+    const currentPass: ChunkItem = {
+      id: "c_cur",
+      index: 3,
+      text: "Already current",
+      originalText: "Already current",
+      durationSec: 2,
+      pauseAfterMs: "auto",
+      status: "ready",
+      audioFilePath: "C:/tmp/c_cur.wav",
+      qualityReview: {
+        status: "pass",
+        issues: [],
+        summary: "Đạt chuẩn",
+        checkedAt: 200,
+        text: "Already current",
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: "tiny",
+        audioSignature: getChunkAudioSignature({
+          id: "c_cur",
+          durationSec: 2,
+          status: "ready",
+          audioFilePath: "C:/tmp/c_cur.wav",
+        }),
+      },
+    };
+
+    const inFlight = new Set<string>();
+    const first = pickNextOutdatedChunk([currentPass, outdatedPass, outdatedWarn], inFlight, "tiny", true);
+    assert.equal(first?.id, "c_warn");
+
+    inFlight.add(`${getChunkAudioSignature(outdatedWarn)}::tiny`);
+    const second = pickNextOutdatedChunk([currentPass, outdatedPass, outdatedWarn], inFlight, "tiny", true);
+    assert.equal(second?.id, "c_pass");
+
+    inFlight.add(`${getChunkAudioSignature(outdatedPass)}::tiny`);
+    const third = pickNextOutdatedChunk([currentPass, outdatedPass, outdatedWarn], inFlight, "tiny", true);
+    assert.equal(third, undefined);
+
+    assert.equal(
+      didQualityReviewMeaningfullyChange(outdatedPass.qualityReview, {
+        ...outdatedPass.qualityReview!,
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        checkedAt: 999,
+      }),
+      false
+    );
+    assert.equal(
+      didQualityReviewMeaningfullyChange(outdatedWarn.qualityReview, {
+        status: "pass",
+        issues: [],
+        summary: "Đạt chuẩn",
+        checkedAt: 999,
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+      }),
+      true
+    );
+    assert.equal(
+      didQualityReviewMeaningfullyChange(outdatedWarn.qualityReview, {
+        ...outdatedWarn.qualityReview!,
+        issues: [{ severity: "warning", code: "MINOR_STUTTER", message: "Warn", timeRange: [1.5, 2.2] }],
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+      }),
+      true
+    );
+  });
+
+  it("V36: resolveAutoRevalidatedReview preserves archived non-error reviews on FILE_NOT_FOUND", () => {
+    const archivedWarn: ChunkItem["qualityReview"] = {
+      status: "warning",
+      issues: [{ severity: "warning", code: "MINOR_STUTTER", message: "Old warn", words: ["foo"] }],
+      summary: "Old warn",
+      checkedAt: 1000,
+      text: "hello foo",
+      validatorVersion: "4.4.4",
+    };
+    const fileMissingErr: ChunkItem["qualityReview"] = {
+      status: "error",
+      issues: [{ severity: "error", code: "FILE_NOT_FOUND", message: "Missing wav" }],
+      summary: "Missing wav",
+      checkedAt: 2000,
+      text: "hello foo",
+      validatorVersion: QUALITY_VALIDATOR_VERSION,
+      asrModelId: "tiny",
+    };
+
+    const preserved = resolveAutoRevalidatedReview(archivedWarn, fileMissingErr, "tiny", "sig_1");
+    assert.equal(preserved.status, "warning");
+    assert.equal(preserved.validatorVersion, QUALITY_VALIDATOR_VERSION);
+    assert.equal(preserved.asrModelId, "tiny");
+    assert.equal(preserved.audioSignature, "sig_1");
+    assert.equal(preserved.issues.length, 1);
+
+    const archivedErr: ChunkItem["qualityReview"] = {
+      status: "error",
+      issues: [{ severity: "error", code: "MISSING_WORD", message: "Old err" }],
+      summary: "Old err",
+      checkedAt: 1000,
+      text: "hello foo",
+      validatorVersion: "4.4.4",
+    };
+    const notPreserved = resolveAutoRevalidatedReview(archivedErr, fileMissingErr, "tiny", "sig_1");
+    assert.equal(notPreserved, fileMissingErr);
+
+    const freshPass: ChunkItem["qualityReview"] = {
+      status: "pass",
+      issues: [],
+      summary: "Đạt chuẩn",
+      checkedAt: 3000,
+      text: "hello foo",
+      validatorVersion: QUALITY_VALIDATOR_VERSION,
+    };
+    assert.equal(resolveAutoRevalidatedReview(archivedWarn, freshPass, "tiny", "sig_1"), freshPass);
   });
 });
 

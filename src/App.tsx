@@ -179,6 +179,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   // One heavy inference at a time. Sidecar returns BUSY for overlapping requests.
   const concurrency = 1;
   const [exportSrt, setExportSrt] = useState<boolean>(() => !!loadStoredTtsSettings().exportSrt);
+  const [translateSrt, setTranslateSrt] = useState<boolean>(() => !!loadStoredTtsSettings().translateSrt);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [totalChunks, setTotalChunks] = useState(0);
 
@@ -418,12 +419,21 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
         localStorage.setItem("voxlab_active_workspace", "settings");
       } catch {}
     };
+    const handleOpenSettingsProviders = () => {
+      setSettingsInitialGroup("providers");
+      setActiveWorkspace("settings");
+      try {
+        localStorage.setItem("voxlab_active_workspace", "settings");
+      } catch {}
+    };
     if (typeof window !== "undefined") {
       window.addEventListener("voxlab_navigate_workspace", handleNav);
       window.addEventListener("voxlab_open_settings_models", handleOpenSettingsModels);
+      window.addEventListener("voxlab_open_settings_providers", handleOpenSettingsProviders);
       return () => {
         window.removeEventListener("voxlab_navigate_workspace", handleNav);
         window.removeEventListener("voxlab_open_settings_models", handleOpenSettingsModels);
+        window.removeEventListener("voxlab_open_settings_providers", handleOpenSettingsProviders);
       };
     }
   }, []);
@@ -498,6 +508,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
                   isPlayingAudio={isAudioPlaying}
                   onPlayChunk={handlePlayChunk}
                   exportSrt={exportSrt}
+                  translateSrt={translateSrt}
                   incomingScript={ttsIncomingScript}
                   onConsumeIncomingScript={() => setTtsIncomingScript(null)}
                   activeModel={activeModel}
@@ -517,6 +528,8 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
                       onOpenVoiceModal={() => setVoiceModalOpen(true)}
                       exportSrt={exportSrt}
                       onChangeExportSrt={setExportSrt}
+                      translateSrt={translateSrt}
+                      onChangeTranslateSrt={setTranslateSrt}
                     />
                   }
                   bottomPlayer={

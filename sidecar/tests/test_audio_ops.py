@@ -429,6 +429,39 @@ class AudioOpsTest(unittest.TestCase):
         cached = audio_quality.get_cached_primary_asr_words(wav_path, "faster-whisper-large-v3-turbo", "en")
         self.assertIsNotNone(cached)
 
+    def test_shape_internal_pauses_maps_mixed_trim_and_insert_timestamps(self):
+        sr = 24000
+        # Two chunks concatenated: speech1 [0.0..0.5], long gap1 [0.5..1.5] (1.0s trimmed to ~0.35s),
+        # speech2 [1.5..2.0], short gap2 [2.0..2.1] (0.1s extended to ~0.50s), speech3 [2.1..2.6]
+        t_sp = np.linspace(0, 0.5, int(0.5 * sr), endpoint=False, dtype=np.float32)
+        sp = 0.25 * np.sin(2 * np.pi * 220.0 * t_sp)
+        audio = np.concatenate([
+            sp,
+            np.zeros(int(1.0 * sr), dtype=np.float32),
+            sp,
+            np.zeros(int(0.1 * sr), dtype=np.float32),
+            sp,
+        ])
+        asr_words = [
+            {"word": "First,", "startSec": 0.0, "endSec": 0.5, "probability": 0.99},
+            {"word": "second?", "startSec": 1.5, "endSec": 2.0, "probability": 0.99},
+            {"word": "Third.", "startSec": 2.1, "endSec": 2.6, "probability": 0.99},
+        ]
+        shaped, updated_words, edits = audio_ops.shape_internal_punctuation_pauses(
+            audio,
+            sr,
+            "First, second? Third.",
+            {"comma": 0.35, "period": 0.55, "questionExclamation": 0.50, "colonSemicolon": 0.40},
+            asr_words,
+        )
+        self.assertGreaterEqual(len(edits), 2)
+        # First word untouched, second word shifted left by trim, third word shifted net left+insert
+        self.assertAlmostEqual(updated_words[0]["startSec"], 0.0, places=2)
+        self.assertLess(updated_words[1]["startSec"], 1.0)
+        gap2 = updated_words[2]["startSec"] - updated_words[1]["endSec"]
+        self.assertGreaterEqual(gap2, 0.45)
+        self.assertLessEqual(updated_words[2]["endSec"], shaped.size / sr + 0.02)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,10 @@ import {
   assembleMasterAudioAsync,
   formatSrtTimestamp,
   generateSrtFromChunks,
+  buildTranslatedSrtPath,
+  translateSrtContent1to1,
 } from "../masterExport";
+import { parseSubtitle } from "../../subtitle/parser";
 
 describe("Master Audio Export Tests (M1 - M15)", () => {
   const createMockChunk = (
@@ -542,6 +545,183 @@ describe("Master Audio Real Assembly Tests (Async Web Audio / Fallback)", () => 
 
     const result = await assembleMasterAudioAsync(chunks);
     assert.deepEqual(result.orderedChunkIndices, [1, 2, 3]);
+  });
+});
+
+describe("Parallel TTS Subtitle Translation (1:1 Timestamp Sync)", () => {
+  it("T1: buildTranslatedSrtPath appends _<lang>.srt cleanly for wav, mp3, srt, and paths with spaces", () => {
+    assert.equal(
+      buildTranslatedSrtPath("D:/Exports/My Podcast Master.wav", "vi"),
+      "D:/Exports/My Podcast Master_vi.srt"
+    );
+    assert.equal(
+      buildTranslatedSrtPath("C:\\Audio\\episode_01.MP3", "ja"),
+      "C:\\Audio\\episode_01_ja.srt"
+    );
+    assert.equal(
+      buildTranslatedSrtPath("VoxLab_Demo.srt", "en"),
+      "VoxLab_Demo_en.srt"
+    );
+    assert.equal(
+      buildTranslatedSrtPath("VoxLab_NoExt", "fr"),
+      "VoxLab_NoExt_fr.srt"
+    );
+  });
+
+  it("T2: translateSrtContent1to1 preserves exact 1:1 cue indices and timestamps from generateSrtFromChunks", async () => {
+    const chunks: ChunkItem[] = [
+      {
+        id: "c1",
+        index: 1,
+        text: "Welcome to our channel.",
+        originalText: "Welcome to our channel.",
+        status: "ready",
+        durationSec: 2.5,
+        pauseAfterMs: 500,
+      },
+      {
+        id: "c2",
+        index: 2,
+        text: "Today we explore new technology.",
+        originalText: "Today we explore new technology.",
+        status: "ready",
+        durationSec: 3.75,
+        pauseAfterMs: 0,
+      },
+    ];
+
+    const sourceSrt = generateSrtFromChunks(chunks, {
+      aspectRatio: "16:9",
+      maxLines: 1,
+      optimize: true,
+    });
+    const sourceCues = parseSubtitle(sourceSrt);
+
+    const mockTranslations: Record<number, string> = {};
+    sourceCues.forEach((c) => {
+      mockTranslations[c.index] = `Bản dịch câu ${c.index}`;
+    });
+
+    const result = await translateSrtContent1to1(sourceSrt, {
+      targetLanguage: "vi",
+      providerId: "google",
+      aspectRatio: "16:9",
+      maxLines: 1,
+      translateCuesFn: async (cues) =>
+        cues.map((c) => ({
+          index: c.index,
+          startSec: c.startSec,
+          endSec: c.endSec,
+          originalText: c.text,
+          text: mockTranslations[c.index],
+        })),
+    });
+
+    const translatedCues = parseSubtitle(result.srt);
+    assert.equal(result.cueCount, sourceCues.length);
+    assert.equal(translatedCues.length, sourceCues.length);
+
+    sourceCues.forEach((orig, idx) => {
+      assert.equal(translatedCues[idx].index, orig.index);
+      assert.equal(translatedCues[idx].startSec, orig.startSec);
+      assert.equal(translatedCues[idx].endSec, orig.endSec);
+      assert.equal(
+        formatSrtTimestamp(translatedCues[idx].startSec),
+        formatSrtTimestamp(orig.startSec)
+      );
+      assert.equal(
+        formatSrtTimestamp(translatedCues[idx].endSec),
+        formatSrtTimestamp(orig.endSec)
+      );
+      assert.equal(translatedCues[idx].text, `Bản dịch câu ${orig.index}`);
+    });
+  });
+
+  it("T3: respects maxLines (1-line unwrapped vs 2-line balanced wrapping) and falls back to source when blank", async () => {
+    const sampleSrt =
+      "1\n00:00:00,000 --> 00:00:04,500\nFirst long cue here.\n\n" +
+      "2\n00:00:04,800 --> 00:00:07,200\nSecond cue fallback.\n";
+
+    const twoLineRes = await translateSrtContent1to1(sampleSrt, {
+      targetLanguage: "vi",
+      providerId: "google",
+      aspectRatio: "9:16",
+      maxLines: 2,
+      translateCuesFn: async (cues) => [
+        {
+          index: cues[0].index,
+          startSec: cues[0].startSec,
+          endSec: cues[0].endSec,
+          originalText: cues[0].text,
+          text: "Đây là một câu dịch phụ đề khá dài cần được ngắt thành hai dòng cân đối",
+        },
+        {
+          index: cues[1].index,
+          startSec: cues[1].startSec,
+          endSec: cues[1].endSec,
+          originalText: cues[1].text,
+          text: "   ", // Blank translation triggers source fallback so index isn't dropped
+        },
+      ],
+    });
+
+    const twoLineCues = parseSubtitle(twoLineRes.srt);
+    assert.equal(twoLineCues.length, 2);
+    assert.ok(twoLineCues[0].text.includes("\n"), "Expected 2-line balanced wrapping for 9:16 maxLines=2");
+    assert.equal(twoLineCues[1].text, "Second cue fallback.");
+    assert.equal(twoLineCues[1].startSec, 4.8);
+    assert.equal(twoLineCues[1].endSec, 7.2);
+
+    const oneLineRes = await translateSrtContent1to1(sampleSrt, {
+      targetLanguage: "vi",
+      providerId: "google",
+      aspectRatio: "9:16",
+      maxLines: 1,
+      translateCuesFn: async (cues) => [
+        {
+          index: cues[0].index,
+          startSec: cues[0].startSec,
+          endSec: cues[0].endSec,
+          originalText: cues[0].text,
+          text: "Dòng một\nDòng hai",
+        },
+        {
+          index: cues[1].index,
+          startSec: cues[1].startSec,
+          endSec: cues[1].endSec,
+          originalText: cues[1].text,
+          text: "Câu thứ hai.",
+        },
+      ],
+    });
+
+    const oneLineCues = parseSubtitle(oneLineRes.srt);
+    assert.equal(oneLineCues[0].text, "Dòng một Dòng hai");
+  });
+
+  it("T4: throws clear error if translator breaks 1:1 cue count invariant", async () => {
+    const sampleSrt =
+      "1\n00:00:00,000 --> 00:00:02,000\nHello world.\n\n" +
+      "2\n00:00:02,200 --> 00:00:04,000\nSecond line.\n";
+
+    await assert.rejects(
+      async () => {
+        await translateSrtContent1to1(sampleSrt, {
+          targetLanguage: "vi",
+          providerId: "google",
+          translateCuesFn: async (cues) => [
+            {
+              index: cues[0].index,
+              startSec: cues[0].startSec,
+              endSec: cues[0].endSec,
+              originalText: cues[0].text,
+              text: "Xin chào.",
+            },
+          ],
+        });
+      },
+      /không khớp phụ đề gốc/
+    );
   });
 });
 

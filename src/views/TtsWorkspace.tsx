@@ -34,9 +34,12 @@ import {
   generateSrtFromChunks,
   downloadTextBlob,
   computeChunkPausesMs,
+  buildTranslatedSrtPath,
+  translateSrtContent1to1,
 } from "../services/audio/masterExport";
 import { loadStoredTtsSettings } from "../components/inspector/TtsInspector";
 import { loadSubtitleSettings } from "../services/subtitle";
+import { loadTranslationSettings } from "../services/translation";
 import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import {
   buildDefaultExportPath,
@@ -54,7 +57,8 @@ import {
   countChunkQualityIssues,
   getChunkAudioSignature,
   validateChunkAudioQuality,
-  isReviewOutdated,
+  pickNextOutdatedChunk,
+  resolveAutoRevalidatedReview,
   markChunksAffectedByPronunciationRules,
   QUALITY_VALIDATOR_VERSION,
 } from "../services/audio/qualityValidator";
@@ -91,6 +95,7 @@ interface TtsWorkspaceProps {
   inspector?: React.ReactNode;
   bottomPlayer?: React.ReactNode;
   exportSrt?: boolean;
+  translateSrt?: boolean;
   incomingScript?: string | null;
   onConsumeIncomingScript?: () => void;
   activeModel?: string;
@@ -119,6 +124,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   inspector,
   bottomPlayer,
   exportSrt = false,
+  translateSrt,
   incomingScript,
   onConsumeIncomingScript,
   activeModel = "OmniVoice",
@@ -175,6 +181,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   const scriptFileInputRef = useRef<HTMLInputElement>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isAssemblingMaster, setIsAssemblingMaster] = useState(false);
+  const [isExportingMaster, setIsExportingMaster] = useState(false);
+  const [exportButtonLabel, setExportButtonLabel] = useState<string>("");
   const [expandedIssuesChunks, setExpandedIssuesChunks] = useState<Record<string, boolean>>({});
   const inFlightValidationsRef = useRef<Set<string>>(new Set());
   const masterBlobUrlRef = useRef<string | null>(null);
@@ -614,14 +622,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     if (inFlightValidationsRef.current.size > 0) return;
     if (chunks.some((c) => c.qualityReview?.status === "checking")) return;
 
-    // Find first ready chunk that has audio and an outdated review, not currently in flight
-    const outdatedChunk = chunks.find(
-      (c) =>
-        c.status === "ready" &&
-        Boolean(c.audioFilePath || c.audioUrl) &&
-        c.qualityReview?.status !== "checking" &&
-        isReviewOutdated(c, undefined, isAsrReady) &&
-        !inFlightValidationsRef.current.has(`${getChunkAudioSignature(c)}::${currentAsrModel}`)
+    // Find next ready chunk with outdated review, prioritizing non-pass items
+    const outdatedChunk = pickNextOutdatedChunk(
+      chunks,
+      inFlightValidationsRef.current,
+      currentAsrModel,
+      isAsrReady
     );
 
     if (!outdatedChunk) return;
@@ -663,7 +669,13 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       try {
         const lang = outdatedChunk.effectiveVoiceSnapshot?.language;
         const speed = outdatedChunk.effectiveVoiceSnapshot?.speed;
-        const review = await validateChunkAudioQuality(outdatedChunk, lang, undefined, speed, currentAsrModel);
+        const rawReview = await validateChunkAudioQuality(outdatedChunk, lang, undefined, speed, currentAsrModel);
+        const review = resolveAutoRevalidatedReview(
+          outdatedChunk.qualityReview,
+          rawReview,
+          currentAsrModel,
+          audioSig
+        );
 
         inFlightValidationsRef.current.delete(inFlightKey);
 
@@ -1272,6 +1284,8 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
   // Master audio export execution with user-chosen destination dialog
   const handleExportAudio = async (forcePartial = false) => {
+    if (isExportingMaster) return;
+
     const val = validateChunksForExport(chunks);
     if (!forcePartial && !val.canExport) {
       onOpenExportValidation(val.invalidChunks);
@@ -1289,6 +1303,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
     try {
       const ttsSettings = loadStoredTtsSettings();
+      const shouldTranslateSrt = exportSrt && (translateSrt ?? !!ttsSettings.translateSrt);
       const safeTitle =
         (workingText.slice(0, 30) || "Podcast")
           .replace(/[^\w\s-]/g, "")
@@ -1319,6 +1334,9 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         }
       }
 
+      setIsExportingMaster(true);
+      setExportButtonLabel("Đang xuất...");
+
       const sortedChunks = [...targetChunks].sort((a, b) => a.index - b.index);
       const chunkPausesMs = computeChunkPausesMs(sortedChunks, ttsSettings.pauses);
       const seamWarnings = validateMasterBoundaries(sortedChunks, chunkPausesMs);
@@ -1334,6 +1352,10 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         setProgressStage("Đang xuất tệp âm thanh...");
         let exportedSrtPath: string | null = null;
         let exportedSrtContent: string | undefined;
+        let exportedTranslatedSrtPath: string | null = null;
+        let exportedTranslatedSrtContent: string | undefined;
+        let exportedTargetLang = "vi";
+        let translationExportError: string | null = null;
 
         const concatInputs = sortedChunks.map((c, i) => ({
           path: c.audioFilePath!,
@@ -1355,8 +1377,10 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         }
 
         if (exportSrt) {
+          const subtitleSettings = loadSubtitleSettings();
+          const { invoke } = await import("@tauri-apps/api/core");
+
           try {
-            const subtitleSettings = loadSubtitleSettings();
             const timedChunks = fastWav?.segments
               ? sortedChunks.map((c, idx) => ({
                   ...c,
@@ -1370,7 +1394,6 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               optimize: true,
             });
             const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
-            const { invoke } = await import("@tauri-apps/api/core");
             await invoke("fs_write_text", {
               path: srtPath,
               content: srtContent,
@@ -1379,6 +1402,38 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             exportedSrtContent = srtContent;
           } catch (err: any) {
             console.error("SRT export error:", err);
+          }
+
+          if (shouldTranslateSrt && exportedSrtContent && exportedSrtContent.trim().length > 0) {
+            const transSettings = loadTranslationSettings();
+            const targetLang = transSettings.targetLanguage || "vi";
+            const providerId = transSettings.translationProviderId || "google";
+            exportedTargetLang = targetLang;
+            setExportButtonLabel("Đang dịch phụ đề...");
+            setProgressStage("Đang dịch phụ đề...");
+
+            try {
+              const transRes = await translateSrtContent1to1(exportedSrtContent, {
+                targetLanguage: targetLang,
+                providerId,
+                aspectRatio: subtitleSettings.aspectRatio,
+                maxLines: subtitleSettings.maxLines,
+                onProgress: (done, total) => {
+                  setExportButtonLabel(`Đang dịch ${done}/${total}...`);
+                  setProgressStage(`Đang dịch phụ đề (${done}/${total})...`);
+                },
+              });
+              const translatedSrtPath = buildTranslatedSrtPath(chosenPath, targetLang);
+              await invoke("fs_write_text", {
+                path: translatedSrtPath,
+                content: transRes.srt,
+              });
+              exportedTranslatedSrtPath = translatedSrtPath;
+              exportedTranslatedSrtContent = transRes.srt;
+            } catch (err: any) {
+              console.error("Parallel subtitle translation error:", err);
+              translationExportError = err?.message || String(err);
+            }
           }
         }
         setProgressStage("");
@@ -1392,11 +1447,16 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             );
           const activeVoiceObj = voices.find((v) => v.id === activeVoiceId);
           const exportFileName = chosenPath.split(/[\\/]/).pop() || `${safeTitle}.wav`;
+          const historyTasks: ("tts" | "transcription" | "translation")[] = [
+            "tts",
+            ...(exportedSrtPath ? ["transcription" as const] : []),
+            ...(exportedTranslatedSrtPath ? ["translation" as const] : []),
+          ];
           recordCompletedJobToHistory({
             title: exportFileName,
             category: "tts",
             isBatch: false,
-            tasks: exportedSrtPath ? ["tts", "transcription"] : ["tts"],
+            tasks: historyTasks,
             durationSec: totalDurSec,
             chunkCount: sortedChunks.length,
             artifacts: [
@@ -1419,17 +1479,41 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                     },
                   ]
                 : []),
+              ...(exportedTranslatedSrtPath
+                ? [
+                    {
+                      filePath: exportedTranslatedSrtPath,
+                      type: "subtitle" as const,
+                      task: "translation" as const,
+                      label: `Phụ đề dịch (.SRT - ${exportedTargetLang.toUpperCase()})`,
+                      subtitleContent: exportedTranslatedSrtContent,
+                      isTimelineSynced: true,
+                    },
+                  ]
+                : []),
             ],
           });
         } catch (histErr) {
           console.warn("Could not record exported job to history:", histErr);
         }
 
-        alert(
-          exportSrt
-            ? `Hoàn tất xuất WAV + SRT:\n${chosenPath}`
-            : `Đã xuất file âm thanh thành công:\n${chosenPath}`
-        );
+        if (exportedTranslatedSrtPath) {
+          alert(
+            `Hoàn tất xuất Audio + SRT + Bản dịch song song:\n• ${chosenPath}\n• ${exportedSrtPath}\n• ${exportedTranslatedSrtPath}`
+          );
+        } else if (shouldTranslateSrt && translationExportError) {
+          alert(
+            `Đã xuất Audio + SRT gốc:\n• ${chosenPath}${
+              exportedSrtPath ? `\n• ${exportedSrtPath}` : ""
+            }\n\n⚠️ Không thể dịch phụ đề: ${translationExportError}`
+          );
+        } else {
+          alert(
+            exportSrt
+              ? `Hoàn tất xuất WAV + SRT:\n${chosenPath}`
+              : `Đã xuất file âm thanh thành công:\n${chosenPath}`
+          );
+        }
         return;
       }
 
@@ -1459,9 +1543,10 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         downloadAudioBlob(result.blob, result.filename);
 
         if (exportSrt) {
+          let srtContent = "";
+          const subtitleSettings = loadSubtitleSettings();
           try {
-            const subtitleSettings = loadSubtitleSettings();
-            const srtContent = generateSrtFromChunks(chunks, {
+            srtContent = generateSrtFromChunks(chunks, {
               punctuationPauses: ttsSettings.pauses,
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
@@ -1472,11 +1557,40 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           } catch (err: any) {
             console.error("SRT export error:", err);
           }
+
+          if (shouldTranslateSrt && srtContent.trim().length > 0) {
+            try {
+              const transSettings = loadTranslationSettings();
+              const targetLang = transSettings.targetLanguage || "vi";
+              const providerId = transSettings.translationProviderId || "google";
+              setExportButtonLabel("Đang dịch phụ đề...");
+              setProgressStage("Đang dịch phụ đề...");
+              const transRes = await translateSrtContent1to1(srtContent, {
+                targetLanguage: targetLang,
+                providerId,
+                aspectRatio: subtitleSettings.aspectRatio,
+                maxLines: subtitleSettings.maxLines,
+                onProgress: (done, total) => {
+                  setExportButtonLabel(`Đang dịch ${done}/${total}...`);
+                  setProgressStage(`Đang dịch phụ đề (${done}/${total})...`);
+                },
+              });
+              const translatedSrtFilename = buildTranslatedSrtPath(result.filename, targetLang);
+              downloadTextBlob(transRes.srt, translatedSrtFilename);
+            } catch (err: any) {
+              console.error("Parallel subtitle translation error:", err);
+              alert(`Đã xuất Audio + SRT gốc, nhưng không thể dịch phụ đề:\n${err?.message || err}`);
+            }
+          }
         }
       }
     } catch (err: any) {
       console.error("Master export error:", err);
       alert(`Lỗi khi xuất audio: ${err?.message || err}`);
+    } finally {
+      setIsExportingMaster(false);
+      setExportButtonLabel("");
+      setProgressStage("");
     }
   };
 
@@ -1606,25 +1720,36 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
               <button
                 type="button"
                 onClick={() => handleExportAudio(false)}
-                disabled={chunks.length === 0 || isGenerating}
+                disabled={chunks.length === 0 || isGenerating || isExportingMaster}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors whitespace-nowrap cursor-pointer ${
-                  chunks.length === 0 || isGenerating
+                  chunks.length === 0 || isGenerating || isExportingMaster
                     ? "bg-surface2 text-textMuted cursor-not-allowed opacity-60 border border-borderDefault"
                     : "bg-surface2 hover:bg-surface3 text-textPrimary hover:text-accent border border-borderDefault hover:border-accent/40"
                 }`}
                 title={
                   isGenerating
                     ? "Đang tạo audio, vui lòng chờ hoàn tất để ghép & xuất"
+                    : isExportingMaster
+                    ? exportButtonLabel || "Đang xuất file..."
                     : "Chọn vị trí lưu và xuất file audio master"
                 }
               >
-                <FileAudio className="w-3.5 h-3.5 text-accent" />
-                <span>{t.tts.exportAudio}</span>
-                {invalidChunks.length > 0 && !isGenerating && (
-                  <span
-                    className="w-1.5 h-1.5 rounded-full bg-warning ml-0.5"
-                    title="Có đoạn cần tạo lại trước khi xuất"
-                  />
+                {isExportingMaster ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent" />
+                    <span>{exportButtonLabel || "Đang xuất..."}</span>
+                  </>
+                ) : (
+                  <>
+                    <FileAudio className="w-3.5 h-3.5 text-accent" />
+                    <span>{t.tts.exportAudio}</span>
+                    {invalidChunks.length > 0 && !isGenerating && (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-warning ml-0.5"
+                        title="Có đoạn cần tạo lại trước khi xuất"
+                      />
+                    )}
+                  </>
                 )}
               </button>
             </div>

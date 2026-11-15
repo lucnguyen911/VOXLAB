@@ -144,7 +144,7 @@ export const ReviewGrid: React.FC<ReviewGridProps> = ({
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-background">
       {/* Grid Column Headers */}
-      <div className="px-4 py-2 bg-surface2/40 border-b border-borderDefault grid grid-cols-1 md:grid-cols-2 gap-3 text-xs select-none flex-shrink-0">
+      <div className="px-4 py-2 bg-surface2/40 border-b border-borderDefault grid grid-cols-1 @[600px]:grid-cols-2 gap-3 text-xs select-none flex-shrink-0">
         <div className="flex items-center justify-between px-1 gap-2">
           <span className="font-bold text-textPrimary text-xs">
             Bản gốc

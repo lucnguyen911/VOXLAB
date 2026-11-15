@@ -5,8 +5,22 @@ import { loadSubtitleSettings } from "../subtitle/profiles";
 import { getEffectiveRules, prepareSpokenText } from "../pronunciation";
 import { replacePauseTokensWithBoundary } from "../pause";
 
-export const QUALITY_VALIDATOR_VERSION = "4.2.0";
+export const QUALITY_VALIDATOR_VERSION = "4.4.6";
 export const MAX_AUTO_VALIDATION_RETRIES = 1;
+
+/**
+ * Formats seconds as MM:SS.d (0.1s floor precision) matching backend format_timestamp so UI pills,
+ * existing MM:SS ranges, and warning messages stay synchronized without 1s floor truncation lag.
+ */
+export function formatIssueTimestamp(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "00:00.0";
+  const totalTenths = Math.floor(seconds * 10 + 1e-6);
+  const mins = Math.floor(totalTenths / 600);
+  const remTenths = totalTenths % 600;
+  const secs = Math.floor(remTenths / 10);
+  const tenths = remTenths % 10;
+  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}.${tenths}`;
+}
 
 export interface QualityCheckableItem {
   id?: string | number;
@@ -146,6 +160,73 @@ export function isReviewOutdated(
     }
   }
   return false;
+}
+
+/**
+ * Selects the next ready item whose quality review is missing or outdated.
+ * Prioritizes items currently marked non-pass (warnings, errors, unverified, or missing)
+ * before outdated "pass" items so stale warnings and timestamps refresh immediately.
+ */
+export function pickNextOutdatedChunk<T extends QualityCheckableItem>(
+  items: T[],
+  inFlightKeys: ReadonlySet<string>,
+  currentAsrModel?: string,
+  isAsrReady: boolean = true
+): T | undefined {
+  const candidates = items.filter((item) => {
+    if (item.status !== "ready") return false;
+    if (!item.audioFilePath && !item.audioUrl && !item.audioBlobUrl && !item.fittedAudioUrl) {
+      return false;
+    }
+    if (item.qualityReview?.status === "checking") return false;
+    if (!isReviewOutdated(item, undefined, isAsrReady)) return false;
+    const sig = getChunkAudioSignature(item);
+    if (!sig) return false;
+    return !inFlightKeys.has(`${sig}::${currentAsrModel || ""}`);
+  });
+  if (candidates.length === 0) return undefined;
+  return candidates.find((item) => item.qualityReview?.status !== "pass") ?? candidates[0];
+}
+
+/**
+ * Reconciles a newly computed review against a historical review during background
+ * re-validation: preserves non-error archived reviews if temporary scratch WAVs were removed.
+ */
+export function resolveAutoRevalidatedReview(
+  previousReview: AudioQualityReview | undefined,
+  freshReview: AudioQualityReview,
+  currentAsrModel?: string,
+  audioSignature?: string
+): AudioQualityReview {
+  if (
+    previousReview &&
+    previousReview.status !== "error" &&
+    freshReview.status === "error" &&
+    freshReview.issues?.some((iss) => iss.code === "FILE_NOT_FOUND")
+  ) {
+    return {
+      ...previousReview,
+      validatorVersion: QUALITY_VALIDATOR_VERSION,
+      asrModelId: freshReview.asrModelId || previousReview.asrModelId || currentAsrModel,
+      ...(audioSignature ? { audioSignature } : {}),
+    };
+  }
+  return freshReview;
+}
+
+/**
+ * Returns true when background re-validation changed status, issue count, or issue payloads/timestamps.
+ */
+export function didQualityReviewMeaningfullyChange(
+  prev: AudioQualityReview | undefined,
+  next: AudioQualityReview
+): boolean {
+  if (!prev) return true;
+  if (prev.status !== next.status) return true;
+  const prevIssues = prev.issues || [];
+  const nextIssues = next.issues || [];
+  if (prevIssues.length !== nextIssues.length) return true;
+  return JSON.stringify(prevIssues) !== JSON.stringify(nextIssues);
 }
 
 /**

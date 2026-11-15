@@ -56,33 +56,33 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
   });
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
+    <div className="@container flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
       <div className="flex-1 overflow-auto">
-        <table className="w-full min-w-[960px] text-left border-collapse table-fixed border-b border-borderDefault">
+        <table className="w-full min-w-[640px] text-left border-collapse table-fixed border-b border-borderDefault">
           <thead className="sticky top-0 bg-surface2 border-b border-borderDefault z-20 text-[13px] font-bold text-textSecondary">
             <tr>
               {/* Column 1: Order / Pin */}
-              <th className="py-2.5 px-3 w-[10%] text-center border-r border-borderDefault">
+              <th className="py-2.5 px-2 w-[78px] @[920px]:w-[96px] text-center border-r border-borderDefault overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Thứ tự</div>
               </th>
 
               {/* Column 2: File Name */}
-              <th className="py-2.5 px-3.5 w-[28%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-3.5 w-auto text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Tên tệp</div>
               </th>
 
               {/* Column 3: Workflow Sequence & Step Progress */}
-              <th className="py-2.5 px-3 w-[32%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-3 w-[28%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Chuỗi tác vụ</div>
               </th>
 
               {/* Column 4: Status / Progress Bar */}
-              <th className="py-2.5 px-3 w-[18%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-3 w-[132px] @[920px]:w-[168px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Tiến độ</div>
               </th>
 
               {/* Column 5: Actions */}
-              <th className="py-2.5 px-2 w-[12%] text-center text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-2 w-[72px] @[920px]:w-[92px] text-center text-sm font-bold text-textPrimary overflow-hidden">
                 <div className="flex items-center justify-center min-h-[46px]">Thao tác</div>
               </th>
             </tr>
@@ -106,16 +106,16 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                   }`}
                 >
                   {/* Column 1: Priority Order / Pinned Badge */}
-                  <td className="py-3 px-3 text-center border-r border-borderDefault">
+                  <td className="py-3 px-2 text-center border-r border-borderDefault overflow-hidden">
                     <div className="flex items-center justify-center gap-1.5">
                       {isProcessing ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-accent text-slate-950">
-                          <Lock className="w-3 h-3" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-accent text-slate-950 whitespace-nowrap">
+                          <Lock className="w-3 h-3 shrink-0" />
                           <span>{queueStatus === "pausing" ? "Đang dừng..." : "Đang chạy"}</span>
                         </span>
                       ) : isPaused ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                          <Pause className="w-3 h-3" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap">
+                          <Pause className="w-3 h-3 shrink-0" />
                           <span>Tạm dừng</span>
                         </span>
                       ) : (
@@ -149,7 +149,7 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                   </td>
 
                   {/* Column 2: File Name */}
-                  <td className="py-3 px-3.5 border-r border-borderDefault">
+                  <td className="py-3 px-3.5 border-r border-borderDefault overflow-hidden">
                     <div className="flex items-center gap-2 min-w-0">
                       {renderFileIcon(job.fileKind)}
                       <div className="min-w-0">
@@ -167,7 +167,7 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                   </td>
 
                   {/* Column 3: Workflow Buttons with Step Status */}
-                  <td className="py-3 px-3 border-r border-borderDefault">
+                  <td className="py-3 px-3 border-r border-borderDefault overflow-hidden">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {job.executionSequence.map((task) => {
                         const step = job.stepResults[task];
@@ -213,10 +213,10 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                   </td>
 
                   {/* Column 4: Progress Bar */}
-                  <td className="py-3 px-3 border-r border-borderDefault">
+                  <td className="py-3 px-3 border-r border-borderDefault overflow-hidden">
                     <div className="space-y-1">
                       <div className="flex items-center justify-between text-[11px]">
-                        <span className="text-textSecondary font-medium">
+                        <span className="text-textSecondary font-medium truncate">
                           {isProcessing
                             ? queueStatus === "pausing"
                               ? "Đang tạm dừng..."
@@ -227,7 +227,7 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                             ? "Đang chờ"
                             : job.status}
                         </span>
-                        <span className="font-mono font-bold text-textPrimary">
+                        <span className="font-mono font-bold text-textPrimary shrink-0">
                           {job.progressPct}%
                         </span>
                       </div>
@@ -247,13 +247,13 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                   </td>
 
                   {/* Column 5: Actions */}
-                  <td className="py-3 px-2 text-center">
+                  <td className="py-3 px-2 text-center overflow-hidden">
                     <div className="flex items-center justify-center gap-1.5">
                       {isProcessing && onPauseJob && queueStatus !== "pausing" && (
                         <button
                           type="button"
                           onClick={() => onPauseJob(job.id)}
-                          className="p-1 rounded text-amber-400 hover:bg-amber-500/10 cursor-pointer"
+                          className="p-1 rounded text-amber-400 hover:bg-amber-500/10 cursor-pointer shrink-0"
                           title="Tạm dừng tệp này"
                         >
                           <Pause className="w-3.5 h-3.5" />
@@ -263,7 +263,7 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                         <button
                           type="button"
                           onClick={() => onResumeJob(job.id)}
-                          className="p-1 rounded text-accent hover:bg-accent/10 cursor-pointer"
+                          className="p-1 rounded text-accent hover:bg-accent/10 cursor-pointer shrink-0"
                           title="Tiếp tục xử lý"
                         >
                           <Play className="w-3.5 h-3.5" />
@@ -272,7 +272,7 @@ export const QueueReorderTable: React.FC<QueueReorderTableProps> = ({
                       <button
                         type="button"
                         onClick={() => onCancelJob(job.id)}
-                        className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 cursor-pointer"
+                        className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 cursor-pointer shrink-0"
                         title="Hủy khỏi hàng đợi"
                       >
                         <X className="w-3.5 h-3.5" />

@@ -452,6 +452,100 @@ class NumberNormalizerTest(unittest.TestCase):
             [s.canonical for s in collapse_number_tokens(["25°C"], "en")],
         )
 
+    def test_plural_decades_centuries_and_spoken_fractions_v440(self):
+        # Plural decades & centuries (Seg 14 class: 'nineteen eighties' == '1980s')
+        self.assertTrue(are_number_expressions_equivalent("nineteen eighties", "1980s", "en"))
+        self.assertTrue(are_number_expressions_equivalent("nineteen nineties", "1990s", "en"))
+        self.assertTrue(are_number_expressions_equivalent("eighteen seventies", "1870s", "en"))
+        self.assertTrue(are_number_expressions_equivalent("twenty twenties", "2020s", "en"))
+        self.assertTrue(are_number_expressions_equivalent("twenty tens", "2010s", "en"))
+        self.assertTrue(are_number_expressions_equivalent("nineteen hundreds", "1900s", "en"))
+        self.assertTrue(are_number_expressions_equivalent("eighteen hundreds", "1800s", "en"))
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("in the two thousands".split(), "en")],
+            ["in", "the", "2000s"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("back in the nineteen eighties,".split(), "en")],
+            [s.canonical for s in collapse_number_tokens("back in the 1980s,".split(), "en")],
+        )
+        # Short plural decades ('the eighties' == "the '80s" == 'the 80s')
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("the eighties".split(), "en")],
+            ["the", "80s"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("the '80s".split(), "en")],
+            ["the", "80s"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("in his 80s".split(), "en")],
+            ["in", "his", "80s"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("mid-eighties mid-1980s late-'90s".split(), "en")],
+            ["mid", "80s", "mid", "1980s", "late", "90s"],
+        )
+        # Duration like '10s' (10 seconds) without era prefix/apostrophe must NOT become a decade '10s'
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("wait 10s".split(), "en")],
+            ["wait", "10", "s"],
+        )
+        # Distinct centuries/decades must never falsely match
+        self.assertFalse(are_number_expressions_equivalent("nineteen eighties", "1990s", "en"))
+        self.assertFalse(are_number_expressions_equivalent("nineteen eighties", "1980", "en"))
+
+        # English spoken fractional quantifiers (Seg 18 class: 'six and a half million' == '6 .5 million' == '6,500,000')
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("six and a half million".split(), "en")],
+            ["6500000"],
+        )
+        self.assertTrue(
+            are_number_expressions_equivalent("six and a half million", "6,500,000", "en")
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens(["roughly", "6", ".5", "million"], "en")],
+            ["roughly", "6500000"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("roughly six and a half million".split(), "en")],
+            ["roughly", "6500000"],
+        )
+        self.assertTrue(are_number_expressions_equivalent("two and a half", "2.5", "en"))
+        self.assertTrue(are_number_expressions_equivalent("one and one half billion", "1.5 billion", "en"))
+        self.assertTrue(are_number_expressions_equivalent("6 and a half million", "6.5 million", "en"))
+        self.assertTrue(are_number_expressions_equivalent("one and a quarter million", "1,250,000", "en"))
+        self.assertTrue(are_number_expressions_equivalent("three and three quarters", "3.75", "en"))
+        self.assertTrue(are_number_expressions_equivalent("four and a half percent", "4.5%", "en"))
+        self.assertTrue(are_number_expressions_equivalent("half a million", "500,000", "en"))
+        self.assertTrue(are_number_expressions_equivalent("a half million", "0.5 million", "en"))
+        self.assertTrue(are_number_expressions_equivalent("a quarter billion", "250,000,000", "en"))
+        self.assertTrue(are_number_expressions_equivalent("a quarter of a billion", "0.25 billion", "en"))
+        self.assertFalse(are_number_expressions_equivalent("six and a half million", "6,000,000", "en"))
+
+        # Vietnamese 'rưỡi' fractional quantifiers
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("sáu triệu rưỡi".split(), "vi")],
+            ["6500000"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("6 triệu rưỡi".split(), "vi")],
+            ["6500000"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("một tỷ rưỡi".split(), "vi")],
+            ["1500000000"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("hai nghìn rưỡi".split(), "vi")],
+            ["2500"],
+        )
+        self.assertEqual(
+            [s.canonical for s in collapse_number_tokens("một rưỡi".split(), "vi")],
+            ["1.5"],
+        )
+        self.assertTrue(are_number_expressions_equivalent("sáu triệu rưỡi", "6.500.000", "vi"))
+
 
 if __name__ == "__main__":
     unittest.main()

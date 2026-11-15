@@ -1164,62 +1164,62 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
       />
 
       {/* Subheader / Top Action Bar: Always sticky at the top */}
-      <div className="h-12 border-b border-borderDefault bg-surface1 px-4 flex items-center justify-between flex-shrink-0 z-20">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent">
+      <div className="@container min-h-12 py-1.5 border-b border-borderDefault bg-surface1 px-3.5 flex flex-wrap items-center justify-between gap-2 flex-shrink-0 z-20">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent shrink-0">
             <Captions className="w-4 h-4" />
           </div>
-          <div>
-            <h2 className="text-sm font-bold text-textPrimary">
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-textPrimary truncate">
               {t.transcription.title}
             </h2>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 @[900px]:gap-2">
           {workspaceState !== "EMPTY" && (
             <button
               type="button"
               onClick={handleBrowseFile}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
+              className="flex items-center gap-1.5 px-2.5 @[900px]:px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-semibold transition-colors cursor-pointer shadow-2xs whitespace-nowrap"
               title="Tải lên tệp hoặc thư mục âm thanh / video"
             >
-              <UploadCloud className="w-3.5 h-3.5 text-accent" />
+              <UploadCloud className="w-3.5 h-3.5 text-accent shrink-0" />
               <span>Tải Lên</span>
             </button>
           )}
 
           {/* Top Actions in RESULT State */}
           {workspaceState === "RESULT" && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5 @[900px]:gap-2">
               <button
                 onClick={handleExportTxt}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-medium transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 @[900px]:px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-medium transition-colors cursor-pointer whitespace-nowrap"
                 title="Xuất nội dung phụ đề dạng văn bản .TXT"
               >
-                <Download className="w-3.5 h-3.5 text-textMuted" />
+                <Download className="w-3.5 h-3.5 text-textMuted shrink-0" />
                 <span>{t.transcription.exportTxt}</span>
               </button>
 
               <button
                 onClick={handleExportSrt}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-medium transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 @[900px]:px-3 py-1.5 bg-surface2 hover:bg-surface3 text-textPrimary rounded-md border border-borderDefault text-xs font-medium transition-colors cursor-pointer whitespace-nowrap"
                 title="Xuất file phụ đề chuẩn SubRip .SRT"
               >
-                <Download className="w-3.5 h-3.5 text-textMuted" />
+                <Download className="w-3.5 h-3.5 text-textMuted shrink-0" />
                 <span>{t.transcription.exportSrt}</span>
               </button>
 
-              <div className="h-4 w-[1px] bg-borderDefault mx-1" />
+              <div className="h-4 w-[1px] bg-borderDefault mx-0.5 @[900px]:mx-1 hidden @[860px]:block" />
 
               {/* Option 1: Tạo Giọng Đọc (chuyển sang Text to Speech) */}
               <button
                 type="button"
                 onClick={handleSendToTts}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-accent hover:bg-accentHover text-white rounded-md text-xs font-semibold shadow-sm transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 @[900px]:px-3.5 py-1.5 bg-accent hover:bg-accentHover text-white rounded-md text-xs font-semibold shadow-sm transition-colors cursor-pointer whitespace-nowrap"
                 title="Chuyển sang tab Text to Speech để tạo giọng đọc thành audio (bỏ timestamp, chuẩn hoá văn bản)"
               >
-                <Volume2 className="w-3.5 h-3.5" />
+                <Volume2 className="w-3.5 h-3.5 shrink-0" />
                 <span>{t.transcription.sendToTts}</span>
               </button>
 
@@ -1227,10 +1227,10 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
               <button
                 type="button"
                 onClick={handleHandoffToDubbing}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-accent hover:bg-accentHover text-white rounded-md text-xs font-semibold shadow-sm transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 @[900px]:px-3.5 py-1.5 bg-accent hover:bg-accentHover text-white rounded-md text-xs font-semibold shadow-sm transition-colors cursor-pointer whitespace-nowrap"
                 title="Chuyển sang tab Dịch & Lồng tiếng để dịch sang ngôn ngữ khác đồng thời lồng tiếng"
               >
-                <Languages className="w-3.5 h-3.5" />
+                <Languages className="w-3.5 h-3.5 shrink-0" />
                 <span>{t.transcription.sendToDubbing}</span>
               </button>
             </div>
@@ -1665,9 +1665,9 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
         </div>
 
         {/* Right Configuration Inspector: CÀI ĐẶT PHỤ ĐỀ (Permanently Fixed) */}
-        <aside className="w-80 border-l border-borderDefault bg-surface1 flex flex-col flex-shrink-0 select-none text-xs">
+        <aside className="w-[clamp(268px,27vw,340px)] border-l border-borderDefault bg-surface1 flex flex-col flex-shrink-0 select-none text-xs">
           {/* Scrollable Settings Section */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 overflow-y-auto p-3 lg:p-4 space-y-3">
             {/* Header */}
             <div className="pb-1">
               <span className="font-bold text-xs text-textSecondary uppercase tracking-wider block">

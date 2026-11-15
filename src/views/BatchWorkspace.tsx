@@ -36,6 +36,7 @@ import {
 import { hydrateBatchGlobalDefaultsFromWorkspaces } from "../services/batch/batchWorkspaceSync";
 import { resolveBatchVoiceTarget } from "../services/batch/batchModelResolver";
 import { onAiModelsChanged } from "../services/ai/aiRuntimeSettings";
+import { syncBatchJobToHistory } from "../services/history/historyManager";
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { isTauriRuntime } from "../services/ai/tauriBackend";
 import { expandTauriPaths, extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
@@ -981,11 +982,17 @@ export const BatchWorkspace: React.FC = () => {
           isOpen={Boolean(qcModalJob)}
           onClose={() => setQcModalJob(null)}
           onSaveUpdatedJob={(updatedJob) => {
-            const updatedList = jobs.map((j) =>
+            const currentJobs = orchestrator.getJobs();
+            const updatedList = currentJobs.map((j) =>
               j.id === updatedJob.id ? updatedJob : j
             );
             orchestrator.setJobs(updatedList);
             setQcModalJob(updatedJob);
+            try {
+              syncBatchJobToHistory(updatedJob);
+            } catch {
+              // Non-blocking history sync
+            }
           }}
         />
       )}

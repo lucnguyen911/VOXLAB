@@ -4564,6 +4564,2672 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(len(core_rep), 1, core_rep)
         self.assertIn(core_rep[0]["code"], ("REPEATED_WORD", "SUSPECTED_STUTTER"))
 
+    def test_v430_distributive_rate_unit_and_pp_intensifier_no_false_pause(self):
+        # 1. Seg 41: '$40,000 a year [0.37s] straight out of...' -> natural clause-adjunct pause
+        seg41_text = (
+            "Just four hours of daily chore assistance can drain more than "
+            "forty thousand dollars a year straight out of a four zero one K nest egg."
+        )
+        wave_41, sr, asr_41 = self._phrase_audio([
+            ("Just", 0.16, 0.0), ("four", 0.22, 0.0), ("hours", 0.28, 0.0), ("of", 0.12, 0.0),
+            ("daily", 0.28, 0.0), ("chore", 0.24, 0.0), ("assistance", 0.42, 0.0),
+            ("can", 0.14, 0.0), ("drain", 0.26, 0.0), ("more", 0.20, 0.0), ("than", 0.16, 0.0),
+            ("forty", 0.24, 0.0), ("thousand", 0.30, 0.0), ("dollars", 0.30, 0.0),
+            ("a", 0.10, 0.0), ("year", 0.24, 0.37),
+            ("straight", 0.32, 0.0), ("out", 0.16, 0.0), ("of", 0.12, 0.0), ("a", 0.10, 0.0),
+            ("four", 0.20, 0.0), ("zero", 0.22, 0.0), ("one", 0.18, 0.0), ("K", 0.20, 0.0),
+            ("nest", 0.24, 0.0), ("egg.", 0.26, 0.0),
+        ])
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(seg41_text, asr_41, wave_41, sr, speed=1.0),
+            [],
+        )
+
+        # Digit-formatted ASR ($40,000) variant must also pass
+        wave_41d, sr, asr_41d = self._phrase_audio([
+            ("Just", 0.16, 0.0), ("four", 0.22, 0.0), ("hours", 0.28, 0.0), ("of", 0.12, 0.0),
+            ("daily", 0.28, 0.0), ("chore", 0.24, 0.0), ("assistance", 0.42, 0.0),
+            ("can", 0.14, 0.0), ("drain", 0.26, 0.0), ("more", 0.20, 0.0), ("than", 0.16, 0.0),
+            ("$40,000", 0.72, 0.0), ("a", 0.10, 0.0), ("year", 0.24, 0.37),
+            ("straight", 0.32, 0.0), ("out", 0.16, 0.0), ("of", 0.12, 0.0), ("a", 0.10, 0.0),
+            ("401k", 0.55, 0.0), ("nest", 0.24, 0.0), ("egg.", 0.26, 0.0),
+        ])
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(seg41_text, asr_41d, wave_41d, sr, speed=1.0),
+            [],
+        )
+
+        # 2. Distributive rate unit + participial adjunct, and verb + PP-intensifier opener
+        ok_cases = [
+            (
+                "Roughly three hundred dollars a month starting Monday.",
+                [
+                    ("Roughly", 0.26, 0.0), ("three", 0.20, 0.0), ("hundred", 0.28, 0.0),
+                    ("dollars", 0.28, 0.0), ("a", 0.10, 0.0), ("month", 0.26, 0.36),
+                    ("starting", 0.30, 0.0), ("Monday.", 0.30, 0.0),
+                ],
+            ),
+            (
+                "She walked straight into the room.",
+                [
+                    ("She", 0.16, 0.0), ("walked", 0.26, 0.36), ("straight", 0.30, 0.0),
+                    ("into", 0.18, 0.0), ("the", 0.12, 0.0), ("room.", 0.26, 0.0),
+                ],
+            ),
+            (
+                "Money came right out of pocket.",
+                [
+                    ("Money", 0.24, 0.0), ("came", 0.22, 0.36), ("right", 0.22, 0.0),
+                    ("out", 0.16, 0.0), ("of", 0.12, 0.0), ("pocket.", 0.28, 0.0),
+                ],
+            ),
+        ]
+        for txt, spec in ok_cases:
+            w, s_rate, a_w = self._phrase_audio(spec)
+            self.assertEqual(
+                audio_quality.detect_phrase_internal_pauses(txt, a_w, w, s_rate),
+                [],
+                f"Expected 0 false pauses for '{txt}'",
+            )
+
+        # 3. Contrast cases that MUST still flag ABNORMAL_PAUSE
+        bad_cases = [
+            (
+                "Protect the right to vote.",
+                [
+                    ("Protect", 0.28, 0.0), ("the", 0.12, 0.36), ("right", 0.24, 0.0),
+                    ("to", 0.12, 0.0), ("vote.", 0.26, 0.0),
+                ],
+                ["the", "right"],
+            ),
+            (
+                "He needs to find a day job soon.",
+                [
+                    ("He", 0.14, 0.0), ("needs", 0.24, 0.0), ("to", 0.12, 0.0),
+                    ("find", 0.22, 0.0), ("a", 0.10, 0.0), ("day", 0.22, 0.36),
+                    ("job", 0.24, 0.0), ("soon.", 0.26, 0.0),
+                ],
+                ["day", "job"],
+            ),
+            (
+                "Available on a multi year lease.",
+                [
+                    ("Available", 0.34, 0.0), ("on", 0.12, 0.0), ("a", 0.10, 0.0),
+                    ("multi", 0.26, 0.36), ("year", 0.24, 0.0), ("lease.", 0.26, 0.0),
+                ],
+                ["multi", "year"],
+            ),
+        ]
+        for txt, spec, expected_pair in bad_cases:
+            w, s_rate, a_w = self._phrase_audio(spec)
+            issues = audio_quality.detect_phrase_internal_pauses(txt, a_w, w, s_rate)
+            self.assertTrue(
+                any(i["code"] == "ABNORMAL_PAUSE" and i["words"] == expected_pair for i in issues),
+                f"Expected ABNORMAL_PAUSE {expected_pair} for '{txt}', got {issues}",
+            )
+
+    def test_v430_attributive_percent_head_noun_pause_flagged_while_adjunct_and_internal_exempt(self):
+        # 1. Attributive 'percent | <head_noun>' inside an NP/PP MUST be flagged across ASR variants
+        seg69_like = "Officials project a five hundred percent expansion of the tax base."
+        asr_specs = [
+            # Digit + BPE low-prob 'percent' (prob ~ 0.29 after high-prob '500')
+            [
+                ("Officials", 0.34, 0.0, 0.98), ("project", 0.30, 0.0, 0.98), ("a", 0.10, 0.0, 0.98),
+                ("500", 0.45, 0.0, 0.99), ("percent", 0.30, 0.35, 0.29),
+                ("expansion", 0.38, 0.0, 0.99), ("of", 0.12, 0.0, 0.99), ("the", 0.12, 0.0, 0.99),
+                ("tax", 0.24, 0.0, 0.99), ("base.", 0.28, 0.0, 0.99),
+            ],
+            # Merged '500%'
+            [
+                ("Officials", 0.34, 0.0, 0.98), ("project", 0.30, 0.0, 0.98), ("a", 0.10, 0.0, 0.98),
+                ("500%", 0.65, 0.35, 0.98),
+                ("expansion", 0.38, 0.0, 0.99), ("of", 0.12, 0.0, 0.99), ("the", 0.12, 0.0, 0.99),
+                ("tax", 0.24, 0.0, 0.99), ("base.", 0.28, 0.0, 0.99),
+            ],
+            # Spelled 'five hundred percent'
+            [
+                ("Officials", 0.34, 0.0, 0.98), ("project", 0.30, 0.0, 0.98), ("a", 0.10, 0.0, 0.98),
+                ("five", 0.22, 0.0, 0.99), ("hundred", 0.28, 0.0, 0.99), ("percent", 0.30, 0.35, 0.95),
+                ("expansion", 0.38, 0.0, 0.99), ("of", 0.12, 0.0, 0.99), ("the", 0.12, 0.0, 0.99),
+                ("tax", 0.24, 0.0, 0.99), ("base.", 0.28, 0.0, 0.99),
+            ],
+        ]
+        for spec in asr_specs:
+            w, sr, asr_toks = self._phrase_audio([(wd, dur, gap) for wd, dur, gap, _ in spec])
+            for tok, (_, _, _, prob) in zip(asr_toks, spec):
+                tok["probability"] = prob
+            issues = audio_quality.detect_phrase_internal_pauses(seg69_like, asr_toks, w, sr)
+            self.assertEqual(len(issues), 1, f"Expected 1 ABNORMAL_PAUSE for {spec}, got {issues}")
+            self.assertEqual(issues[0]["words"], ["percent", "expansion"])
+
+        # Additional attributive NP/PP patterns (including plural head noun and pre-modified NP)
+        flagged_pct_cases = [
+            (
+                "The twenty percent tariff hit imports.",
+                [
+                    ("The", 0.12, 0.0), ("twenty", 0.26, 0.0), ("percent", 0.28, 0.35),
+                    ("tariff", 0.28, 0.0), ("hit", 0.18, 0.0), ("imports.", 0.30, 0.0),
+                ],
+                ["percent", "tariff"],
+            ),
+            (
+                "Operating with ninety nine percent accuracy every day.",
+                [
+                    ("Operating", 0.34, 0.0), ("with", 0.14, 0.0), ("ninety", 0.24, 0.0),
+                    ("nine", 0.20, 0.0), ("percent", 0.28, 0.35), ("accuracy", 0.34, 0.0),
+                    ("every", 0.22, 0.0), ("day.", 0.26, 0.0),
+                ],
+                ["percent", "accuracy"],
+            ),
+            (
+                "An estimated twenty percent increase in output.",
+                [
+                    ("An", 0.12, 0.0), ("estimated", 0.34, 0.0), ("twenty", 0.24, 0.0),
+                    ("percent", 0.28, 0.35), ("increase", 0.30, 0.0),
+                    ("in", 0.12, 0.0), ("output.", 0.28, 0.0),
+                ],
+                ["percent", "increase"],
+            ),
+        ]
+        for txt, spec, pair in flagged_pct_cases:
+            w, sr, asr_toks = self._phrase_audio(spec)
+            issues = audio_quality.detect_phrase_internal_pauses(txt, asr_toks, w, sr)
+            self.assertTrue(
+                any(i["code"] == "ABNORMAL_PAUSE" and i["words"] == pair for i in issues),
+                f"Expected {pair} ABNORMAL_PAUSE for '{txt}', got {issues}",
+            )
+
+        # 2. Internal number pauses and post-verbal / differential adjuncts MUST remain exempt
+        exempt_cases = [
+            (
+                seg69_like,
+                [
+                    ("Officials", 0.34, 0.0), ("project", 0.30, 0.0), ("a", 0.10, 0.0),
+                    ("five", 0.22, 0.36), ("hundred", 0.28, 0.0), ("percent", 0.30, 0.0),
+                    ("expansion", 0.38, 0.0), ("of", 0.12, 0.0), ("the", 0.12, 0.0),
+                    ("tax", 0.24, 0.0), ("base.", 0.28, 0.0),
+                ],
+            ),
+            (
+                seg69_like,
+                [
+                    ("Officials", 0.34, 0.0), ("project", 0.30, 0.0), ("a", 0.10, 0.0),
+                    ("five", 0.22, 0.0), ("hundred", 0.28, 0.36), ("percent", 0.30, 0.0),
+                    ("expansion", 0.38, 0.0), ("of", 0.12, 0.0), ("the", 0.12, 0.0),
+                    ("tax", 0.24, 0.0), ("base.", 0.28, 0.0),
+                ],
+            ),
+            (
+                "Costs dropped twenty percent last year.",
+                [
+                    ("Costs", 0.24, 0.0), ("dropped", 0.28, 0.0), ("twenty", 0.24, 0.0),
+                    ("percent", 0.28, 0.38), ("last", 0.22, 0.0), ("year.", 0.26, 0.0),
+                ],
+            ),
+            (
+                "The plant cut costs by fifty percent nationwide.",
+                [
+                    ("The", 0.12, 0.0), ("plant", 0.26, 0.0), ("cut", 0.18, 0.0),
+                    ("costs", 0.24, 0.0), ("by", 0.14, 0.0), ("fifty", 0.24, 0.0),
+                    ("percent", 0.28, 0.38), ("nationwide.", 0.36, 0.0),
+                ],
+            ),
+            (
+                "Revenue grew ten percent faster than expected.",
+                [
+                    ("Revenue", 0.30, 0.0), ("grew", 0.20, 0.0), ("ten", 0.20, 0.0),
+                    ("percent", 0.28, 0.38), ("faster", 0.28, 0.0),
+                    ("than", 0.14, 0.0), ("expected.", 0.34, 0.0),
+                ],
+            ),
+        ]
+        for txt, spec in exempt_cases:
+            w, sr, asr_toks = self._phrase_audio(spec)
+            issues = audio_quality.detect_phrase_internal_pauses(txt, asr_toks, w, sr)
+            self.assertEqual(issues, [], f"Expected 0 exempt issues for '{txt}', got {issues}")
+
+    def test_v430_stutter_stop_closure_bleed_and_coarticulation_vs_real_intrusive_stop(self):
+        from types import SimpleNamespace
+
+        # 1. Seg 60: 'tech' (prob=0.79, dur=0.26s, normal 95ms /k/ stop closure) must NOT trigger slice ASR
+        wave_60, sr, asr_60 = self._phrase_audio([
+            ("endless", 0.32, 0.0), ("monthly", 0.32, 0.0), ("tech", 0.26, 0.0), ("surcharges", 0.42, 0.0),
+        ])
+        tech_st = asr_60[2]["startSec"]
+        wave_60[int((tech_st + 0.09) * sr) : int((tech_st + 0.185) * sr)] = 0.0
+        asr_60[2]["probability"] = 0.79
+
+        class SpyModel:
+            def __init__(self, tokens=None):
+                self.calls = 0
+                self._tokens = tokens or []
+
+            def transcribe(self, *_args, **_kwargs):
+                self.calls += 1
+                words = [
+                    SimpleNamespace(word=wd, start=0.18 + 0.15 * idx, end=0.33 + 0.15 * idx, probability=prob)
+                    for idx, (wd, prob) in enumerate(self._tokens)
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        spy_60_t1 = SpyModel([(" We", 0.15), (" text.", 0.91)])
+        issues_60_t1 = audio_quality.verify_whisper_smoothed_stutters(
+            "endless monthly tech surcharges", asr_60, wave_60, sr, spy_60_t1, language="en", slice_budget=[2]
+        )
+        self.assertEqual(issues_60_t1, [])
+        self.assertEqual(spy_60_t1.calls, 0, "Voiceless stop closure <=115ms on 'tech' should not trigger slice ASR")
+
+        # 2. Seg 60 Tier 2: low prob forces slice; slice hears ['We', 'text.'] -> cleared via left bleed + coarticulation
+        asr_60_low = [dict(w) for w in asr_60]
+        asr_60_low[2]["probability"] = 0.50
+
+        class FixedSliceModel:
+            def __init__(self, tokens):
+                self._tokens = tokens
+
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=wd, start=0.18 + 0.15 * idx, end=0.33 + 0.15 * idx, probability=prob)
+                    for idx, (wd, prob) in enumerate(self._tokens)
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        issues_60_t2 = audio_quality.verify_whisper_smoothed_stutters(
+            "endless monthly tech surcharges",
+            asr_60_low, wave_60, sr,
+            FixedSliceModel([(" We", 0.15), (" text.", 0.91)]),
+            language="en", slice_budget=[2],
+        )
+        self.assertEqual(issues_60_t2, [], f"Expected 0 issues for 'We text.' on 'monthly tech surcharges', got {issues_60_t2}")
+
+        # 3. Seg 42: 'Giga' (prob=0.31) where slice hears 'Jigatex.' or 'Jigga' -> cleared; real stutter flagged
+        wave_42, sr, asr_42 = self._phrase_audio([
+            ("Modeling", 0.34, 0.0), ("Giga", 0.32, 0.0), ("Texas", 0.36, 0.0),
+        ])
+        asr_42[1]["probability"] = 0.31
+        for slice_toks in ([(" Jigatex.", 0.62)], [(" Jigga", 0.55)], [(" Jig", 0.52), (" it.", 0.25)]):
+            issues_42 = audio_quality.verify_whisper_smoothed_stutters(
+                "Modeling Giga Texas",
+                asr_42, wave_42, sr,
+                FixedSliceModel(slice_toks),
+                language="en", slice_budget=[2],
+            )
+            self.assertEqual(issues_42, [], f"Expected 0 issues for {slice_toks} on 'Modeling Giga Texas', got {issues_42}")
+
+        issues_42_bad = audio_quality.verify_whisper_smoothed_stutters(
+            "Modeling Giga Texas",
+            asr_42, wave_42, sr,
+            FixedSliceModel([(" Gi", 0.75), (" -giga", 0.88)]),
+            language="en", slice_budget=[2],
+        )
+        self.assertEqual(len(issues_42_bad), 1, issues_42_bad)
+        self.assertEqual(issues_42_bad[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(issues_42_bad[0]["words"], ["giga"])
+
+        # 4. Seg 67 TP: 'Under the signed schedule' (prob=0.59, 75ms intrusive stop, 'signed' has NO voiceless plosive)
+        wave_67, sr, asr_67 = self._phrase_audio([
+            ("Under", 0.24, 0.0), ("the", 0.12, 0.0), ("signed", 0.42, 0.0), ("schedule", 0.38, 0.0),
+        ])
+        sig_st = asr_67[2]["startSec"]
+        wave_67[int((sig_st + 0.14) * sr) : int((sig_st + 0.215) * sr)] = 0.0
+        asr_67[2]["probability"] = 0.59
+        for bad_toks in ([(" Steins", 0.65)], [(" Stein.", 0.74)]):
+            issues_67 = audio_quality.verify_whisper_smoothed_stutters(
+                "Under the signed schedule",
+                asr_67, wave_67, sr,
+                FixedSliceModel(bad_toks),
+                language="en", slice_budget=[2],
+            )
+            self.assertEqual(len(issues_67), 1, f"Expected TP SUSPECTED_STUTTER on 'signed' for {bad_toks}, got {issues_67}")
+            self.assertEqual(issues_67[0]["code"], "SUSPECTED_STUTTER")
+            self.assertEqual(issues_67[0]["words"], ["signed"])
+
+    def test_v430_pronunciation_giga_hard_g_and_custom_rule_override(self):
+        from voxlab_sidecar import pronunciation
+
+        res_en = pronunciation.prepare_spoken_text_and_mapping(
+            "Modeling Giga Texas and Gigafactory", language="en"
+        )
+        self.assertEqual(res_en["sourceText"], "Modeling Giga Texas and Gigafactory")
+        self.assertEqual(res_en["spokenText"], "Modeling Gigga Texas and Gigafactory")
+        self.assertEqual(res_en["pronunciationMapping"], [])
+
+        res_caps = pronunciation.prepare_spoken_text_and_mapping("MODELING GIGA TEXAS.", language="en")
+        self.assertEqual(res_caps["spokenText"], "Modeling gigga texas.")
+
+        res_caps_start = pronunciation.prepare_spoken_text_and_mapping("GIGA TEXAS IS HUGE.", language="en")
+        self.assertEqual(res_caps_start["spokenText"], "Gigga texas is huge.")
+
+        res_custom = pronunciation.prepare_spoken_text_and_mapping(
+            "Modeling Giga Texas",
+            language="en",
+            custom_rules=[{
+                "sourceText": "Giga",
+                "spokenText": "Jiga",
+                "enabled": True,
+                "caseSensitive": False,
+                "scope": "project",
+            }],
+        )
+        self.assertEqual(res_custom["spokenText"], "Modeling Jiga Texas")
+
+        res_vi = pronunciation.prepare_spoken_text_and_mapping("Mô hình Giga Texas", language="vi")
+        self.assertEqual(res_vi["spokenText"], "Mô hình Giga Texas")
+
+    def test_v440_irregular_finite_verbs_and_contextual_verb_homographs_pause_exemption(self):
+        src_words = "Even the capital behind the pitch broke Wall Street records".split()
+        src_clean = [audio_quality.clean_word(w) for w in src_words]
+        delimiters = [""] * len(src_words)
+
+        self.assertTrue(
+            audio_quality.is_prosodic_phrase_boundary(
+                src_words, src_clean, 5, 6, "pitch", "broke", delimiters
+            )
+        )
+        # Ensure detect_phrase_internal_pauses exempts heavy-subject -> irregular past verb & contextual 'set'
+        spec_broke = [
+            (w, 0.24, 0.36 if i == 5 else 0.0)
+            for i, w in enumerate("Even the capital behind the pitch broke Wall Street records.".split())
+        ]
+        w_b, sr_b, asr_b = self._phrase_audio(spec_broke)
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(
+                "Even the capital behind the pitch broke Wall Street records.", asr_b, w_b, sr_b
+            ),
+            [],
+        )
+
+        # Contextual invariant homograph: 'set' as finite verb vs noun in tight NP ('pitch deck')
+        set_verb_words = "Even the capital behind the project set a record".split()
+        set_verb_clean = [audio_quality.clean_word(w) for w in set_verb_words]
+        self.assertTrue(
+            audio_quality.is_prosodic_phrase_boundary(
+                set_verb_words, set_verb_clean, 5, 6, "project", "set", [""] * len(set_verb_words)
+            )
+        )
+        spec_set = [
+            (w, 0.24, 0.36 if i == 5 else 0.0)
+            for i, w in enumerate("Even the capital behind the project set a record.".split())
+        ]
+        w_s, sr_s, asr_s = self._phrase_audio(spec_set)
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(
+                "Even the capital behind the project set a record.", asr_s, w_s, sr_s
+            ),
+            [],
+        )
+
+        set_noun_words = "The old television set is broken today".split()
+        set_noun_clean = [audio_quality.clean_word(w) for w in set_noun_words]
+        self.assertFalse(
+            audio_quality.is_prosodic_phrase_boundary(
+                set_noun_words, set_noun_clean, 2, 3, "television", "set", [""] * len(set_noun_words)
+            )
+        )
+
+        # Tight noun+noun ('pitch | deck') must STILL flag ABNORMAL_PAUSE
+        spec_nn = [
+            ("The", 0.14, 0.0), ("team", 0.24, 0.0), ("signed", 0.28, 0.0),
+            ("a", 0.10, 0.0), ("pitch", 0.26, 0.36), ("deck", 0.28, 0.0), ("yesterday.", 0.34, 0.0),
+        ]
+        w_nn, sr_nn, asr_nn = self._phrase_audio(spec_nn)
+        issues_nn = audio_quality.detect_phrase_internal_pauses(
+            "The team signed a pitch deck yesterday.", asr_nn, w_nn, sr_nn
+        )
+        self.assertTrue(
+            any(it["code"] == "ABNORMAL_PAUSE" and it["words"] == ["pitch", "deck"] for it in issues_nn),
+            f"Expected ABNORMAL_PAUSE on ['pitch', 'deck'], got {issues_nn}",
+        )
+
+    def test_v440_contraction_homophones_inflection_stems_and_function_word_guard(self):
+        from types import SimpleNamespace
+
+        for a, b in [
+            ("there", "they're"),
+            ("there", "their"),
+            ("your", "you're"),
+            ("where", "wear"),
+            ("whose", "who's"),
+            ("new", "knew"),
+            ("passed", "past"),
+            ("larger", "large"),
+            ("driving", "drive"),
+            ("easier", "easy"),
+            ("bigger", "big"),
+        ]:
+            self.assertTrue(audio_quality._is_minor_word_variant(a, b), f"Expected minor variant for {a} / {b}")
+
+        self.assertFalse(audio_quality._is_minor_word_variant("shift", "lift"))
+        self.assertFalse(audio_quality._is_minor_word_variant("eighty", "dalfs"))
+
+        # Closed-class 4+ letter function words must not trigger Step 3 unconfirmed garble warnings
+        wave, sr, asr_words = self._phrase_audio([
+            ("There", 0.24, 0.0), ("is", 0.16, 0.0), ("hope.", 0.36, 0.0),
+        ])
+        asr_words[0]["probability"] = 0.62
+
+        class FixedSliceModel:
+            def __init__(self, tokens):
+                self._tokens = tokens
+
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=wd, start=0.12 + 0.15 * idx, end=0.26 + 0.15 * idx, probability=prob)
+                    for idx, (wd, prob) in enumerate(self._tokens)
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        issues = audio_quality.verify_whisper_smoothed_stutters(
+            "There is hope.",
+            asr_words,
+            wave,
+            sr,
+            FixedSliceModel([(" whose", 0.65)]),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(issues, [])
+
+    def test_v440_onset_vowel_restart_stutter_detected_intra_and_cross_boundary(self):
+        sr = 16000
+        dur = 1.50
+        n_samples = int(sr * dur)
+        t = np.linspace(0, dur, n_samples, endpoint=False, dtype=np.float32)
+
+        def add_tone(buf: np.ndarray, st: float, en: float, f1: float, amp: float = 0.22):
+            i0, i1 = int(st * sr), int(en * sr)
+            seg_t = t[i0:i1] - st
+            sig = np.sin(2 * np.pi * f1 * seg_t) + 0.45 * np.sin(2 * np.pi * (f1 * 3.0) * seg_t)
+            # Soft 6ms fade to prevent spectral click
+            fade = min(int(0.006 * sr), (i1 - i0) // 4)
+            if fade >= 2:
+                env = np.ones(i1 - i0, dtype=np.float32)
+                env[:fade] = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                env[-fade:] = np.linspace(1.0, 0.0, fade, dtype=np.float32)
+                sig = sig * env
+            buf[i0:i1] += (amp * sig).astype(np.float32)
+
+        # Case A & B: "covers luh- roughly ..." -> burst1 [0.40..0.54] + 130ms valley + burst2 [0.67..0.81] + -ly [0.85..0.99]
+        wave_bad = np.zeros(n_samples, dtype=np.float32)
+        add_tone(wave_bad, 0.02, 0.34, 210.0, amp=0.16)
+        add_tone(wave_bad, 0.40, 0.54, 240.0, amp=0.22)
+        add_tone(wave_bad, 0.67, 0.81, 240.0, amp=0.22)
+        add_tone(wave_bad, 0.85, 0.99, 320.0, amp=0.22)
+        add_tone(wave_bad, 1.05, 1.38, 360.0, amp=0.16)
+
+        asr_intra = [
+            {"word": "covers", "startSec": 0.02, "endSec": 0.35, "probability": 0.96},
+            {"word": "roughly", "startSec": 0.38, "endSec": 1.00, "probability": 0.92},
+            {"word": "six", "startSec": 1.05, "endSec": 1.38, "probability": 0.98},
+        ]
+        stutters_intra = audio_quality.detect_acoustic_stutter(
+            wave_bad, sr, text="covers roughly six", asr_words=asr_intra
+        )
+        self.assertTrue(
+            any(i["code"] == "SUSPECTED_STUTTER" and i["words"] == ["roughly"] for i in stutters_intra),
+            f"Expected intra-word onset vowel-restart stutter on 'roughly', got {stutters_intra}",
+        )
+
+        # Cross-boundary (large-v3 puts b2 at the start of "6.5" right after w1_end=0.69)
+        asr_cross = [
+            {"word": "covers", "startSec": 0.02, "endSec": 0.35, "probability": 0.96},
+            {"word": "roughly", "startSec": 0.38, "endSec": 0.69, "probability": 0.85},
+            {"word": "6.5", "startSec": 0.69, "endSec": 1.25, "probability": 0.95},
+        ]
+        stutters_cross = audio_quality.detect_acoustic_stutter(
+            wave_bad, sr, text="covers roughly six and a half", asr_words=asr_cross
+        )
+        self.assertTrue(
+            any(i["code"] == "SUSPECTED_STUTTER" and i["words"] == ["roughly"] for i in stutters_cross),
+            f"Expected cross-boundary onset vowel-restart stutter on 'roughly', got {stutters_cross}",
+        )
+
+        # Clean 2-syllable "roughly" (no extra burst, short dip <= 25ms) -> []
+        wave_clean = np.zeros(n_samples, dtype=np.float32)
+        add_tone(wave_clean, 0.02, 0.34, 210.0, amp=0.16)
+        add_tone(wave_clean, 0.40, 0.56, 240.0, amp=0.22)
+        add_tone(wave_clean, 0.58, 0.74, 340.0, amp=0.22)
+        add_tone(wave_clean, 0.82, 1.15, 360.0, amp=0.16)
+        asr_clean = [
+            {"word": "covers", "startSec": 0.02, "endSec": 0.35, "probability": 0.96},
+            {"word": "roughly", "startSec": 0.38, "endSec": 0.76, "probability": 0.96},
+            {"word": "six", "startSec": 0.82, "endSec": 1.15, "probability": 0.98},
+        ]
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(wave_clean, sr, text="covers roughly six", asr_words=asr_clean),
+            [],
+        )
+
+    def test_v440_left_sibilant_bleed_intrusive_plural_sibilant_and_coda_stem_trim(self):
+        from types import SimpleNamespace
+
+        class FixedSliceModel:
+            def __init__(self, tokens):
+                self._tokens = tokens
+
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=wd, start=0.12 + 0.15 * idx, end=0.26 + 0.15 * idx, probability=prob)
+                    for idx, (wd, prob) in enumerate(self._tokens)
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        # 1. Coda-stem equivalence with -a schwa / low-prob bleed ('a silicon.' / 'plus silica')
+        wave_si, sr, asr_si = self._phrase_audio([
+            ("Tesla", 0.32, 0.0), ("silicon", 0.38, 0.0), ("is", 0.18, 0.0),
+        ])
+        asr_si[1]["probability"] = 0.44
+        for toks in ([(" a", 0.55), (" silicon.", 0.48)], [(" plus", 0.09), (" silica", 0.44)]):
+            res = audio_quality.verify_whisper_smoothed_stutters(
+                "Tesla silicon is", asr_si, wave_si, sr, FixedSliceModel(toks), language="en", slice_budget=[2]
+            )
+            self.assertEqual(res, [], f"Expected 0 issues for {toks} on 'Tesla silicon is', got {res}")
+
+        # 2. Texas -> assembly (genuine >=50ms high-ZCR post-word intrusive sibilant vs clean voiced coda)
+        dur = 1.50
+        n_samp = int(sr * dur)
+        t = np.linspace(0, dur, n_samp, endpoint=False, dtype=np.float32)
+
+        def voiced_seg(st: float, en: float) -> np.ndarray:
+            out = np.zeros(n_samp, dtype=np.float32)
+            i0, i1 = int(st * sr), int(en * sr)
+            out[i0:i1] = (0.24 * np.sin(2 * np.pi * 220.0 * t[i0:i1])).astype(np.float32)
+            return out
+
+        def sib_seg(st: float, en: float) -> np.ndarray:
+            out = np.zeros(n_samp, dtype=np.float32)
+            i0, i1 = int(st * sr), int(en * sr)
+            out[i0:i1] = (0.09 * np.sin(2 * np.pi * 5000.0 * t[i0:i1])).astype(np.float32)
+            return out
+
+        wave_asm_bad = (
+            voiced_seg(0.02, 0.36)
+            + sib_seg(0.36, 0.42)       # trailing -s of "Texas"
+            + voiced_seg(0.46, 0.90)    # voiced body of "assembly"
+            + sib_seg(0.90, 0.98)       # 80ms intrusive /z/ sibilant
+            + voiced_seg(1.04, 1.42)    # "lines"
+        )
+        asr_asm = [
+            {"word": "Texas", "startSec": 0.02, "endSec": 0.42, "probability": 0.96},
+            {"word": "assembly", "startSec": 0.45, "endSec": 0.99, "probability": 0.66},
+            {"word": "lines", "startSec": 1.04, "endSec": 1.42, "probability": 0.95},
+        ]
+        issues_asm_bad = audio_quality.verify_whisper_smoothed_stutters(
+            "Texas assembly lines",
+            asr_asm,
+            wave_asm_bad,
+            sr,
+            FixedSliceModel([(" Assemblies.", 0.73)]),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(len(issues_asm_bad), 1, issues_asm_bad)
+        self.assertEqual(issues_asm_bad[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(issues_asm_bad[0]["words"], ["assembly"])
+
+        # Without the post-word acoustic sibilant, minor plural noise clears cleanly
+        wave_asm_clean = voiced_seg(0.02, 0.36) + sib_seg(0.36, 0.42) + voiced_seg(0.46, 0.92) + voiced_seg(1.04, 1.42)
+        asr_asm_clean = [
+            {"word": "Texas", "startSec": 0.02, "endSec": 0.42, "probability": 0.96},
+            {"word": "assembly", "startSec": 0.45, "endSec": 0.92, "probability": 0.66},
+            {"word": "lines", "startSec": 1.04, "endSec": 1.42, "probability": 0.95},
+        ]
+        issues_asm_clean = audio_quality.verify_whisper_smoothed_stutters(
+            "Texas assembly lines",
+            asr_asm_clean,
+            wave_asm_clean,
+            sr,
+            FixedSliceModel([(" Assemblies.", 0.73)]),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(issues_asm_clean, [])
+
+        # 3. Disyllabic double-sibilant previous word ('Texas': -x- + -a- + -s) before word with
+        # internal sibilant ('assembly': a- + -ss- + -embly + /z/) and left-shifted large-v3 timestamps
+        import soundfile as sf
+
+        wave_asm_v3 = (
+            voiced_seg(0.02, 0.22)      # "Te-"
+            + sib_seg(0.22, 0.28)       # "-x-" (1st post-onset sibilant of "Texas")
+            + voiced_seg(0.28, 0.33)    # "-a-" (50ms unstressed vowel)
+            + sib_seg(0.33, 0.41)       # "-s"  (2nd post-onset sibilant of "Texas")
+            + voiced_seg(0.42, 0.47)    # "a-"  (initial vowel of "assembly")
+            + sib_seg(0.47, 0.55)       # "-ss-" (internal sibilant of "assembly")
+            + voiced_seg(0.55, 0.90)    # "-embly" voiced body
+            + sib_seg(0.90, 0.98)       # 80ms intrusive /z/ sibilant
+            + voiced_seg(1.00, 1.42)    # "lines"
+        )
+        asr_asm_v3 = [
+            {"word": "Texas", "startSec": 0.02, "endSec": 0.30, "probability": 0.96},
+            {"word": "assembly", "startSec": 0.30, "endSec": 0.74, "probability": 0.63},
+            {"word": "lines", "startSec": 0.74, "endSec": 1.06, "probability": 0.95},
+        ]
+        captured_clips: list[np.ndarray] = []
+
+        class RecordingSliceModel(FixedSliceModel):
+            def transcribe(self, wav_path, *args, **kwargs):
+                clip_arr, _ = sf.read(wav_path, dtype="float32")
+                captured_clips.append(clip_arr)
+                return super().transcribe(wav_path, *args, **kwargs)
+
+        issues_asm_v3 = audio_quality.verify_whisper_smoothed_stutters(
+            "Texas assembly lines",
+            asr_asm_v3,
+            wave_asm_v3,
+            sr,
+            RecordingSliceModel([(" Assemblies.", 0.73)]),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(len(issues_asm_v3), 1, issues_asm_v3)
+        self.assertEqual(issues_asm_v3[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(issues_asm_v3[0]["words"], ["assembly"])
+        self.assertEqual(len(captured_clips), 1)
+        pad_n = int(0.18 * sr)
+        raw_slice = captured_clips[0][pad_n:-pad_n]
+        raw_dur = raw_slice.size / float(sr)
+        # Raw clip starts around 0.41-0.42s and ends at ~0.99s -> ~0.55-0.61s (neither truncated at 0.74s nor starting at 0.30s/-a-)
+        self.assertGreaterEqual(raw_dur, 0.50, f"Intrusive sibilant truncated on left-shifted v3 slice: {raw_dur:.3f}s")
+        self.assertLessEqual(raw_dur, 0.63, f"Left sibilant bleed (-x-/-a-/-s) not trimmed: {raw_dur:.3f}s")
+        # Tail of raw slice contains >=5 frames of intrusive sibilant energy (high ZCR)
+        tail_frames = [
+            raw_slice[i : i + int(0.025 * sr)]
+            for i in range(max(0, raw_slice.size - int(0.14 * sr)), max(0, raw_slice.size - int(0.025 * sr)), int(0.010 * sr))
+        ]
+        tail_sib_frames = sum(
+            1 for fr in tail_frames
+            if float(np.sqrt(np.mean(fr * fr))) >= 0.015 and float(np.mean(fr[:-1] * fr[1:] < 0)) >= 0.42
+        )
+        self.assertGreaterEqual(tail_sib_frames, 5, f"Expected intrusive sibilant preserved at end of slice, got {tail_sib_frames} frames")
+
+    def test_v441_onset_vowel_restart_rejects_voiceless_obstruent_valley_and_coda_bursts(self):
+        sr = 16000
+        dur = 1.60
+        n_samples = int(sr * dur)
+        t = np.linspace(0, dur, n_samples, endpoint=False, dtype=np.float32)
+
+        def add_harmonic(buf: np.ndarray, st: float, en: float, f1: float, amp: float = 0.22, fade_ms: float = 6.0):
+            i0, i1 = int(st * sr), int(en * sr)
+            seg_t = t[i0:i1] - st
+            sig = np.sin(2 * np.pi * f1 * seg_t) + 0.45 * np.sin(2 * np.pi * (f1 * 3.0) * seg_t)
+            fade = min(int(fade_ms * 0.001 * sr), max(1, (i1 - i0) // 4))
+            if fade >= 2:
+                env = np.ones(i1 - i0, dtype=np.float32)
+                env[:fade] = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                env[-fade:] = np.linspace(1.0, 0.0, fade, dtype=np.float32)
+                sig = sig * env
+            buf[i0:i1] += (amp * sig).astype(np.float32)
+
+        def add_voiceless(buf: np.ndarray, st: float, en: float, amp: float = 0.018):
+            i0, i1 = int(st * sr), int(en * sr)
+            seg_t = t[i0:i1] - st
+            buf[i0:i1] += (amp * np.sin(2 * np.pi * 5000.0 * seg_t)).astype(np.float32)
+
+        # 1. Voiceless obstruent (/s/ or /k/) inside 100ms valley between two onset-near similar vowel bursts
+        #    Must be rejected both intra-word ("processors") and cross-boundary ("silicon | abundance").
+        wave_obs = np.zeros(n_samples, dtype=np.float32)
+        add_harmonic(wave_obs, 0.02, 0.28, 210.0, amp=0.16)
+        add_harmonic(wave_obs, 0.36, 0.50, 240.0, amp=0.22)   # b1 near w_st
+        add_voiceless(wave_obs, 0.52, 0.60, amp=0.018)        # voiceless obstruent in ~110ms valley
+        add_harmonic(wave_obs, 0.63, 0.77, 240.0, amp=0.22)   # b2
+        add_harmonic(wave_obs, 0.82, 0.96, 330.0, amp=0.18)
+        add_harmonic(wave_obs, 1.00, 1.14, 360.0, amp=0.18)
+        add_harmonic(wave_obs, 1.20, 1.40, 360.0, amp=0.16)
+
+        asr_intra_obs = [
+            {"word": "replacement", "startSec": 0.02, "endSec": 0.30, "probability": 0.96},
+            {"word": "processors", "startSec": 0.32, "endSec": 1.17, "probability": 0.90},
+            {"word": "forever", "startSec": 1.20, "endSec": 1.42, "probability": 0.98},
+        ]
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_obs, sr, text="replacement processors forever", asr_words=asr_intra_obs
+            ),
+            [],
+        )
+
+        asr_cross_obs = [
+            {"word": "domestic", "startSec": 0.02, "endSec": 0.30, "probability": 0.96},
+            {"word": "silicon", "startSec": 0.32, "endSec": 0.62, "probability": 0.92},
+            {"word": "abundance", "startSec": 0.62, "endSec": 1.42, "probability": 0.94},
+        ]
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_obs, sr, text="domestic silicon abundance", asr_words=asr_cross_obs
+            ),
+            [],
+        )
+
+        # 2. Word-final coda burst (>0.26s past w1_st, preceded by 2 voiced syllables) + next word onset
+        #    across a completely silent 100ms valley must ALSO be rejected.
+        wave_coda = np.zeros(n_samples, dtype=np.float32)
+        add_harmonic(wave_coda, 0.08, 0.24, 190.0, amp=0.18)  # syl 1 ("re-")
+        add_harmonic(wave_coda, 0.28, 0.44, 310.0, amp=0.18)  # syl 2 ("-place-")
+        add_harmonic(wave_coda, 0.64, 0.78, 240.0, amp=0.22)  # b1: coda ("-ment", 0.58s past w1_st)
+        add_harmonic(wave_coda, 0.88, 1.02, 240.0, amp=0.22)  # b2: next word onset ("pro-")
+        add_harmonic(wave_coda, 1.06, 1.22, 340.0, amp=0.18)
+        add_harmonic(wave_coda, 1.26, 1.44, 360.0, amp=0.18)
+
+        asr_coda_cross = [
+            {"word": "replacement", "startSec": 0.06, "endSec": 0.86, "probability": 0.94},
+            {"word": "processors", "startSec": 0.86, "endSec": 1.46, "probability": 0.94},
+        ]
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_coda, sr, text="replacement processors", asr_words=asr_coda_cross
+            ),
+            [],
+        )
+
+        # 3. Genuine cross-boundary onset vowel restart ("covers roughly six", non-digit word2)
+        #    where trailing quiet in word2 lowers pair p75 (merging pair_nuclei to 3) while
+        #    distinct voiced bursts in [w1_st, w2_en] count 4 >= exp_syl_pair + 1: MUST flag ["roughly"].
+        wave_stut = np.zeros(n_samples, dtype=np.float32)
+        add_harmonic(wave_stut, 0.04, 0.22, 180.0, amp=0.34)
+        add_harmonic(wave_stut, 0.34, 0.48, 240.0, amp=0.24, fade_ms=0.0)
+        add_harmonic(wave_stut, 0.48, 0.60, 240.0, amp=0.032, fade_ms=0.0)
+        add_harmonic(wave_stut, 0.60, 0.74, 240.0, amp=0.24, fade_ms=0.0)
+        add_harmonic(wave_stut, 0.80, 0.90, 320.0, amp=0.14)
+        add_harmonic(wave_stut, 0.98, 1.08, 360.0, amp=0.14)
+
+        asr_stut = [
+            {"word": "covers", "startSec": 0.02, "endSec": 0.28, "probability": 0.98},
+            {"word": "roughly", "startSec": 0.28, "endSec": 0.65, "probability": 0.88},
+            {"word": "six", "startSec": 0.65, "endSec": 1.54, "probability": 0.95},
+        ]
+        stut_issues = audio_quality.detect_acoustic_stutter(
+            wave_stut, sr, text="covers roughly six", asr_words=asr_stut
+        )
+        self.assertEqual(len(stut_issues), 1)
+        self.assertEqual(stut_issues[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(stut_issues[0]["words"], ["roughly"])
+
+    def test_v441_silent_stop_closure_barrier_post_rebound_valley_and_left_liaison(self):
+        import soundfile as sf
+        from types import SimpleNamespace
+
+        sr = 16000
+        dur = 1.60
+        n_samp = int(sr * dur)
+        t = np.linspace(0, dur, n_samp, endpoint=False, dtype=np.float32)
+
+        def voiced_seg(st: float, en: float, amp: float = 0.24) -> np.ndarray:
+            out = np.zeros(n_samp, dtype=np.float32)
+            i0, i1 = int(st * sr), int(en * sr)
+            out[i0:i1] = (amp * np.sin(2 * np.pi * 220.0 * t[i0:i1])).astype(np.float32)
+            return out
+
+        def high_zcr_seg(st: float, en: float, amp: float = 0.09) -> np.ndarray:
+            out = np.zeros(n_samp, dtype=np.float32)
+            i0, i1 = int(st * sr), int(en * sr)
+            out[i0:i1] = (amp * np.sin(2 * np.pi * 5000.0 * t[i0:i1])).astype(np.float32)
+            return out
+
+        # Case A: "SpaceX's Terafab arrangement" — 50ms dead-silent /t/ stop closure [0.38..0.43]
+        # separates trailing -s [0.31..0.38] from Terafab /t^h/ burst [0.43..0.48].
+        wave_t = (
+            voiced_seg(0.02, 0.20)       # "Space-"
+            + high_zcr_seg(0.20, 0.26)   # "-x-"
+            + voiced_seg(0.26, 0.31)     # "-e-"
+            + high_zcr_seg(0.31, 0.38)   # "-s"
+            + high_zcr_seg(0.43, 0.48)   # /t^h/ aspiration burst of "Terafab" after [0.38..0.43] silence
+            + voiced_seg(0.48, 0.92)     # "-erafab"
+            + voiced_seg(0.98, 1.38)     # "arrangement"
+        )
+        asr_t = [
+            {"word": " SpaceX's", "startSec": 0.02, "endSec": 0.48, "probability": 0.95},
+            {"word": " Terafab", "startSec": 0.48, "endSec": 0.92, "probability": 0.48},
+            {"word": " arrangement", "startSec": 0.98, "endSec": 1.38, "probability": 0.97},
+        ]
+
+        class PlosivePreservingSliceModel:
+            def __init__(self):
+                self.captured = []
+
+            def transcribe(self, wav_path, *args, **kwargs):
+                clip_arr, _ = sf.read(wav_path, dtype="float32")
+                self.captured.append(clip_arr)
+                pad_n = int(0.18 * sr)
+                raw = clip_arr[pad_n:-pad_n]
+                lead = raw[: min(raw.size, int(0.11 * sr))]
+                sib_frames = sum(
+                    1
+                    for i in range(0, max(0, lead.size - int(0.025 * sr) + 1), int(0.010 * sr))
+                    if float(np.sqrt(np.mean(lead[i : i + int(0.025 * sr)] ** 2))) >= 0.015
+                    and float(np.mean(lead[i : i + int(0.025 * sr) - 1] * lead[i + 1 : i + int(0.025 * sr)] < 0)) >= 0.35
+                )
+                tok = " Terafab." if sib_frames >= 3 else " parafab."
+                words = [SimpleNamespace(word=tok, start=0.18, end=0.58, probability=0.68)]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        model_t = PlosivePreservingSliceModel()
+        iss_t = audio_quality.verify_whisper_smoothed_stutters(
+            "SpaceX's Terafab arrangement", asr_t, wave_t, sr, model_t, language="en", slice_budget=[2]
+        )
+        self.assertEqual(iss_t, [], f"Expected /t^h/ burst preserved past silent closure barrier, got {iss_t}")
+        self.assertEqual(len(model_t.captured), 1)
+
+        # Case B: Post-rebound valley extension ("Type Option A" on left-shifted ASR where w_en sits at /p/ closure)
+        wave_opt = (
+            voiced_seg(0.02, 0.30)       # "Type"
+            + voiced_seg(0.34, 0.52)     # "Op-"
+            + voiced_seg(0.58, 0.76)     # "-tion" after [0.52..0.58] /p/ closure
+            + voiced_seg(0.76, 0.80, amp=0.025)  # brief post-rebound valley between "Option" and "A"
+            + voiced_seg(0.80, 1.26)     # "A"
+        )
+        asr_opt = [
+            {"word": " Type", "startSec": 0.02, "endSec": 0.32, "probability": 0.96},
+            {"word": " Option", "startSec": 0.34, "endSec": 0.56, "probability": 0.50},
+            {"word": " A", "startSec": 0.56, "endSec": 1.26, "probability": 0.96},
+        ]
+
+        class LengthCheckingSliceModel:
+            def __init__(self, tok: str = " Option"):
+                self._tok = tok
+                self.captured_durs = []
+
+            def transcribe(self, wav_path, *args, **kwargs):
+                clip_arr, _ = sf.read(wav_path, dtype="float32")
+                pad_n = int(0.18 * sr)
+                raw_dur = (clip_arr.size - 2 * pad_n) / float(sr)
+                self.captured_durs.append(raw_dur)
+                tok = self._tok if raw_dur >= 0.38 else " Up"
+                words = [SimpleNamespace(word=tok, start=0.18, end=0.52, probability=0.68)]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        model_opt = LengthCheckingSliceModel()
+        iss_opt = audio_quality.verify_whisper_smoothed_stutters(
+            "Type Option A", asr_opt, wave_opt, sr, model_opt, language="en", slice_budget=[2]
+        )
+        self.assertEqual(iss_opt, [], f"Expected post-rebound valley extension to capture full 'Option', got {iss_opt}")
+        self.assertEqual(len(model_opt.captured_durs), 1)
+        self.assertGreaterEqual(model_opt.captured_durs[0], 0.38)
+
+        # Case C: Left consonant liaison ("Type Option" -> "Boption"/"Poption", "make arrangements" -> "Garrangements")
+        wave_lia, sr_l, asr_lia = self._phrase_audio([
+            ("Type", 0.26, 0.0), ("Option", 0.36, 0.0), ("A.", 0.26, 0.0),
+        ])
+        asr_lia[1]["probability"] = 0.52
+
+        class FixedSliceModel:
+            def __init__(self, tokens):
+                self._tokens = tokens
+
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=wd, start=0.18 + 0.14 * idx, end=0.32 + 0.14 * idx, probability=prob)
+                    for idx, (wd, prob) in enumerate(self._tokens)
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        for lia_tok in (" Boption", " Poption"):
+            iss_lia = audio_quality.verify_whisper_smoothed_stutters(
+                "Type Option A.", asr_lia, wave_lia, sr_l, FixedSliceModel([(lia_tok, 0.66)]), language="en", slice_budget=[2]
+            )
+            self.assertEqual(iss_lia, [], f"Expected left liaison '{lia_tok}' to clear 'Option', got {iss_lia}")
+
+        wave_arr, sr_a, asr_arr = self._phrase_audio([
+            ("make", 0.26, 0.0), ("arrangements", 0.42, 0.0), ("now.", 0.26, 0.0),
+        ])
+        asr_arr[1]["probability"] = 0.52
+        self.assertEqual(
+            audio_quality.verify_whisper_smoothed_stutters(
+                "make arrangements now.",
+                asr_arr,
+                wave_arr,
+                sr_a,
+                FixedSliceModel([(" Garrangements", 0.65)]),
+                language="en",
+                slice_budget=[2],
+            ),
+            [],
+        )
+
+    def test_v441_recover_unaligned_words_leading_prefix_no_vad_splice_and_true_omission_guard(self):
+        import soundfile as sf
+        from types import SimpleNamespace
+
+        wave, sr, _ = self._phrase_audio([
+            ("Type", 0.30, 0.05),
+            ("Option", 0.32, 0.02),
+            ("A", 0.30, 0.04),
+            ("if", 0.24, 0.02),
+            ("you", 0.24, 0.02),
+            ("think.", 0.32, 0.0),
+        ])
+        wav_path = os.path.join(self.dir, "lead_prefix_v441.wav")
+        sf.write(wav_path, wave, sr, subtype="PCM_16")
+        dur = round(wave.size / float(sr), 3)
+
+        class StubLeadingModel:
+            def __init__(self, words_spec):
+                self.calls = 0
+                self._spec = words_spec
+
+            def transcribe(self, *_args, **_kwargs):
+                self.calls += 1
+                words = [
+                    SimpleNamespace(word=wd, start=st, end=en, probability=pr)
+                    for wd, st, en, pr in self._spec
+                ]
+                return [SimpleNamespace(words=words, text=" ".join(w[0].strip() for w in self._spec))], SimpleNamespace(language="en")
+
+        # Subcase 1: VAD swallowed "Type" and emitted 0.0000-prob "Option" anchored later.
+        det_collapsed = [
+            {"word": " Option", "startSec": 0.24, "endSec": 0.76, "probability": 0.0},
+            {"word": " A", "startSec": 0.78, "endSec": 1.08, "probability": 0.99},
+            {"word": " if", "startSec": 1.12, "endSec": 1.36, "probability": 0.98},
+            {"word": " you", "startSec": 1.38, "endSec": 1.62, "probability": 0.99},
+            {"word": " think.", "startSec": 1.64, "endSec": 1.96, "probability": 0.99},
+        ]
+        stub_ok = StubLeadingModel([
+            (" Type", 0.08, 0.40, 0.99),
+            (" Option", 0.45, 0.77, 0.56),
+            (" A", 0.79, 1.09, 0.99),
+            (" if", 1.12, 1.36, 0.98),
+        ])
+        spliced = audio_quality.recover_unaligned_words(
+            wav_path,
+            det_collapsed,
+            dur,
+            stub_ok,
+            language="en",
+            slice_budget=[3],
+            audio_data=wave,
+            sample_rate=sr,
+            text="Type Option A if you think.",
+        )
+        self.assertEqual(stub_ok.calls, 1)
+        self.assertEqual(
+            [audio_quality.clean_word(w["word"]) for w in spliced],
+            ["type", "option", "a", "if", "you", "think"],
+        )
+
+        # Subcase 2: True omission of leading word ("Type" genuinely absent in audio) must NOT fabricate it
+        det_omitted = [
+            {"word": " Option", "startSec": 0.10, "endSec": 0.42, "probability": 0.96},
+            {"word": " A", "startSec": 0.44, "endSec": 0.74, "probability": 0.99},
+            {"word": " if", "startSec": 0.78, "endSec": 1.02, "probability": 0.98},
+            {"word": " you", "startSec": 1.04, "endSec": 1.28, "probability": 0.99},
+            {"word": " think.", "startSec": 1.30, "endSec": 1.62, "probability": 0.99},
+        ]
+        stub_missing = StubLeadingModel([
+            (" Option", 0.10, 0.42, 0.97),
+            (" A", 0.44, 0.74, 0.99),
+            (" if", 0.78, 1.02, 0.98),
+        ])
+        not_fabricated = audio_quality.recover_unaligned_words(
+            wav_path,
+            det_omitted,
+            dur,
+            stub_missing,
+            language="en",
+            slice_budget=[3],
+            audio_data=wave,
+            sample_rate=sr,
+            text="Type Option A if you think.",
+        )
+        self.assertEqual(
+            [audio_quality.clean_word(w["word"]) for w in not_fabricated],
+            ["option", "a", "if", "you", "think"],
+        )
+        raw_miss = audio_quality.analyze_word_alignment_issues(
+            "Type Option A if you think.", not_fabricated, language="en", core_scope=True
+        )
+        core_miss = audio_quality._reduce_to_core_defects(raw_miss, not_fabricated)
+        self.assertTrue(
+            any(it["code"] == "MISSING_WORD" and "type" in it.get("words", []) for it in core_miss),
+            f"Expected MISSING_WORD for genuinely omitted 'type', got {core_miss}",
+        )
+
+    def test_v442_phonetic_key_nse_nts_homophones_and_lexicon_bleed_trim(self):
+        # 1. English /ns/ <-> /nts/ exact homophone pairs (-nse <-> -nts)
+        for w_nse, w_nts in [
+            ("assistance", "assistants"),
+            ("patience", "patients"),
+            ("presence", "presents"),
+            ("instance", "instants"),
+            ("residence", "residents"),
+        ]:
+            self.assertTrue(
+                audio_quality.are_words_equivalent(w_nse, w_nts),
+                f"Expected exact /ns/~/nts/ homophones '{w_nse}' == '{w_nts}'",
+            )
+        # Distinct words must never collapse
+        for w_a, w_b in [
+            ("assistance", "assist"),
+            ("expense", "experts"),
+            ("sense", "since"),
+            ("patience", "patient"),
+        ]:
+            self.assertFalse(
+                audio_quality.are_words_equivalent(w_a, w_b),
+                f"Distinct words '{w_a}' vs '{w_b}' must remain separate",
+            )
+
+        # 2. _verify_asr_substitution_with_lexicon trims left/right neighbor bleed while preserving stutters
+        from types import SimpleNamespace
+
+        wave, sr, asr_words = self._phrase_audio([
+            ("chore", 0.30, 0.0),
+            ("assistance", 0.42, 0.0),
+            ("now", 0.28, 0.0),
+        ])
+        t_st = asr_words[1]["startSec"]
+        t_en = asr_words[1]["endSec"]
+        dur = round(wave.size / float(sr), 3)
+
+        class BleedSliceModel:
+            def __init__(self, tokens):
+                self._tokens = tokens
+
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=wd, start=0.10 + 0.14 * idx, end=0.22 + 0.14 * idx, probability=pr)
+                    for idx, (wd, pr) in enumerate(self._tokens)
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        ok_bleed = audio_quality._verify_asr_substitution_with_lexicon(
+            raw_src_word="assistance",
+            src_clean="assistance",
+            t_start=t_st,
+            t_end=t_en,
+            w_prob=0.78,
+            audio_data=wave,
+            sample_rate=sr,
+            whisper_model=BleedSliceModel([(" or", 0.646), (" assistance", 0.936)]),
+            language="en",
+            total_dur=dur,
+            slice_budget=[2],
+            secondary_reasons=[],
+            prev_src_clean="chore",
+            next_src_clean="now",
+        )
+        self.assertTrue(ok_bleed, "Expected left bleed 'or' from 'chore' trimmed before verifying 'assistance'")
+
+        # Genuine onset stutter must NOT be trimmed as neighbor bleed
+        bad_stut = audio_quality._verify_asr_substitution_with_lexicon(
+            raw_src_word="assistance",
+            src_clean="assistance",
+            t_start=t_st,
+            t_end=t_en,
+            w_prob=0.68,
+            audio_data=wave,
+            sample_rate=sr,
+            whisper_model=BleedSliceModel([(" ass", 0.58), (" assistance", 0.91)]),
+            language="en",
+            total_dur=dur,
+            slice_budget=[2],
+            secondary_reasons=[],
+            prev_src_clean="chore",
+            next_src_clean="now",
+        )
+        self.assertFalse(bad_stut, "Prefix stutter 'ass assistance' must NOT be trimmed as neighbor bleed")
+
+    def test_v442_recover_unaligned_words_flush_zero_onset_pad_and_non_overlapping_splice(self):
+        import soundfile as sf
+        from types import SimpleNamespace
+
+        sr = 16000
+        dur = 2.00
+        n_samp = int(sr * dur)
+        t = np.linspace(0, dur, n_samp, endpoint=False, dtype=np.float32)
+        wave = np.zeros(n_samp, dtype=np.float32)
+        # Flush-zero onset at 0.015s (NO 0.10s leading zeros like _phrase_audio)
+        for st, en, freq in [
+            (0.015, 0.24, 220.0),  # "Type"
+            (0.26, 0.56, 250.0),   # "Option"
+            (0.58, 0.86, 230.0),   # "A"
+            (0.90, 1.14, 210.0),   # "if"
+            (1.16, 1.40, 210.0),   # "you"
+            (1.42, 1.76, 240.0),   # "think"
+        ]:
+            i0, i1 = int(st * sr), int(en * sr)
+            wave[i0:i1] = (0.24 * np.sin(2 * np.pi * freq * (t[i0:i1] - st))).astype(np.float32)
+
+        wav_path = os.path.join(self.dir, "flush_zero_v442.wav")
+        sf.write(wav_path, wave, sr, subtype="PCM_16")
+
+        class PadInspectLeadingModel:
+            def transcribe(self, path_arg, *_args, **_kwargs):
+                arr, _ = sf.read(path_arg, dtype="float32")
+                # Count leading near-zero samples before first active signal
+                active_idx = int(np.argmax(np.abs(arr) >= 0.025))
+                lead_sil_sec = active_idx / float(sr)
+                # Simulate Whisper dropping "Type" unless padded >= 0.20s; shift returned timestamps by lead pad
+                pad_off = lead_sil_sec - 0.015
+                if lead_sil_sec >= 0.20:
+                    spec = [
+                        (" Type", pad_off + 0.00, pad_off + 0.24, 0.88),
+                        (" Option", pad_off + 0.24, pad_off + 0.56, 0.45),
+                        (" A", pad_off + 0.56, pad_off + 0.88, 0.98),
+                        (" if", pad_off + 0.88, pad_off + 1.14, 0.97),
+                    ]
+                else:
+                    spec = [
+                        (" Option", 0.00, 0.30, 0.0),
+                        (" A", 0.58, 0.86, 0.98),
+                    ]
+                words = [SimpleNamespace(word=wd, start=st, end=en, probability=pr) for wd, st, en, pr in spec]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        det_collapsed = [
+            {"word": " Option", "startSec": 0.00, "endSec": 0.30, "probability": 0.0},
+            {"word": " A", "startSec": 0.58, "endSec": 0.86, "probability": 0.98},
+            {"word": " if", "startSec": 0.90, "endSec": 1.14, "probability": 0.97},
+            {"word": " you", "startSec": 1.16, "endSec": 1.40, "probability": 0.99},
+            {"word": " think.", "startSec": 1.42, "endSec": 1.76, "probability": 0.99},
+        ]
+        spliced = audio_quality.recover_unaligned_words(
+            wav_path,
+            det_collapsed,
+            dur,
+            PadInspectLeadingModel(),
+            language="en",
+            slice_budget=[3],
+            audio_data=wave,
+            sample_rate=sr,
+            text="Type Option A if you think.",
+        )
+        self.assertEqual(
+            [audio_quality.clean_word(w["word"]) for w in spliced],
+            ["type", "option", "a", "if", "you", "think"],
+        )
+        self.assertLess(spliced[0]["startSec"], 0.08, f"Expected lead_pad_sec subtracted from spliced[0]: {spliced[0]}")
+
+        # Subcase 2: Non-overlapping splice guard skips overlapping anchor (`prev_pref_en > det_j_st + 0.06`)
+        wave_cont = wave.copy()
+        wave_cont[int(0.56 * sr) : int(0.58 * sr)] = wave_cont[int(0.54 * sr)]
+        class OverlapAnchorModel:
+            def transcribe(self, path_arg, *_args, **_kwargs):
+                arr, _ = sf.read(path_arg, dtype="float32")
+                active_idx = int(np.argmax(np.abs(arr) >= 0.025))
+                pad_off = max(0.0, active_idx / float(sr) - 0.015)
+                spec = [
+                    (" Type", pad_off + 0.00, pad_off + 0.24, 0.88),
+                    (" Option", pad_off + 0.24, pad_off + 0.72, 0.75),  # extends past det[1] startSec=0.56!
+                    (" A", pad_off + 0.72, pad_off + 0.88, 0.97),
+                    (" if", pad_off + 0.90, pad_off + 1.14, 0.97),
+                ]
+                words = [SimpleNamespace(word=wd, start=st, end=en, probability=pr) for wd, st, en, pr in spec]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        det_overlap = [
+            {"word": " Option", "startSec": 0.00, "endSec": 0.30, "probability": 0.0},
+            {"word": " A", "startSec": 0.56, "endSec": 0.86, "probability": 0.98},
+            {"word": " if", "startSec": 0.90, "endSec": 1.14, "probability": 0.97},
+            {"word": " you", "startSec": 1.16, "endSec": 1.40, "probability": 0.99},
+            {"word": " think.", "startSec": 1.42, "endSec": 1.76, "probability": 0.99},
+        ]
+        spliced_clean = audio_quality.recover_unaligned_words(
+            wav_path,
+            det_overlap,
+            dur,
+            OverlapAnchorModel(),
+            language="en",
+            slice_budget=[3],
+            audio_data=wave_cont,
+            sample_rate=sr,
+            text="Type Option A if you think.",
+        )
+        for idx_w in range(1, len(spliced_clean)):
+            self.assertLessEqual(
+                float(spliced_clean[idx_w - 1]["endSec"]),
+                float(spliced_clean[idx_w]["startSec"]) + 0.06,
+                f"Overlapping timestamps across splice boundary: {spliced_clean[idx_w - 1]} -> {spliced_clean[idx_w]}",
+            )
+
+    def test_v442_homorganic_cluster_stop_masking_and_non_homorganic_guard(self):
+        from types import SimpleNamespace
+        import soundfile as sf
+
+        sr = 16000
+        dur = 1.40
+        n_samp = int(sr * dur)
+        t = np.linspace(0, dur, n_samp, endpoint=False, dtype=np.float32)
+
+        def vseg(st: float, en: float, amp: float = 0.22) -> np.ndarray:
+            buf = np.zeros(n_samp, dtype=np.float32)
+            i0, i1 = int(st * sr), int(en * sr)
+            buf[i0:i1] = (amp * np.sin(2 * np.pi * 220.0 * t[i0:i1])).astype(np.float32)
+            return buf
+
+        def fseg(st: float, en: float, amp: float = 0.08) -> np.ndarray:
+            buf = np.zeros(n_samp, dtype=np.float32)
+            i0, i1 = int(st * sr), int(en * sr)
+            buf[i0:i1] = (amp * np.sin(2 * np.pi * 5200.0 * t[i0:i1])).astype(np.float32)
+            return buf
+
+        # 1. Case 4 Homorganic cluster-final stop masking ("lithography mask creation", /sk#k/)
+        wave_cluster = (
+            vseg(0.02, 0.38)       # "lithography" ending with -y
+            + vseg(0.40, 0.62)     # "ma-" vowel of "mask"
+            + fseg(0.62, 0.69)     # "-s-" fricative of "mask"
+            # [0.69..0.725]: 35ms silent homorganic velar /k/ closure
+            + fseg(0.725, 0.76)    # /k/ release
+            + vseg(0.76, 1.24)     # "creation"
+        )
+        asr_cluster = [
+            {"word": " lithography", "startSec": 0.02, "endSec": 0.38, "probability": 0.96},
+            {"word": " mass", "startSec": 0.40, "endSec": 0.71, "probability": 0.61},
+            {"word": " creation", "startSec": 0.72, "endSec": 1.24, "probability": 0.97},
+        ]
+        dec_ok, _ = audio_quality._evaluate_coarticulatory_assimilation(
+            sw="mask",
+            aw="mass",
+            next_src_w="creation",
+            t_start=0.40,
+            t_end=0.71,
+            w_prob=0.61,
+            gap_to_next_asr=0.01,
+            gap_from_prev_asr=0.02,
+            asr_words=asr_cluster,
+            j1=1,
+            audio_data=wave_cluster,
+            sample_rate=sr,
+            whisper_model=None,
+            language="en",
+            total_dur=dur,
+            eff_speed=1.0,
+            slice_budget=None,
+        )
+        self.assertEqual(dec_ok, "pass", "Expected homorganic velar cluster masking ('mask creation' -> 'mass') to pass")
+
+        # Homorganic alveolar cluster (/st#t/, "fast track" -> "fas track")
+        dec_st, _ = audio_quality._evaluate_coarticulatory_assimilation(
+            sw="fast",
+            aw="fas",
+            next_src_w="track",
+            t_start=0.40,
+            t_end=0.71,
+            w_prob=0.64,
+            gap_to_next_asr=0.01,
+            gap_from_prev_asr=0.02,
+            asr_words=asr_cluster,
+            j1=1,
+            audio_data=wave_cluster,
+            sample_rate=sr,
+            whisper_model=None,
+            language="en",
+            total_dur=dur,
+            eff_speed=1.0,
+            slice_budget=None,
+        )
+        self.assertEqual(dec_st, "pass", "Expected homorganic alveolar cluster masking ('fast track' -> 'fas') to pass")
+
+        # Non-homorganic guard: "mask fabrication" (/k/ vs /f/) MUST NOT pass
+        dec_non_hom, _ = audio_quality._evaluate_coarticulatory_assimilation(
+            sw="mask",
+            aw="mass",
+            next_src_w="fabrication",
+            t_start=0.40,
+            t_end=0.71,
+            w_prob=0.61,
+            gap_to_next_asr=0.01,
+            gap_from_prev_asr=0.02,
+            asr_words=asr_cluster,
+            j1=1,
+            audio_data=wave_cluster,
+            sample_rate=sr,
+            whisper_model=None,
+            language="en",
+            total_dur=dur,
+            eff_speed=1.0,
+            slice_budget=None,
+        )
+        self.assertNotEqual(dec_non_hom, "pass", "Non-homorganic 'mask fabrication' must not auto-pass")
+
+        # Continuous waveform without closure guard MUST NOT pass
+        wave_no_clos = vseg(0.02, 0.38) + vseg(0.40, 1.24)
+        dec_no_clos, _ = audio_quality._evaluate_coarticulatory_assimilation(
+            sw="mask",
+            aw="mass",
+            next_src_w="creation",
+            t_start=0.40,
+            t_end=0.71,
+            w_prob=0.61,
+            gap_to_next_asr=0.01,
+            gap_from_prev_asr=0.02,
+            asr_words=asr_cluster,
+            j1=1,
+            audio_data=wave_no_clos,
+            sample_rate=sr,
+            whisper_model=None,
+            language="en",
+            total_dur=dur,
+            eff_speed=1.0,
+            slice_budget=None,
+        )
+        self.assertNotEqual(dec_no_clos, "pass", "Cluster stop masking without boundary closure must not pass")
+
+        # 2. verify_whisper_smoothed_stutters: left-shifted w_en extends to /k/ closure + trims -y -> -ee bleed
+        asr_v3_shift = [
+            {"word": " lithography", "startSec": 0.02, "endSec": 0.38, "probability": 0.96},
+            {"word": " mask", "startSec": 0.40, "endSec": 0.56, "probability": 0.50},
+            {"word": " creation", "startSec": 0.56, "endSec": 1.24, "probability": 0.96},
+        ]
+
+        class RightClosureInspectModel:
+            def __init__(self):
+                self.durs = []
+
+            def transcribe(self, path_arg, *_args, **_kwargs):
+                clip_arr, _ = sf.read(path_arg, dtype="float32")
+                pad_n = int(0.18 * sr)
+                raw_dur = (clip_arr.size - 2 * pad_n) / float(sr)
+                self.durs.append(raw_dur)
+                if raw_dur >= 0.30:
+                    spec = [(" Fee", 0.34, 0.12, 0.22), (" mask.", 0.80, 0.24, 0.46)]
+                else:
+                    spec = [(" photolithography", 0.48, 0.12, 0.38)]  # 6 syllables hallucination
+                words = [SimpleNamespace(word=wd, start=st, end=en, probability=pr) for wd, pr, st, en in spec]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        model_rc = RightClosureInspectModel()
+        iss_rc = audio_quality.verify_whisper_smoothed_stutters(
+            "lithography mask creation",
+            asr_v3_shift,
+            wave_cluster,
+            sr,
+            model_rc,
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(iss_rc, [], f"Expected right-closure extension + '-y -> Fee' left trim to clear, got {iss_rc}")
+        self.assertEqual(len(model_rc.durs), 1)
+        self.assertGreaterEqual(model_rc.durs[0], 0.30, f"Right bound failed to extend past left-shifted w_en: {model_rc.durs}")
+
+    def test_v442_vstop_onset_closure_rejects_prev_voiced_syllable_and_finds_shifted_closure(self):
+        from types import SimpleNamespace
+        import soundfile as sf
+
+        sr = 16000
+        dur = 1.55
+        n_samp = int(sr * dur)
+        t = np.linspace(0, dur, n_samp, endpoint=False, dtype=np.float32)
+
+        def vseg(st: float, en: float, amp: float = 0.22) -> np.ndarray:
+            buf = np.zeros(n_samp, dtype=np.float32)
+            i0, i1 = int(st * sr), int(en * sr)
+            buf[i0:i1] = (amp * np.sin(2 * np.pi * 220.0 * t[i0:i1])).astype(np.float32)
+            return buf
+
+        def sibseg(st: float, en: float, amp: float = 0.09) -> np.ndarray:
+            buf = np.zeros(n_samp, dtype=np.float32)
+            i0, i1 = int(st * sr), int(en * sr)
+            buf[i0:i1] = (amp * np.sin(2 * np.pi * 5000.0 * t[i0:i1])).astype(np.float32)
+            return buf
+
+        # "Austin Terafab unveiling":
+        # - 0.24..0.27: Austin's internal /t/ closure
+        # - 0.27..0.44: "-in" loud voiced vowel (Whisper sets speech_onset early at 0.35s!)
+        # - 0.44..0.47: Terafab's TRUE initial /t/ closure
+        # - 0.47..0.52: Terafab /t^h/ burst + "-erafab" [0.52..0.96]
+        wave_at = (
+            vseg(0.02, 0.24)
+            # [0.24..0.27]: Austin internal /t/ closure
+            + vseg(0.27, 0.44)
+            # [0.44..0.47]: Terafab true initial /t/ closure
+            + sibseg(0.47, 0.52)
+            + vseg(0.52, 0.96)
+            + vseg(1.00, 1.44)
+        )
+        asr_at = [
+            {"word": " Austin", "startSec": 0.02, "endSec": 0.35, "probability": 0.95},
+            {"word": " Terafab", "startSec": 0.35, "endSec": 0.96, "probability": 0.38},
+            {"word": " unveiling", "startSec": 1.00, "endSec": 1.44, "probability": 0.97},
+        ]
+
+        class OnsetInspectModel:
+            def transcribe(self, path_arg, *_args, **_kwargs):
+                clip_arr, _ = sf.read(path_arg, dtype="float32")
+                pad_n = int(0.18 * sr)
+                raw = clip_arr[pad_n:-pad_n]
+                # Check if leading 140ms of slice still includes Austin's "-in" low-ZCR voiced vowel before /t^h/ burst
+                win_len = int(0.025 * sr)
+                hop = int(0.010 * sr)
+                lead = raw[: min(raw.size, int(0.16 * sr))]
+                voiced_lead_frames = sum(
+                    1
+                    for i in range(0, max(0, lead.size - win_len + 1), hop)
+                    if float(np.sqrt(np.mean(lead[i : i + win_len] ** 2))) >= 0.030
+                    and float(np.mean(lead[i : i + win_len - 1] * lead[i + 1 : i + win_len] < 0)) < 0.18
+                )
+                if voiced_lead_frames >= 4:
+                    spec = [(" Dintera", 0.56, 0.12, 0.36), (" Fab", 0.84, 0.38, 0.58)]
+                else:
+                    spec = [(" Terafab", 0.68, 0.12, 0.56)]
+                words = [SimpleNamespace(word=wd, start=st, end=en, probability=pr) for wd, pr, st, en in spec]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        iss_at = audio_quality.verify_whisper_smoothed_stutters(
+            "Austin Terafab unveiling",
+            asr_at,
+            wave_at,
+            sr,
+            OnsetInspectModel(),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(iss_at, [], f"Expected shifted closure at 0.44..0.47s to skip Austin's '-in' vowel, got {iss_at}")
+
+        # Regression guard (B3-Seg72): quiet pre-voicing ramp (amp=0.032, rms~0.0226) after /t^h/ burst
+        # before stressed vowel must NOT trigger syllabic barrier and clip /t^h/.
+        wave_spx = (
+            vseg(0.02, 0.24)
+            + sibseg(0.24, 0.32, amp=0.08)   # "-X's"
+            # [0.32..0.37]: 50ms silent /t/ closure
+            + sibseg(0.37, 0.42, amp=0.09)   # /t^h/ aspiration burst
+            + vseg(0.42, 0.48, amp=0.032)    # 60ms quiet pre-voicing ramp into vowel
+            + vseg(0.48, 0.92, amp=0.24)     # stressed "-erafab" vowel
+            + vseg(0.98, 1.40, amp=0.22)     # "arrangement"
+        )
+        asr_spx = [
+            {"word": " SpaceX's", "startSec": 0.02, "endSec": 0.42, "probability": 0.96},
+            {"word": " Terafab", "startSec": 0.42, "endSec": 0.92, "probability": 0.54},
+            {"word": " arrangement", "startSec": 0.98, "endSec": 1.40, "probability": 0.99},
+        ]
+
+        class PlosiveKeepModel:
+            def transcribe(self, path_arg, *_args, **_kwargs):
+                clip_arr, _ = sf.read(path_arg, dtype="float32")
+                pad_n = int(0.18 * sr)
+                raw = clip_arr[pad_n:-pad_n]
+                lead = raw[: min(raw.size, int(0.12 * sr))]
+                win_len = int(0.025 * sr)
+                hop = int(0.010 * sr)
+                sib_frames = sum(
+                    1
+                    for i in range(0, max(0, lead.size - win_len + 1), hop)
+                    if float(np.sqrt(np.mean(lead[i : i + win_len] ** 2))) >= 0.015
+                    and float(np.mean(lead[i : i + win_len - 1] * lead[i + 1 : i + win_len] < 0)) >= 0.35
+                )
+                tok = " Terafab" if sib_frames >= 3 else " parafab"
+                words = [SimpleNamespace(word=tok, start=0.18, end=0.58, probability=0.68)]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        iss_spx = audio_quality.verify_whisper_smoothed_stutters(
+            "SpaceX's Terafab arrangement",
+            asr_spx,
+            wave_spx,
+            sr,
+            PlosiveKeepModel(),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(iss_spx, [], f"Quiet pre-voicing ramp must not block silent closure / /t^h/ burst, got {iss_spx}")
+
+        # Subcase B: _matches_with_fused_left_liaison handles coda-syllable bleed ("Dintera Fab" after "Austin")
+        class FixedDinteraModel:
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=" Dintera", start=0.12, end=0.36, probability=0.55),
+                    SimpleNamespace(word=" Fab", start=0.38, end=0.58, probability=0.82),
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        iss_lia = audio_quality.verify_whisper_smoothed_stutters(
+            "Austin Terafab unveiling",
+            asr_at,
+            wave_at,
+            sr,
+            FixedDinteraModel(),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(iss_lia, [], f"Expected unstressed coda-syllable bleed 'Dintera Fab' after 'Austin' cleared, got {iss_lia}")
+
+        # Negative stutter guard: genuine onset stutter "Te Terafab" must still flag SUSPECTED_STUTTER
+        class RealStutterModel:
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=" Te", start=0.12, end=0.26, probability=0.52),
+                    SimpleNamespace(word= " Terafab", start=0.28, end=0.58, probability=0.88),
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        iss_real = audio_quality.verify_whisper_smoothed_stutters(
+            "Austin Terafab unveiling",
+            asr_at,
+            wave_at,
+            sr,
+            RealStutterModel(),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(len(iss_real), 1, f"Expected real stutter 'Te Terafab' still flagged, got {iss_real}")
+        self.assertEqual(iss_real[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(iss_real[0]["words"], ["terafab"])
+
+    def test_v443_estimate_expected_syllables_ces_ges_oes_and_stutter_slice_clear(self):
+        from types import SimpleNamespace
+
+        # 1. English syllabic -ces/-ges/-oes plurals & 3rd-person singulars must keep their syllable
+        for w, exp in (
+            ("convinces", 3),
+            ("services", 3),
+            ("surfaces", 3),
+            ("sentences", 3),
+            ("challenges", 3),
+            ("potatoes", 3),
+            ("advantages", 4),
+            ("percentages", 4),
+            ("prices", 2),
+            ("changes", 2),
+            ("clauses", 2),
+            ("heroes", 2),
+            ("clause", 1),
+            ("makes", 1),
+            ("types", 1),
+            ("shares", 1),
+        ):
+            self.assertEqual(
+                audio_quality._estimate_expected_syllables(w),
+                exp,
+                f"Unexpected syllable count for {w!r}",
+            )
+
+        # 2. Clean 3-syllable 'convinces' [0.50..1.02] where syl 1 & 2 share nasal spectral shape must not flag
+        sr = 16000
+        dur = 1.40
+        n_samp = int(sr * dur)
+        t = np.linspace(0, dur, n_samp, endpoint=False, dtype=np.float32)
+        wave = np.zeros(n_samp, dtype=np.float32)
+
+        def add_tone(st: float, en: float, f1: float, f2: float, amp: float = 0.24) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            seg_t = t[i0:i1]
+            sig = (0.65 * np.sin(2 * np.pi * f1 * seg_t) + 0.35 * np.sin(2 * np.pi * f2 * seg_t)).astype(np.float32)
+            fn = min(int(0.008 * sr), sig.size // 4)
+            if fn >= 2:
+                r = np.linspace(0.0, 1.0, fn, dtype=np.float32)
+                sig[:fn] *= r
+                sig[-fn:] *= r[::-1]
+            wave[i0:i1] += amp * sig
+
+        add_tone(0.10, 0.36, 290.0, 580.0, amp=0.20)  # "clause"
+        add_tone(0.52, 0.64, 190.0, 380.0, amp=0.24)  # "con-"
+        add_tone(0.69, 0.81, 190.0, 380.0, amp=0.24)  # "-vin-" (0.05s nasal closure valley)
+        add_tone(0.90, 1.00, 260.0, 520.0, amp=0.18)  # "-ces"
+        add_tone(1.06, 1.24, 230.0, 460.0, amp=0.18)  # "you"
+
+        asr_words = [
+            {"word": " clause", "startSec": 0.10, "endSec": 0.36, "probability": 0.999},
+            {"word": " convinces", "startSec": 0.50, "endSec": 1.02, "probability": 0.999},
+            {"word": " you", "startSec": 1.06, "endSec": 1.24, "probability": 1.0},
+        ]
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave, sr, text="clause convinces you", asr_words=asr_words, language="en"
+            ),
+            [],
+        )
+
+        # 3. Tier-2 whisper_model guard clears high-confidence equal-matched Pass 1 false triggers,
+        #    while preserving confirmed stutters
+        wave_int = np.zeros(n_samp, dtype=np.float32)
+        t_int = t
+
+        def add_int(st: float, en: float, f1: float, f2: float, amp: float = 0.24) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            seg_t = t_int[i0:i1]
+            sig = (0.65 * np.sin(2 * np.pi * f1 * seg_t) + 0.35 * np.sin(2 * np.pi * f2 * seg_t)).astype(np.float32)
+            wave_int[i0:i1] += amp * sig
+
+        add_int(0.04, 0.16, 300.0, 600.0, amp=0.20)  # "we"
+        add_int(0.22, 0.34, 190.0, 380.0, amp=0.24)  # b1
+        add_int(0.39, 0.51, 190.0, 380.0, amp=0.24)  # b2 (0.05s valley)
+        add_int(0.56, 0.68, 190.0, 380.0, amp=0.24)  # b3 -> 3 bursts inside 2-syllable 'intend'
+        add_int(0.76, 0.96, 310.0, 620.0, amp=0.20)  # "now"
+        asr_int = [
+            {"word": " we", "startSec": 0.04, "endSec": 0.16, "probability": 0.99},
+            {"word": " intend", "startSec": 0.20, "endSec": 0.70, "probability": 0.99},
+            {"word": " now", "startSec": 0.76, "endSec": 0.96, "probability": 0.99},
+        ]
+
+        class CleanIntendModel:
+            def transcribe(self, *_args, **_kwargs):
+                words = [SimpleNamespace(word=" intend", start=0.20, end=0.62, probability=0.88)]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        class StutteredIntendModel:
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=" in", start=0.20, end=0.34, probability=0.65),
+                    SimpleNamespace(word=" intend", start=0.38, end=0.68, probability=0.85),
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_int,
+                sr,
+                text="we intend now",
+                asr_words=asr_int,
+                language="en",
+                whisper_model=CleanIntendModel(),
+                slice_budget=[2],
+            ),
+            [],
+        )
+        stut_confirmed = audio_quality.detect_acoustic_stutter(
+            wave_int,
+            sr,
+            text="we intend now",
+            asr_words=asr_int,
+            language="en",
+            whisper_model=StutteredIntendModel(),
+            slice_budget=[2],
+        )
+        self.assertEqual(len(stut_confirmed), 1, f"Expected stutter confirmed, got {stut_confirmed}")
+        self.assertEqual(stut_confirmed[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(stut_confirmed[0]["words"], ["intend"])
+
+    def test_v443_pass2_whole_word_repeat_rejects_voiceless_onset_swap_out_and_keeps_real_repeat(self):
+        sr = 24000
+        dur = 2.0
+        n_samp = int(sr * dur)
+        t = np.linspace(0, dur, n_samp, endpoint=False, dtype=np.float32)
+
+        def voiced(buf: np.ndarray, st: float, en: float, f1: float, f2: float, amp: float) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            seg_t = t[i0:i1]
+            sig = (0.65 * np.sin(2 * np.pi * f1 * seg_t) + 0.35 * np.sin(2 * np.pi * f2 * seg_t)).astype(np.float32)
+            buf[i0:i1] += amp * sig
+
+        # Subcase A: "to swap out a worn" where /sw/ is 170ms low-energy high-ZCR fricative + /a/ 160ms + /p/ closure 80ms + /au/ 160ms
+        wave_swap = np.zeros(n_samp, dtype=np.float32)
+        voiced(wave_swap, 0.08, 0.16, 180.0, 540.0, amp=0.14)  # "to"
+        i_s0, i_s1 = int(0.18 * sr), int(0.35 * sr)
+        wave_swap[i_s0:i_s1] = (0.048 * np.sin(2 * np.pi * 6200.0 * t[i_s0:i_s1])).astype(np.float32)  # /sw/ voiceless fricative (zcr ~ 0.52, rms ~ 0.034 < wb_speech_thresh)
+        voiced(wave_swap, 0.36, 0.52, 200.0, 600.0, amp=0.34)  # /a/ vowel in "swap"
+        # [0.52 .. 0.60]: silent /p/ closure
+        voiced(wave_swap, 0.60, 0.76, 200.0, 600.0, amp=0.28)  # /au/ vowel in "out"
+        voiced(wave_swap, 0.87, 1.02, 310.0, 740.0, amp=0.14)  # "a"
+        voiced(wave_swap, 1.04, 1.38, 260.0, 680.0, amp=0.18)  # "worn"
+
+        asr_swap = [
+            {"word": " to", "startSec": 0.08, "endSec": 0.18, "probability": 0.999},
+            {"word": " swap", "startSec": 0.18, "endSec": 0.55, "probability": 0.999},
+            {"word": " out", "startSec": 0.55, "endSec": 0.79, "probability": 0.9995},
+            {"word": " a", "startSec": 0.79, "endSec": 1.02, "probability": 1.0},
+            {"word": " worn", "startSec": 1.02, "endSec": 1.38, "probability": 0.97},
+        ]
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_swap, sr, text="to swap out a worn", asr_words=asr_swap, language="en"
+            ),
+            [],
+            "Clean 'swap out' with voiceless /sw/ onset + /p/ closure must not false-trigger REPEATED_WORD 'out'",
+        )
+
+        # Subcase B: Positive guard — genuine backward-absorbed repeat "for out out" MUST still flag REPEATED_WORD 'out'
+        wave_rep = np.zeros(n_samp, dtype=np.float32)
+        voiced(wave_rep, 0.22, 0.42, 300.0, 900.0, amp=0.14)   # voiced "for"
+        voiced(wave_rep, 0.48, 0.76, 200.0, 600.0, amp=0.30)   # "out" #1 (absorbed into 'for' span)
+        # [0.76 .. 0.84]: 80ms valley
+        voiced(wave_rep, 0.84, 1.12, 200.0, 600.0, amp=0.30)   # "out" #2
+        asr_rep = [
+            {"word": " for", "startSec": 0.20, "endSec": 0.78, "probability": 0.92},
+            {"word": " out", "startSec": 0.78, "endSec": 1.12, "probability": 0.98},
+        ]
+        rep_issues = audio_quality.detect_acoustic_stutter(
+            wave_rep, sr, text="for out", asr_words=asr_rep, language="en"
+        )
+        rep_only = [i for i in rep_issues if i["code"] == "REPEATED_WORD"]
+        self.assertEqual(len(rep_only), 1, f"Expected genuine backward-absorbed repeat 'out' flagged, got {rep_issues}")
+        self.assertEqual(rep_only[0]["words"], ["out"])
+
+    def test_v443_twin_span_disjoint_slice_catches_coarticulated_whole_word_repeat(self):
+        from types import SimpleNamespace
+
+        sr = 16000
+        dur = 2.20
+        n_samp = int(sr * dur)
+        wave = np.zeros(n_samp, dtype=np.float32)
+
+        def add_voiced_block(st: float, en: float, f1: float, f2: float, env: np.ndarray | float) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            t_loc = np.arange(i1 - i0, dtype=np.float32) / sr
+            raw = (
+                0.60 * np.sin(2 * np.pi * f1 * t_loc)
+                + 0.28 * np.sin(2 * np.pi * f2 * t_loc)
+                + 0.12 * np.sin(2 * np.pi * (2.0 * f2) * t_loc)
+            ).astype(np.float32)
+            wave[i0:i1] += raw * env
+
+        # 0.30s two-syllable voiced envelope with non-silent sonorant boundaries (like "legal")
+        n_leg = int(0.30 * sr)
+        x_leg = np.linspace(0.0, 1.0, n_leg, dtype=np.float32)
+        env_leg = (
+            0.075
+            + 0.22 * np.exp(-((x_leg - 0.27) / 0.13) ** 2)
+            + 0.19 * np.exp(-((x_leg - 0.75) / 0.13) ** 2)
+        ).astype(np.float32)
+
+        add_voiced_block(0.04, 0.24, 310.0, 620.0, 0.18)       # "thirty"
+        add_voiced_block(0.26, 0.46, 270.0, 540.0, 0.18)       # "day"
+        add_voiced_block(0.50, 0.80, 180.0, 360.0, env_leg)    # "legal" #1
+        add_voiced_block(0.80, 1.10, 180.0, 360.0, env_leg)    # "legal" #2 (continuously voiced /l/ boundary!)
+        add_voiced_block(1.12, 1.44, 270.0, 810.0, 0.20)       # "exit"
+        add_voiced_block(1.48, 1.80, 340.0, 680.0, 0.16)       # "clause"
+
+        asr_words = [
+            {"word": " thirty", "startSec": 0.04, "endSec": 0.24, "probability": 0.99},
+            {"word": " day", "startSec": 0.26, "endSec": 0.46, "probability": 0.99},
+            {"word": " legal", "startSec": 0.50, "endSec": 0.80, "probability": 0.98},
+            {"word": " exit", "startSec": 0.80, "endSec": 1.44, "probability": 0.995},
+            {"word": " clause", "startSec": 1.48, "endSec": 1.80, "probability": 0.99},
+        ]
+
+        class TwinLegalModel:
+            def transcribe(self, path_arg, *_args, **_kwargs):
+                clip_arr, _ = sf.read(path_arg, dtype="float32")
+                # pad = 0.18s each side -> clip1 ~ 0.34s raw (~0.70s total), clip2 ~ 0.64s raw (~1.00s total)
+                raw_dur = (clip_arr.size - int(0.36 * sr)) / float(sr)
+                if raw_dur < 0.48:
+                    words = [SimpleNamespace(word=" Illegal.", start=0.18, end=0.48, probability=0.66)]
+                else:
+                    words = [
+                        SimpleNamespace(word=" Legal", start=0.18, end=0.46, probability=0.58),
+                        SimpleNamespace(word=" exit.", start=0.46, end=0.78, probability=0.79),
+                    ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        class CleanNoRepeatModel:
+            def transcribe(self, path_arg, *_args, **_kwargs):
+                clip_arr, _ = sf.read(path_arg, dtype="float32")
+                raw_dur = (clip_arr.size - int(0.36 * sr)) / float(sr)
+                if raw_dur < 0.48:
+                    words = [SimpleNamespace(word=" legal", start=0.18, end=0.48, probability=0.90)]
+                else:
+                    words = [SimpleNamespace(word=" exit.", start=0.18, end=0.58, probability=0.92)]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        # Subcase A: Coarticulated repeated "legal legal" caught as REPEATED_WORD even with prob >= 0.98
+        iss_a = audio_quality.verify_whisper_smoothed_stutters(
+            "thirty day legal exit clause",
+            asr_words,
+            wave,
+            sr,
+            TwinLegalModel(),
+            language="en",
+            slice_budget=[2],
+        )
+        rep_a = [i for i in iss_a if i["code"] == "REPEATED_WORD"]
+        self.assertEqual(len(rep_a), 1, f"Expected REPEATED_WORD 'legal', got {iss_a}")
+        self.assertEqual(rep_a[0]["words"], ["legal"])
+
+        # Subcase B: Intentional script repeat "legal legal" must NOT flag
+        asr_words_int = [
+            {"word": " thirty", "startSec": 0.04, "endSec": 0.24, "probability": 0.99},
+            {"word": " day", "startSec": 0.26, "endSec": 0.46, "probability": 0.99},
+            {"word": " legal", "startSec": 0.50, "endSec": 0.80, "probability": 0.98},
+            {"word": " legal", "startSec": 0.80, "endSec": 1.10, "probability": 0.98},
+            {"word": " exit", "startSec": 1.12, "endSec": 1.44, "probability": 0.995},
+            {"word": " clause", "startSec": 1.48, "endSec": 1.80, "probability": 0.99},
+        ]
+        self.assertEqual(
+            audio_quality.verify_whisper_smoothed_stutters(
+                "thirty day legal legal exit clause",
+                asr_words_int,
+                wave,
+                sr,
+                TwinLegalModel(),
+                language="en",
+                slice_budget=[2],
+            ),
+            [],
+        )
+
+        # Subcase C: Clean disjoint slice verification returning no second 'legal' must NOT flag
+        self.assertEqual(
+            audio_quality.verify_whisper_smoothed_stutters(
+                "thirty day legal exit clause",
+                asr_words,
+                wave,
+                sr,
+                CleanNoRepeatModel(),
+                language="en",
+                slice_budget=[2],
+            ),
+            [],
+        )
+
+    def test_v444_homophones_crews_cruz_and_exact_pairs(self):
+        for a, b in (
+            ("crews", "cruz"),
+            ("crews", "cruise"),
+            ("brows", "browse"),
+            ("days", "daze"),
+            ("ways", "weighs"),
+            ("rows", "rose"),
+            ("knows", "nose"),
+            ("blew", "blue"),
+            ("flew", "flu"),
+            ("chews", "choose"),
+            ("board", "bored"),
+            ("poured", "pored"),
+            ("soar", "sore"),
+            ("core", "corps"),
+            ("pole", "poll"),
+            ("stake", "steak"),
+            ("mail", "male"),
+            ("tail", "tale"),
+            ("sail", "sale"),
+            ("pain", "pane"),
+            ("hall", "haul"),
+        ):
+            self.assertTrue(audio_quality.are_words_equivalent(a, b), f"Expected {a} ~= {b}")
+            self.assertTrue(audio_quality.are_words_equivalent(b, a), f"Expected {b} ~= {a}")
+
+        for a, b in (("crews", "claws"), ("rows", "rules"), ("board", "broad"), ("pain", "pine")):
+            self.assertFalse(audio_quality.are_words_equivalent(a, b), f"Expected {a} != {b}")
+
+    def test_v444_isolated_slice_clears_stutter_ignores_neighbor_coda_bleed(self):
+        from types import SimpleNamespace
+
+        sr = 24000
+        dur = 1.60
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+        wave = np.zeros_like(t)
+
+        def add_block(st: float, en: float, f1: float, f2: float, amp: float = 0.24) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            seg_t = t[i0:i1]
+            sig = (0.65 * np.sin(2 * np.pi * f1 * seg_t) + 0.35 * np.sin(2 * np.pi * f2 * seg_t)).astype(np.float32)
+            wave[i0:i1] += amp * sig
+
+        add_block(0.06, 0.34, 280.0, 640.0, amp=0.20)  # "decade"
+        # 4 bursts inside 3-syllable "reinventing" (w_dur=0.74 >= 0.66) -> Pass 1 trigger
+        for b_st, b_en in ((0.40, 0.53), (0.58, 0.71), (0.76, 0.89), (0.94, 1.07)):
+            add_block(b_st, b_en, 195.0, 420.0, amp=0.25)
+        add_block(1.16, 1.36, 300.0, 600.0, amp=0.20)  # "today"
+
+        asr_words = [
+            {"word": " decade", "startSec": 0.06, "endSec": 0.36, "probability": 0.99},
+            {"word": " reinventing", "startSec": 0.38, "endSec": 1.12, "probability": 0.99},
+            {"word": " today", "startSec": 1.16, "endSec": 1.36, "probability": 0.99},
+        ]
+
+        class BleedModel:
+            def __init__(self, tokens):
+                self._tokens = tokens
+
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=wd, start=st, end=en, probability=pr)
+                    for wd, st, en, pr in self._tokens
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        # Left neighbor coda bleed ("It" p=0.30 from /d/, "Kate" p=0.31 devoiced /-kət/ from 'decade')
+        # and right neighbor onset bleed ("to" p=0.28 from 'today') must trim cleanly
+        for bleed_tokens in (
+            [(" It", 0.14, 0.22, 0.30), (" reinventing", 0.24, 0.82, 0.92)],
+            [(" Kate", 0.14, 0.22, 0.31), (" reinventing", 0.24, 0.82, 0.96)],
+            [(" reinventing", 0.18, 0.72, 0.91), (" to", 0.74, 0.84, 0.28)],
+        ):
+            self.assertEqual(
+                audio_quality.detect_acoustic_stutter(
+                    wave,
+                    sr,
+                    text="decade reinventing today",
+                    asr_words=asr_words,
+                    language="en",
+                    whisper_model=BleedModel(bleed_tokens),
+                    slice_budget=[2],
+                ),
+                [],
+                f"Expected neighbor bleed {bleed_tokens} cleared",
+            )
+
+        # Genuine onset prefix stutter must NEVER be trimmed away as bleed
+        bad = audio_quality.detect_acoustic_stutter(
+            wave,
+            sr,
+            text="decade reinventing today",
+            asr_words=asr_words,
+            language="en",
+            whisper_model=BleedModel([(" re", 0.16, 0.26, 0.32), (" reinventing", 0.28, 0.84, 0.90)]),
+            slice_budget=[2],
+        )
+        self.assertGreaterEqual(len(bad), 1, f"Expected stutter preserved for 're reinventing', got {bad}")
+        self.assertTrue(
+            all(i["code"] == "SUSPECTED_STUTTER" and i["words"] == ["reinventing"] for i in bad),
+            bad,
+        )
+
+        # Low-confidence smoothed single-token slice (< min_clear_prob) must NOT clear genuine acoustic stutter
+        low_prob_bad = audio_quality.detect_acoustic_stutter(
+            wave,
+            sr,
+            text="decade reinventing today",
+            asr_words=asr_words,
+            language="en",
+            whisper_model=BleedModel([(" reinventing", 0.18, 0.82, 0.47)]),
+            slice_budget=[2],
+        )
+        self.assertGreaterEqual(len(low_prob_bad), 1, f"Expected low-prob smoothed slice preserved, got {low_prob_bad}")
+        self.assertTrue(
+            all(i["code"] == "SUSPECTED_STUTTER" and i["words"] == ["reinventing"] for i in low_prob_bad),
+            low_prob_bad,
+        )
+
+    def test_v444_reanchor_does_not_strand_word_on_unvoiced_sibilant_coda(self):
+        sr = 24000
+        dur = 2.10
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def build_base_wave() -> np.ndarray:
+            w = np.zeros_like(t)
+
+            def add_v(st: float, en: float, f1: float, f2: float, amp: float = 0.22) -> None:
+                i0, i1 = int(st * sr), int(en * sr)
+                seg = t[i0:i1]
+                w[i0:i1] += amp * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+            add_v(0.08, 0.28, 220.0, 560.0, amp=0.18)  # "its"
+            add_v(0.32, 0.66, 200.0, 520.0, amp=0.22)  # "targets" vowel stem
+            # 80ms unvoiced high-ZCR /ts/ coda at [0.66..0.74]
+            s0, s1 = int(0.66 * sr), int(0.74 * sr)
+            w[s0:s1] = (0.042 * np.sin(2 * np.pi * 6100.0 * t[s0:s1])).astype(np.float32)
+            return w
+
+        text = "its targets or not done"
+        # Subcase A: [targets + /ts/] -> [0.36s silence] -> ["or" + "not" fluent together]
+        # Whisper stretches "or" start onto /ts/ at 0.66s; reanchor must NOT strand "or" before the pause
+        wave_a = build_base_wave()
+        for st, en, f1, f2 in ((1.10, 1.28, 180.0, 500.0), (1.28, 1.56, 210.0, 620.0), (1.60, 1.92, 240.0, 580.0)):
+            i0, i1 = int(st * sr), int(en * sr)
+            seg = t[i0:i1]
+            wave_a[i0:i1] += 0.22 * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+        asr_a = [
+            {"word": " its", "startSec": 0.08, "endSec": 0.30, "probability": 0.99},
+            {"word": " targets", "startSec": 0.32, "endSec": 0.66, "probability": 0.99},
+            {"word": " or", "startSec": 0.66, "endSec": 1.28, "probability": 0.98},
+            {"word": " not", "startSec": 1.28, "endSec": 1.56, "probability": 0.99},
+            {"word": " done", "startSec": 1.60, "endSec": 1.92, "probability": 0.99},
+        ]
+        reanchored_a = audio_quality.reanchor_asr_word_timestamps(asr_a, wave_a, sr, text=text)
+        self.assertGreaterEqual(
+            reanchored_a[2]["startSec"],
+            1.02,
+            f"Expected 'or' shifted past unvoiced /ts/ and silence pause, got {reanchored_a}",
+        )
+        pauses_a = audio_quality.detect_phrase_internal_pauses(text, reanchored_a, wave_a, sr, speed=1.0)
+        self.assertEqual(pauses_a, [], f"Expected zero false abnormal pause on 'or not', got {pauses_a}")
+
+        # Subcase B: Positive guard — genuine voiced "or" BEFORE 0.38s pause before "not" STILL flags
+        wave_b = build_base_wave()
+        for st, en, f1, f2 in ((0.76, 0.92, 180.0, 500.0), (1.30, 1.58, 210.0, 620.0), (1.62, 1.94, 240.0, 580.0)):
+            i0, i1 = int(st * sr), int(en * sr)
+            seg = t[i0:i1]
+            wave_b[i0:i1] += 0.22 * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+        asr_b = [
+            {"word": " its", "startSec": 0.08, "endSec": 0.30, "probability": 0.99},
+            {"word": " targets", "startSec": 0.32, "endSec": 0.74, "probability": 0.99},
+            {"word": " or", "startSec": 0.76, "endSec": 0.92, "probability": 0.99},
+            {"word": " not", "startSec": 1.30, "endSec": 1.58, "probability": 0.99},
+            {"word": " done", "startSec": 1.62, "endSec": 1.94, "probability": 0.99},
+        ]
+        reanchored_b = audio_quality.reanchor_asr_word_timestamps(asr_b, wave_b, sr, text=text)
+        pauses_b = audio_quality.detect_phrase_internal_pauses(text, reanchored_b, wave_b, sr, speed=1.0)
+        self.assertTrue(
+            any(iss["words"] == ["or", "not"] for iss in pauses_b),
+            f"Expected real pause between voiced 'or' and 'not' flagged, got {pauses_b}",
+        )
+
+    def test_v444_post_comma_meaning_heavy_subject_exempt_while_short_garden_path_flagged(self):
+        # Subcase A: Heavy >= 4-word embedded subject tolerates breathing pause up to 0.45s
+        text_heavy = "Tests confirming the new local campus could operate well."
+        audio_ok, sr, words_ok = self._phrase_audio(
+            [
+                ("Tests", 0.22, 0.0),
+                ("confirming", 0.28, 0.0),
+                ("the", 0.14, 0.0),
+                ("new", 0.18, 0.0),
+                ("local", 0.22, 0.0),
+                ("campus", 0.26, 0.38),
+                ("could", 0.20, 0.0),
+                ("operate", 0.26, 0.0),
+                ("well", 0.22, 0.0),
+            ]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text_heavy, words_ok, audio_ok, sr), [])
+
+        audio_too_long, sr, words_too_long = self._phrase_audio(
+            [
+                ("Tests", 0.22, 0.0),
+                ("confirming", 0.28, 0.0),
+                ("the", 0.14, 0.0),
+                ("new", 0.18, 0.0),
+                ("local", 0.22, 0.0),
+                ("campus", 0.26, 0.52),
+                ("could", 0.20, 0.0),
+                ("operate", 0.26, 0.0),
+                ("well", 0.22, 0.0),
+            ]
+        )
+        heavy_long = audio_quality.detect_phrase_internal_pauses(text_heavy, words_too_long, audio_too_long, sr)
+        self.assertTrue(any(i["words"] == ["campus", "could"] for i in heavy_long), heavy_long)
+
+        # Subcase B: Post-punctuation participial connector ', meaning' with >= 3-word subject is exempt
+        text_meaning = "The upgrade arrived, meaning older regional power grids stay stable."
+        audio_m, sr, words_m = self._phrase_audio(
+            [
+                ("The", 0.14, 0.0),
+                ("upgrade", 0.24, 0.0),
+                ("arrived,", 0.24, 0.15),
+                ("meaning", 0.24, 0.0),
+                ("older", 0.20, 0.0),
+                ("regional", 0.24, 0.0),
+                ("power", 0.22, 0.0),
+                ("grids", 0.22, 0.38),
+                ("stay", 0.20, 0.0),
+                ("stable", 0.24, 0.0),
+            ]
+        )
+        self.assertEqual(audio_quality.detect_phrase_internal_pauses(text_meaning, words_m, audio_m, sr), [])
+
+        # Subcase C: Short embedded subject ('a local store' -> 3 words, < 9 syllables) still flags abnormal pause before 'could'
+        text_short = "Tests showing a local store could close."
+        audio_s, sr, words_s = self._phrase_audio(
+            [
+                ("Tests", 0.22, 0.0),
+                ("showing", 0.24, 0.0),
+                ("a", 0.12, 0.0),
+                ("local", 0.20, 0.0),
+                ("store", 0.22, 0.40),
+                ("could", 0.20, 0.0),
+                ("close", 0.24, 0.0),
+            ]
+        )
+        short_issues = audio_quality.detect_phrase_internal_pauses(text_short, words_s, audio_s, sr)
+        self.assertTrue(any(i["words"] == ["store", "could"] for i in short_issues), short_issues)
+
+    def test_v444_intra_word_cluster_hitch_explicitly_caught_and_clean_ref_passes(self):
+        from types import SimpleNamespace
+
+        sr = 24000
+        dur = 1.90
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def build_explicitly(hitch: bool) -> tuple[np.ndarray, list[dict]]:
+            w = np.zeros_like(t)
+
+            def add_v(st: float, en: float, f1: float, f2: float, amp: float = 0.22) -> None:
+                i0, i1 = int(st * sr), int(en * sr)
+                seg = t[i0:i1]
+                w[i0:i1] += amp * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+            def add_glide(st: float, en: float, f1_a: float, f1_b: float, f2_a: float, f2_b: float, amp: float = 0.22) -> None:
+                i0, i1 = int(st * sr), int(en * sr)
+                n_loc = i1 - i0
+                ph1 = 2.0 * np.pi * np.cumsum(np.linspace(f1_a, f1_b, n_loc, dtype=np.float64)) / float(sr)
+                ph2 = 2.0 * np.pi * np.cumsum(np.linspace(f2_a, f2_b, n_loc, dtype=np.float64)) / float(sr)
+                w[i0:i1] += (amp * (0.65 * np.sin(ph1) + 0.35 * np.sin(ph2))).astype(np.float32)
+
+            add_v(0.06, 0.20, 340.0, 880.0, amp=0.18)  # "the"
+            add_v(0.24, 0.56, (175.0 if hitch else 680.0), (450.0 if hitch else 1950.0), amp=0.20)  # "prospectus"
+            if hitch:
+                # /ɪk/ voiced nucleus [0.60..0.72], then >= 0.30s unvoiced cluster stall with >= 6 frames sibilant + silence, then /splɪsɪtli/ voiced [1.04..1.42]
+                add_v(0.60, 0.72, 220.0, 580.0, amp=0.22)
+                s0, s1 = int(0.75 * sr), int(0.87 * sr)
+                w[s0:s1] = (0.045 * np.sin(2 * np.pi * 6200.0 * t[s0:s1])).astype(np.float32)
+                add_v(1.04, 1.42, 210.0, 540.0, amp=0.22)
+                add_v(1.48, 1.76, 295.0, 740.0, amp=0.19)  # "warned"
+                asr = [
+                    {"word": " the", "startSec": 0.06, "endSec": 0.20, "probability": 0.99},
+                    {"word": " prospectus", "startSec": 0.24, "endSec": 0.56, "probability": 0.99},
+                    # Deliberately compress w_en=1.02 and stretch next word [1.02..1.76] to exercise c_ext_end
+                    {"word": " explicitly", "startSec": 0.60, "endSec": 1.02, "probability": 0.96},
+                    {"word": " warned", "startSec": 1.02, "endSec": 1.76, "probability": 0.99},
+                ]
+            else:
+                add_glide(0.60, 1.06, 185.0, 265.0, 470.0, 670.0, amp=0.22)  # "explicitly"
+                add_v(1.10, 1.38, 295.0, 740.0, amp=0.19)  # "warned"
+                asr = [
+                    {"word": " the", "startSec": 0.06, "endSec": 0.20, "probability": 0.99},
+                    {"word": " prospectus", "startSec": 0.24, "endSec": 0.56, "probability": 0.99},
+                    {"word": " explicitly", "startSec": 0.60, "endSec": 1.06, "probability": 0.98},
+                    {"word": " warned", "startSec": 1.10, "endSec": 1.38, "probability": 0.99},
+                ]
+            return w, asr
+
+        class TriggerCModel:
+            def __init__(self, tokens):
+                self._tokens = tokens
+
+            def transcribe(self, *_args, **_kwargs):
+                words = [
+                    SimpleNamespace(word=wd, start=st, end=en, probability=pr)
+                    for wd, st, en, pr in self._tokens
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        wave_bad, asr_bad = build_explicitly(hitch=True)
+        for obs_tokens in (
+            [(" ik", 0.16, 0.28, 0.55), (" explicitly", 0.52, 0.92, 0.90)],
+            [(" It's", 0.16, 0.28, 0.65), (" explicitly", 0.52, 0.92, 0.99)],
+        ):
+            bad_issues = audio_quality.verify_whisper_smoothed_stutters(
+                "the prospectus explicitly warned",
+                asr_bad,
+                wave_bad,
+                sr,
+                TriggerCModel(obs_tokens),
+                language="en",
+                slice_budget=[2],
+            )
+            self.assertEqual(len(bad_issues), 1, f"Expected trigger_c to flag 'explicitly' for {obs_tokens}, got {bad_issues}")
+            self.assertEqual(bad_issues[0]["code"], "SUSPECTED_STUTTER")
+            self.assertEqual(bad_issues[0]["words"], ["explicitly"])
+
+        wave_ref, asr_ref = build_explicitly(hitch=False)
+        ref_issues = audio_quality.verify_whisper_smoothed_stutters(
+            "the prospectus explicitly warned",
+            asr_ref,
+            wave_ref,
+            sr,
+            TriggerCModel([(" explicitly", 0.18, 0.64, 0.94)]),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(ref_issues, [], f"Expected clean reference 'explicitly' to pass, got {ref_issues}")
+
+    def test_v444_inter_word_detached_double_click_hitch_caught_and_punctuated_or_single_release_exempt(self):
+        sr = 24000
+        dur = 1.60
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def build_inter_word(clicks: list[tuple[float, float]]) -> tuple[np.ndarray, list[dict]]:
+            w = np.zeros_like(t)
+
+            def add_v(st: float, en: float, f1: float, f2: float, amp: float = 0.22) -> None:
+                i0, i1 = int(st * sr), int(en * sr)
+                seg = t[i0:i1]
+                w[i0:i1] += amp * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+            add_v(0.06, 0.24, 230.0, 520.0, amp=0.20)  # "photos"
+            add_v(0.28, 0.54, 210.0, 500.0, amp=0.22)  # "revealed" -> end voiced at 0.54
+            for c_st, c_en in clicks:
+                c0, c1 = int(c_st * sr), int(c_en * sr)
+                w[c0:c1] = (0.018 * np.sin(2 * np.pi * 5600.0 * t[c0:c1])).astype(np.float32)
+            # "acres" voiced starts at 0.86 -> vv_gap = 0.32s in [0.24, 0.55]
+            add_v(0.86, 1.18, 220.0, 540.0, amp=0.22)
+            add_v(1.22, 1.44, 200.0, 480.0, amp=0.18)  # "of"
+            asr = [
+                {"word": " photos", "startSec": 0.06, "endSec": 0.24, "probability": 0.99},
+                {"word": " revealed", "startSec": 0.28, "endSec": 0.56, "probability": 0.99},
+                {"word": " acres", "startSec": 0.85, "endSec": 1.18, "probability": 0.99},
+                {"word": " of", "startSec": 1.22, "endSec": 1.44, "probability": 0.99},
+            ]
+            return w, asr
+
+        # Two detached clicks at [0.58..0.61] and [0.66..0.69] -> pre_sil=0.04s, post_sil=0.17s
+        double_clicks = [(0.58, 0.61), (0.66, 0.69)]
+        wave_bad, asr_bad = build_inter_word(double_clicks)
+        bad_issues = audio_quality.detect_acoustic_stutter(
+            wave_bad, sr, text="photos revealed acres of", asr_words=asr_bad, language="en"
+        )
+        self.assertEqual(len(bad_issues), 1, f"Expected Pass 3 double-click hitch caught, got {bad_issues}")
+        self.assertEqual(bad_issues[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(bad_issues[0]["words"], ["revealed", "acres"])
+
+        # Exempt when separated by punctuation ("revealed, acres")
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_bad, sr, text="photos revealed, acres of", asr_words=asr_bad, language="en"
+            ),
+            [],
+        )
+
+        # Exempt when only a single normal stop-release click is present
+        wave_single, asr_single = build_inter_word([(0.58, 0.61)])
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_single, sr, text="photos revealed acres of", asr_words=asr_single, language="en"
+            ),
+            [],
+        )
+
+    def test_v445_timestamp_formatting_trim_and_message_sync(self):
+        self.assertEqual(audio_quality.format_timestamp(0.0), "00:00.0")
+        self.assertEqual(audio_quality.format_timestamp(-0.3), "00:00.0")
+        self.assertEqual(audio_quality.format_timestamp(0.95), "00:00.9")
+        self.assertEqual(audio_quality.format_timestamp(6.68), "00:06.6")
+        self.assertEqual(audio_quality.format_timestamp(59.99), "00:59.9")
+        self.assertEqual(audio_quality.format_timestamp(60.0), "01:00.0")
+
+        sr = 24000
+        dur = 3.0
+        w = np.zeros(int(sr * dur), dtype=np.float32)
+        t = np.linspace(0, 0.5, int(sr * 0.5), endpoint=False, dtype=np.float32)
+        # Leading silence [1.00..1.35], speech starts at 1.35s
+        i0 = int(1.35 * sr)
+        w[i0 : i0 + t.size] = 0.20 * np.sin(2 * np.pi * 240.0 * t)
+        issues = [{
+            "severity": "warning",
+            "code": "SUSPECTED_STUTTER",
+            "message": 'Nghi vấn vấp / đọc không rõ từ "flooding" — khoảng 00:01.0. Vui lòng nghe lại.',
+            "words": ["flooding"],
+            "timeRange": [1.00, 1.85],
+        }]
+        audio_quality._refine_and_sync_issue_timestamps(issues, w, sr)
+        self.assertGreaterEqual(issues[0]["timeRange"][0], 1.30)
+        self.assertLessEqual(issues[0]["timeRange"][0], 1.37)
+        expected_ts = audio_quality.format_timestamp(issues[0]["timeRange"][0])
+        self.assertIn(f"khoảng {expected_ts}", issues[0]["message"])
+
+    def test_v445_proper_noun_transliteration_and_phonetic_echo(self):
+        self.assertTrue(audio_quality._is_valid_proper_noun_transliteration("munro", "monroe"))
+        self.assertTrue(audio_quality._is_valid_proper_noun_transliteration("elluswamy", "eliswami"))
+        self.assertFalse(audio_quality._is_valid_proper_noun_transliteration("tesla", "tessa"))
+
+        self.assertTrue(audio_quality._is_phonetic_echo_fragment("heably", "capability"))
+        self.assertTrue(audio_quality._is_phonetic_echo_fragment("kibli", "capability"))
+        self.assertFalse(audio_quality._is_phonetic_echo_fragment("still", "capability"))
+        self.assertFalse(audio_quality._is_phonetic_echo_fragment("is", "capability"))
+
+    def test_v445_closed_compound_split_clearance_vs_stutter(self):
+        sr = 24000
+        dur = 1.60
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+        wave = np.zeros_like(t)
+        s0, s1 = int(0.30 * sr), int(1.10 * sr)
+        wave[s0:s1] = 0.22 * np.sin(2 * np.pi * 220.0 * t[: s1 - s0])
+
+        class CompoundModel:
+            def __init__(self, tokens):
+                self.tokens = tokens
+
+            def transcribe(self, *args, **kwargs):
+                class W:
+                    def __init__(self, tok, prob, st, en):
+                        self.word = tok
+                        self.probability = prob
+                        self.start = st
+                        self.end = en
+
+                class Seg:
+                    def __init__(self, toks):
+                        self.words = [W(tk, pr, 0.20 + i * 0.25, 0.42 + i * 0.25) for i, (tk, pr) in enumerate(toks)]
+
+                return [Seg(self.tokens)], None
+
+        asr_comp = [
+            {"word": " America's", "startSec": 0.05, "endSec": 0.28, "probability": 0.96},
+            {"word": " bestselling", "startSec": 0.30, "endSec": 1.10, "probability": 0.48},
+            {"word": " pickup", "startSec": 1.15, "endSec": 1.50, "probability": 0.97},
+        ]
+        # "Best" + "-selling" joins cleanly to "bestselling" -> cleared
+        comp_issues = audio_quality.verify_whisper_smoothed_stutters(
+            "America's bestselling pickup",
+            asr_comp,
+            wave,
+            sr,
+            CompoundModel([("Best", 0.72), ("-selling", 0.85)]),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(comp_issues, [])
+
+        # Genuine stutter "The sel- -selling" still flagged (not a valid compound word)
+        asr_sell = [
+            {"word": " The", "startSec": 0.05, "endSec": 0.25, "probability": 0.96},
+            {"word": " selling", "startSec": 0.30, "endSec": 1.10, "probability": 0.45},
+        ]
+        sell_issues = audio_quality.verify_whisper_smoothed_stutters(
+            "The selling",
+            asr_sell,
+            wave,
+            sr,
+            CompoundModel([(" sel", 0.65), ("-selling", 0.80)]),
+            language="en",
+            slice_budget=[2],
+        )
+        self.assertEqual(len(sell_issues), 1)
+        self.assertEqual(sell_issues[0]["words"], ["selling"])
+
+    def test_v445_recover_degenerate_asr_loops_filters_zero_prob_ghost(self):
+        words = [
+            {"word": " door", "startSec": 16.42, "endSec": 16.88, "probability": 0.99},
+            {"word": " to", "startSec": 16.88, "endSec": 17.06, "probability": 0.99},
+            {"word": " to", "startSec": 17.06, "endSec": 17.08, "probability": 0.0},
+            {"word": "-to", "startSec": 17.08, "endSec": 17.10, "probability": 0.88},
+            {"word": " door", "startSec": 17.10, "endSec": 17.32, "probability": 0.99},
+            {"word": " freedom.", "startSec": 17.32, "endSec": 17.60, "probability": 0.99},
+        ]
+        cleaned = audio_quality.recover_degenerate_asr_loops(None, words, 18.0, None)
+        self.assertEqual([w["word"].strip() for w in cleaned], ["door", "to", "door", "freedom."])
+
+        # Also test at_tail loop recovery (run_e == len(words) - 2) without suffix duplication or left bleed overlap
+        sr = 16000
+        wave = np.zeros(int(2.20 * sr), dtype=np.float32)
+
+        class TailLoopModel:
+            def transcribe(self, *args, **kwargs):
+                class W:
+                    def __init__(self, tok, prob, st, en):
+                        self.word = tok
+                        self.probability = prob
+                        self.start = st
+                        self.end = en
+
+                class Seg:
+                    def __init__(self):
+                        # span_start = 0.75, pad_sec = 0.24 => abs = 0.51 + rel
+                        self.words = [
+                            W(" door", 0.99, 0.24, 0.34),       # abs [0.75..0.85] -> overlaps prev door [0.45..0.85]
+                            W(" or", 0.79, 0.25, 0.36),         # abs [0.76..0.87] -> left bleed of door
+                            W("-to", 0.99, 0.36, 0.56),         # abs [0.87..1.07]
+                            W("-door", 0.99, 0.56, 1.14),       # abs [1.07..1.65]
+                            W(" freedom.", 0.99, 1.14, 1.54),   # abs [1.65..2.05]
+                        ]
+
+                return [Seg()], None
+
+        tail_words = [
+            {"word": " complete", "startSec": 0.05, "endSec": 0.45, "probability": 0.99},
+            {"word": " door", "startSec": 0.45, "endSec": 0.85, "probability": 0.99},
+            {"word": "-to", "startSec": 0.85, "endSec": 1.05, "probability": 0.85},
+            {"word": "-to", "startSec": 1.05, "endSec": 1.25, "probability": 0.88},
+            {"word": "-to", "startSec": 1.25, "endSec": 1.45, "probability": 0.90},
+            {"word": "-to", "startSec": 1.45, "endSec": 1.65, "probability": 0.92},
+            {"word": " freedom.", "startSec": 1.65, "endSec": 2.05, "probability": 0.95},
+        ]
+        recovered = audio_quality.recover_degenerate_asr_loops(
+            None,
+            tail_words,
+            2.20,
+            TailLoopModel(),
+            language="en",
+            audio_data=wave,
+            sample_rate=sr,
+            text="complete door to door freedom.",
+        )
+        self.assertEqual([w["word"].strip() for w in recovered], ["complete", "door", "-to", "-door", "freedom."])
+
+    def test_v445_pre_numeral_tight_modifier_pause_caught(self):
+        sr = 24000
+        dur = 2.0
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+        wave = np.zeros_like(t)
+        # "full" at [0.10..0.42], silence [0.42..0.92] (0.50s), "twenty" at [0.92..1.35], "four" at [1.35..1.75]
+        for s_t, e_t in [(0.10, 0.42), (0.92, 1.35), (1.35, 1.75)]:
+            i0, i1 = int(s_t * sr), int(e_t * sr)
+            wave[i0:i1] = 0.22 * np.sin(2 * np.pi * 230.0 * t[i0:i1])
+        asr = [
+            {"word": " full", "startSec": 0.10, "endSec": 0.42, "probability": 0.98},
+            {"word": " 24", "startSec": 0.92, "endSec": 1.75, "probability": 0.98},
+        ]
+        issues = audio_quality.detect_phrase_internal_pauses(
+            "full twenty four", asr, wave, sr, min_pause_sec=0.35
+        )
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues[0]["words"], ["full", "twenty"])
+        self.assertGreaterEqual(issues[0]["timeRange"][0], 0.40)
+        self.assertLessEqual(issues[0]["timeRange"][0], 0.46)
+
+    def test_v446_broken_word_pause_place_b_and_place_a_caught(self):
+        sr = 24000
+        dur = 1.6
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        class SeqMockModel:
+            def __init__(self, responses):
+                self.responses = list(responses)
+                self.calls = 0
+
+            def transcribe(self, *args, **kwargs):
+                class W:
+                    def __init__(self, tok, prob, st, en):
+                        self.word = tok
+                        self.probability = prob
+                        self.start = st
+                        self.end = en
+
+                class Seg:
+                    def __init__(self, toks):
+                        self.words = [
+                            W(tk, pr, 0.20 + i * 0.12, 0.30 + i * 0.12)
+                            for i, (tk, pr) in enumerate(toks)
+                        ]
+
+                idx = min(self.calls, len(self.responses) - 1)
+                self.calls += 1
+                return [Seg(self.responses[idx])], None
+
+        # Place B: "this eigh- [0.27s silence] -teen cent" absorbed across 'this' | '$0.18'
+        wave_b = np.zeros_like(t)
+        for s_t, e_t in [(0.05, 0.46), (0.73, 0.81), (0.81, 1.21)]:
+            i0, i1 = int(s_t * sr), int(e_t * sr)
+            wave_b[i0:i1] = 0.22 * np.sin(2 * np.pi * 230.0 * t[i0:i1])
+        asr_b = [
+            {"word": " this", "startSec": 0.05, "endSec": 0.46, "probability": 0.99},
+            {"word": " $0", "startSec": 0.73, "endSec": 0.81, "probability": 0.70},
+            {"word": ".18", "startSec": 0.81, "endSec": 1.21, "probability": 0.98},
+        ]
+        model_b = SeqMockModel([
+            [("this", 0.99), ("eight.", 0.79)],
+            [("$0", 0.63), (".15.", 0.71)],
+        ])
+        issues_b = audio_quality.detect_broken_word_pauses(
+            "this eighteen cent",
+            asr_b,
+            wave_b,
+            sr,
+            whisper_model=model_b,
+            language="en",
+            slice_budget=[3],
+        )
+        self.assertEqual(len(issues_b), 1)
+        self.assertEqual(issues_b[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_b[0]["pauseContext"], "intra_word")
+        self.assertEqual(issues_b[0]["words"], ["eighteen"])
+        self.assertEqual(issues_b[0]["timeRange"], [0.46, 0.73])
+        self.assertIn("khoảng 00:00.4", issues_b[0]["message"])
+
+        # Place A: internal 0.30s dead silence inside 'understand'
+        wave_a = np.zeros_like(t)
+        for s_t, e_t in [(0.05, 0.28), (0.30, 0.45), (0.75, 1.05), (1.06, 1.35)]:
+            i0, i1 = int(s_t * sr), int(e_t * sr)
+            wave_a[i0:i1] = 0.22 * np.sin(2 * np.pi * 220.0 * t[i0:i1])
+        asr_a = [
+            {"word": " We", "startSec": 0.05, "endSec": 0.28, "probability": 0.99},
+            {"word": " understand", "startSec": 0.30, "endSec": 1.05, "probability": 0.94},
+            {"word": " now", "startSec": 1.06, "endSec": 1.35, "probability": 0.99},
+        ]
+        model_a = SeqMockModel([
+            [("We", 0.98), ("under", 0.75)],
+            [("stand", 0.80)],
+        ])
+        issues_a = audio_quality.detect_broken_word_pauses(
+            "We understand now",
+            asr_a,
+            wave_a,
+            sr,
+            whisper_model=model_a,
+            language="en",
+            slice_budget=[3],
+        )
+        self.assertEqual(len(issues_a), 1)
+        self.assertEqual(issues_a[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_a[0]["pauseContext"], "intra_word")
+        self.assertEqual(issues_a[0]["words"], ["understand"])
+        self.assertAlmostEqual(issues_a[0]["timeRange"][0], 0.45, delta=0.015)
+        self.assertAlmostEqual(issues_a[0]["timeRange"][1], 0.75, delta=0.020)
+
+    def test_v446_broken_word_pause_rejects_boundary_bleed_and_scale_pauses_and_catches_compound_tens(self):
+        sr = 24000
+        dur = 1.8
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        class SeqMockModel:
+            def __init__(self, responses):
+                self.responses = list(responses)
+                self.calls = 0
+
+            def transcribe(self, *args, **kwargs):
+                class W:
+                    def __init__(self, tok, prob, st, en):
+                        self.word = tok
+                        self.probability = prob
+                        self.start = st
+                        self.end = en
+
+                class Seg:
+                    def __init__(self, toks):
+                        self.words = [
+                            W(tk, pr, 0.20 + i * 0.12, 0.30 + i * 0.12)
+                            for i, (tk, pr) in enumerate(toks)
+                        ]
+
+                idx = min(self.calls, len(self.responses) - 1)
+                self.calls += 1
+                return [Seg(self.responses[idx])], None
+
+        # 1) Normal inter-word pause absorbed before 'remembers': pre-slice completes '55.' -> no flag & 1 slice call
+        wave_bleed = np.zeros_like(t)
+        for s_t, e_t in [(0.05, 0.48), (0.85, 1.40)]:
+            i0, i1 = int(s_t * sr), int(e_t * sr)
+            wave_bleed[i0:i1] = 0.22 * np.sin(2 * np.pi * 220.0 * t[i0:i1])
+        asr_bleed = [
+            {"word": " 55", "startSec": 0.05, "endSec": 0.48, "probability": 0.99},
+            {"word": " remembers", "startSec": 0.85, "endSec": 1.40, "probability": 0.84},
+        ]
+        model_bleed = SeqMockModel([
+            [("55.", 0.95)],
+            [("Remember", 0.90)],
+        ])
+        issues_bleed = audio_quality.detect_broken_word_pauses(
+            "fifty five remembers",
+            asr_bleed,
+            wave_bleed,
+            sr,
+            whisper_model=model_bleed,
+            language="en",
+            slice_budget=[3],
+        )
+        self.assertEqual(issues_bleed, [])
+        self.assertEqual(model_bleed.calls, 1)
+
+        # 2) Multi-word number natural scale pause ("two thousand | 770") -> no flag
+        wave_scale = np.zeros_like(t)
+        for s_t, e_t in [(0.05, 0.24), (0.25, 0.60), (0.90, 1.35)]:
+            i0, i1 = int(s_t * sr), int(e_t * sr)
+            wave_scale[i0:i1] = 0.22 * np.sin(2 * np.pi * 220.0 * t[i0:i1])
+        asr_scale = [
+            {"word": " a", "startSec": 0.05, "endSec": 0.24, "probability": 0.99},
+            {"word": " 2,770", "startSec": 0.25, "endSec": 1.35, "probability": 0.98},
+        ]
+        model_scale = SeqMockModel([
+            [("a", 0.96), ("2000", 0.92)],
+            [("770", 0.91)],
+        ])
+        issues_scale = audio_quality.detect_broken_word_pauses(
+            "a two thousand seven hundred seventy",
+            asr_scale,
+            wave_scale,
+            sr,
+            whisper_model=model_scale,
+            language="en",
+            slice_budget=[3],
+        )
+        self.assertEqual(issues_scale, [])
+
+        # 3) Tight compound tens-ones split ("full twenty | [0.32s] | four") -> ABNORMAL_PAUSE ['twenty', 'four']
+        wave_comp = np.zeros_like(t)
+        for s_t, e_t in [(0.05, 0.30), (0.30, 0.60), (0.92, 1.25)]:
+            i0, i1 = int(s_t * sr), int(e_t * sr)
+            wave_comp[i0:i1] = 0.22 * np.sin(2 * np.pi * 220.0 * t[i0:i1])
+        asr_comp = [
+            {"word": " full", "startSec": 0.05, "endSec": 0.30, "probability": 0.99},
+            {"word": " 24", "startSec": 0.30, "endSec": 1.25, "probability": 0.98},
+        ]
+        model_comp = SeqMockModel([
+            [("full", 0.98), ("20", 0.90)],
+            [("4", 0.92)],
+        ])
+        issues_comp = audio_quality.detect_broken_word_pauses(
+            "full twenty four",
+            asr_comp,
+            wave_comp,
+            sr,
+            whisper_model=model_comp,
+            language="en",
+            slice_budget=[3],
+        )
+        self.assertEqual(len(issues_comp), 1)
+        self.assertEqual(issues_comp[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues_comp[0]["pauseContext"], "intra_word")
+        self.assertEqual(issues_comp[0]["words"], ["twenty", "four"])
+
+    def test_v446_tight_determiner_before_numeral_and_core_reduction(self):
+        sr = 24000
+        dur = 2.2
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def _make_wave(spans):
+            w = np.zeros_like(t)
+            for s_t, e_t in spans:
+                i0, i1 = int(s_t * sr), int(e_t * sr)
+                w[i0:i1] = 0.22 * np.sin(2 * np.pi * 220.0 * t[i0:i1])
+            return w
+
+        # 1) "whether this | [0.38s] | eighteen" -> flagged
+        w1 = _make_wave([(0.05, 0.32), (0.32, 0.55), (0.93, 1.35)])
+        asr1 = [
+            {"word": " whether", "startSec": 0.05, "endSec": 0.32, "probability": 0.99},
+            {"word": " this", "startSec": 0.32, "endSec": 0.55, "probability": 0.99},
+            {"word": " 18", "startSec": 0.93, "endSec": 1.35, "probability": 0.99},
+        ]
+        iss1 = audio_quality.detect_phrase_internal_pauses("whether this eighteen", asr1, w1, sr, min_pause_sec=0.30)
+        self.assertEqual([(i["code"], i["words"]) for i in iss1], [("ABNORMAL_PAUSE", ["this", "eighteen"])])
+
+        # 2) "under the | [0.38s] | thirty" -> flagged
+        w2 = _make_wave([(0.05, 0.32), (0.32, 0.55), (0.93, 1.35)])
+        asr2 = [
+            {"word": " under", "startSec": 0.05, "endSec": 0.32, "probability": 0.99},
+            {"word": " the", "startSec": 0.32, "endSec": 0.55, "probability": 0.99},
+            {"word": " 30", "startSec": 0.93, "endSec": 1.35, "probability": 0.99},
+        ]
+        iss2 = audio_quality.detect_phrase_internal_pauses("under the thirty", asr2, w2, sr, min_pause_sec=0.30)
+        self.assertEqual([(i["code"], i["words"]) for i in iss2], [("ABNORMAL_PAUSE", ["the", "thirty"])])
+
+        # 3) "remembers this | [0.38s] | twenty years later" -> exempt demonstrative object before temporal adjunct
+        w3 = _make_wave([(0.05, 0.35), (0.35, 0.55), (0.93, 1.30), (1.30, 1.60), (1.60, 1.90)])
+        asr3 = [
+            {"word": " remembers", "startSec": 0.05, "endSec": 0.35, "probability": 0.99},
+            {"word": " this", "startSec": 0.35, "endSec": 0.55, "probability": 0.99},
+            {"word": " 20", "startSec": 0.93, "endSec": 1.30, "probability": 0.99},
+            {"word": " years", "startSec": 1.30, "endSec": 1.60, "probability": 0.99},
+            {"word": " later", "startSec": 1.60, "endSec": 1.90, "probability": 0.99},
+        ]
+        iss3 = audio_quality.detect_phrase_internal_pauses("remembers this twenty years later", asr3, w3, sr, min_pause_sec=0.30)
+        self.assertEqual(iss3, [])
+
+        # 4) _reduce_to_core_defects preserves intra_word ABNORMAL_PAUSE
+        core = audio_quality._reduce_to_core_defects(
+            [{
+                "severity": "warning",
+                "code": "ABNORMAL_PAUSE",
+                "message": "broken eighteen",
+                "words": ["eighteen"],
+                "timeRange": [1.38, 1.65],
+                "pauseContext": "intra_word",
+            }],
+            asr1,
+        )
+        self.assertEqual(len(core), 1)
+        self.assertEqual(core[0]["pauseContext"], "intra_word")
+
 
 if __name__ == "__main__":
     unittest.main()

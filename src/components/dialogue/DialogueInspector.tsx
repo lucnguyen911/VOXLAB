@@ -25,6 +25,20 @@ import {
   SubtitleAspectRatio,
   SubtitleMaxLines,
 } from "../../services/subtitle";
+import {
+  scanAiModels,
+  onAiModelsChanged,
+  normalizeWhisperModelId,
+  type ModelStatus,
+} from "../../services/ai/aiRuntimeSettings";
+import { applyAsrModelSwitch } from "../../services/ai/asrReadiness";
+
+const WHISPER_ASR_OPTIONS = [
+  { id: "large-v3-turbo", fullId: "faster-whisper-large-v3-turbo", label: "Whisper Large V3 Turbo" },
+  { id: "large-v3", fullId: "faster-whisper-large-v3", label: "Whisper Large V3" },
+  { id: "medium", fullId: "faster-whisper-medium", label: "Whisper Medium" },
+  { id: "small", fullId: "faster-whisper-small", label: "Whisper Small" },
+] as const;
 import { CharacterCard } from "./CharacterCard";
 import { EmptyDialogueState } from "./EmptyDialogueState";
 
@@ -78,8 +92,26 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
   const [isPausesOpen, setIsPausesOpen] = useState(false);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
 
-  // Subtitle Settings (Aspect ratio & max lines, identical to TTS inspector)
+  // Subtitle Settings (Whisper model, aspect ratio & max lines, identical to TTS inspector)
   const [subtitleSettings, setSubtitleSettings] = useState(() => loadSubtitleSettings());
+  const [installedModels, setInstalledModels] = useState<ModelStatus[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      scanAiModels()
+        .then((list) => {
+          if (!cancelled) setInstalledModels(list);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const unsub = onAiModelsChanged(refresh);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
 
   useEffect(() => {
     if (settings.exportSrt) {
@@ -152,9 +184,9 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
   };
 
   return (
-    <aside className="w-80 lg:w-88 border-l border-borderDefault bg-surface1/40 flex flex-col flex-shrink-0 select-none overflow-hidden">
+    <aside className="w-[clamp(268px,27vw,356px)] border-l border-borderDefault bg-surface1/40 flex flex-col flex-shrink-0 select-none overflow-hidden">
       {/* Scrollable Inspector Body */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+      <div className="flex-1 overflow-y-auto p-3 lg:p-4 space-y-4 text-xs">
         {/* CARD 1: THIẾT LẬP CHUNG */}
         <div className="p-3.5 rounded-xl bg-surface1/70 border border-borderDefault/80 space-y-3.5">
           <div className="flex items-center justify-between border-b border-borderDefault/60 pb-2.5">
@@ -393,7 +425,7 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
             )}
           </div>
 
-          {/* Collapsible: NÂNG CAO (Advanced: SRT Export, Inter-Speaker Pause) */}
+          {/* Collapsible: PHỤ ĐỀ (SRT Export) */}
           <div className="pt-1.5 border-t border-borderDefault/60">
             <button
               type="button"
@@ -403,7 +435,7 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
               <div className="flex items-center gap-1.5">
                 <Settings2 className="w-3.5 h-3.5 text-accent" />
                 <span className="uppercase tracking-wider font-bold">
-                  {t.inspector.advanced}
+                  {t.inspector.subtitlesSection}
                 </span>
               </div>
               <ChevronRight
@@ -440,71 +472,109 @@ export const DialogueInspector: React.FC<DialogueInspectorProps> = ({
                   </button>
                 </div>
 
-                {/* Subtitle Display Options (Aspect Ratio & Max Lines) when SRT export is ON */}
+                {/* Subtitle Display Options (Whisper Model, Aspect Ratio & Max Lines) when SRT export is ON */}
                 {settings.exportSrt && (
                   <div className="mt-3 pt-3 border-t border-borderDefault/30 space-y-3 animate-in fade-in-50 duration-200">
-                    {/* Tỉ lệ khung hình */}
+                    {/* Mô hình */}
                     <div className="space-y-1.5">
-                      <label className="block text-textSecondary font-medium text-[11px]">
-                        {t.transcription.aspectRatioLabel}
-                      </label>
-                      <div className="grid grid-cols-3 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
-                        {(["16:9", "9:16", "1:1"] as SubtitleAspectRatio[]).map((ratio) => {
-                          const isSelected = subtitleSettings.aspectRatio === ratio;
-                          const labels: Record<SubtitleAspectRatio, { ratio: string; sub: string }> = {
-                            "16:9": { ratio: "16:9", sub: lang === "vi" ? "Ngang" : lang === "en" ? "Landscape" : "横屏" },
-                            "9:16": { ratio: "9:16", sub: lang === "vi" ? "Dọc" : lang === "en" ? "Portrait" : "竖屏" },
-                            "1:1": { ratio: "1:1", sub: lang === "vi" ? "Vuông" : lang === "en" ? "Square" : "正方形" },
-                          };
-                          const info = labels[ratio];
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="block text-textSecondary font-medium text-[11px]">
+                          {lang === "vi" ? "Mô hình" : lang === "en" ? "Model" : "模型"}
+                        </label>
+                      </div>
+                      <select
+                        value={normalizeWhisperModelId(subtitleSettings.whisperModel)}
+                        onChange={(e) => {
+                          const nextId = e.target.value;
+                          setSubtitleSettings((prev) => ({ ...prev, whisperModel: nextId as any }));
+                          applyAsrModelSwitch(nextId).catch(() => {});
+                        }}
+                        className="w-full h-[32px] bg-surface1 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
+                      >
+                        {WHISPER_ASR_OPTIONS.map((w) => {
+                          const st = installedModels.find((m) => m.id === w.fullId);
+                          const ready = installedModels.length === 0 || (st ? Boolean(st.installed) : false);
                           return (
-                            <button
-                              key={ratio}
-                              type="button"
-                              onClick={() => handleUpdateSubtitleSettings({ aspectRatio: ratio })}
-                              className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
-                                isSelected
-                                  ? "bg-accent text-background font-semibold shadow-sm"
-                                  : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
-                              }`}
-                            >
-                              <span className="leading-tight">{info.ratio}</span>
-                              <span
-                                className={`text-[10px] leading-tight ${
-                                  isSelected ? "text-background/80" : "text-textMuted"
-                                }`}
-                              >
-                                {info.sub}
-                              </span>
-                            </button>
+                            <option key={w.id} value={w.id}>
+                              {w.label}
+                              {installedModels.length > 0
+                                ? ready
+                                  ? " ✓"
+                                  : lang === "vi"
+                                  ? " (Chưa cài)"
+                                  : " (Not installed)"
+                                : ""}
+                            </option>
                           );
                         })}
-                      </div>
+                      </select>
                     </div>
 
-                    {/* Số dòng tối đa */}
-                    <div className="space-y-1.5">
-                      <label className="block text-textSecondary font-medium text-[11px]">
-                        {t.transcription.maxLinesLabel}
-                      </label>
-                      <div className="grid grid-cols-2 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
-                        {([1, 2] as SubtitleMaxLines[]).map((lines) => {
-                          const isSelected = subtitleSettings.maxLines === lines;
-                          return (
-                            <button
-                              key={lines}
-                              type="button"
-                              onClick={() => handleUpdateSubtitleSettings({ maxLines: lines })}
-                              className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all text-center cursor-pointer ${
-                                isSelected
-                                  ? "bg-accent text-background font-semibold shadow-sm"
-                                  : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
-                              }`}
-                            >
-                              {lines} {lang === "vi" ? "dòng" : lang === "en" ? (lines === 1 ? "line" : "lines") : "行"}
-                            </button>
-                          );
-                        })}
+                    {/* Nhóm định dạng phụ đề (Tỉ lệ khung hình & Số dòng) */}
+                    <div className="p-2.5 bg-surface2/35 rounded-lg border border-borderDefault/60 space-y-3">
+                      {/* Tỉ lệ khung hình */}
+                      <div className="space-y-1.5">
+                        <label className="block text-textSecondary font-medium text-[11px]">
+                          {t.transcription.aspectRatioLabel}
+                        </label>
+                        <div className="grid grid-cols-3 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                          {(["16:9", "9:16", "1:1"] as SubtitleAspectRatio[]).map((ratio) => {
+                            const isSelected = subtitleSettings.aspectRatio === ratio;
+                            const labels: Record<SubtitleAspectRatio, { ratio: string; sub: string }> = {
+                              "16:9": { ratio: "16:9", sub: lang === "vi" ? "Ngang" : lang === "en" ? "Landscape" : "横屏" },
+                              "9:16": { ratio: "9:16", sub: lang === "vi" ? "Dọc" : lang === "en" ? "Portrait" : "竖屏" },
+                              "1:1": { ratio: "1:1", sub: lang === "vi" ? "Vuông" : lang === "en" ? "Square" : "正方形" },
+                            };
+                            const info = labels[ratio];
+                            return (
+                              <button
+                                key={ratio}
+                                type="button"
+                                onClick={() => handleUpdateSubtitleSettings({ aspectRatio: ratio })}
+                                className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                                  isSelected
+                                    ? "bg-accent text-background font-semibold shadow-sm"
+                                    : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                                }`}
+                              >
+                                <span className="leading-tight">{info.ratio}</span>
+                                <span
+                                  className={`text-[10px] leading-tight ${
+                                    isSelected ? "text-background/80" : "text-textMuted"
+                                  }`}
+                                >
+                                  {info.sub}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Số dòng tối đa */}
+                      <div className="space-y-1.5">
+                        <label className="block text-textSecondary font-medium text-[11px]">
+                          {t.transcription.maxLinesLabel}
+                        </label>
+                        <div className="grid grid-cols-2 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                          {([1, 2] as SubtitleMaxLines[]).map((lines) => {
+                            const isSelected = subtitleSettings.maxLines === lines;
+                            return (
+                              <button
+                                key={lines}
+                                type="button"
+                                onClick={() => handleUpdateSubtitleSettings({ maxLines: lines })}
+                                className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all text-center cursor-pointer ${
+                                  isSelected
+                                    ? "bg-accent text-background font-semibold shadow-sm"
+                                    : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                                }`}
+                              >
+                                {lines} {lang === "vi" ? "dòng" : lang === "en" ? (lines === 1 ? "line" : "lines") : "行"}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   </div>

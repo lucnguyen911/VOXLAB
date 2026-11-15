@@ -1,6 +1,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_TTS_SETTINGS,
   loadStoredTtsSettings,
   saveStoredTtsSettings,
 } from "../../components/inspector/TtsInspector";
@@ -77,5 +78,19 @@ describe("TTS Settings Storage & Speed Range Suite", () => {
     const settings = loadStoredTtsSettings();
     assert.equal(settings.speed, 1.1);
     assert.equal(settings.concurrency, 1);
+    assert.equal(settings.translateSrt, false);
+  });
+
+  it("persists translateSrt toggle and defaults it to false", () => {
+    assert.equal(DEFAULT_TTS_SETTINGS.translateSrt, false);
+    assert.equal(loadStoredTtsSettings().translateSrt, false);
+
+    saveStoredTtsSettings({ exportSrt: true, translateSrt: true });
+    const loaded = loadStoredTtsSettings();
+    assert.equal(loaded.exportSrt, true);
+    assert.equal(loaded.translateSrt, true);
+
+    saveStoredTtsSettings({ translateSrt: false });
+    assert.equal(loadStoredTtsSettings().translateSrt, false);
   });
 });

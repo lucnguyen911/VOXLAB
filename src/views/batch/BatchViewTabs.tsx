@@ -28,12 +28,12 @@ export const BatchViewTabs: React.FC<BatchViewTabsProps> = ({
   viewCounts,
 }) => {
   return (
-    <div className="inline-flex bg-surface2/80 rounded-lg p-0.5 border border-borderDefault/80 text-xs flex-shrink-0 gap-0.5 select-none">
+    <div className="inline-flex bg-surface2/80 rounded-lg p-0.5 border border-borderDefault/80 text-xs flex-shrink-0 gap-0.5 select-none overflow-x-auto scrollbar-none max-w-full">
       {/* 1. Tab Danh sách */}
       <button
         type="button"
         onClick={() => onViewChange("list")}
-        className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+        className={`px-2.5 @[860px]:px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
           activeView === "list"
             ? "bg-surface1 text-textPrimary font-bold shadow-2xs"
             : "text-textMuted hover:text-textPrimary"
@@ -55,7 +55,7 @@ export const BatchViewTabs: React.FC<BatchViewTabsProps> = ({
       <button
         type="button"
         onClick={() => onViewChange("queued")}
-        className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+        className={`px-2.5 @[860px]:px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
           activeView === "queued"
             ? "bg-surface1 text-textPrimary font-bold shadow-2xs"
             : "text-textMuted hover:text-textPrimary"
@@ -83,7 +83,7 @@ export const BatchViewTabs: React.FC<BatchViewTabsProps> = ({
       <button
         type="button"
         onClick={() => onViewChange("completed")}
-        className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+        className={`px-2.5 @[860px]:px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
           activeView === "completed"
             ? "bg-surface1 text-textPrimary font-bold shadow-2xs"
             : "text-textMuted hover:text-textPrimary"
@@ -105,7 +105,7 @@ export const BatchViewTabs: React.FC<BatchViewTabsProps> = ({
       <button
         type="button"
         onClick={() => onViewChange("failed")}
-        className={`px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+        className={`px-2.5 @[860px]:px-3 py-1 rounded-md font-medium transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
           activeView === "failed"
             ? "bg-surface1 text-danger font-bold shadow-2xs"
             : "text-textMuted hover:text-danger"

@@ -25,41 +25,41 @@ export const BatchSubToolbar: React.FC<BatchSubToolbarProps> = ({
   maxAutoRetries = 5,
 }) => {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-surface1 rounded-lg border border-borderDefault text-xs flex-shrink-0 shadow-2xs select-none">
+    <div className="@container flex flex-wrap items-center justify-between gap-2 p-2 bg-surface1 rounded-lg border border-borderDefault text-xs flex-shrink-0 shadow-2xs select-none">
       {/* Left: Upload, Bulk Config, and Auto-Retry Toggle */}
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-1.5 @[900px]:gap-2 flex-wrap">
         <button
           type="button"
           onClick={onUploadClick}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-textPrimary bg-surface2 hover:bg-surface3 border border-borderDefault rounded-md transition-colors shadow-2xs cursor-pointer"
+          className="flex items-center gap-1.5 px-2.5 @[900px]:px-3 py-1.5 text-xs font-semibold text-textPrimary bg-surface2 hover:bg-surface3 border border-borderDefault rounded-md transition-colors shadow-2xs cursor-pointer whitespace-nowrap"
           title="Tải lên tệp hoặc thư mục"
         >
-          <UploadCloud className="w-3.5 h-3.5 text-accent" />
+          <UploadCloud className="w-3.5 h-3.5 text-accent shrink-0" />
           <span>Tải Lên</span>
         </button>
 
-        <div className="h-4 w-px bg-borderDefault mx-1" />
+        <div className="h-4 w-px bg-borderDefault mx-0.5 @[900px]:mx-1" />
 
         <button
           type="button"
           onClick={onGlobalConfigClick}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-textPrimary hover:text-accent bg-surface2 hover:bg-surface3 border border-borderDefault rounded-md transition-colors shadow-2xs cursor-pointer"
+          className="flex items-center gap-1.5 px-2.5 @[900px]:px-3 py-1.5 text-xs font-semibold text-textPrimary hover:text-accent bg-surface2 hover:bg-surface3 border border-borderDefault rounded-md transition-colors shadow-2xs cursor-pointer whitespace-nowrap"
           title="Cấu hình mặc định cho toàn bộ mẻ chạy"
         >
-          <SlidersHorizontal className="w-3.5 h-3.5 text-textMuted" />
+          <SlidersHorizontal className="w-3.5 h-3.5 text-textMuted shrink-0" />
           <span>Cấu hình hàng loạt</span>
         </button>
 
         {onToggleAutoRetry && (
           <>
-            <div className="h-4 w-px bg-borderDefault mx-1" />
+            <div className="h-4 w-px bg-borderDefault mx-0.5 @[900px]:mx-1" />
 
             <button
               type="button"
               role="switch"
               aria-checked={autoRetryEnabled}
               onClick={() => onToggleAutoRetry(!autoRetryEnabled)}
-              className={`flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors shadow-2xs cursor-pointer ${
+              className={`flex items-center gap-2 px-2.5 @[900px]:px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors shadow-2xs cursor-pointer whitespace-nowrap ${
                 autoRetryEnabled
                   ? "bg-accent/10 border-accent/35 text-accent"
                   : "bg-surface2 hover:bg-surface3 border-borderDefault text-textSecondary"
@@ -67,11 +67,12 @@ export const BatchSubToolbar: React.FC<BatchSubToolbarProps> = ({
               title={`Tự động tạo lại và hậu kiểm tối đa ${maxAutoRetries} lần đối với các đoạn bị lỗi/cảnh báo. Nếu sau ${maxAutoRetries} lần vẫn còn cảnh báo, hệ thống sẽ bỏ qua và vẫn xuất file kèm cảnh báo.`}
             >
               <RotateCcw
-                className={`w-3.5 h-3.5 ${
+                className={`w-3.5 h-3.5 shrink-0 ${
                   autoRetryEnabled ? "text-accent" : "text-textMuted"
                 }`}
               />
-              <span>Tự động tạo lại đoạn lỗi ({maxAutoRetries} lần)</span>
+              <span className="@[920px]:hidden">Tự tạo lại lỗi ({maxAutoRetries}×)</span>
+              <span className="hidden @[920px]:inline">Tự động tạo lại đoạn lỗi ({maxAutoRetries} lần)</span>
               <span
                 className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
                   autoRetryEnabled ? "bg-accent" : "bg-surface3 border border-borderDefault"
@@ -89,7 +90,7 @@ export const BatchSubToolbar: React.FC<BatchSubToolbarProps> = ({
       </div>
 
       {/* Right: Search Box */}
-      <div className="relative w-64">
+      <div className="relative flex-1 @[860px]:flex-initial min-w-[160px] w-48 @[960px]:w-64 max-w-[280px]">
         <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-textMuted pointer-events-none" />
         <input
           type="text"

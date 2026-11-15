@@ -687,14 +687,26 @@ export function prepareSpokenText(
       /[A-Z]/.test(token) &&
       (token.length >= 2 || token === "A")
     ) {
-      const normWord =
-        isAtSentenceStart(tok.start) || token === "TESLA"
-          ? token.charAt(0).toUpperCase() + token.slice(1).toLowerCase()
-          : token.toLowerCase();
+      let normWord: string;
+      if (langCode === "en" && token === "GIGA") {
+        normWord = isAtSentenceStart(tok.start) ? "Gigga" : "gigga";
+      } else if (isAtSentenceStart(tok.start) || token === "TESLA") {
+        normWord = token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
+      } else {
+        normWord = token.toLowerCase();
+      }
       claimed.push({
         start: tok.start,
         end: tok.end,
         replacement: normWord,
+        entry: null,
+      });
+    } else if (langCode === "en" && /^giga$/i.test(token)) {
+      claimed.push({
+        start: tok.start,
+        end: tok.end,
+        replacement:
+          token.charAt(0) === token.charAt(0).toUpperCase() ? "Gigga" : "gigga",
         entry: null,
       });
     } else {

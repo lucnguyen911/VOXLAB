@@ -23,6 +23,8 @@ export interface ActiveAudioTrack {
   audioUrl?: string;
   audioFilePath?: string;
   text?: string;
+  seekToSec?: number;
+  seekNonce?: number;
 }
 
 export interface BottomAudioPlayerProps {
@@ -160,6 +162,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
 }) => {
   const { t } = useI18n();
   const [currentTime, setCurrentTime] = useState(0);
+  const [decodedDuration, setDecodedDuration] = useState<number | null>(null);
   const [volume, setVolume] = useState(0.85);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
@@ -170,6 +173,10 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
   const bufferCacheRef = useRef<Map<string, AudioBuffer>>(new Map());
   const synthIntervalRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0);
+  const hwCtxAnchorRef = useRef<number | null>(null);
+  const hwOffsetAnchorRef = useRef<number>(0);
+  const isDecodingRef = useRef<boolean>(false);
+  const lastSeekNonceRef = useRef<number | undefined>(undefined);
   const playRequestIdRef = useRef<number>(0);
   const isPlayingRef = useRef<boolean>(isPlaying);
   const lastTrackKeyRef = useRef<string>("");
@@ -180,7 +187,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
   const onTogglePlayRef = useRef(onTogglePlay);
   const onSeekRef = useRef(onSeek);
 
-  const duration = Math.max(0.1, track.durationSec || 4.2);
+  const duration = Math.max(0.1, decodedDuration ?? track.durationSec ?? 4.2);
   const durationRef = useRef(duration);
   const trackKey = `${track.id}_${track.audioUrl || ""}`;
 
@@ -200,6 +207,8 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
 
   const stopAudioNode = useCallback(() => {
     playRequestIdRef.current++;
+    hwCtxAnchorRef.current = null;
+    isDecodingRef.current = false;
     if (sourceNodeRef.current) {
       try {
         sourceNodeRef.current.onended = null;
@@ -256,19 +265,21 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
 
       const synthetic = createSyntheticSpeechBuffer(
         ctx,
-        duration,
+        durationRef.current,
         track.voiceName || track.title || "preview",
         track.text
       );
       bufferCacheRef.current.set(cacheKey, synthetic);
       return synthetic;
     },
-    [track.id, track.audioUrl, track.voiceName, track.title, track.text, duration]
+    [track.id, track.audioUrl, track.voiceName, track.title, track.text]
   );
 
   const playFromOffset = useCallback(
     async (offsetSec: number) => {
       stopAudioNode();
+      isDecodingRef.current = true;
+      hwOffsetAnchorRef.current = offsetSec;
       const currentReqId = ++playRequestIdRef.current;
 
       try {
@@ -279,13 +290,17 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
           }
         }
         const ctx = audioContextRef.current;
-        if (!ctx) return;
+        if (!ctx) {
+          isDecodingRef.current = false;
+          return;
+        }
         if (ctx.state === "suspended") {
           await ctx.resume();
         }
 
         // Cancel if user paused or stopped while resuming context
         if (currentReqId !== playRequestIdRef.current || !isPlayingRef.current) {
+          isDecodingRef.current = false;
           if (ctx.state === "running") ctx.suspend().catch(() => {});
           return;
         }
@@ -300,8 +315,16 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
 
         // Cancel if user paused or stopped while decoding audio
         if (currentReqId !== playRequestIdRef.current || !isPlayingRef.current) {
+          isDecodingRef.current = false;
           if (ctx.state === "running") ctx.suspend().catch(() => {});
           return;
+        }
+
+        const realDuration =
+          Number.isFinite(buf.duration) && buf.duration > 0 ? buf.duration : durationRef.current;
+        if (realDuration > 0 && Math.abs(realDuration - durationRef.current) > 0.01) {
+          durationRef.current = realDuration;
+          setDecodedDuration(realDuration);
         }
 
         const effectiveVol = isMutedRef.current ? 0 : volumeRef.current * 0.45;
@@ -318,11 +341,17 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
           }
         };
 
-        const currentDuration = durationRef.current;
-        const safeOffset = Math.max(0, Math.min(offsetSec, currentDuration - 0.05));
+        const currentDuration = realDuration > 0 ? realDuration : durationRef.current;
+        const safeOffset = Math.max(0, Math.min(offsetSec, Math.max(0, currentDuration - 0.05)));
+        const hwStartTime = ctx.currentTime;
         source.start(0, safeOffset);
         sourceNodeRef.current = source;
+        hwCtxAnchorRef.current = hwStartTime;
+        hwOffsetAnchorRef.current = safeOffset;
+        isDecodingRef.current = false;
+        startTimeRef.current = Date.now() - (safeOffset / (playbackSpeedRef.current || 1.0)) * 1000;
       } catch (err) {
+        isDecodingRef.current = false;
         console.warn("Could not start Web Audio playback:", err);
       }
     },
@@ -343,6 +372,10 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
       sourceNodeRef.current.playbackRate.value = playbackSpeed;
     }
     if (isPlayingRef.current) {
+      if (audioContextRef.current && hwCtxAnchorRef.current !== null) {
+        hwCtxAnchorRef.current = audioContextRef.current.currentTime;
+        hwOffsetAnchorRef.current = currentTimeRef.current;
+      }
       startTimeRef.current = Date.now() - (currentTimeRef.current / playbackSpeed) * 1000;
     }
   }, [playbackSpeed]);
@@ -351,43 +384,67 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
   useEffect(() => {
     const isNewTrack = lastTrackKeyRef.current !== trackKey;
     lastTrackKeyRef.current = trackKey;
+    const hasNewSeek =
+      track.seekNonce !== undefined && track.seekNonce !== lastSeekNonceRef.current;
+    if (hasNewSeek) {
+      lastSeekNonceRef.current = track.seekNonce;
+    }
 
     if (isNewTrack) {
       // Whenever track changes (different chunk or regenerated audio):
-      // 1. Immediately reset playback position to 0
-      updateCurrentTime(0);
-      // 2. Stop any existing audio node
+      // 1. Reset decoded duration to metadata fallback until new buffer decodes
+      setDecodedDuration(null);
+      durationRef.current = Math.max(0.1, track.durationSec ?? 4.2);
+      // 2. Reset playback position (or jump to explicit seek target if provided)
+      const initialOffset =
+        hasNewSeek && typeof track.seekToSec === "number"
+          ? Math.max(0, Math.min(durationRef.current, track.seekToSec))
+          : 0;
+      updateCurrentTime(initialOffset);
+      // 3. Stop any existing audio node
       stopAudioNode();
-      // 3. Clear interval
+      // 4. Clear interval
       if (synthIntervalRef.current) {
         clearInterval(synthIntervalRef.current);
         synthIntervalRef.current = null;
       }
+    } else if (hasNewSeek && typeof track.seekToSec === "number") {
+      const seekTarget = Math.max(0, Math.min(durationRef.current, track.seekToSec));
+      updateCurrentTime(seekTarget);
     }
 
     if (isPlaying) {
-      // If it's a new track, strictly start from 0:00!
-      // If it's the same track (resumed from pause), continue from currentTimeRef.current
-      let startOffset = isNewTrack ? 0 : currentTimeRef.current;
-      if (startOffset >= duration - 0.1) {
+      // If a new seek was requested, jump directly there; if new track without seek, start from 0:00;
+      // otherwise continue from currentTimeRef.current.
+      let startOffset =
+        hasNewSeek && typeof track.seekToSec === "number"
+          ? Math.max(0, Math.min(durationRef.current, track.seekToSec))
+          : isNewTrack
+            ? 0
+            : currentTimeRef.current;
+      if (!hasNewSeek && startOffset >= durationRef.current - 0.1) {
         startOffset = 0;
         updateCurrentTime(0);
       }
 
       playFromOffset(startOffset);
       const currentSpeed = playbackSpeedRef.current || 1.0;
-      const startTime = Date.now() - (startOffset / currentSpeed) * 1000;
-      startTimeRef.current = startTime;
+      startTimeRef.current = Date.now() - (startOffset / currentSpeed) * 1000;
 
       if (synthIntervalRef.current) {
         clearInterval(synthIntervalRef.current);
       }
 
       synthIntervalRef.current = window.setInterval(() => {
+        if (isDecodingRef.current || hwCtxAnchorRef.current === null || !audioContextRef.current) {
+          return;
+        }
         const speed = playbackSpeedRef.current || 1.0;
-        const elapsed = ((Date.now() - startTimeRef.current) / 1000) * speed;
+        const hwElapsed =
+          hwOffsetAnchorRef.current +
+          Math.max(0, audioContextRef.current.currentTime - hwCtxAnchorRef.current) * speed;
         const maxDuration = durationRef.current;
-        if (elapsed >= maxDuration) {
+        if (hwElapsed >= maxDuration) {
           stopAudioNode();
           updateCurrentTime(0);
           if (synthIntervalRef.current) {
@@ -396,7 +453,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
           }
           onTogglePlayRef.current(); // End of audio track
         } else {
-          updateCurrentTime(elapsed);
+          updateCurrentTime(hwElapsed);
         }
       }, 40);
     } else {
@@ -414,7 +471,16 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
         synthIntervalRef.current = null;
       }
     };
-  }, [trackKey, isPlaying, duration, playFromOffset, stopAudioNode, updateCurrentTime]);
+  }, [
+    trackKey,
+    isPlaying,
+    track.seekNonce,
+    track.seekToSec,
+    track.durationSec,
+    playFromOffset,
+    stopAudioNode,
+    updateCurrentTime,
+  ]);
 
   // Direct seek handler for range slider
   const handleSeek = useCallback(
@@ -514,7 +580,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
     <div
       role="region"
       aria-label="Audio Preview Player"
-      className={`h-[68px] px-3.5 sm:px-5 bg-surface1/95 dark:bg-[#19140F]/95 backdrop-blur-xl border border-borderDefault dark:border-amber-500/20 rounded-xl shadow-[0_8px_24px_-4px_rgba(36,24,12,0.12),inset_0_1px_0_#fff] dark:shadow-[0_12px_32px_-4px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,240,212,0.08)] flex items-center justify-between gap-3 sm:gap-6 text-xs select-none shrink-0 z-30 relative overflow-hidden transition-all duration-200 ${
+      className={`@container h-[68px] px-3 @[720px]:px-5 bg-surface1/95 dark:bg-[#19140F]/95 backdrop-blur-xl border border-borderDefault dark:border-amber-500/20 rounded-xl shadow-[0_8px_24px_-4px_rgba(36,24,12,0.12),inset_0_1px_0_#fff] dark:shadow-[0_12px_32px_-4px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,240,212,0.08)] flex items-center justify-between gap-2 @[720px]:gap-4 @[900px]:gap-6 text-xs select-none shrink-0 z-30 relative overflow-hidden transition-all duration-200 ${
         className ?? "mx-2.5 sm:mx-3 mb-2.5 sm:mb-3"
       }`}
     >
@@ -524,7 +590,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
       {/* ================================================================== */}
       {/* 1. LEFT ZONE: Voice Card Avatar & Dual-Line Track Metadata         */}
       {/* ================================================================== */}
-      <div className="w-[220px] sm:w-[260px] shrink-0 flex items-center gap-3 min-w-0">
+      <div className="w-[140px] @[620px]:w-[184px] @[860px]:w-[250px] shrink-0 flex items-center gap-2.5 @[720px]:gap-3 min-w-0">
         {/* Sleek Voice Avatar with Dancing Soundwave Equalizer */}
         <div
           className="w-10 h-10 rounded-xl bg-gradient-to-tr from-accent/20 via-accent/10 to-transparent border border-accent/30 flex items-center justify-center relative overflow-hidden shrink-0 shadow-inner group cursor-pointer"
@@ -549,7 +615,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
             <span className="font-bold text-textPrimary text-xs tracking-tight truncate block" title={trackHeading}>
               {trackHeading}
             </span>
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-surface2 text-textMuted border border-borderDefault/60 font-medium shrink-0">
+            <span className="hidden @[560px]:inline-block text-[10px] font-mono px-1.5 py-0.2 rounded bg-surface2 text-textMuted border border-borderDefault/60 font-medium shrink-0">
               WAV
             </span>
             <span className="text-[10px] font-mono text-textMuted hidden lg:inline shrink-0">
@@ -569,7 +635,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
       {/* ================================================================== */}
       {/* 2. CENTER ZONE: True Studio Control Deck (Controls + Scrubber)     */}
       {/* ================================================================== */}
-      <div className="flex-1 max-w-[480px] sm:max-w-[520px] min-w-0 flex flex-col items-center justify-center gap-1 mx-auto px-2">
+      <div className="flex-1 min-w-[170px] max-w-[520px] flex flex-col items-center justify-center gap-1 mx-auto px-1 @[720px]:px-2">
         {/* Top Control Cluster */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* Rewind 5s */}
@@ -655,7 +721,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
       {/* ================================================================== */}
       {/* 3. RIGHT ZONE: Volume Slider + Download WAV + Close Button         */}
       {/* ================================================================== */}
-      <div className="w-[220px] sm:w-[260px] shrink-0 flex items-center justify-end gap-1.5 sm:gap-2">
+      <div className="w-auto @[680px]:w-[184px] @[860px]:w-[250px] shrink-0 flex items-center justify-end gap-1 @[720px]:gap-2">
         {/* Volume Control Group */}
         <div className="flex items-center gap-1 shrink-0">
           <button
@@ -675,7 +741,7 @@ export const BottomAudioPlayer: React.FC<BottomAudioPlayerProps> = ({
           </button>
 
           {/* Fixed-width Volume Slider */}
-          <div className="w-16 sm:w-20 flex items-center">
+          <div className="hidden @[680px]:flex w-16 @[860px]:w-20 items-center">
             {(() => {
               const volPct = isMuted ? 0 : Math.round(volume * 100);
               return (

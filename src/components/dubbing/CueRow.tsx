@@ -15,6 +15,7 @@ import {
   isChunkUnverified,
   getChunkBadgeInfo,
   getIssueShortLabel,
+  formatIssueTimestamp,
 } from "../../services/audio/qualityValidator";
 
 export interface CueRowProps {
@@ -180,7 +181,7 @@ export const CueRow: React.FC<CueRowProps> = ({
   return (
     <div
       data-cue-index={original.index}
-      className={`grid grid-cols-1 md:grid-cols-2 gap-3 transition-all ${
+      className={`grid grid-cols-1 @[600px]:grid-cols-2 gap-3 transition-all ${
         isPlaying ? "ring-1 ring-accent/60 rounded-xl" : ""
       }`}
     >
@@ -191,7 +192,7 @@ export const CueRow: React.FC<CueRowProps> = ({
         }`}
       >
         {/* Top Header: Index & Timestamps & Duration */}
-        <div className="flex items-center justify-between text-[11px] font-mono text-textMuted select-none flex-shrink-0 h-5">
+        <div className="flex items-center justify-between text-[11px] font-mono text-textMuted select-none flex-shrink-0 min-h-5 flex-wrap gap-1">
           <div className="flex items-center gap-2">
             <span className="font-bold text-accent">{formattedIndex}</span>
             <span>
@@ -390,9 +391,7 @@ export const CueRow: React.FC<CueRowProps> = ({
                 {audioSegment.qualityReview.issues.map((iss, idx) => {
                   const shortLabel = getIssueShortLabel(iss.code);
                   const hasTime = Array.isArray(iss.timeRange) && iss.timeRange.length === 2;
-                  const timeStr = hasTime
-                    ? `${Math.floor(iss.timeRange![0] / 60).toString().padStart(2, "0")}:${Math.floor(iss.timeRange![0] % 60).toString().padStart(2, "0")}`
-                    : "";
+                  const timeStr = hasTime ? formatIssueTimestamp(iss.timeRange![0]) : "";
                   return (
                     <div key={idx} className="text-textSecondary leading-snug flex items-start justify-between gap-2 py-0.5">
                       <div className="flex items-start gap-1.5 min-w-0 flex-1">

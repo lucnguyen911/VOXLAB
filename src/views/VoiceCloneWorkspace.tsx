@@ -807,12 +807,12 @@ export const VoiceCloneWorkspace: React.FC<VoiceCloneWorkspaceProps> = ({
 
       {/* Main Workspace Frame: 2-Column Split */}
       <div className="flex-1 flex flex-col h-full overflow-hidden p-4 sm:p-5">
-        {/* 2-Column Split: Left (380-390px) + Right (flex-grow) */}
-        <div className="flex-1 flex flex-col lg:flex-row gap-5 min-h-0 overflow-hidden">
+        {/* 2-Column Split: Left (clamped 290-390px) + Right (flex-grow) */}
+        <div className="flex-1 flex flex-col lg:flex-row gap-3.5 xl:gap-5 min-h-0 overflow-hidden">
           {/* ======================================================== */}
-          {/* LEFT COLUMN: CREATE VOICE PANEL (380–390px)              */}
+          {/* LEFT COLUMN: CREATE VOICE PANEL (clamped 290–390px)      */}
           {/* ======================================================== */}
-          <div className="w-full lg:w-[380px] xl:w-[390px] flex flex-col bg-surface1 rounded-xl border border-borderDefault shrink-0 overflow-hidden shadow-xs">
+          <div className="w-full lg:w-[clamp(290px,30vw,390px)] flex flex-col bg-surface1 rounded-xl border border-borderDefault shrink-0 overflow-hidden shadow-xs">
             {/* Scrollable Form Body */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3.5 text-xs">
               {/* 1. ÂM THANH THAM CHIẾU */}

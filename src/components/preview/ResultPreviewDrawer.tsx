@@ -392,7 +392,7 @@ export const ResultPreviewDrawer: React.FC<ResultPreviewDrawerProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="w-full max-w-[500px] bg-surface1 border-l border-borderDefault flex flex-col h-full shadow-2xl animate-in slide-in-from-right duration-200">
+      <div className="w-full max-w-[min(500px,92vw)] bg-surface1 border-l border-borderDefault flex flex-col h-full shadow-2xl animate-in slide-in-from-right duration-200">
         {/* 1. HEADER: Title + Close */}
         <div className="p-4 border-b border-borderDefault flex items-center justify-between bg-surface1 flex-shrink-0">
           <h3 className="text-sm font-bold text-textPrimary">Kết quả</h3>

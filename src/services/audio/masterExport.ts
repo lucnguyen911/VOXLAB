@@ -3,9 +3,14 @@ import {
   getTargetPauseMs,
   calculateEffectiveSilenceGapMs,
 } from "../pause/punctuationPause";
-import { SubtitleAspectRatio, SubtitleMaxLines } from "../subtitle/types";
+import { SubtitleAspectRatio, SubtitleCue, SubtitleMaxLines } from "../subtitle/types";
 import { generateSubtitlesFromChunks } from "../subtitle/pipeline";
 import { exportToSrt } from "../subtitle/exporter";
+import { parseSubtitle } from "../subtitle/parser";
+import { getSubtitleProfile } from "../subtitle/profiles";
+import { wrapCueTextBalanced } from "../subtitle/candidates";
+import { OriginalCue, TranslatedCue } from "../../types/dubbing";
+import { translationManager } from "../translation/manager";
 
 export interface ValidationResult {
   canExport: boolean;
@@ -564,6 +569,97 @@ export function downloadTextBlob(content: string, filename: string): void {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/**
+ * Builds the parallel translated subtitle filename/path (`<Base>_<lang>.srt`)
+ * from an audio (`.wav`/`.mp3`) or subtitle (`.srt`) base path.
+ */
+export function buildTranslatedSrtPath(
+  baseAudioOrSrtPath: string,
+  targetLanguage: string
+): string {
+  const safeLang = (targetLanguage || "vi").trim().replace(/[^a-zA-Z0-9_-]/g, "") || "vi";
+  if (/\.(wav|mp3|srt)$/i.test(baseAudioOrSrtPath)) {
+    return baseAudioOrSrtPath.replace(/\.(wav|mp3|srt)$/i, `_${safeLang}.srt`);
+  }
+  return `${baseAudioOrSrtPath}_${safeLang}.srt`;
+}
+
+/**
+ * Translates an already-generated SRT string 1:1 with the source subtitle cues.
+ * Strictly preserves cue index, startSec, and endSec using "default" translation style.
+ */
+export async function translateSrtContent1to1(
+  srtContent: string,
+  options: {
+    targetLanguage: string;
+    providerId: string;
+    aspectRatio?: SubtitleAspectRatio;
+    maxLines?: SubtitleMaxLines;
+    onProgress?: (done: number, total: number) => void;
+    translateCuesFn?: (
+      cues: OriginalCue[],
+      targetLang: string,
+      providerId: string,
+      onProgress?: (done: number, total: number) => void
+    ) => Promise<TranslatedCue[]>;
+  }
+): Promise<{ srt: string; cueCount: number; targetLanguage: string }> {
+  const targetLanguage = options.targetLanguage || "vi";
+  if (!srtContent || !srtContent.trim()) {
+    return { srt: "", cueCount: 0, targetLanguage };
+  }
+
+  const originalCues = parseSubtitle(srtContent);
+  if (originalCues.length === 0) {
+    return { srt: "", cueCount: 0, targetLanguage };
+  }
+
+  const runTranslate =
+    options.translateCuesFn ??
+    ((cues: OriginalCue[], lang: string, prov: string, prog?: (done: number, total: number) => void) =>
+      translationManager.translateOriginalCues(cues, lang, prov, prog, "default", {
+        sourceLang: "auto",
+        strict: true,
+      }));
+
+  const translatedCues = await runTranslate(
+    originalCues,
+    targetLanguage,
+    options.providerId || "google",
+    options.onProgress
+  );
+
+  if (translatedCues.length !== originalCues.length) {
+    throw new Error(
+      `Số câu phụ đề dịch (${translatedCues.length}) không khớp phụ đề gốc (${originalCues.length}).`
+    );
+  }
+
+  const maxLines = (options.maxLines || 2) as SubtitleMaxLines;
+  const profile = getSubtitleProfile(options.aspectRatio || "16:9", maxLines);
+
+  const syncedCues: SubtitleCue[] = originalCues.map((orig, idx) => {
+    const flatTranslated = (translatedCues[idx]?.text || "").replace(/\s+/g, " ").trim();
+    const fallbackSource = orig.text.replace(/\s+/g, " ").trim();
+    const nonEmptyText = flatTranslated || fallbackSource;
+    const finalText =
+      maxLines >= 2 ? wrapCueTextBalanced(nonEmptyText, profile) : nonEmptyText;
+
+    return {
+      index: orig.index,
+      startSec: orig.startSec,
+      endSec: orig.endSec,
+      text: finalText,
+    };
+  });
+
+  return {
+    srt: exportToSrt(syncedCues),
+    cueCount: syncedCues.length,
+    targetLanguage,
+  };
 }
 
 export interface SpeechBoundaryAnalysis {

@@ -1381,30 +1381,61 @@ def shape_internal_punctuation_pauses(
     out_pieces.append(tail)
     shaped_audio = np.concatenate(out_pieces) if out_pieces else mono
 
-    # Shift updated_words timestamps accurately across all applied edits
-    cum_shift = 0.0
-    edit_ptr = 0
-    for w_idx, w_obj in enumerate(updated_words):
-        orig_s = float(w_obj.get("startSec", 0.0))
-        orig_e = float(w_obj.get("endSec", orig_s))
-        new_s = orig_s + cum_shift
-        new_e = orig_e + cum_shift
-
-        if edit_ptr < len(planned_edits) and planned_edits[edit_ptr]["asrIndex"] == w_idx:
-            ed = planned_edits[edit_ptr]
-            cut_sec = float(ed["cutIdx"]) / float(sr)
-            delta_sec = float(ed["deltaSamples"]) / float(sr)
+    # Shift updated_words timestamps accurately across all applied edits using exact piecewise mapping
+    def _map_orig_to_shaped_sec(t_sec: float, is_start: bool) -> float:
+        shift_acc = 0.0
+        for ed in planned_edits:
+            delta_s = float(ed["deltaSamples"]) / float(sr)
             if ed["mode"] == "insert":
-                new_e = min(new_e, cut_sec + cum_shift)
+                cut_s = float(ed["cutIdx"]) / float(sr)
+                if t_sec < cut_s - 1e-6:
+                    return t_sec + shift_acc
+                if abs(t_sec - cut_s) <= 1e-6:
+                    return t_sec + shift_acc + (delta_s if is_start else 0.0)
+                shift_acc += delta_s
+            else:
+                cut_s = float(ed["cutIdx"]) / float(sr)
+                cut_e = float(ed["cutEndIdx"]) / float(sr)
+                if t_sec <= cut_s:
+                    return t_sec + shift_acc
+                if t_sec < cut_e:
+                    return cut_s + shift_acc
+                shift_acc += delta_s
+        return t_sec + shift_acc
+
+    orig_bounds = [
+        (float(w_obj.get("startSec", 0.0)), float(w_obj.get("endSec", float(w_obj.get("startSec", 0.0)))))
+        for w_obj in updated_words
+    ]
+    insert_cut_shifted: dict[int, tuple[float, float]] = {}
+    cum_ins = 0.0
+    for ed in planned_edits:
+        delta_s = float(ed["deltaSamples"]) / float(sr)
+        cut_s = float(ed["cutIdx"]) / float(sr)
+        if ed["mode"] == "insert":
+            insert_cut_shifted[int(ed["asrIndex"])] = (cut_s + cum_ins, cut_s + cum_ins + delta_s)
+        cum_ins += delta_s
+
+    for w_idx, w_obj in enumerate(updated_words):
+        orig_s, orig_e = orig_bounds[w_idx]
+        new_s = _map_orig_to_shaped_sec(orig_s, is_start=True)
+        new_e = _map_orig_to_shaped_sec(orig_e, is_start=False)
+        if w_idx in insert_cut_shifted:
+            pre_cut_s, _post_cut_s = insert_cut_shifted[w_idx]
+            if new_e > pre_cut_s and (pre_cut_s - new_s) >= 0.02:
+                new_e = pre_cut_s
+        if (w_idx - 1) in insert_cut_shifted:
+            _pre_cut_s, post_cut_s = insert_cut_shifted[w_idx - 1]
+            if new_s < post_cut_s:
+                new_s = post_cut_s
                 if new_e < new_s + 0.02:
-                    new_e = max(new_s, cut_sec + cum_shift)
-            cum_shift += delta_sec
-            edit_ptr += 1
-            # Ensure the immediately following word starts after the newly inserted silence
-            if ed["mode"] == "insert" and w_idx + 1 < len(updated_words):
-                nxt_orig_s = float(updated_words[w_idx + 1].get("startSec", cut_sec))
-                if nxt_orig_s < cut_sec:
-                    updated_words[w_idx + 1]["startSec"] = round(cut_sec, 3)
+                    new_e = new_s + 0.02
+        if w_idx > 0 and orig_s >= orig_bounds[w_idx - 1][1] - 1e-6:
+            prev_end = float(updated_words[w_idx - 1]["endSec"])
+            if new_s < prev_end:
+                new_s = prev_end
+                if new_e < new_s:
+                    new_e = new_s
 
         w_obj["startSec"] = round(max(0.0, new_s), 3)
         w_obj["endSec"] = round(max(w_obj["startSec"], new_e), 3)
@@ -1422,6 +1453,7 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
     from . import audio_quality as aq
     from .asr_engine import (
         AsrLifecycleManager,
+        DEFAULT_TTS_VAD_PARAMETERS,
         _is_cuda_runtime_error,
         find_whisper_model_dir,
         resolve_whisper_model_dir,
@@ -1505,7 +1537,7 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
             whisper_model = mgr.get_or_load(model_dir_or_id=target_model_dir, models_dir=models_dir)
             mgr_model_id = getattr(mgr, "current_model_id", None)
             qc_hotwords = aq.extract_qc_vocabulary_hotwords(text, language=eff_language)
-            kw_extra: dict[str, Any] = {}
+            kw_extra: dict[str, Any] = {"temperature": 0.0}
             if qc_hotwords:
                 kw_extra["hotwords"] = qc_hotwords
             try:
@@ -1515,7 +1547,7 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
                     beam_size=5,
                     word_timestamps=True,
                     vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=200),
+                    vad_parameters=dict(DEFAULT_TTS_VAD_PARAMETERS),
                     condition_on_previous_text=False,
                     **kw_extra,
                 )
@@ -1543,6 +1575,7 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
                         beam_size=5,
                         word_timestamps=True,
                         vad_filter=True,
+                        vad_parameters=dict(DEFAULT_TTS_VAD_PARAMETERS),
                         condition_on_previous_text=False,
                     )
                     segs = list(segs)
@@ -1561,6 +1594,16 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
                         })
 
             if detected_words:
+                detected_words = aq.recover_degenerate_asr_loops(
+                    audio_path,
+                    detected_words,
+                    orig_dur,
+                    whisper_model,
+                    language=eff_language,
+                    audio_data=mono,
+                    sample_rate=sr,
+                    text=text,
+                )
                 detected_words = aq.reanchor_asr_word_timestamps(detected_words, mono, sr, text=text)
                 detected_words = aq.recover_unaligned_words(
                     audio_path,
@@ -1571,6 +1614,7 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
                     slice_budget=[2],
                     audio_data=mono,
                     sample_rate=sr,
+                    text=text,
                 )
         except Exception as e:
             log(f"[enforce_punctuation_pauses] ASR alignment skipped: {e}")
@@ -1605,6 +1649,7 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
         write_audio_atomic(audio_path, shaped_audio, sr=sr, fmt=out_fmt)
         final_dur = round(shaped_audio.size / float(sr), 3)
         _, edge_final = attenuate_leading_breath_and_measure_edges(shaped_audio, sr)
+        updated_words = aq.reanchor_asr_word_timestamps(updated_words, shaped_audio, sr, text=text)
     else:
         final_dur = orig_dur
         edge_final = edge_initial

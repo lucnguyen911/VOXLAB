@@ -8,12 +8,14 @@ import io
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from voxlab_sidecar.__main__ import _create_dev_module_reloader  # noqa: E402
 from voxlab_sidecar.protocol import SidecarError, Writer  # noqa: E402
 from voxlab_sidecar.server import RequestContext, Server  # noqa: E402
 
@@ -392,6 +394,85 @@ class CapabilityValidationTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, "DEVICE_UNAVAILABLE")
         if cuda_available():
             self.assertEqual(svc._resolve_device(OmniVoiceAdapter(), "auto"), "cuda")
+
+    def test_dev_module_reloader_topological_cascade_and_cache_clear(self):
+        pkg_name = f"_tmp_dev_reload_{os.getpid()}_{int(time.time() * 1000)}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pkg_dir = os.path.join(tmpdir, pkg_name)
+            os.makedirs(pkg_dir, exist_ok=True)
+            init_path = os.path.join(pkg_dir, "__init__.py")
+            nn_path = os.path.join(pkg_dir, "number_normalizer.py")
+            aq_path = os.path.join(pkg_dir, "audio_quality.py")
+            ao_path = os.path.join(pkg_dir, "audio_ops.py")
+
+            with open(init_path, "w", encoding="utf-8") as fh:
+                fh.write("")
+            with open(nn_path, "w", encoding="utf-8") as fh:
+                fh.write('TAG = "v1"\n')
+            with open(aq_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "from .number_normalizer import TAG\n"
+                    "_RECENT_PRIMARY_ASR_CACHE = {}\n"
+                    "def get_tag(): return TAG\n"
+                )
+            with open(ao_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "from .audio_quality import get_tag\n"
+                    'OPS_VER = "1"\n'
+                    "def op_tag(): return get_tag()\n"
+                )
+
+            sys.path.insert(0, tmpdir)
+            try:
+                import importlib
+
+                nn_mod = importlib.import_module(f"{pkg_name}.number_normalizer")
+                aq_mod = importlib.import_module(f"{pkg_name}.audio_quality")
+                ao_mod = importlib.import_module(f"{pkg_name}.audio_ops")
+
+                reloader = _create_dev_module_reloader([nn_mod, aq_mod, ao_mod])
+                self.assertEqual(reloader(), [])
+                self.assertEqual(ao_mod.op_tag(), "v1")
+
+                base_t = max(
+                    os.path.getmtime(nn_path),
+                    os.path.getmtime(aq_path),
+                    os.path.getmtime(ao_path),
+                )
+                with open(nn_path, "w", encoding="utf-8") as fh:
+                    fh.write('TAG = "v2"\n')
+                os.utime(nn_path, (base_t + 2.0, base_t + 2.0))
+
+                reloaded = reloader()
+                self.assertEqual(
+                    reloaded,
+                    [
+                        f"{pkg_name}.number_normalizer",
+                        f"{pkg_name}.audio_quality",
+                        f"{pkg_name}.audio_ops",
+                    ],
+                )
+                self.assertEqual(ao_mod.op_tag(), "v2")
+
+                aq_mod._RECENT_PRIMARY_ASR_CACHE["cached"] = {"ok": True}
+                with open(ao_path, "w", encoding="utf-8") as fh:
+                    fh.write(
+                        "from .audio_quality import get_tag\n"
+                        'OPS_VER = "2"\n'
+                        "def op_tag(): return get_tag()\n"
+                    )
+                os.utime(ao_path, (base_t + 4.0, base_t + 4.0))
+
+                reloaded_ops = reloader()
+                self.assertEqual(reloaded_ops, [f"{pkg_name}.audio_ops"])
+                self.assertEqual(ao_mod.OPS_VER, "2")
+                self.assertEqual(aq_mod._RECENT_PRIMARY_ASR_CACHE, {})
+            finally:
+                for key in list(sys.modules):
+                    if key == pkg_name or key.startswith(pkg_name + "."):
+                        sys.modules.pop(key, None)
+                if tmpdir in sys.path:
+                    sys.path.remove(tmpdir)
 
 
 if __name__ == "__main__":

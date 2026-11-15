@@ -18,6 +18,7 @@ import {
   isChunkChecking,
   getChunkBadgeInfo,
   getIssueShortLabel,
+  formatIssueTimestamp,
 } from "../../services/audio/qualityValidator";
 
 export const AutoResizeTextarea: React.FC<{
@@ -309,9 +310,7 @@ export const TtsChunkCard = React.memo(function TtsChunkCard({
               {chunk.qualityReview.issues.map((iss, idx) => {
                 const shortLabel = getIssueShortLabel(iss.code);
                 const hasTime = Array.isArray(iss.timeRange) && iss.timeRange.length === 2;
-                const timeStr = hasTime
-                  ? `${Math.floor(iss.timeRange![0] / 60).toString().padStart(2, "0")}:${Math.floor(iss.timeRange![0] % 60).toString().padStart(2, "0")}`
-                  : "";
+                const timeStr = hasTime ? formatIssueTimestamp(iss.timeRange![0]) : "";
                 return (
                   <div key={idx} className="text-textSecondary leading-snug flex items-start justify-between gap-2 py-0.5">
                     <div className="flex items-start gap-1.5 min-w-0 flex-1">

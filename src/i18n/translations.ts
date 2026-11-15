@@ -88,6 +88,7 @@ export interface Translations {
     settings: string;
     defaultBtn: string;
     advanced: string;
+    subtitlesSection: string;
     resetSettings: string;
     speed: string;
     normal: string;
@@ -326,6 +327,7 @@ export interface Translations {
     processingSpeedLabel: string;
     aspectRatioLabel: string;
     maxLinesLabel: string;
+    subtitleFormattingLabel: string;
     invalidationNotice: string;
     cueCount: string;
     activeCue: string;
@@ -493,6 +495,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       settings: "Cài đặt",
       defaultBtn: "Mặc định",
       advanced: "Nâng cao",
+      subtitlesSection: "Phụ Đề",
       resetSettings: "Đặt lại",
       speed: "Tốc độ",
       normal: "Chuẩn",
@@ -704,7 +707,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       cancel: "Hủy",
       asrSettings: "CÀI ĐẶT NHẬN DIỆN",
       asrSettingsDesc: "Mô hình nhận diện giọng nói tự động trên máy tính.",
-      modelLabel: "Mô hình Whisper",
+      modelLabel: "Mô hình",
       whisperModelSmall: "Small (Máy Yếu)",
       whisperModelMedium: "Medium (Máy Trung Bình)",
       whisperModelTurbo: "Large-V3-Turbo (Cân Bằng)",
@@ -731,6 +734,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       processingSpeedLabel: "Tốc độ xử lý",
       aspectRatioLabel: "Tỷ lệ khung hình",
       maxLinesLabel: "Số dòng tối đa",
+      subtitleFormattingLabel: "Định dạng phụ đề",
       invalidationNotice: "Cài đặt nhận diện đã thay đổi. Kết quả cũ đã được đặt lại.",
       cueCount: "{count} phụ đề",
       activeCue: "Đang phát",
@@ -897,6 +901,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       settings: "Settings",
       defaultBtn: "Default",
       advanced: "Advanced",
+      subtitlesSection: "Subtitles",
       resetSettings: "Reset",
       speed: "Speed",
       normal: "Normal",
@@ -1108,7 +1113,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       cancel: "Cancel",
       asrSettings: "RECOGNITION SETTINGS",
       asrSettingsDesc: "Automatic speech recognition running on local hardware.",
-      modelLabel: "Whisper Model",
+      modelLabel: "Model",
       whisperModelSmall: "Small (Low Spec)",
       whisperModelMedium: "Medium (Mid-tier)",
       whisperModelTurbo: "Large-V3-Turbo (Balanced)",
@@ -1135,6 +1140,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       processingSpeedLabel: "Processing Speed",
       aspectRatioLabel: "Aspect Ratio",
       maxLinesLabel: "Max Lines",
+      subtitleFormattingLabel: "Subtitle Formatting",
       invalidationNotice: "Recognition settings changed. Previous result was reset.",
       cueCount: "{count} cues",
       activeCue: "Playing",
@@ -1301,6 +1307,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       settings: "設定",
       defaultBtn: "デフォルト",
       advanced: "高度な設定",
+      subtitlesSection: "字幕",
       resetSettings: "リセット",
       speed: "速度",
       normal: "標準",
@@ -1539,6 +1546,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       processingSpeedLabel: "処理速度",
       aspectRatioLabel: "アスペクト比",
       maxLinesLabel: "最大行数",
+      subtitleFormattingLabel: "字幕フォーマット",
       invalidationNotice: "認識設定が変更されたため、前回の結果をリセットしました。",
       cueCount: "{count} 件の字幕",
       activeCue: "再生中",
@@ -1705,6 +1713,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       settings: "设置",
       defaultBtn: "默认",
       advanced: "高级设置",
+      subtitlesSection: "字幕",
       resetSettings: "重置",
       speed: "语速",
       normal: "标准",
@@ -1943,6 +1952,7 @@ export const TRANSLATIONS: Record<SupportedLang, Translations> = {
       processingSpeedLabel: "处理速度",
       aspectRatioLabel: "画幅比例",
       maxLinesLabel: "最大行数",
+      subtitleFormattingLabel: "字幕格式",
       invalidationNotice: "识别设置已更改，已重置旧结果。",
       cueCount: "{count} 条字幕",
       activeCue: "正在播放",

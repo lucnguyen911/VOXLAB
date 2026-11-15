@@ -12,6 +12,7 @@ import {
   Pause,
   Play,
   X,
+  AlertCircle,
 } from "lucide-react";
 import { ChunkItem, VoiceProfile, PunctuationPauses } from "../../types/ui";
 import { useI18n } from "../../i18n/context";
@@ -22,12 +23,19 @@ import {
   getVoiceSecondaryTags,
 } from "../../constants/voiceFilters";
 import { CountryFlag } from "../common/CountryFlag";
+import { SearchableLanguageSelect } from "../common/SearchableLanguageSelect";
 import {
   loadSubtitleSettings,
   saveSubtitleSettings,
+  TRANSLATION_TARGET_LANGUAGES,
   SubtitleAspectRatio,
   SubtitleMaxLines,
 } from "../../services/subtitle";
+import {
+  translationManager,
+  loadTranslationSettings,
+  saveTranslationSettings,
+} from "../../services/translation";
 
 export interface PersistedTtsSettings {
   speed: number;
@@ -37,6 +45,7 @@ export interface PersistedTtsSettings {
   sentencePauseMs?: number;
   concurrency: number;
   exportSrt?: boolean;
+  translateSrt?: boolean;
   optimizeClarity?: boolean;
 }
 
@@ -52,6 +61,7 @@ export const DEFAULT_TTS_SETTINGS: PersistedTtsSettings = {
   },
   concurrency: 1, // Section 20: default is 1x · Mặc định
   exportSrt: false,
+  translateSrt: false,
 };
 
 const STORAGE_KEY = "voxlab_tts_settings";
@@ -102,6 +112,7 @@ export const loadStoredTtsSettings = (): PersistedTtsSettings => {
             : undefined,
         concurrency,
         exportSrt: typeof parsed.exportSrt === "boolean" ? parsed.exportSrt : false,
+        translateSrt: typeof parsed.translateSrt === "boolean" ? parsed.translateSrt : false,
       };
     }
   } catch (e) {
@@ -157,6 +168,8 @@ interface TtsInspectorProps {
   lang?: string;
   exportSrt?: boolean;
   onChangeExportSrt?: (enabled: boolean) => void;
+  translateSrt?: boolean;
+  onChangeTranslateSrt?: (enabled: boolean) => void;
   onGenerateAudio?: () => void;
   isGenerating?: boolean;
   canGenerate?: boolean;
@@ -183,6 +196,8 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   onOpenVoiceModal,
   exportSrt: propExportSrt,
   onChangeExportSrt,
+  translateSrt: propTranslateSrt,
+  onChangeTranslateSrt,
   onGenerateAudio,
   isGenerating = false,
   canGenerate = true,
@@ -260,6 +275,9 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
   const [localExportSrt, setLocalExportSrt] = useState<boolean>(
     propExportSrt ?? initialSettings.exportSrt ?? false
   );
+  const [localTranslateSrt, setLocalTranslateSrt] = useState<boolean>(
+    propTranslateSrt ?? initialSettings.translateSrt ?? false
+  );
 
   // Punctuation pauses configuration (in seconds)
   const [pauses, setPauses] = useState<PunctuationPauses>(initialSettings.pauses);
@@ -275,15 +293,26 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
     }
   }, [propExportSrt]);
 
+  useEffect(() => {
+    if (propTranslateSrt !== undefined && propTranslateSrt !== localTranslateSrt) {
+      setLocalTranslateSrt(propTranslateSrt);
+    }
+  }, [propTranslateSrt]);
+
   const effectiveExportSrt = propExportSrt ?? localExportSrt;
+  const effectiveTranslateSrt = propTranslateSrt ?? localTranslateSrt;
 
   const [subtitleSettings, setSubtitleSettings] = useState(() => loadSubtitleSettings());
+  const [translationSettings, setTranslationSettings] = useState(() => loadTranslationSettings());
 
   useEffect(() => {
     if (effectiveExportSrt) {
       setSubtitleSettings(loadSubtitleSettings());
     }
-  }, [effectiveExportSrt]);
+    if (effectiveExportSrt || effectiveTranslateSrt || isAdvancedOpen) {
+      setTranslationSettings(loadTranslationSettings());
+    }
+  }, [effectiveExportSrt, effectiveTranslateSrt, isAdvancedOpen]);
 
   useEffect(() => {
     const handleAsrChanged = () => {
@@ -308,6 +337,35 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
     saveStoredTtsSettings({ exportSrt: enabled });
     onChangeExportSrt?.(enabled);
   };
+
+  const handleToggleTranslateSrt = (enabled: boolean) => {
+    setLocalTranslateSrt(enabled);
+    saveStoredTtsSettings({ translateSrt: enabled });
+    onChangeTranslateSrt?.(enabled);
+  };
+
+  const availableTranslationProviders = translationManager.listProviders();
+  const selectedTranslationProviderId = availableTranslationProviders.some(
+    (p) => p.id === translationSettings.translationProviderId
+  )
+    ? translationSettings.translationProviderId
+    : availableTranslationProviders[0]?.id || "google";
+  const activeTransProvider =
+    availableTranslationProviders.find((p) => p.id === selectedTranslationProviderId) ||
+    availableTranslationProviders[0];
+  const isTranslationProviderUnconfigured = Boolean(
+    activeTransProvider &&
+      (((activeTransProvider.type === "gemini" ||
+        activeTransProvider.type === "claude" ||
+        activeTransProvider.type === "deepseek" ||
+        activeTransProvider.type === "openai" ||
+        activeTransProvider.type === "qwen") &&
+        !activeTransProvider.apiKey) ||
+        ((activeTransProvider.type === "lmstudio" ||
+          activeTransProvider.type === "ollama" ||
+          activeTransProvider.type === "custom") &&
+          !activeTransProvider.endpoint))
+  );
 
   // Reset voice settings (Speed, Pitch, Volume) - Section 7
   const handleResetSettings = () => {
@@ -344,11 +402,11 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
 
   return (
     <aside
-      style={{ width: `${inspectorWidth}px` }}
+      style={{ width: `clamp(268px, 27vw, ${inspectorWidth}px)` }}
       className="bg-panel border-l border-borderDefault flex flex-col h-full flex-shrink-0 z-20 select-none transition-all duration-150"
     >
       {/* Body Content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+      <div className="flex-1 overflow-y-auto p-3 lg:p-4 space-y-4 text-xs">
         {/* 1. GIỌNG ĐỌC (Voice Card - Section 4: Reduced Metadata, max 2 items) */}
         <div className="space-y-1.5">
           <label className="block text-[11px] font-semibold text-textMuted uppercase tracking-wider">
@@ -707,7 +765,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
           )}
         </div>
 
-        {/* Section 11-24: COLLAPSIBLE NÂNG CAO (Default Collapsed, SRT Export) */}
+        {/* Section 11-24: COLLAPSIBLE PHỤ ĐỀ (Default Collapsed, SRT Export & Translation) */}
         <div className="pt-2 border-t border-borderDefault/60">
           <button
             type="button"
@@ -717,7 +775,7 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
             <div className="flex items-center gap-1.5">
               <Settings2 className="w-3.5 h-3.5 text-accent" />
               <span className="uppercase tracking-wider font-bold">
-                {t.inspector.advanced}
+                {t.inspector.subtitlesSection}
               </span>
             </div>
             <ChevronRight
@@ -759,11 +817,11 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                 {/* Subtitle Display Options (Whisper Model, Aspect Ratio & Max Lines) when SRT export is ON */}
                 {effectiveExportSrt && (
                   <div className="mt-3 pt-3 border-t border-borderDefault/30 space-y-3 animate-in fade-in-50 duration-200">
-                    {/* Mô hình nhận dạng phụ đề (Whisper) */}
+                    {/* Mô hình */}
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between gap-2">
                         <label className="block text-textSecondary font-medium text-[11px]">
-                          {lang === "vi" ? "Mô hình phụ đề (Whisper)" : "Subtitle ASR Model"}
+                          {lang === "vi" ? "Mô hình" : lang === "en" ? "Model" : "模型"}
                         </label>
                       </div>
                       <select
@@ -794,69 +852,193 @@ export const TtsInspector: React.FC<TtsInspectorProps> = ({
                       </select>
                     </div>
 
-                    {/* Tỉ lệ khung hình */}
-                    <div className="space-y-1.5">
-                      <label className="block text-textSecondary font-medium text-[11px]">
-                        {t.transcription.aspectRatioLabel}
-                      </label>
-                      <div className="grid grid-cols-3 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
-                        {(["16:9", "9:16", "1:1"] as SubtitleAspectRatio[]).map((ratio) => {
-                          const isSelected = subtitleSettings.aspectRatio === ratio;
-                          const labels: Record<SubtitleAspectRatio, { ratio: string; sub: string }> = {
-                            "16:9": { ratio: "16:9", sub: lang === "vi" ? "Ngang" : lang === "en" ? "Landscape" : "横屏" },
-                            "9:16": { ratio: "9:16", sub: lang === "vi" ? "Dọc" : lang === "en" ? "Portrait" : "竖屏" },
-                            "1:1": { ratio: "1:1", sub: lang === "vi" ? "Vuông" : lang === "en" ? "Square" : "正方形" },
-                          };
-                          const info = labels[ratio];
-                          return (
-                            <button
-                              key={ratio}
-                              type="button"
-                              onClick={() => handleUpdateSubtitleSettings({ aspectRatio: ratio })}
-                              className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
-                                isSelected
-                                  ? "bg-accent text-background font-semibold shadow-sm"
-                                  : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
-                              }`}
-                            >
-                              <span className="leading-tight">{info.ratio}</span>
-                              <span
-                                className={`text-[10px] leading-tight ${
-                                  isSelected ? "text-background/80" : "text-textMuted"
+                    {/* Nhóm định dạng phụ đề (Tỉ lệ khung hình & Số dòng) */}
+                    <div className="p-2.5 bg-surface2/35 rounded-lg border border-borderDefault/60 space-y-3">
+                      {/* Tỉ lệ khung hình */}
+                      <div className="space-y-1.5">
+                        <label className="block text-textSecondary font-medium text-[11px]">
+                          {t.transcription.aspectRatioLabel}
+                        </label>
+                        <div className="grid grid-cols-3 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                          {(["16:9", "9:16", "1:1"] as SubtitleAspectRatio[]).map((ratio) => {
+                            const isSelected = subtitleSettings.aspectRatio === ratio;
+                            const labels: Record<SubtitleAspectRatio, { ratio: string; sub: string }> = {
+                              "16:9": { ratio: "16:9", sub: lang === "vi" ? "Ngang" : lang === "en" ? "Landscape" : "横屏" },
+                              "9:16": { ratio: "9:16", sub: lang === "vi" ? "Dọc" : lang === "en" ? "Portrait" : "竖屏" },
+                              "1:1": { ratio: "1:1", sub: lang === "vi" ? "Vuông" : lang === "en" ? "Square" : "正方形" },
+                            };
+                            const info = labels[ratio];
+                            return (
+                              <button
+                                key={ratio}
+                                type="button"
+                                onClick={() => handleUpdateSubtitleSettings({ aspectRatio: ratio })}
+                                className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                                  isSelected
+                                    ? "bg-accent text-background font-semibold shadow-sm"
+                                    : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
                                 }`}
                               >
-                                {info.sub}
-                              </span>
-                            </button>
-                          );
-                        })}
+                                <span className="leading-tight">{info.ratio}</span>
+                                <span
+                                  className={`text-[10px] leading-tight ${
+                                    isSelected ? "text-background/80" : "text-textMuted"
+                                  }`}
+                                >
+                                  {info.sub}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Số dòng tối đa */}
+                      <div className="space-y-1.5">
+                        <label className="block text-textSecondary font-medium text-[11px]">
+                          {t.transcription.maxLinesLabel}
+                        </label>
+                        <div className="grid grid-cols-2 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
+                          {([1, 2] as SubtitleMaxLines[]).map((lines) => {
+                            const isSelected = subtitleSettings.maxLines === lines;
+                            return (
+                              <button
+                                key={lines}
+                                type="button"
+                                onClick={() => handleUpdateSubtitleSettings({ maxLines: lines })}
+                                className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all text-center cursor-pointer ${
+                                  isSelected
+                                    ? "bg-accent text-background font-semibold shadow-sm"
+                                    : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
+                                }`}
+                              >
+                                {lines} {lang === "vi" ? "dòng" : lang === "en" ? (lines === 1 ? "line" : "lines") : "行"}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
 
-                    {/* Số dòng tối đa */}
-                    <div className="space-y-1.5">
-                      <label className="block text-textSecondary font-medium text-[11px]">
-                        {t.transcription.maxLinesLabel}
-                      </label>
-                      <div className="grid grid-cols-2 gap-1 p-1 bg-surface1 rounded-lg border border-borderDefault">
-                        {([1, 2] as SubtitleMaxLines[]).map((lines) => {
-                          const isSelected = subtitleSettings.maxLines === lines;
-                          return (
-                            <button
-                              key={lines}
-                              type="button"
-                              onClick={() => handleUpdateSubtitleSettings({ maxLines: lines })}
-                              className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all text-center cursor-pointer ${
-                                isSelected
-                                  ? "bg-accent text-background font-semibold shadow-sm"
-                                  : "text-textSecondary hover:text-textPrimary hover:bg-surface2/60"
-                              }`}
-                            >
-                              {lines} {lang === "vi" ? "dòng" : lang === "en" ? (lines === 1 ? "line" : "lines") : "行"}
-                            </button>
-                          );
-                        })}
+                    {/* Parallel Subtitle Translation (1:1 Timestamp Sync, Default Style) */}
+                    <div className="pt-3 border-t border-borderDefault/30 space-y-3">
+                      <div
+                        className="flex items-center justify-between"
+                        title={
+                          lang === "vi"
+                            ? "Xuất song song tệp phụ đề đã dịch (phong cách mặc định, đồng bộ 1:1 mốc thời gian với phụ đề gốc)"
+                            : "Export a parallel translated SRT file synchronized 1:1 with source subtitle timestamps"
+                        }
+                      >
+                        <span className="text-xs text-textSecondary font-medium select-none">
+                          {lang === "vi"
+                            ? "Dịch phụ đề"
+                            : lang === "en"
+                            ? "Translate subtitles"
+                            : "翻译字幕"}
+                        </span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={effectiveTranslateSrt}
+                          onClick={() => handleToggleTranslateSrt(!effectiveTranslateSrt)}
+                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                            effectiveTranslateSrt ? "bg-accent" : "bg-surface3"
+                          }`}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                              effectiveTranslateSrt ? "translate-x-4" : "translate-x-0"
+                            }`}
+                          />
+                        </button>
                       </div>
+
+                      {effectiveTranslateSrt && (
+                        <div className="space-y-3 animate-in fade-in-50 duration-200">
+                          {/* Mô hình dịch */}
+                          <div className="space-y-1.5">
+                            <label className="block text-textSecondary font-medium text-[11px]">
+                              {lang === "vi"
+                                ? "Mô hình dịch"
+                                : lang === "en"
+                                ? "Translation Model"
+                                : "翻译模型"}
+                            </label>
+                            <select
+                              value={selectedTranslationProviderId}
+                              onChange={(e) => {
+                                const nextId = e.target.value;
+                                setTranslationSettings((prev) => ({
+                                  ...prev,
+                                  translationProviderId: nextId,
+                                }));
+                                saveTranslationSettings({ translationProviderId: nextId });
+                              }}
+                              className="w-full h-[32px] bg-surface1 border border-borderDefault rounded-lg px-2.5 text-xs text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
+                            >
+                              {availableTranslationProviders.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.displayName} ({p.badge})
+                                </option>
+                              ))}
+                            </select>
+
+                            {isTranslationProviderUnconfigured && (
+                              <div className="flex items-center justify-between gap-2 text-[11px] text-amber-500">
+                                <div className="flex items-center gap-1 min-w-0">
+                                  <AlertCircle className="w-3 h-3 shrink-0" />
+                                  <span className="truncate">
+                                    {lang === "vi"
+                                      ? "Chưa cấu hình API / Endpoint"
+                                      : "API / Endpoint not configured"}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    window.dispatchEvent(
+                                      new CustomEvent("voxlab_open_settings_providers")
+                                    )
+                                  }
+                                  className="underline hover:text-amber-400 font-medium cursor-pointer shrink-0"
+                                >
+                                  {lang === "vi" ? "Cài đặt →" : "Settings →"}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Ngôn ngữ đích */}
+                          <div className="space-y-1.5">
+                            <label className="block text-textSecondary font-medium text-[11px]">
+                              {lang === "vi"
+                                ? "Ngôn ngữ đích"
+                                : lang === "en"
+                                ? "Target Language"
+                                : "目标语言"}
+                            </label>
+                            <SearchableLanguageSelect
+                              value={translationSettings.targetLanguage || "vi"}
+                              onChange={(code) => {
+                                setTranslationSettings((prev) => ({
+                                  ...prev,
+                                  targetLanguage: code,
+                                }));
+                                saveTranslationSettings({ targetLanguage: code });
+                              }}
+                              languages={TRANSLATION_TARGET_LANGUAGES}
+                              size="sm"
+                              dropdownAlign="left"
+                              triggerClassName="!bg-surface1"
+                              ariaLabel={
+                                lang === "vi" ? "Ngôn ngữ đích" : "Target language"
+                              }
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

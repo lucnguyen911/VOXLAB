@@ -48,26 +48,28 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
   onClearFailedJobs,
 }) => {
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
+    <div className="@container flex-1 flex flex-col min-h-0 overflow-hidden bg-surface1">
       <div className="flex-1 overflow-auto">
-        <table className="w-full min-w-[960px] text-left border-collapse table-fixed border-b border-borderDefault">
+        <table className="w-full min-w-[640px] text-left border-collapse table-fixed border-b border-borderDefault">
           <thead className="sticky top-0 bg-surface2 border-b border-borderDefault z-20 text-[13px] font-bold text-textSecondary">
             <tr>
-              <th className="py-2.5 px-3 w-[4%] text-center border-r border-borderDefault">#</th>
-              <th className="py-2.5 px-3.5 w-[26%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-2 w-[42px] @[960px]:w-[48px] text-center border-r border-borderDefault overflow-hidden">#</th>
+              <th className="py-2.5 px-3.5 w-auto text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 Tên tệp
               </th>
-              <th className="py-2.5 px-3 w-[15%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-2 w-[104px] @[920px]:w-[124px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 Bước lỗi
               </th>
-              <th className="py-2.5 px-3 w-[30%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
+              <th className="py-2.5 px-3 w-[30%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
                 Chi tiết sự cố
               </th>
-              <th className="py-2.5 px-2 w-[15%] text-center border-r border-borderDefault text-sm font-bold text-textPrimary">
-                Hành động khôi phục
+              <th className="py-2.5 px-2 w-[116px] @[920px]:w-[148px] text-center border-r border-borderDefault text-sm font-bold text-textPrimary overflow-hidden">
+                <span className="@[920px]:hidden">Khôi phục</span>
+                <span className="hidden @[920px]:inline">Hành động khôi phục</span>
               </th>
-              <th className="py-2.5 px-2 w-[10%] text-center text-sm font-bold text-textPrimary">
-                Thao tác
+              <th className="py-2.5 px-2 w-[56px] @[920px]:w-[76px] text-center text-sm font-bold text-textPrimary overflow-hidden">
+                <span className="@[920px]:hidden">Xóa</span>
+                <span className="hidden @[920px]:inline">Thao tác</span>
               </th>
             </tr>
           </thead>
@@ -84,12 +86,12 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
 
               return (
                 <tr key={job.id} className="hover:bg-surface2/50 transition-colors">
-                  <td className="py-3 px-3 text-center text-textMuted font-mono border-r border-borderDefault">
+                  <td className="py-3 px-2 text-center text-textMuted font-mono border-r border-borderDefault overflow-hidden">
                     {index + 1}
                   </td>
 
                   {/* File Name */}
-                  <td className="py-3 px-3.5 border-r border-borderDefault">
+                  <td className="py-3 px-3.5 border-r border-borderDefault overflow-hidden">
                     <div className="flex items-center gap-2 min-w-0">
                       {renderFileIcon(job.fileKind)}
                       <div className="min-w-0">
@@ -107,9 +109,9 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                   </td>
 
                   {/* Failed Step */}
-                  <td className="py-3 px-3 border-r border-borderDefault text-center">
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30">
-                      <AlertTriangle className="w-3 h-3" />
+                  <td className="py-3 px-2 border-r border-borderDefault text-center overflow-hidden">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30 whitespace-nowrap">
+                      <AlertTriangle className="w-3 h-3 shrink-0" />
                       <span>
                         {failedTask === "tts"
                           ? "TTS"
@@ -125,7 +127,7 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                   </td>
 
                   {/* Error Message */}
-                  <td className="py-3 px-3 border-r border-borderDefault">
+                  <td className="py-3 px-3 border-r border-borderDefault overflow-hidden">
                     <div
                       className="text-textSecondary text-xs leading-relaxed truncate"
                       title={job.errorMessage || "Lỗi xử lý tác vụ"}
@@ -135,16 +137,16 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                   </td>
 
                   {/* 3-Way Dynamic CTA Button */}
-                  <td className="py-3 px-2 border-r border-borderDefault text-center">
+                  <td className="py-3 px-2 border-r border-borderDefault text-center overflow-hidden">
                     <div className="flex items-center justify-center">
                       {diff.recommendedCta === "retry" && (
                         <button
                           type="button"
                           onClick={() => onRetry(job.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-surface2 hover:bg-surface3 text-textPrimary border border-borderDefault transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 @[920px]:px-3 @[920px]:py-1.5 text-xs font-semibold rounded-lg bg-surface2 hover:bg-surface3 text-textPrimary border border-borderDefault transition-colors cursor-pointer whitespace-nowrap"
                           title="Tái sử dụng cấu hình cũ, chạy tiếp từ bước lỗi"
                         >
-                          <RotateCcw className="w-3.5 h-3.5 text-textMuted" />
+                          <RotateCcw className="w-3.5 h-3.5 text-textMuted shrink-0" />
                           <span>Thử lại</span>
                         </button>
                       )}
@@ -153,10 +155,10 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                         <button
                           type="button"
                           onClick={() => onRegenerate(job.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 @[920px]:px-3 @[920px]:py-1.5 text-xs font-bold rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors cursor-pointer whitespace-nowrap"
                           title="Áp dụng cấu hình mới và chạy lại từ bước bị ảnh hưởng"
                         >
-                          <Zap className="w-3.5 h-3.5 fill-current" />
+                          <Zap className="w-3.5 h-3.5 fill-current shrink-0" />
                           <span>Tạo lại</span>
                         </button>
                       )}
@@ -165,10 +167,10 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                         <button
                           type="button"
                           onClick={() => onReexport(job.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 @[920px]:px-3 @[920px]:py-1.5 text-xs font-bold rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition-colors cursor-pointer whitespace-nowrap"
                           title="Xuất lại sang đích hoặc định dạng mới (0 chạy lại AI)"
                         >
-                          <FolderOpen className="w-3.5 h-3.5" />
+                          <FolderOpen className="w-3.5 h-3.5 shrink-0" />
                           <span>Xuất lại</span>
                         </button>
                       )}
@@ -176,13 +178,13 @@ export const FailedJobsTable: React.FC<FailedJobsTableProps> = ({
                   </td>
 
                   {/* Delete Button */}
-                  <td className="py-3 px-2 text-center">
+                  <td className="py-3 px-2 text-center overflow-hidden">
                     <div className="flex items-center justify-center gap-1.5">
                       {onDeleteJob && (
                         <button
                           type="button"
                           onClick={() => onDeleteJob(job.id)}
-                          className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer"
+                          className="p-1 rounded text-textMuted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer shrink-0"
                           title="Xóa tệp khỏi danh sách lỗi"
                         >
                           <Trash2 className="w-3.5 h-3.5" />

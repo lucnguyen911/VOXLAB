@@ -310,7 +310,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
       {/* Subheader Toolbar */}
-      <div className="p-4 border-b border-borderDefault bg-surface1 space-y-3 flex-shrink-0">
+      <div className="p-3.5 sm:p-4 border-b border-borderDefault bg-surface1 space-y-3 flex-shrink-0">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent flex-shrink-0">
@@ -319,12 +319,12 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
             <h2 className="text-sm font-bold text-textPrimary">{t.library.title}</h2>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2 flex-wrap">
             {/* Source Filters */}
-            <div className="flex bg-surface2 rounded-md p-0.5 border border-borderDefault text-xs">
+            <div className="flex flex-wrap bg-surface2 rounded-md p-0.5 border border-borderDefault text-xs">
               <button
                 onClick={() => setSelectedSource("all")}
-                className={`px-3 py-1 rounded font-medium transition-colors ${
+                className={`px-2.5 sm:px-3 py-1 rounded font-medium transition-colors whitespace-nowrap ${
                   selectedSource === "all"
                     ? "bg-accent text-background font-semibold"
                     : "text-textSecondary hover:text-textPrimary"
@@ -334,7 +334,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
               </button>
               <button
                 onClick={() => setSelectedSource("local_clone")}
-                className={`px-3 py-1 rounded font-medium transition-colors ${
+                className={`px-2.5 sm:px-3 py-1 rounded font-medium transition-colors whitespace-nowrap ${
                   selectedSource === "local_clone"
                     ? "bg-accent text-background font-semibold"
                     : "text-textSecondary hover:text-textPrimary"
@@ -344,7 +344,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
               </button>
               <button
                 onClick={() => setSelectedSource("preset_local")}
-                className={`px-3 py-1 rounded font-medium transition-colors ${
+                className={`px-2.5 sm:px-3 py-1 rounded font-medium transition-colors whitespace-nowrap ${
                   selectedSource === "preset_local"
                     ? "bg-accent text-background font-semibold"
                     : "text-textSecondary hover:text-textPrimary"
@@ -354,7 +354,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
               </button>
               <button
                 onClick={() => setSelectedSource("online")}
-                className={`px-3 py-1 rounded font-medium transition-colors ${
+                className={`px-2.5 sm:px-3 py-1 rounded font-medium transition-colors whitespace-nowrap ${
                   selectedSource === "online"
                     ? "bg-accent text-background font-semibold"
                     : "text-textSecondary hover:text-textPrimary"
@@ -368,7 +368,7 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
               <button
                 type="button"
                 onClick={onNavigateToClone}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent text-xs font-semibold transition-colors cursor-pointer shrink-0"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent text-xs font-semibold transition-colors cursor-pointer shrink-0 whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>{lang === "vi" ? "Tạo giọng nhân bản" : "Create Clone"}</span>
@@ -379,8 +379,8 @@ export const VoiceLibraryWorkspace: React.FC<VoiceLibraryWorkspaceProps> = ({
 
         {/* Search & Video Filter Bar */}
         <div ref={filterBarRef} className="space-y-2 pt-1 relative">
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1 max-w-md">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="relative flex-1 min-w-[200px] max-w-md">
               <Search className="w-3.5 h-3.5 text-textMuted absolute left-3 top-2.5" />
               <input
                 type="text"
