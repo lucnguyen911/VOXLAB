@@ -1,6 +1,6 @@
 [package]
 name = "voxlab"
-version = "1.0.0"
+version = "1.0.1"
 description = "VoxLab Desktop App"
 authors = ["VoxLab"]
 edition = "2021"

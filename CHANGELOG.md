@@ -2,6 +2,17 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.1] — 2026-11-22
+
+### Added
+- **Cài đặt thư mục Cache (bộ nhớ tạm)**:
+  - Cho phép chọn thư mục Cache tùy chỉnh và khôi phục về mặc định (`<app_data>/scratch`) trong **Cài đặt → Chung**.
+  - Đồng bộ toàn bộ `fs_scratch_dir`, sidecar (`TMP`/`TEMP`/`HF_HOME`/`TORCH_HOME`), installer và updater qua `settings/storage.json`, kèm kiểm tra an toàn đường dẫn & tệp đánh dấu `.voxlab-cache` để bảo vệ dữ liệu người dùng khi dọn bộ nhớ tạm.
+
+### Fixed
+- **Hậu kiểm Âm học (Pass 3B)**:
+  - Bổ sung phát hiện lỗi lặp âm gió tách rời ở cuối từ (*detached coda sibilant echo*, ví dụ `/s/` lặp tách rời giữa hai từ không dấu câu) mà không làm ảnh hưởng đến các bộ dò hậu kiểm khác.
+
 ## [1.0.0] — 2026-11-15 (Initial Official Release)
 
 ### Added
