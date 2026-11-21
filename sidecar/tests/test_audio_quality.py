@@ -6798,6 +6798,129 @@ class AudioQualityTest(unittest.TestCase):
             [],
         )
 
+    def test_v446_inter_word_detached_coda_sibilant_echo_caught_without_false_positives(self):
+        sr = 24000
+        dur = 1.65
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def _synth_sibilant(seg_t: np.ndarray, amp: float) -> np.ndarray:
+            # High-frequency energy (5.2–8.4 kHz) matching unvoiced /s/ acoustics (high ZCR, hf_ratio >= 0.65)
+            sig = (
+                0.45 * np.sin(2 * np.pi * 5400.0 * seg_t)
+                + 0.35 * np.sin(2 * np.pi * 6700.0 * seg_t)
+                + 0.25 * np.sin(2 * np.pi * 8100.0 * seg_t)
+            )
+            return (amp * sig).astype(np.float32)
+
+        def _synth_breath(seg_t: np.ndarray, amp: float) -> np.ndarray:
+            # Low/mid-frequency breath / inhale energy (350–1600 Hz)
+            sig = (
+                0.55 * np.sin(2 * np.pi * 420.0 * seg_t)
+                + 0.45 * np.sin(2 * np.pi * 980.0 * seg_t)
+                + 0.25 * np.sin(2 * np.pi * 1550.0 * seg_t)
+            )
+            return (amp * sig).astype(np.float32)
+
+        def build_case(
+            detached_kind: str = "sibilant",
+            detached_span: tuple[float, float] | None = (0.625, 0.805),
+            we_start: float = 1.02,
+            w1_raw: str = " unless",
+            w2_raw: str = " we",
+        ) -> tuple[np.ndarray, list[dict]]:
+            w = np.zeros_like(t)
+
+            def add_v(st: float, en: float, f1: float, f2: float, amp: float = 0.20) -> None:
+                i0, i1 = int(st * sr), int(en * sr)
+                seg = t[i0:i1]
+                w[i0:i1] += amp * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+            # "Unless": voiced nucleus [0.12..0.42], natural coda /s/ [0.42..0.55]
+            add_v(0.12, 0.42, 210.0, 520.0, amp=0.20)
+            c0, c1 = int(0.42 * sr), int(0.55 * sr)
+            w[c0:c1] += _synth_sibilant(t[c0:c1], amp=0.075)
+
+            if detached_span is not None:
+                d0, d1 = int(detached_span[0] * sr), int(detached_span[1] * sr)
+                if detached_kind == "sibilant":
+                    w[d0:d1] += _synth_sibilant(t[d0:d1], amp=0.055)
+                elif detached_kind == "breath":
+                    w[d0:d1] += _synth_breath(t[d0:d1], amp=0.055)
+
+            # "we" [we_start..we_start+0.18], "can" [+0.20..+0.44]
+            add_v(we_start, we_start + 0.18, 220.0, 540.0, amp=0.20)
+            add_v(we_start + 0.20, we_start + 0.44, 200.0, 490.0, amp=0.18)
+
+            asr = [
+                {"word": w1_raw, "startSec": 0.115, "endSec": 0.805 if detached_span else 0.56, "probability": 0.885},
+                {"word": w2_raw, "startSec": we_start, "endSec": we_start + 0.18, "probability": 0.998},
+                {"word": " can", "startSec": we_start + 0.20, "endSec": we_start + 0.44, "probability": 0.999},
+            ]
+            return w, asr
+
+        # 1. Positive: detached coda /s/ echo [0.625..0.805] followed by 215ms silence before "we"
+        wave_bad, asr_bad = build_case(detached_kind="sibilant", detached_span=(0.625, 0.805), we_start=1.02)
+        bad_issues = audio_quality.detect_acoustic_stutter(
+            wave_bad, sr, text="Unless we can", asr_words=asr_bad, language="en"
+        )
+        self.assertEqual(len(bad_issues), 1, f"Expected Pass 3B detached coda /s/ echo caught, got {bad_issues}")
+        self.assertEqual(bad_issues[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(bad_issues[0]["words"], ["unless", "we"])
+        self.assertAlmostEqual(bad_issues[0]["timeRange"][0], 0.625, delta=0.03)
+
+        # 2. Negative 1: clean "Unless" with continuous /s/ + 280ms silence (no detached second /s/)
+        wave_clean, asr_clean = build_case(detached_span=None, we_start=0.83)
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_clean, sr, text="Unless we can", asr_words=asr_clean, language="en"
+            ),
+            [],
+        )
+
+        # 3. Negative 2: punctuated boundary ("Unless, we can")
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_bad, sr, text="Unless, we can", asr_words=asr_bad, language="en"
+            ),
+            [],
+        )
+
+        # 4. Negative 3: next word starts with sibilant ("Unless she can")
+        wave_she, asr_she = build_case(detached_kind="sibilant", detached_span=(0.625, 0.805), we_start=1.02, w2_raw=" she")
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_she, sr, text="Unless she can", asr_words=asr_she, language="en"
+            ),
+            [],
+        )
+
+        # 5. Negative 4: broadband/low-mid breath noise instead of high-frequency sibilant
+        wave_breath, asr_breath = build_case(detached_kind="breath", detached_span=(0.625, 0.805), we_start=1.02)
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_breath, sr, text="Unless we can", asr_words=asr_breath, language="en"
+            ),
+            [],
+        )
+
+        # 6. Negative 5: w1 does not end in a sibilant ("until we can")
+        wave_nonsib, asr_nonsib = build_case(detached_kind="sibilant", detached_span=(0.625, 0.805), we_start=1.02, w1_raw=" until")
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_nonsib, sr, text="until we can", asr_words=asr_nonsib, language="en"
+            ),
+            [],
+        )
+
+        # 7. Negative 6: high-ZCR burst immediately before w2 (post_sil < 0.04s)
+        wave_adj, asr_adj = build_case(detached_kind="sibilant", detached_span=(0.625, 0.805), we_start=0.825)
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_adj, sr, text="Unless we can", asr_words=asr_adj, language="en"
+            ),
+            [],
+        )
+
     def test_v445_timestamp_formatting_trim_and_message_sync(self):
         self.assertEqual(audio_quality.format_timestamp(0.0), "00:00.0")
         self.assertEqual(audio_quality.format_timestamp(-0.3), "00:00.0")

@@ -9992,7 +9992,8 @@ def detect_acoustic_stutter(
                 v1 = np.where((rms_5[f_s1:f_e1] >= 0.025) & (zcr_5[f_s1:f_e1] < 0.22))[0]
                 if v1.size == 0:
                     continue
-                fv1 = int(f_s1 + v1[-1])
+                v1_end = int(f_s1 + v1[-1])
+                fv1 = v1_end
                 step1 = 0
                 while fv1 < n5 and rms_5[fv1] >= 0.0035 and step1 < max_edge_step:
                     fv1 += 1
@@ -10008,12 +10009,10 @@ def detect_acoustic_stutter(
                     fv2 -= 1
                     step2 += 1
                 vv_gap = (fv2 - fv1) * fsec5
-                if not (0.24 <= vv_gap <= 0.55) or (fv2 - fv1) <= 8:
+                if not (0.24 <= vv_gap <= 0.90) or (fv2 - fv1) <= 8:
                     continue
                 g_rms = rms_5[fv1:fv2]
                 g_zcr = zcr_5[fv1:fv2]
-                if float(np.max(g_rms)) >= 0.030:
-                    continue
                 act = g_rms >= 0.0035
                 islands: list[tuple[int, int]] = []
                 in_isl = False
@@ -10027,42 +10026,127 @@ def detect_acoustic_stutter(
                         islands.append((ist, g_i))
                 if in_isl:
                     islands.append((ist, len(act)))
-                detached_clicks = 0
-                for idx_i, (ist, ien) in enumerate(islands):
-                    dur_i = (ien - ist) * fsec5
-                    pk_i = float(np.max(g_rms[ist:ien]))
-                    mz_i = float(np.max(g_zcr[ist:ien]))
-                    pre_sil = (ist - (islands[idx_i - 1][1] if idx_i > 0 else 0)) * fsec5
-                    post_sil = ((islands[idx_i + 1][0] if (idx_i + 1) < len(islands) else len(g_rms)) - ien) * fsec5
-                    if (
-                        0.010 <= dur_i <= 0.060
-                        and 0.006 <= pk_i < 0.030
-                        and mz_i >= 0.28
-                        and pre_sil >= 0.025
-                        and post_sil >= 0.035
-                    ):
-                        detached_clicks += 1
-                if detached_clicks >= 2:
-                    t_h_start = round(fv1 * fsec5, 3)
-                    t_h_end = round(min(w2_en, fv2 * fsec5 + 0.18), 3)
-                    if any(abs(t_h_start - r[0]) < 0.25 for r in detected_ranges):
-                        continue
-                    detected_ranges.append((t_h_start, t_h_end))
-                    raw_w1 = p3_src_words[si].strip(" ,.;:!?\"'()") or sw1
-                    raw_w2 = p3_src_words[si + 1].strip(" ,.;:!?\"'()") or sw2
-                    ts = format_timestamp(t_h_start)
-                    issues.append({
-                        "severity": "warning",
-                        "code": "SUSPECTED_STUTTER",
-                        "message": f'Nghi vấn vấp / khựng âm tại cụm "{raw_w1} {raw_w2}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
-                        "words": [sw1, sw2],
-                        "timeRange": [t_h_start, t_h_end],
-                        "sourceExcerpt": f"{raw_w1} {raw_w2}",
-                        "asrRawExcerpt": f"{raw_w1} {raw_w2}",
-                        "asrNormalizedExcerpt": f"{sw1} {sw2}",
-                        "tokenSource": "primary_asr",
-                        "evidence": f"Inter-word detached double-click hitch vv_gap={vv_gap:.3f}s clicks={detached_clicks}",
-                    })
+
+                emitted_p3 = False
+                if (0.24 <= vv_gap <= 0.55) and float(np.max(g_rms)) < 0.030:
+                    detached_clicks = 0
+                    for idx_i, (ist, ien) in enumerate(islands):
+                        dur_i = (ien - ist) * fsec5
+                        pk_i = float(np.max(g_rms[ist:ien]))
+                        mz_i = float(np.max(g_zcr[ist:ien]))
+                        pre_sil = (ist - (islands[idx_i - 1][1] if idx_i > 0 else 0)) * fsec5
+                        post_sil = ((islands[idx_i + 1][0] if (idx_i + 1) < len(islands) else len(g_rms)) - ien) * fsec5
+                        if (
+                            0.010 <= dur_i <= 0.060
+                            and 0.006 <= pk_i < 0.030
+                            and mz_i >= 0.28
+                            and pre_sil >= 0.025
+                            and post_sil >= 0.035
+                        ):
+                            detached_clicks += 1
+                    if detached_clicks >= 2:
+                        t_h_start = round(fv1 * fsec5, 3)
+                        t_h_end = round(min(w2_en, fv2 * fsec5 + 0.18), 3)
+                        if any(abs(t_h_start - r[0]) < 0.25 for r in detected_ranges):
+                            continue
+                        detected_ranges.append((t_h_start, t_h_end))
+                        raw_w1 = p3_src_words[si].strip(" ,.;:!?\"'()") or sw1
+                        raw_w2 = p3_src_words[si + 1].strip(" ,.;:!?\"'()") or sw2
+                        ts = format_timestamp(t_h_start)
+                        issues.append({
+                            "severity": "warning",
+                            "code": "SUSPECTED_STUTTER",
+                            "message": f'Nghi vấn vấp / khựng âm tại cụm "{raw_w1} {raw_w2}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                            "words": [sw1, sw2],
+                            "timeRange": [t_h_start, t_h_end],
+                            "sourceExcerpt": f"{raw_w1} {raw_w2}",
+                            "asrRawExcerpt": f"{raw_w1} {raw_w2}",
+                            "asrNormalizedExcerpt": f"{sw1} {sw2}",
+                            "tokenSource": "primary_asr",
+                            "evidence": f"Inter-word detached double-click hitch vv_gap={vv_gap:.3f}s clicks={detached_clicks}",
+                        })
+                        emitted_p3 = True
+
+                # Pass 3B: Detached coda sibilant echo (e.g. 'Unless — [valley] — [detached /s/] — [silence] — we')
+                if (
+                    not emitted_p3
+                    and 0.26 <= vv_gap <= 0.90
+                    and sw1.endswith(("s", "z", "x", "sh", "ch", "ce", "se", "ze", "ge", "dge"))
+                    and not sw2.startswith(("s", "z", "sh", "ch", "ce", "ci", "cy", "ps", "ts", "x"))
+                ):
+                    for idx_i, (ist, ien) in enumerate(islands):
+                        dur_i = (ien - ist) * fsec5
+                        if not (0.065 <= dur_i <= 0.350):
+                            continue
+                        pk_i = float(np.max(g_rms[ist:ien]))
+                        if not (0.012 <= pk_i <= 0.12):
+                            continue
+                        mean_zcr = float(np.mean(g_zcr[ist:ien]))
+                        mz_i = float(np.max(g_zcr[ist:ien]))
+                        if mean_zcr < 0.35 or mz_i < 0.45:
+                            continue
+                        pre_gap_start = (fv1 + islands[idx_i - 1][1]) if idx_i > 0 else fv1
+                        pre_gap_end = fv1 + ist
+                        post_gap_start = fv1 + ien
+                        post_gap_end = (fv1 + islands[idx_i + 1][0]) if (idx_i + 1) < len(islands) else fv2
+                        if pre_gap_end <= pre_gap_start or post_gap_end <= post_gap_start:
+                            continue
+                        pre_sil = (pre_gap_end - pre_gap_start) * fsec5
+                        post_sil = (post_gap_end - post_gap_start) * fsec5
+                        if pre_sil < 0.040 or float(np.min(rms_5[pre_gap_start:pre_gap_end])) > min(0.0035, 0.20 * pk_i):
+                            continue
+                        if post_sil < 0.100 or float(np.min(rms_5[post_gap_start:post_gap_end])) > 0.0025:
+                            continue
+                        if pre_gap_start <= v1_end:
+                            continue
+                        coda_rms = rms_5[v1_end:pre_gap_start]
+                        coda_zcr = zcr_5[v1_end:pre_gap_start]
+                        coda_sib_idx = np.where((coda_zcr >= 0.32) & (coda_rms >= 0.008))[0]
+                        if coda_sib_idx.size < 5:
+                            continue
+                        isl_wave = mono[(fv1 + ist) * hop5 : min(mono.size, (fv1 + ien) * hop5 + win15)]
+                        c_f0 = v1_end + int(coda_sib_idx[0])
+                        c_f1 = v1_end + int(coda_sib_idx[-1]) + 1
+                        coda_wave = mono[c_f0 * hop5 : min(mono.size, c_f1 * hop5 + win15)]
+                        if isl_wave.size < 64 or coda_wave.size < 64:
+                            continue
+                        spec_isl = np.abs(np.fft.rfft(isl_wave * np.hanning(isl_wave.size))) ** 2
+                        freqs_isl = np.fft.rfftfreq(isl_wave.size, d=1.0 / sample_rate)
+                        tot_pow = float(np.sum(spec_isl)) + 1e-12
+                        hf_ratio = float(np.sum(spec_isl[freqs_isl >= 3200.0]) / tot_pow)
+                        lf_ratio = float(np.sum(spec_isl[(freqs_isl >= 80.0) & (freqs_isl <= 1000.0)]) / tot_pow)
+                        if hf_ratio < 0.65 or lf_ratio > 0.15:
+                            continue
+                        coda_sp, _, _ = _compute_chunk_acoustic_vecs(coda_wave)
+                        isl_sp, _, _ = _compute_chunk_acoustic_vecs(isl_wave)
+                        coda_cos_sim = float(np.dot(coda_sp, isl_sp))
+                        if coda_cos_sim < 0.72:
+                            continue
+                        t_h_start = round((fv1 + ist) * fsec5, 3)
+                        t_h_end = round(min(w2_en, fv2 * fsec5 + 0.18), 3)
+                        if any(abs(t_h_start - r[0]) < 0.25 for r in detected_ranges):
+                            continue
+                        detected_ranges.append((t_h_start, t_h_end))
+                        raw_w1 = p3_src_words[si].strip(" ,.;:!?\"'()") or sw1
+                        raw_w2 = p3_src_words[si + 1].strip(" ,.;:!?\"'()") or sw2
+                        ts = format_timestamp(t_h_start)
+                        issues.append({
+                            "severity": "warning",
+                            "code": "SUSPECTED_STUTTER",
+                            "message": f'Nghi vấn lặp âm gió / vấp âm tại cụm "{raw_w1} {raw_w2}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
+                            "words": [sw1, sw2],
+                            "timeRange": [t_h_start, t_h_end],
+                            "sourceExcerpt": f"{raw_w1} {raw_w2}",
+                            "asrRawExcerpt": f"{raw_w1} {raw_w2}",
+                            "asrNormalizedExcerpt": f"{sw1} {sw2}",
+                            "tokenSource": "primary_asr",
+                            "evidence": (
+                                f"Inter-word detached coda sibilant echo vv_gap={vv_gap:.3f}s "
+                                f"dur={dur_i:.3f}s pre_sil={pre_sil:.3f}s post_sil={post_sil:.3f}s "
+                                f"hf={hf_ratio:.2f} cos={coda_cos_sim:.2f}"
+                            ),
+                        })
+                        break
 
     return issues
 
