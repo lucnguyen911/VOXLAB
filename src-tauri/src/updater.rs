@@ -291,7 +291,7 @@ pub async fn download_and_install_update(
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
             .collect();
-        let updates_dir = app_data.join("scratch").join("updates");
+        let updates_dir = crate::fsio::resolve_scratch_dir_from_app_data(&app_data).join("updates");
         let installer_path = updates_dir.join(format!("VoxLab_Setup_v{}.{}", safe_ver, ext));
 
         let _ = app_handle.emit(

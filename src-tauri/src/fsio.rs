@@ -127,13 +127,378 @@ pub fn fs_remove_file(path: String) -> Result<(), String> {
     }
 }
 
-/// Per-purpose scratch directory under `<storage_dir>/scratch` (e.g. TTS chunk WAVs).
+const STORAGE_SETTINGS_REL_PATH: &str = "settings/storage.json";
+const SCRATCH_MARKER_FILE: &str = ".voxlab-cache";
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct StorageSettingsFile {
+    schema_version: u32,
+    custom_scratch_dir: bool,
+    scratch_dir: Option<String>,
+}
+
+/// Parses `<app_data>/settings/storage.json` and extracts a user-configured custom `scratchDir`
+/// when `customScratchDir` is `true` and `scratchDir` is a clean absolute path.
+pub fn parse_custom_scratch_dir_from_json(raw_json: &str) -> Option<PathBuf> {
+    let parsed: serde_json::Value = serde_json::from_str(raw_json).ok()?;
+    let is_custom = parsed
+        .get("customScratchDir")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !is_custom {
+        return None;
+    }
+    let dir_str = parsed.get("scratchDir").and_then(|v| v.as_str())?.trim();
+    if dir_str.is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(dir_str);
+    if !p.is_absolute()
+        || p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(p)
+}
+
+fn strip_windows_verbatim_prefix(s: String) -> String {
+    #[cfg(windows)]
+    {
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{}", rest);
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+    }
+    s
+}
+
+fn clean_lexical_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            _ => out.push(comp.as_os_str()),
+        }
+    }
+    out
+}
+
+fn format_clean_dir_path(path: &Path) -> PathBuf {
+    let cleaned = clean_lexical_path(path);
+    #[cfg(windows)]
+    {
+        let mut s = cleaned.to_string_lossy().replace('/', "\\");
+        while s.len() > 3 && s.ends_with('\\') {
+            s.pop();
+        }
+        if s.starts_with(r"\\") && s.ends_with('\\') {
+            s.pop();
+        }
+        PathBuf::from(s)
+    }
+    #[cfg(not(windows))]
+    {
+        cleaned
+    }
+}
+
+fn resolve_canonical_or_ancestor(path: &Path) -> PathBuf {
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return PathBuf::from(strip_windows_verbatim_prefix(
+            canon.to_string_lossy().into_owned(),
+        ));
+    }
+    let mut cur = path;
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while let Some(name) = cur.file_name() {
+        if let Some(parent) = cur.parent() {
+            tail.push(name.to_os_string());
+            if parent.exists() {
+                if let Ok(canon_parent) = std::fs::canonicalize(parent) {
+                    let mut combined = PathBuf::from(strip_windows_verbatim_prefix(
+                        canon_parent.to_string_lossy().into_owned(),
+                    ));
+                    for seg in tail.iter().rev() {
+                        if seg != "." {
+                            combined.push(seg);
+                        }
+                    }
+                    return clean_lexical_path(&combined);
+                }
+            }
+            cur = parent;
+        } else {
+            break;
+        }
+    }
+    clean_lexical_path(path)
+}
+
+fn normalize_path_for_compare(path: &Path) -> String {
+    let resolved = resolve_canonical_or_ancestor(path);
+    let mut s = strip_windows_verbatim_prefix(resolved.to_string_lossy().into_owned());
+    #[cfg(windows)]
+    {
+        s = s.replace('/', "\\");
+        while s.len() > 3 && s.ends_with('\\') {
+            s.pop();
+        }
+        if s.starts_with(r"\\") && s.ends_with('\\') {
+            s.pop();
+        }
+        s.make_ascii_lowercase();
+    }
+    #[cfg(not(windows))]
+    {
+        while s.len() > 1 && s.ends_with('/') {
+            s.pop();
+        }
+    }
+    s
+}
+
+fn paths_equal_or_ancestor(candidate: &Path, target: &Path) -> bool {
+    let cand = normalize_path_for_compare(candidate);
+    let tgt = normalize_path_for_compare(target);
+    if cand == tgt {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        if cand.ends_with('\\') {
+            tgt.starts_with(&cand)
+        } else {
+            tgt.starts_with(&cand) && tgt.as_bytes().get(cand.len()) == Some(&b'\\')
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if cand == "/" {
+            tgt.starts_with('/')
+        } else {
+            tgt.starts_with(&cand) && tgt.as_bytes().get(cand.len()) == Some(&b'/')
+        }
+    }
+}
+
+fn is_known_voxlab_scratch_entry(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        ".voxlab-cache"
+            | "tmp"
+            | "hf-cache"
+            | "hf-xet-cache"
+            | "torch-cache"
+            | "uv-cache"
+            | "wheelhouse"
+            | "updates"
+            | "export"
+            | "dialogue"
+            | "clone_test"
+            | "subtitle_tab"
+            | "tts"
+            | "dub"
+    ) || lower.starts_with("tts-")
+        || lower.starts_with("dlg-")
+        || lower.starts_with("dub-")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ScratchTargetResolution {
+    UseDefault,
+    UseCustom(PathBuf),
+}
+
+fn validate_custom_scratch_dir(
+    target: &Path,
+    app_data_dir: &Path,
+    models_dir: Option<&Path>,
+    exe_dir: Option<&Path>,
+) -> Result<ScratchTargetResolution, String> {
+    if !target.is_absolute() {
+        return Err("Đường dẫn thư mục Cache phải là đường dẫn tuyệt đối.".to_string());
+    }
+    if target
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Đường dẫn thư mục Cache không được chứa '..'.".to_string());
+    }
+
+    let default_scratch = app_data_dir.join("scratch");
+    if normalize_path_for_compare(target) == normalize_path_for_compare(&default_scratch) {
+        return Ok(ScratchTargetResolution::UseDefault);
+    }
+
+    if target.parent().is_none() {
+        return Err("Không thể chọn thư mục gốc ổ đĩa làm thư mục Cache.".to_string());
+    }
+
+    if paths_equal_or_ancestor(target, app_data_dir) {
+        return Err(
+            "Không thể chọn thư mục trùng với hoặc chứa thư mục dữ liệu VoxLab.".to_string(),
+        );
+    }
+
+    for sub in ["models", "runtimes", "webview", "settings", "voices"] {
+        if paths_equal_or_ancestor(&app_data_dir.join(sub), target) {
+            return Err(format!(
+                "Không thể chọn thư mục '{}' của VoxLab làm thư mục Cache.",
+                sub
+            ));
+        }
+    }
+
+    if let Some(m) = models_dir {
+        if paths_equal_or_ancestor(target, m) || paths_equal_or_ancestor(m, target) {
+            return Err(
+                "Không thể chọn thư mục trùng với, nằm trong hoặc chứa thư mục mô hình AI."
+                    .to_string(),
+            );
+        }
+    }
+
+    if let Some(e) = exe_dir {
+        if paths_equal_or_ancestor(target, e)
+            || paths_equal_or_ancestor(&e.join("sidecar"), target)
+            || paths_equal_or_ancestor(&e.join("resources"), target)
+        {
+            return Err(
+                "Không thể chọn thư mục cài đặt hoặc thư mục thực thi của VoxLab làm thư mục Cache."
+                    .to_string(),
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let norm_target = normalize_path_for_compare(target);
+        let win_dir = std::env::var_os("SystemRoot")
+            .or_else(|| std::env::var_os("WINDIR"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        if paths_equal_or_ancestor(target, &win_dir) || paths_equal_or_ancestor(&win_dir, target) {
+            return Err(
+                "Không thể chọn thư mục hệ thống Windows làm thư mục Cache.".to_string(),
+            );
+        }
+
+        for env_key in ["ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+            if let Some(val) = std::env::var_os(env_key) {
+                let sys_path = PathBuf::from(val);
+                if paths_equal_or_ancestor(target, &sys_path) {
+                    return Err(
+                        "Không thể chọn thư mục hệ thống hoặc thư mục chứa chương trình làm thư mục Cache."
+                            .to_string(),
+                    );
+                }
+            }
+        }
+
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            let profile_path = PathBuf::from(profile);
+            if norm_target == normalize_path_for_compare(&profile_path) {
+                return Err(
+                    "Không thể chọn trực tiếp thư mục người dùng làm thư mục Cache. Vui lòng tạo một thư mục con riêng."
+                        .to_string(),
+                );
+            }
+            for user_sub in [
+                "Desktop",
+                "Documents",
+                "Downloads",
+                "Pictures",
+                "Music",
+                "Videos",
+            ] {
+                let sub_path = profile_path.join(user_sub);
+                if norm_target == normalize_path_for_compare(&sub_path) {
+                    return Err(format!(
+                        "Không thể chọn trực tiếp thư mục '{}' làm thư mục Cache. Vui lòng chọn hoặc tạo một thư mục con riêng.",
+                        user_sub
+                    ));
+                }
+            }
+        }
+    }
+
+    if target.exists() {
+        if !target.is_dir() {
+            return Err("Đường dẫn đã chọn không phải là một thư mục hợp lệ.".to_string());
+        }
+        let has_marker = target.join(SCRATCH_MARKER_FILE).is_file();
+        if !has_marker {
+            let entries = std::fs::read_dir(target)
+                .map_err(|e| format!("Không thể kiểm tra thư mục đã chọn: {e}"))?;
+            for entry_res in entries {
+                let entry = entry_res
+                    .map_err(|e| format!("Không thể đọc nội dung thư mục đã chọn: {e}"))?;
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if !is_known_voxlab_scratch_entry(&name_str) {
+                    return Err(
+                        "Thư mục đã chọn đang chứa tệp hoặc dữ liệu không thuộc bộ nhớ tạm VoxLab. Vui lòng chọn một thư mục trống hoặc tạo thư mục con mới."
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    if !crate::is_dir_writable(target) {
+        return Err(
+            "VoxLab không có quyền ghi vào thư mục đã chọn. Vui lòng chọn thư mục khác."
+                .to_string(),
+        );
+    }
+
+    Ok(ScratchTargetResolution::UseCustom(format_clean_dir_path(
+        target,
+    )))
+}
+
+/// Resolves the active scratch directory along with `(active, default, is_custom)`.
+pub fn resolve_scratch_dir_with_meta(app_data_dir: &Path) -> (PathBuf, PathBuf, bool) {
+    let default_dir = app_data_dir.join("scratch");
+    let settings_file = app_data_dir.join(STORAGE_SETTINGS_REL_PATH);
+    if let Ok(raw) = std::fs::read_to_string(&settings_file) {
+        if let Some(custom) = parse_custom_scratch_dir_from_json(&raw) {
+            if normalize_path_for_compare(&custom) == normalize_path_for_compare(&default_dir) {
+                return (default_dir.clone(), default_dir, false);
+            }
+            if custom.is_dir() || std::fs::create_dir_all(&custom).is_ok() {
+                return (custom, default_dir, true);
+            }
+        }
+    }
+    (default_dir.clone(), default_dir, false)
+}
+
+pub fn resolve_scratch_dir_from_app_data(app_data_dir: &Path) -> PathBuf {
+    resolve_scratch_dir_with_meta(app_data_dir).0
+}
+
+pub fn resolve_scratch_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = crate::resolve_app_storage_dir(app)?;
+    Ok(resolve_scratch_dir_from_app_data(&app_data_dir))
+}
+
+/// Per-purpose scratch directory under the active scratch root (e.g. TTS chunk WAVs).
 #[tauri::command]
 pub fn fs_scratch_dir(app: tauri::AppHandle, name: String) -> Result<String, String> {
     if name.is_empty() || name.contains(['/', '\\', '.']) {
         return Err("invalid scratch name".to_string());
     }
-    let dir = crate::resolve_app_storage_dir(&app)?.join("scratch").join(name);
+    let dir = resolve_scratch_dir(&app)?.join(name);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.to_string_lossy().to_string())
 }
@@ -164,18 +529,22 @@ fn dir_size_bytes_excluding(path: &Path, exclude_dir_names: &[&str]) -> u64 {
     total
 }
 
-fn dir_size_bytes(path: &Path) -> u64 {
-    dir_size_bytes_excluding(path, &[])
-}
-
-fn clear_dir_contents_best_effort(path: &Path) {
+fn clear_dir_contents_best_effort_except(path: &Path, keep_names: &[&str]) {
     let Ok(entries) = std::fs::read_dir(path) else {
         return;
     };
     for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if keep_names
+            .iter()
+            .any(|keep| name_str.eq_ignore_ascii_case(keep))
+        {
+            continue;
+        }
         let p = entry.path();
         if p.is_dir() {
-            clear_dir_contents_best_effort(&p);
+            clear_dir_contents_best_effort_except(&p, &[]);
             let _ = std::fs::remove_dir(&p);
         } else {
             let _ = std::fs::remove_file(&p);
@@ -190,39 +559,164 @@ pub struct StorageStats {
     pub app_data_bytes: u64,
     pub scratch_path: String,
     pub scratch_bytes: u64,
+    pub default_scratch_path: String,
+    pub is_custom_scratch_path: bool,
+}
+
+fn compute_storage_stats(app_data_dir: &Path) -> StorageStats {
+    let _ = std::fs::create_dir_all(app_data_dir);
+    let (scratch_dir, default_scratch_dir, is_custom_scratch_path) =
+        resolve_scratch_dir_with_meta(app_data_dir);
+    let _ = std::fs::create_dir_all(&scratch_dir);
+    let scratch_bytes = dir_size_bytes_excluding(&scratch_dir, &[SCRATCH_MARKER_FILE]);
+
+    // Exclude heavy runtime/webview/models trees when computing lightweight app state size,
+    // and avoid double-counting if a custom scratch dir is a direct child of app_data_dir.
+    let mut excludes: Vec<String> = vec![
+        "models".to_string(),
+        "runtimes".to_string(),
+        "webview".to_string(),
+        "scratch".to_string(),
+    ];
+    if is_custom_scratch_path {
+        if let Some(parent) = scratch_dir.parent() {
+            if normalize_path_for_compare(parent) == normalize_path_for_compare(app_data_dir) {
+                if let Some(name) = scratch_dir.file_name().and_then(|n| n.to_str()) {
+                    excludes.push(name.to_string());
+                }
+            }
+        }
+    }
+    let exclude_refs: Vec<&str> = excludes.iter().map(String::as_str).collect();
+    let app_data_only_bytes = dir_size_bytes_excluding(app_data_dir, &exclude_refs);
+    let total_bytes = app_data_only_bytes.saturating_add(scratch_bytes);
+
+    StorageStats {
+        app_data_path: app_data_dir.to_string_lossy().to_string(),
+        app_data_bytes: total_bytes,
+        scratch_path: scratch_dir.to_string_lossy().to_string(),
+        scratch_bytes,
+        default_scratch_path: default_scratch_dir.to_string_lossy().to_string(),
+        is_custom_scratch_path,
+    }
 }
 
 #[tauri::command]
 pub async fn fs_storage_stats(app: tauri::AppHandle) -> Result<StorageStats, String> {
     let app_data_dir = crate::resolve_app_storage_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || Ok(compute_storage_stats(&app_data_dir)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn fs_set_scratch_dir(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::ai::AiState>,
+    path: Option<String>,
+) -> Result<StorageStats, String> {
+    if state.0.has_active_requests() || crate::ai::installer::is_install_active() {
+        return Err(
+            "Không thể thay đổi thư mục Cache khi tác vụ AI hoặc quá trình tải mô hình đang chạy."
+                .to_string(),
+        );
+    }
+    let app_data_dir = crate::resolve_app_storage_dir(&app)?;
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let mgr = state.0.clone();
+
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = std::fs::create_dir_all(&app_data_dir);
-        let scratch_dir = app_data_dir.join("scratch");
-        let _ = std::fs::create_dir_all(&scratch_dir);
-        let scratch_bytes = dir_size_bytes(&scratch_dir);
-        // Exclude heavy runtime/webview/models trees when computing lightweight app state size.
-        let app_data_only_bytes =
-            dir_size_bytes_excluding(&app_data_dir, &["models", "runtimes", "webview", "scratch"]);
-        let total_bytes = app_data_only_bytes.saturating_add(scratch_bytes);
-        Ok(StorageStats {
-            app_data_path: app_data_dir.to_string_lossy().to_string(),
-            app_data_bytes: total_bytes,
-            scratch_path: scratch_dir.to_string_lossy().to_string(),
-            scratch_bytes,
-        })
+        let models_dir = {
+            let ai_settings = app_data_dir.join("settings").join("ai_runtime.json");
+            std::fs::read_to_string(&ai_settings)
+                .ok()
+                .and_then(|raw| crate::ai::parse_custom_models_dir_from_json(&raw))
+                .unwrap_or_else(|| app_data_dir.join("models"))
+        };
+        let settings_path = app_data_dir.join(STORAGE_SETTINGS_REL_PATH);
+        let trimmed = path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+        match trimmed {
+            None => {
+                let settings = StorageSettingsFile {
+                    schema_version: 1,
+                    custom_scratch_dir: false,
+                    scratch_dir: None,
+                };
+                let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+                atomic_write(&settings_path, json.as_bytes())?;
+            }
+            Some(raw_path) => {
+                let target = Path::new(raw_path);
+                match validate_custom_scratch_dir(
+                    target,
+                    &app_data_dir,
+                    Some(&models_dir),
+                    exe_dir.as_deref(),
+                )? {
+                    ScratchTargetResolution::UseDefault => {
+                        let settings = StorageSettingsFile {
+                            schema_version: 1,
+                            custom_scratch_dir: false,
+                            scratch_dir: None,
+                        };
+                        let json =
+                            serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+                        atomic_write(&settings_path, json.as_bytes())?;
+                    }
+                    ScratchTargetResolution::UseCustom(clean_path) => {
+                        let marker_path = clean_path.join(SCRATCH_MARKER_FILE);
+                        atomic_write(&marker_path, b"voxlab-cache-v1\n")?;
+                        let settings = StorageSettingsFile {
+                            schema_version: 1,
+                            custom_scratch_dir: true,
+                            scratch_dir: Some(clean_path.to_string_lossy().to_string()),
+                        };
+                        let json =
+                            serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+                        atomic_write(&settings_path, json.as_bytes())?;
+                    }
+                }
+            }
+        }
+
+        mgr.shutdown_idle();
+        Ok(compute_storage_stats(&app_data_dir))
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn fs_clear_scratch(app: tauri::AppHandle) -> Result<u64, String> {
-    let scratch_dir = crate::resolve_app_storage_dir(&app)?.join("scratch");
+pub async fn fs_clear_scratch(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::ai::AiState>,
+) -> Result<u64, String> {
+    if state.0.has_active_requests() || crate::ai::installer::is_install_active() {
+        return Err(
+            "Không thể dọn bộ nhớ tạm khi tác vụ AI hoặc quá trình tải mô hình đang chạy."
+                .to_string(),
+        );
+    }
+    let app_data_dir = crate::resolve_app_storage_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let before = dir_size_bytes(&scratch_dir);
-        clear_dir_contents_best_effort(&scratch_dir);
+        let (scratch_dir, _default_dir, is_custom) = resolve_scratch_dir_with_meta(&app_data_dir);
+        if is_custom
+            && (scratch_dir.parent().is_none()
+                || paths_equal_or_ancestor(&scratch_dir, &app_data_dir)
+                || !scratch_dir.join(SCRATCH_MARKER_FILE).is_file())
+        {
+            return Err(
+                "Thư mục Cache tùy chỉnh không hợp lệ hoặc thiếu tệp xác thực an toàn (.voxlab-cache). Đã hủy dọn dẹp để bảo vệ dữ liệu."
+                    .to_string(),
+            );
+        }
+        let before = dir_size_bytes_excluding(&scratch_dir, &[SCRATCH_MARKER_FILE]);
+        clear_dir_contents_best_effort_except(&scratch_dir, &[SCRATCH_MARKER_FILE]);
         std::fs::create_dir_all(&scratch_dir).map_err(|e| e.to_string())?;
-        let after = dir_size_bytes(&scratch_dir);
+        let after = dir_size_bytes_excluding(&scratch_dir, &[SCRATCH_MARKER_FILE]);
         Ok(before.saturating_sub(after))
     })
     .await
@@ -699,5 +1193,233 @@ mod tests {
         assert!(fs_write_text("C:\\Users\\test\\AppData\\Roaming\\com.voxlab.app\\license.enc".into(), "{}".into()).is_err());
         assert!(fs_write_bytes("C:\\Users\\test\\AppData\\Roaming\\com.voxlab.app\\device_profile.enc".into(), vec![1, 2]).is_err());
         assert!(fs_remove_file("C:\\Users\\test\\AppData\\Roaming\\com.voxlab.app\\gemini_keys.enc".into()).is_err());
+    }
+
+    #[test]
+    fn parses_custom_scratch_dir_from_json_safely() {
+        let enabled = r#"{"schemaVersion":1,"customScratchDir":true,"scratchDir":"D:\\VoxLabCache"}"#;
+        assert_eq!(
+            parse_custom_scratch_dir_from_json(enabled),
+            Some(PathBuf::from(r"D:\VoxLabCache"))
+        );
+
+        let disabled = r#"{"schemaVersion":1,"customScratchDir":false,"scratchDir":"D:\\VoxLabCache"}"#;
+        assert_eq!(parse_custom_scratch_dir_from_json(disabled), None);
+
+        let blank = r#"{"schemaVersion":1,"customScratchDir":true,"scratchDir":"   "}"#;
+        assert_eq!(parse_custom_scratch_dir_from_json(blank), None);
+
+        let relative = r#"{"schemaVersion":1,"customScratchDir":true,"scratchDir":"cache\\tmp"}"#;
+        assert_eq!(parse_custom_scratch_dir_from_json(relative), None);
+
+        let parent_traversal =
+            r#"{"schemaVersion":1,"customScratchDir":true,"scratchDir":"D:\\VoxLab\\..\\Other"}"#;
+        assert_eq!(parse_custom_scratch_dir_from_json(parent_traversal), None);
+    }
+
+    #[test]
+    fn validates_custom_scratch_dir_safety_rules() {
+        let base = std::env::temp_dir().join(format!("voxlab-scratch-val-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let app_data = base.join("app_data");
+        let models_dir = base.join("models_store");
+        let exe_dir = base.join("bin_dir");
+        std::fs::create_dir_all(&app_data).unwrap();
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::create_dir_all(&exe_dir).unwrap();
+
+        // Empty new or existing dir is accepted
+        let empty_custom = base.join("custom_cache_empty");
+        std::fs::create_dir_all(&empty_custom).unwrap();
+        assert!(matches!(
+            validate_custom_scratch_dir(&empty_custom, &app_data, Some(&models_dir), Some(&exe_dir)),
+            Ok(ScratchTargetResolution::UseCustom(_))
+        ));
+
+        // Directory with known VoxLab scratch subdirectories or marker is accepted
+        let known_dir = base.join("custom_cache_known");
+        std::fs::create_dir_all(known_dir.join("hf-cache")).unwrap();
+        std::fs::create_dir_all(known_dir.join("tts-job1")).unwrap();
+        assert!(matches!(
+            validate_custom_scratch_dir(&known_dir, &app_data, Some(&models_dir), Some(&exe_dir)),
+            Ok(ScratchTargetResolution::UseCustom(_))
+        ));
+
+        let marked_dir = base.join("custom_cache_marked");
+        std::fs::create_dir_all(&marked_dir).unwrap();
+        atomic_write(&marked_dir.join(SCRATCH_MARKER_FILE), b"voxlab-cache-v1\n").unwrap();
+        std::fs::write(marked_dir.join("leftover.wav"), b"audio").unwrap();
+        assert!(matches!(
+            validate_custom_scratch_dir(&marked_dir, &app_data, Some(&models_dir), Some(&exe_dir)),
+            Ok(ScratchTargetResolution::UseCustom(_))
+        ));
+
+        // Selecting default <app_data>/scratch returns UseDefault
+        let default_scratch = app_data.join("scratch");
+        assert_eq!(
+            validate_custom_scratch_dir(
+                &default_scratch,
+                &app_data,
+                Some(&models_dir),
+                Some(&exe_dir)
+            )
+            .unwrap(),
+            ScratchTargetResolution::UseDefault
+        );
+
+        // Drive root rejected
+        #[cfg(windows)]
+        assert!(
+            validate_custom_scratch_dir(Path::new(r"C:\"), &app_data, Some(&models_dir), Some(&exe_dir))
+                .is_err()
+        );
+
+        // AppData itself, ancestor of AppData, and protected subdirs rejected
+        assert!(
+            validate_custom_scratch_dir(&app_data, &app_data, Some(&models_dir), Some(&exe_dir))
+                .is_err()
+        );
+        assert!(
+            validate_custom_scratch_dir(&base, &app_data, Some(&models_dir), Some(&exe_dir)).is_err()
+        );
+        for sub in ["models", "runtimes", "webview", "settings", "voices"] {
+            assert!(
+                validate_custom_scratch_dir(
+                    &app_data.join(sub),
+                    &app_data,
+                    Some(&models_dir),
+                    Some(&exe_dir)
+                )
+                .is_err(),
+                "protected subdir {} must be rejected",
+                sub
+            );
+            assert!(
+                validate_custom_scratch_dir(
+                    &app_data.join(sub).join("nested"),
+                    &app_data,
+                    Some(&models_dir),
+                    Some(&exe_dir)
+                )
+                .is_err(),
+                "nested inside protected subdir {} must be rejected",
+                sub
+            );
+        }
+
+        // Models dir and child inside models dir rejected
+        assert!(
+            validate_custom_scratch_dir(&models_dir, &app_data, Some(&models_dir), Some(&exe_dir))
+                .is_err()
+        );
+        assert!(
+            validate_custom_scratch_dir(
+                &models_dir.join("sub"),
+                &app_data,
+                Some(&models_dir),
+                Some(&exe_dir)
+            )
+            .is_err()
+        );
+
+        // Exe dir and sidecar/resources rejected
+        assert!(
+            validate_custom_scratch_dir(&exe_dir, &app_data, Some(&models_dir), Some(&exe_dir))
+                .is_err()
+        );
+        assert!(
+            validate_custom_scratch_dir(
+                &exe_dir.join("sidecar"),
+                &app_data,
+                Some(&models_dir),
+                Some(&exe_dir)
+            )
+            .is_err()
+        );
+
+        // Non-empty directory with unrelated user file (no marker) rejected
+        let user_dir = base.join("user_photos");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::write(user_dir.join("family.jpg"), b"data").unwrap();
+        assert!(
+            validate_custom_scratch_dir(&user_dir, &app_data, Some(&models_dir), Some(&exe_dir))
+                .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolves_scratch_dir_with_meta_and_clears_preserving_marker() {
+        let base = std::env::temp_dir().join(format!("voxlab-scratch-meta-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let app_data = base.join("app_data");
+        std::fs::create_dir_all(&app_data).unwrap();
+
+        // Missing settings -> default
+        let default_expected = app_data.join("scratch");
+        let (active, default_path, is_custom) = resolve_scratch_dir_with_meta(&app_data);
+        assert_eq!(active, default_expected);
+        assert_eq!(default_path, default_expected);
+        assert!(!is_custom);
+
+        // Configured custom directory -> active custom
+        let custom_dir = base.join("my_cache");
+        std::fs::create_dir_all(&custom_dir).unwrap();
+        let marker = custom_dir.join(SCRATCH_MARKER_FILE);
+        atomic_write(&marker, b"voxlab-cache-v1\n").unwrap();
+        let nested_file = custom_dir.join("tmp").join("chunk.wav");
+        atomic_write(&nested_file, &[1u8; 512]).unwrap();
+
+        let settings = StorageSettingsFile {
+            schema_version: 1,
+            custom_scratch_dir: true,
+            scratch_dir: Some(custom_dir.to_string_lossy().to_string()),
+        };
+        atomic_write(
+            &app_data.join(STORAGE_SETTINGS_REL_PATH),
+            serde_json::to_string_pretty(&settings).unwrap().as_bytes(),
+        )
+        .unwrap();
+
+        let (active2, default2, is_custom2) = resolve_scratch_dir_with_meta(&app_data);
+        assert_eq!(active2, custom_dir);
+        assert_eq!(default2, default_expected);
+        assert!(is_custom2);
+
+        // Clear contents preserving marker and verify size exclusion reports 0 bytes afterward
+        assert_eq!(
+            dir_size_bytes_excluding(&custom_dir, &[SCRATCH_MARKER_FILE]),
+            512
+        );
+        clear_dir_contents_best_effort_except(&custom_dir, &[SCRATCH_MARKER_FILE]);
+        assert!(marker.is_file(), ".voxlab-cache marker must be preserved");
+        assert!(!nested_file.exists(), "temporary file should be removed");
+        assert_eq!(
+            dir_size_bytes_excluding(&custom_dir, &[SCRATCH_MARKER_FILE]),
+            0
+        );
+
+        // Unusable custom path (points to an existing file) -> falls back to default
+        let blocking_file = base.join("not_a_dir.txt");
+        std::fs::write(&blocking_file, b"file").unwrap();
+        let bad_settings = StorageSettingsFile {
+            schema_version: 1,
+            custom_scratch_dir: true,
+            scratch_dir: Some(blocking_file.to_string_lossy().to_string()),
+        };
+        atomic_write(
+            &app_data.join(STORAGE_SETTINGS_REL_PATH),
+            serde_json::to_string_pretty(&bad_settings)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        let (active3, default3, is_custom3) = resolve_scratch_dir_with_meta(&app_data);
+        assert_eq!(active3, default_expected);
+        assert_eq!(default3, default_expected);
+        assert!(!is_custom3);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

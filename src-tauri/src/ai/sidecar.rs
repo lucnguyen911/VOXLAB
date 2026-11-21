@@ -106,7 +106,7 @@ impl SidecarProcess {
             .env("VOXLAB_SPAWN_SEED", &spawn_seed_hex)
             .env("VOXLAB_HOST_PID", host_pid.to_string());
         if let Some(d) = data_dir {
-            let scratch = d.join("scratch");
+            let scratch = crate::fsio::resolve_scratch_dir_from_app_data(d);
             let tmp_dir = scratch.join("tmp");
             let hf_dir = scratch.join("hf-cache");
             let torch_dir = scratch.join("torch-cache");
@@ -487,6 +487,25 @@ impl SidecarManager {
                 alive: p.is_alive(),
             })
             .collect()
+    }
+
+    pub fn has_active_requests(&self) -> bool {
+        let mut map = self.runtimes.lock().unwrap();
+        map.values_mut()
+            .any(|p| p.is_alive() && !p.pending.lock().unwrap().is_empty())
+    }
+
+    pub fn shutdown_idle(&self) {
+        let idle_names: Vec<String> = {
+            let map = self.runtimes.lock().unwrap();
+            map.iter()
+                .filter(|(_, p)| p.pending.lock().unwrap().is_empty())
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+        for name in idle_names {
+            self.shutdown(&name);
+        }
     }
 
     fn unload_tts_elsewhere(&self, target: &str) {

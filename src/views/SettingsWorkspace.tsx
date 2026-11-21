@@ -834,15 +834,37 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
   };
 
   // Tab 3: Storage state (real AppData & Scratch metrics)
+  type BackendStorageStats = {
+    appDataPath: string;
+    appDataBytes: number;
+    scratchPath: string;
+    scratchBytes: number;
+    defaultScratchPath?: string;
+    isCustomScratchPath?: boolean;
+  };
+
   const [appDataRoot, setAppDataRoot] = useState("");
   const [storageStats, setStorageStats] = useState({
     dataRootSize: "0 MB",
     cacheSize: "0 MB",
     scratchBytes: 0,
+    defaultScratchPath: "",
+    isCustomScratchPath: false,
   });
   const [cleanActionPending, setCleanActionPending] = useState<"cache" | null>(null);
   const [activeCleaningTask, setActiveCleaningTask] = useState<"cache" | null>(null);
+  const [isUpdatingScratchDir, setIsUpdatingScratchDir] = useState(false);
   const [storageToast, setStorageToast] = useState<string | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
+
+  const extractErrorMessage = (err: unknown, fallback: string): string => {
+    if (typeof err === "string" && err.trim()) return err;
+    if (err && typeof err === "object" && "message" in err) {
+      const msg = (err as { message?: unknown }).message;
+      if (typeof msg === "string" && msg.trim()) return msg;
+    }
+    return fallback;
+  };
 
   const formatBytesReadable = (bytes: number): string => {
     if (!bytes || bytes <= 0) return "0 MB";
@@ -857,31 +879,106 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     return `${(mb / 1024).toFixed(2)} GB`;
   };
 
+  const applyStorageStats = (stats: BackendStorageStats) => {
+    setAppDataRoot(stats.scratchPath || stats.appDataPath);
+    setStorageStats({
+      dataRootSize: formatBytesReadable(stats.appDataBytes),
+      cacheSize: formatBytesReadable(stats.scratchBytes),
+      scratchBytes: stats.scratchBytes,
+      defaultScratchPath: stats.defaultScratchPath || "",
+      isCustomScratchPath: Boolean(stats.isCustomScratchPath),
+    });
+  };
+
   const fetchRealStorageStats = async () => {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const stats = await invoke<{
-        appDataPath: string;
-        appDataBytes: number;
-        scratchPath: string;
-        scratchBytes: number;
-      }>("fs_storage_stats");
+      const stats = await invoke<BackendStorageStats>("fs_storage_stats");
       if (stats) {
-        setAppDataRoot(stats.scratchPath || stats.appDataPath);
-        setStorageStats({
-          dataRootSize: formatBytesReadable(stats.appDataBytes),
-          cacheSize: formatBytesReadable(stats.scratchBytes),
-          scratchBytes: stats.scratchBytes,
-        });
+        applyStorageStats(stats);
       }
-    } catch {
-      // Fallback in non-Tauri test/dev preview
+    } catch (err) {
+      const isTauri =
+        typeof window !== "undefined" &&
+        Boolean((window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+      if (isTauri) {
+        setStorageError(extractErrorMessage(err, "Không thể tải thông tin thư mục Cache."));
+      }
+    }
+  };
+
+  const handlePickScratchDir = async () => {
+    if (isUpdatingScratchDir || activeCleaningTask !== null) return;
+    setStorageError(null);
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: appDataRoot || undefined,
+        title: "Chọn thư mục Cache (bộ nhớ tạm)",
+      });
+      if (typeof selected !== "string" || !selected.trim()) {
+        return;
+      }
+      setIsUpdatingScratchDir(true);
+      const previousPath = appDataRoot;
+      const previousBytes = storageStats.scratchBytes;
+      const previousSizeLabel = storageStats.cacheSize;
+      const { invoke } = await import("@tauri-apps/api/core");
+      const stats = await invoke<BackendStorageStats>("fs_set_scratch_dir", {
+        path: selected,
+      });
+      applyStorageStats(stats);
+      setStorageError(null);
+      const pathChanged = Boolean(
+        previousPath &&
+          stats.scratchPath &&
+          stats.scratchPath.toLowerCase() !== previousPath.toLowerCase()
+      );
+      if (pathChanged && previousBytes > 0) {
+        setStorageToast(
+          `Đã chuyển thư mục Cache sang ${stats.scratchPath}. Dữ liệu tạm cũ (${previousSizeLabel}) vẫn được giữ nguyên để bạn tự dọn nếu cần.`
+        );
+      } else {
+        setStorageToast(`Đã cập nhật thư mục Cache: ${stats.scratchPath}`);
+      }
+      setTimeout(() => setStorageToast(null), 4000);
+    } catch (err) {
+      setStorageToast(null);
+      setStorageError(extractErrorMessage(err, "Không thể thay đổi thư mục Cache."));
+    } finally {
+      setIsUpdatingScratchDir(false);
+    }
+  };
+
+  const handleResetScratchDir = async () => {
+    if (isUpdatingScratchDir || activeCleaningTask !== null) return;
+    setStorageError(null);
+    setIsUpdatingScratchDir(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const stats = await invoke<BackendStorageStats>("fs_set_scratch_dir", {
+        path: null,
+      });
+      applyStorageStats(stats);
+      setStorageToast("Đã khôi phục thư mục Cache về mặc định.");
+      setTimeout(() => setStorageToast(null), 4000);
+    } catch (err) {
+      setStorageToast(null);
+      setStorageError(extractErrorMessage(err, "Không thể khôi phục thư mục Cache mặc định."));
+    } finally {
+      setIsUpdatingScratchDir(false);
     }
   };
 
   const executeCleanAction = async (action: "cache") => {
     setCleanActionPending(null);
+    setStorageError(null);
     setActiveCleaningTask(action);
+    const isTauri =
+      typeof window !== "undefined" &&
+      Boolean((window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const freedBytes = await invoke<number>("fs_clear_scratch");
@@ -891,12 +988,18 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
           ? `Đã dọn sạch ${formatBytesReadable(freedBytes)} bộ nhớ tạm an toàn.`
           : "Bộ nhớ tạm đã sạch hoàn toàn."
       );
-    } catch {
-      setStorageStats((prev) => ({ ...prev, cacheSize: "0 MB", scratchBytes: 0 }));
-      setStorageToast("Đã dọn sạch bộ nhớ tạm an toàn.");
+      setTimeout(() => setStorageToast(null), 4000);
+    } catch (err) {
+      if (!isTauri) {
+        setStorageStats((prev) => ({ ...prev, cacheSize: "0 MB", scratchBytes: 0 }));
+        setStorageToast("Đã dọn sạch bộ nhớ tạm an toàn.");
+        setTimeout(() => setStorageToast(null), 4000);
+      } else {
+        setStorageToast(null);
+        setStorageError(extractErrorMessage(err, "Không thể dọn bộ nhớ tạm lúc này."));
+      }
     } finally {
       setActiveCleaningTask(null);
-      setTimeout(() => setStorageToast(null), 3000);
     }
   };
 
@@ -2030,9 +2133,26 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                   <label className="font-semibold text-xs text-textPrimary block">
                     Cache
                   </label>
-                  <span className="font-mono text-xs text-accent font-semibold px-2 py-0.5 rounded bg-accent/10 border border-accent/20">
-                    {storageStats.cacheSize}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {storageStats.isCustomScratchPath && (
+                      <button
+                        type="button"
+                        onClick={handleResetScratchDir}
+                        disabled={isUpdatingScratchDir || activeCleaningTask !== null}
+                        title={
+                          storageStats.defaultScratchPath
+                            ? `Khôi phục về mặc định (${storageStats.defaultScratchPath})`
+                            : "Khôi phục thư mục Cache mặc định"
+                        }
+                        className="px-2 py-0.5 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded border border-borderDefault text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Dùng mặc định
+                      </button>
+                    )}
+                    <span className="font-mono text-xs text-accent font-semibold px-2 py-0.5 rounded bg-accent/10 border border-accent/20">
+                      {storageStats.cacheSize}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
@@ -2040,13 +2160,22 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     type="text"
                     readOnly
                     value={appDataRoot || "Đang tải đường dẫn..."}
+                    title={appDataRoot || undefined}
                     className="flex-1 min-w-[200px] bg-surface2/80 border border-borderDefault rounded-lg px-3 py-2 text-xs font-mono text-textPrimary select-none focus:outline-none"
                   />
+                  <button
+                    type="button"
+                    onClick={handlePickScratchDir}
+                    disabled={isUpdatingScratchDir || activeCleaningTask !== null}
+                    className="px-3.5 py-2 bg-surface2 hover:bg-surface3 rounded-lg border border-borderDefault text-textSecondary hover:text-textPrimary text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                  >
+                    {isUpdatingScratchDir ? "Đang cập nhật..." : "Chọn thư mục..."}
+                  </button>
                   {appDataRoot && (
                     <button
                       type="button"
                       onClick={() => showPathInFolder(appDataRoot)}
-                      title="Mở thư mục dữ liệu trên máy"
+                      title="Mở thư mục Cache trên máy"
                       className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface2 hover:bg-surface3 text-textSecondary hover:text-textPrimary rounded-lg border border-borderDefault text-xs font-medium transition-colors cursor-pointer shrink-0"
                     >
                       <FolderOpen className="w-3.5 h-3.5 text-accent shrink-0" />
@@ -2056,7 +2185,11 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                   <button
                     type="button"
                     onClick={() => setCleanActionPending("cache")}
-                    disabled={activeCleaningTask !== null || storageStats.scratchBytes === 0}
+                    disabled={
+                      isUpdatingScratchDir ||
+                      activeCleaningTask !== null ||
+                      storageStats.scratchBytes === 0
+                    }
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-surface2 hover:bg-danger/15 text-textSecondary hover:text-danger rounded-lg border border-borderDefault hover:border-danger/30 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                   >
                     {activeCleaningTask === "cache" ? (
@@ -2077,6 +2210,22 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     )}
                   </button>
                 </div>
+
+                {storageError && (
+                  <div className="p-2.5 rounded-lg bg-danger/10 border border-danger/25 text-danger text-xs flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span className="leading-snug">{storageError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setStorageError(null)}
+                      className="p-1 hover:bg-danger/15 rounded text-danger cursor-pointer shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Thẻ 3: Phần Cứng & Hiệu suất xử lý */}
@@ -2273,7 +2422,8 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
                     <span>Dữ liệu sẽ dọn dẹp:</span>
                   </div>
                   <p className="text-textSecondary leading-relaxed">
-                    Giải phóng <span className="font-mono font-semibold text-textPrimary">{storageStats.cacheSize}</span> bộ nhớ đệm audio tạm thời trong thư mục <code className="font-mono">scratch</code>.
+                    Giải phóng <span className="font-mono font-semibold text-textPrimary">{storageStats.cacheSize}</span> bộ nhớ đệm audio tạm thời trong thư mục{" "}
+                    <code className="font-mono break-all">{appDataRoot || "scratch"}</code>.
                   </p>
                 </div>
                 <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 space-y-1">

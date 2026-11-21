@@ -66,6 +66,13 @@ fn active_install_slot() -> &'static Mutex<Option<ActiveInstallJob>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
+pub fn is_install_active() -> bool {
+    active_install_slot()
+        .lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
+}
+
 fn cached_hw_info() -> &'static OnceLock<HardwareAcceleratorInfo> {
     static HW: OnceLock<HardwareAcceleratorInfo> = OnceLock::new();
     &HW
@@ -730,7 +737,7 @@ where
             speed_mbps: None,
         });
 
-        let scratch_root = app_data_dir.join("scratch");
+        let scratch_root = crate::fsio::resolve_scratch_dir_from_app_data(app_data_dir);
         let hf_xet_cache_dir = scratch_root.join("hf-xet-cache");
         let hf_cache_dir = scratch_root.join("hf-cache");
         let tmp_dir = scratch_root.join("tmp");
@@ -892,9 +899,10 @@ where
     let uv_bin = resolve_uv_binary(dev_sidecar_root)?;
     let runtimes_root = app_data_dir.join("runtimes");
     let uv_python_dir = runtimes_root.join("_python");
-    let uv_cache_dir = app_data_dir.join("scratch").join("uv-cache");
-    let wheelhouse_dir = app_data_dir.join("scratch").join("wheelhouse");
-    let tmp_dir = app_data_dir.join("scratch").join("tmp");
+    let scratch_root = crate::fsio::resolve_scratch_dir_from_app_data(app_data_dir);
+    let uv_cache_dir = scratch_root.join("uv-cache");
+    let wheelhouse_dir = scratch_root.join("wheelhouse");
+    let tmp_dir = scratch_root.join("tmp");
     let target_rt_dir = runtimes_root.join(runtime);
     let site_packages_dir = if cfg!(windows) {
         target_rt_dir.join("Lib").join("site-packages")

@@ -36,6 +36,7 @@ pub fn migrate_legacy_state_files_once(
         "gemini_keys.enc",
         "batch_queue_v3.json",
         "settings/ai_runtime.json",
+        "settings/storage.json",
     ] {
         let src = legacy_dir.join(rel);
         let dst = target_dir.join(rel);
@@ -449,6 +450,7 @@ pub fn run() {
             fsio::fs_remove_file,
             fsio::fs_scratch_dir,
             fsio::fs_storage_stats,
+            fsio::fs_set_scratch_dir,
             fsio::fs_clear_scratch,
             fsio::fs_read_bytes,
             fsio::fs_probe_wav_header,
