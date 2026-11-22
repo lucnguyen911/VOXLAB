@@ -4692,6 +4692,56 @@ _DEMONSTRATIVE_PRE_NUM_CONTEXT = frozenset(
 )
 
 
+_SMALL_QUANTIFIER_NUMS = frozenset({
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+})
+_NON_QUANTIFIER_PREV_WORDS = frozenset({
+    "the", "this", "that", "which", "each", "every", "no", "some", "any",
+    "another", "only", "last", "first", "next", "number", "step", "part",
+    "phase", "day", "year", "chapter", "section", "stage", "level", "option",
+    "rule", "tier", "item", "point", "reason", "factor", "way",
+})
+
+
+def _is_small_quantifier_noun_pair(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    left_span_start: int,
+    idx: int,
+) -> bool:
+    """True for a single-word small cardinal quantifier directly modifying a content noun/adjective
+    (e.g. 'one | metro area', 'two | major cities'), excluding pronoun/label heads ('the one | ...',
+    'part one | ...') and clause/verb/opener boundaries.
+    """
+    if idx < 0 or idx + 1 >= len(src_clean) or left_span_start != idx:
+        return False
+    left = src_clean[idx]
+    right = src_clean[idx + 1]
+    if left not in _SMALL_QUANTIFIER_NUMS:
+        return False
+    if len(right) < 3 or _is_numeric_scope_word(right):
+        return False
+    if idx > 0 and not has_punctuation_boundary(delimiters[idx], source_words[idx]):
+        if src_clean[idx - 1] in _NON_QUANTIFIER_PREV_WORDS:
+            return False
+    if right in (
+        ENTITY_NON_PROPER_HEADS
+        | CONSTITUENT_INITIAL_FUNCTION_WORDS
+        | COMMON_FINITE_VERBS_AND_AUX
+        | PHRASE_OPENER_WORDS
+        | DET_AND_POSSESSIVE_SET
+        | _NON_HEAD_NOUN_ADVERBS_AND_PARTICLES
+    ) or _is_contextual_invariant_finite_verb(src_clean, idx + 1, left, right):
+        return False
+    if len(right) >= 5 and right.endswith(("ed", "ly")):
+        return False
+    if _is_pp_intensifier_opener(source_words, src_clean, delimiters, idx + 1):
+        return False
+    return True
+
+
 def _is_tight_pre_numeral_modifier(
     source_words: list[str],
     src_clean: list[str],
@@ -4770,6 +4820,182 @@ def _is_tight_np_pp_modifier_pair(
         | CONSTITUENT_INITIAL_FUNCTION_WORDS
         | COMMON_FINITE_VERBS_AND_AUX
         | PHRASE_OPENER_WORDS
+        | _NON_HEAD_NOUN_ADVERBS_AND_PARTICLES
+    ) or _is_contextual_invariant_finite_verb(src_clean, idx + 1, left, right):
+        return False
+    if len(right) >= 5 and right.endswith(("ing", "ed", "ly")):
+        return False
+    if _is_pp_intensifier_opener(source_words, src_clean, delimiters, idx + 1):
+        return False
+    return True
+
+
+_STOP_CODA_SUFFIXES = ("p", "t", "k", "b", "d", "g", "pe", "te", "ke", "be", "de", "ge")
+
+
+def _measure_stop_release_bridged_silence(
+    audio_data: np.ndarray,
+    sample_rate: int,
+    start1: float,
+    end1: float,
+    start2: float,
+    end2: float,
+    base_silence: float,
+    gap_s: float,
+    gap_e: float,
+) -> tuple[float, float, float]:
+    """When a stop-final word (e.g. 'top') has a detached weak release puff (<= 95ms) between
+    its stop closure (>= 38ms) and a substantial post-release dead silence (>= 180ms), return
+    the full perceived break `(bridged_dur, closure_start, gap_e)` across closure + puff + silence.
+    """
+    if base_silence < 0.18 or gap_e <= gap_s or audio_data is None or sample_rate <= 0:
+        return (base_silence, gap_s, gap_e)
+    win_start = max(0.0, start1)
+    win_end = min(audio_data.size / float(sample_rate), max(gap_e + 0.04, end2))
+    if win_end - win_start < 0.08:
+        return (base_silence, gap_s, gap_e)
+    frame = max(1, int(round(0.020 * sample_rate)))
+    hop = max(1, int(round(0.010 * sample_rate)))
+    s0 = max(0, int(round(win_start * sample_rate)))
+    s1 = min(audio_data.size, int(round(win_end * sample_rate)))
+    if s1 - s0 < frame * 4:
+        return (base_silence, gap_s, gap_e)
+    frames = np.lib.stride_tricks.sliding_window_view(audio_data[s0:s1], frame)[::hop]
+    rms = np.sqrt(np.mean(np.square(frames, dtype=np.float32), axis=1))
+    zcr = np.mean(np.abs(np.diff(np.signbit(frames), axis=1)), axis=1)
+    frame_sec = hop / float(sample_rate)
+    n = len(rms)
+
+    gs_idx = max(0, min(n - 1, int(round((gap_s - win_start) / frame_sec))))
+    ge_idx = max(gs_idx + 1, min(n, int(round((gap_e - win_start) / frame_sec))))
+    if float(np.min(rms[gs_idx:ge_idx])) > 0.002:
+        return (base_silence, gap_s, gap_e)
+
+    puff_end = gs_idx
+    while puff_end > 0 and rms[puff_end - 1] < 0.012:
+        puff_end -= 1
+    if puff_end <= 0:
+        return (base_silence, gap_s, gap_e)
+
+    max_puff_frames = max(1, int(round(0.095 / frame_sec)))
+    walk_limit = max(0, puff_end - max_puff_frames)
+    closure_start = -1
+    closure_end = -1
+    puff_start = puff_end
+    k = puff_end - 1
+    while k >= walk_limit:
+        if rms[k] > 0.025 or zcr[k] >= 0.25:
+            return (base_silence, gap_s, gap_e)
+        if rms[k] < 0.004:
+            c_en = k + 1
+            c_st = k
+            while c_st > 0 and rms[c_st - 1] < 0.004:
+                c_st -= 1
+            if (c_en - c_st) * frame_sec >= 0.038:
+                closure_start = c_st
+                closure_end = c_en
+                puff_start = c_en
+                break
+        k -= 1
+    if closure_start <= 0 or closure_end <= closure_start:
+        return (base_silence, gap_s, gap_e)
+
+    w1_peak = float(np.max(rms[:closure_start]))
+    puff_peak = float(np.max(rms[puff_start:puff_end])) if puff_end > puff_start else 0.0
+    if w1_peak < 0.05 or puff_peak > 0.15 * w1_peak:
+        return (base_silence, gap_s, gap_e)
+
+    bridged_start = win_start + closure_start * frame_sec
+    bridged_dur = max(base_silence, gap_e - bridged_start)
+    return (bridged_dur, round(bridged_start, 3), gap_e)
+
+
+_LINKING_OR_INTRANSITIVE_ING_VERBS = frozenset({
+    "being", "becoming", "seeming", "looking", "feeling", "staying", "remaining",
+    "appearing", "sounding", "growing", "turning", "getting", "proving",
+    "going", "coming", "running", "sitting", "standing", "living", "working",
+    "waiting", "sleeping", "walking", "talking", "moving", "speaking", "thinking",
+    "trying", "starting", "beginning", "ending", "stopping", "continuing",
+    "rising", "falling", "dropping", "failing", "struggling", "happening",
+    "arriving", "leaving", "returning", "traveling", "travelling", "driving",
+    "flying", "riding", "climbing", "jumping", "smiling", "laughing", "crying",
+})
+
+_PRENOMINAL_TIGHT_MODIFIERS = frozenset({
+    "top", "main", "chief", "key", "major", "minor", "premier", "primary",
+    "secondary", "senior", "junior", "former", "current", "modern", "recent",
+    "future", "early", "late", "best", "worst", "better", "worse", "leading",
+    "elite", "core", "prime", "central", "local", "national", "regional",
+    "global", "federal", "foreign", "domestic", "public", "private", "urban",
+    "rural", "coastal", "nearby", "neighboring", "surrounding", "medical",
+    "clinical", "surgical", "dental", "mental", "physical", "legal", "financial",
+    "economic", "political", "social", "industrial", "commercial", "residential",
+    "annual", "monthly", "weekly", "daily", "hourly", "personal", "individual",
+    "chronic", "acute", "severe", "serious", "critical", "essential", "vital",
+    "basic", "simple", "common", "special", "specific", "general", "certain",
+    "various", "multiple", "numerous", "countless", "additional", "extra",
+    "further", "other", "different", "similar", "separate", "independent",
+    "entire", "whole", "full", "total", "overall", "average", "typical",
+    "normal", "standard", "regular", "ordinary", "original", "initial", "final",
+    "real", "true", "pure", "raw", "fresh", "clean", "safe", "strong", "heavy",
+    "deep", "wide", "long", "short", "large", "small", "big", "great", "good",
+    "bad", "new", "old", "high", "low", "free", "direct", "rapid", "urgent",
+    "licensed", "certified", "retired", "skilled", "trained", "experienced",
+    "qualified", "specialized", "dedicated", "trusted", "verified", "approved",
+})
+
+
+def _is_tight_participle_modifier_pair(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    idx: int,
+) -> bool:
+    """True for a tight [Transitive '-ing' Participle] + AttributiveModifier + Head/Modifier group
+    (e.g. 'seeing top | medical specialists', 'hiring senior | engineers') that must be read without
+    splitting the prenominal modifier from its immediate noun/modifier complement.
+    """
+    if idx < 1 or idx + 1 >= len(src_clean):
+        return False
+    prev_w = src_clean[idx - 1]
+    left = src_clean[idx]
+    right = src_clean[idx + 1]
+    if has_punctuation_boundary(delimiters[idx], source_words[idx]):
+        return False
+    if (
+        len(prev_w) < 5
+        or not prev_w.endswith("ing")
+        or prev_w in _NON_PARTICIPLE_ING_WORDS
+        or prev_w in _LINKING_OR_INTRANSITIVE_ING_VERBS
+    ):
+        return False
+    if idx >= 2 and not has_punctuation_boundary(delimiters[idx - 1], source_words[idx - 1]):
+        if src_clean[idx - 2] in DET_AND_POSSESSIVE_SET:
+            return False
+    if _is_numeric_scope_word(left) or _is_numeric_scope_word(right):
+        return False
+    raw_left = source_words[idx].strip(" ,.;:!?\"'()")
+    raw_right = source_words[idx + 1].strip(" ,.;:!?\"'()")
+    if (raw_left and raw_left[0].isupper()) or (raw_right and raw_right[0].isupper()):
+        return False
+    is_clear_adj = (left in _PRENOMINAL_TIGHT_MODIFIERS) or (
+        len(left) >= 6
+        and left.endswith(("ical", "al", "ive", "ous", "ful", "ary", "ory"))
+        and left not in (
+            ENTITY_NON_PROPER_HEADS
+            | COMMON_FINITE_VERBS_AND_AUX
+            | CONSTITUENT_INITIAL_FUNCTION_WORDS
+            | PHRASE_OPENER_WORDS
+        )
+    )
+    if not is_clear_adj:
+        return False
+    if right in (
+        ENTITY_NON_PROPER_HEADS
+        | CONSTITUENT_INITIAL_FUNCTION_WORDS
+        | COMMON_FINITE_VERBS_AND_AUX
+        | PHRASE_OPENER_WORDS
+        | DET_AND_POSSESSIVE_SET
         | _NON_HEAD_NOUN_ADVERBS_AND_PARTICLES
     ) or _is_contextual_invariant_finite_verb(src_clean, idx + 1, left, right):
         return False
@@ -4953,26 +5179,58 @@ def detect_phrase_internal_pauses(
             and (right_is_num or _is_numeric_scope_word(right))
             and _is_tight_pre_numeral_modifier(source_words, src_clean, delimiters, i)
         )
-        if not is_pct_head_pair and not is_pre_num_mod_pair and (
+        is_small_quant_noun_pair = (
+            (not is_pct_head_pair)
+            and (not is_pre_num_mod_pair)
+            and (not right_is_num)
+            and _is_small_quantifier_noun_pair(source_words, src_clean, delimiters, left_span_start, i)
+        )
+        if not is_pct_head_pair and not is_pre_num_mod_pair and not is_small_quant_noun_pair and (
             left_is_num or right_is_num or _is_numeric_scope_word(left) or _is_numeric_scope_word(right)
         ):
             continue
-        is_head_pair = (not is_pct_head_pair and not is_pre_num_mod_pair) and (left in PHRASE_HEAD_WORDS)
+        is_head_pair = (
+            not is_pct_head_pair and not is_pre_num_mod_pair and not is_small_quant_noun_pair
+        ) and (left in PHRASE_HEAD_WORDS)
         is_mod_noun_pair = (
-            not is_pct_head_pair and not is_pre_num_mod_pair and not is_head_pair
-        ) and _is_tight_np_pp_modifier_pair(source_words, src_clean, delimiters, i)
+            not is_pct_head_pair and not is_pre_num_mod_pair and not is_small_quant_noun_pair and not is_head_pair
+        ) and (
+            _is_tight_np_pp_modifier_pair(source_words, src_clean, delimiters, i)
+            or _is_tight_participle_modifier_pair(source_words, src_clean, delimiters, i)
+        )
         is_part_comp_pair = (
-            not is_pct_head_pair and not is_pre_num_mod_pair and not is_head_pair and not is_mod_noun_pair
+            not is_pct_head_pair
+            and not is_pre_num_mod_pair
+            and not is_small_quant_noun_pair
+            and not is_head_pair
+            and not is_mod_noun_pair
         ) and _is_participle_complement_pair(source_words, src_clean, delimiters, i)
         embedded_subj_span = (
             _find_zero_that_embedded_subject_span(source_words, src_clean, delimiters, i)
-            if (not is_pct_head_pair and not is_pre_num_mod_pair and not is_head_pair and not is_mod_noun_pair and not is_part_comp_pair)
+            if (
+                not is_pct_head_pair
+                and not is_pre_num_mod_pair
+                and not is_small_quant_noun_pair
+                and not is_head_pair
+                and not is_mod_noun_pair
+                and not is_part_comp_pair
+            )
             else None
         )
         is_embedded_subj_split = embedded_subj_span is not None
-        if not (is_pct_head_pair or is_pre_num_mod_pair or is_head_pair or is_mod_noun_pair or is_part_comp_pair or is_embedded_subj_split):
+        if not (
+            is_pct_head_pair
+            or is_pre_num_mod_pair
+            or is_small_quant_noun_pair
+            or is_head_pair
+            or is_mod_noun_pair
+            or is_part_comp_pair
+            or is_embedded_subj_split
+        ):
             continue
-        if not (is_head_pair or is_pct_head_pair or is_pre_num_mod_pair) and is_prosodic_phrase_boundary(
+        if not (
+            is_head_pair or is_pct_head_pair or is_pre_num_mod_pair or is_small_quant_noun_pair
+        ) and is_prosodic_phrase_boundary(
             source_words, src_clean, i, i + 1, source_words[i], source_words[i + 1], delimiters=delimiters
         ):
             continue
@@ -5005,6 +5263,14 @@ def detect_phrase_internal_pauses(
             or sum(_estimate_expected_syllables(t) for t in embedded_subj_span) >= 9
         ):
             pair_threshold = max(threshold, 0.45 / eff_speed)
+        if (
+            silence < pair_threshold
+            and silence >= 0.18
+            and left.endswith(_STOP_CODA_SUFFIXES)
+        ):
+            silence, gap_s, gap_e = _measure_stop_release_bridged_silence(
+                audio_data, sample_rate, s1, e1, s2, e2, silence, gap_s, gap_e
+            )
         if silence < pair_threshold:
             continue
         raw_left = source_words[i].strip(" ,.;:!?\"'()")
@@ -5013,6 +5279,8 @@ def detect_phrase_internal_pauses(
             head_tag = f"percent+{right}"
         elif is_pre_num_mod_pair:
             head_tag = f"pre_num+{left}"
+        elif is_small_quant_noun_pair:
+            head_tag = f"quant+{left}"
         elif is_head_pair:
             head_tag = left
         elif is_mod_noun_pair:
@@ -9927,7 +10195,7 @@ def detect_acoustic_stutter(
             p3_asr_raw,
             counterpart_clean=set(p3_src_clean),
         )
-        p3_pairs: list[tuple[int, int]] = []
+        p3_pairs: list[tuple[int, int, bool]] = []
         p3_matcher = difflib.SequenceMatcher(
             None, [s.canonical for s in p3_src_spans], [a.canonical for a in p3_asr_spans], autojunk=False
         )
@@ -9939,7 +10207,7 @@ def detect_acoustic_stutter(
                 a_len = a_cur.orig_end - a_cur.orig_start
                 if not s_cur.is_number and not a_cur.is_number and s_len >= 2 and s_len == a_len:
                     for sub in range(s_len - 1):
-                        p3_pairs.append((s_cur.orig_start + sub, a_cur.orig_start + sub))
+                        p3_pairs.append((s_cur.orig_start + sub, a_cur.orig_start + sub, False))
                 if off + 1 < blk.size:
                     s_nxt = p3_src_spans[blk.a + off + 1]
                     a_nxt = p3_asr_spans[blk.b + off + 1]
@@ -9948,12 +10216,10 @@ def detect_acoustic_stutter(
                     if (
                         not s_cur.is_number
                         and not a_cur.is_number
-                        and not s_nxt.is_number
-                        and not a_nxt.is_number
                         and s_nxt.orig_start == si + 1
                         and a_nxt.orig_start == aj + 1
                     ):
-                        p3_pairs.append((si, aj))
+                        p3_pairs.append((si, aj, bool(s_nxt.is_number or a_nxt.is_number)))
 
         hop5 = max(1, int(round(0.005 * sample_rate)))
         win15 = max(hop5 + 1, int(round(0.015 * sample_rate)))
@@ -9964,7 +10230,7 @@ def detect_acoustic_stutter(
             zcr_5 = np.mean(np.abs(np.diff(np.signbit(fr5), axis=1)), axis=1)
             n5 = len(rms_5)
             max_edge_step = max(1, int(round(0.10 / fsec5)))
-            for si, aj in p3_pairs:
+            for si, aj, right_is_num in p3_pairs:
                 if si < 0 or si + 1 >= len(p3_src_clean) or aj < 0 or aj + 1 >= len(asr_words):
                     continue
                 sw1, sw2 = p3_src_clean[si], p3_src_clean[si + 1]
@@ -9974,7 +10240,6 @@ def detect_acoustic_stutter(
                     or si in p3_pm_src
                     or (si + 1) in p3_pm_src
                     or _is_numeric_scope_word(sw1)
-                    or _is_numeric_scope_word(sw2)
                     or has_punctuation_boundary(p3_delims[si + 1], p3_src_words[si + 1])
                 ):
                     continue
@@ -10028,7 +10293,12 @@ def detect_acoustic_stutter(
                     islands.append((ist, len(act)))
 
                 emitted_p3 = False
-                if (0.24 <= vv_gap <= 0.55) and float(np.max(g_rms)) < 0.030:
+                if (
+                    not right_is_num
+                    and not _is_numeric_scope_word(sw2)
+                    and (0.24 <= vv_gap <= 0.55)
+                    and float(np.max(g_rms)) < 0.030
+                ):
                     detached_clicks = 0
                     for idx_i, (ist, ien) in enumerate(islands):
                         dur_i = (ien - ist) * fsec5
@@ -10067,16 +10337,24 @@ def detect_acoustic_stutter(
                         })
                         emitted_p3 = True
 
-                # Pass 3B: Detached coda sibilant echo (e.g. 'Unless — [valley] — [detached /s/] — [silence] — we')
+                # Pass 3B: Detached coda sibilant echo (e.g. 'Unless — [valley] — [detached /s/] — [silence] — we'
+                # or elongated double-/s/ coda on '-sts/-sks/-sps' or sibilant-to-sibilant boundary echoes)
                 if (
                     not emitted_p3
                     and 0.26 <= vv_gap <= 0.90
                     and sw1.endswith(("s", "z", "x", "sh", "ch", "ce", "se", "ze", "ge", "dge"))
-                    and not sw2.startswith(("s", "z", "sh", "ch", "ce", "ci", "cy", "ps", "ts", "x"))
                 ):
+                    is_double_sib_cluster = sw1.endswith(("sts", "sks", "sps"))
+                    sw2_starts_sib = (
+                        sw2.startswith(("s", "z", "sh", "ch", "ce", "ci", "cy", "ps", "ts", "x", "0", "6", "7"))
+                        or sw2 in ("16", "17")
+                    )
+                    min_dur_i = 0.130 if is_double_sib_cluster else (0.075 if sw2_starts_sib else 0.065)
+                    min_pre_sil = 0.045 if sw2_starts_sib else 0.040
+                    min_post_sil = 0.150 if is_double_sib_cluster else (0.140 if sw2_starts_sib else 0.100)
                     for idx_i, (ist, ien) in enumerate(islands):
                         dur_i = (ien - ist) * fsec5
-                        if not (0.065 <= dur_i <= 0.350):
+                        if not (min_dur_i <= dur_i <= 0.350):
                             continue
                         pk_i = float(np.max(g_rms[ist:ien]))
                         if not (0.012 <= pk_i <= 0.12):
@@ -10088,14 +10366,22 @@ def detect_acoustic_stutter(
                         pre_gap_start = (fv1 + islands[idx_i - 1][1]) if idx_i > 0 else fv1
                         pre_gap_end = fv1 + ist
                         post_gap_start = fv1 + ien
-                        post_gap_end = (fv1 + islands[idx_i + 1][0]) if (idx_i + 1) < len(islands) else fv2
+                        # Skip low-level breath/floor ripples (< 0.010 RMS & ZCR < 0.25) inside the post-coda gap
+                        # so soft inhalations before w2 do not mask the detached sibilant's trailing silence.
+                        post_gap_end = fv2
+                        for nxt_j in range(idx_i + 1, len(islands)):
+                            st_j, en_j = islands[nxt_j]
+                            if float(np.max(g_rms[st_j:en_j])) < 0.010 and float(np.max(g_zcr[st_j:en_j])) < 0.25:
+                                continue
+                            post_gap_end = fv1 + st_j
+                            break
                         if pre_gap_end <= pre_gap_start or post_gap_end <= post_gap_start:
                             continue
                         pre_sil = (pre_gap_end - pre_gap_start) * fsec5
                         post_sil = (post_gap_end - post_gap_start) * fsec5
-                        if pre_sil < 0.040 or float(np.min(rms_5[pre_gap_start:pre_gap_end])) > min(0.0035, 0.20 * pk_i):
+                        if pre_sil < min_pre_sil or float(np.min(rms_5[pre_gap_start:pre_gap_end])) > min(0.0035, 0.20 * pk_i):
                             continue
-                        if post_sil < 0.100 or float(np.min(rms_5[post_gap_start:post_gap_end])) > 0.0025:
+                        if post_sil < min_post_sil or float(np.min(rms_5[post_gap_start:post_gap_end])) > 0.0025:
                             continue
                         if pre_gap_start <= v1_end:
                             continue
@@ -10107,6 +10393,8 @@ def detect_acoustic_stutter(
                         isl_wave = mono[(fv1 + ist) * hop5 : min(mono.size, (fv1 + ien) * hop5 + win15)]
                         c_f0 = v1_end + int(coda_sib_idx[0])
                         c_f1 = v1_end + int(coda_sib_idx[-1]) + 1
+                        if is_double_sib_cluster and ((fv1 + ien) - c_f0) * fsec5 < 0.290:
+                            continue
                         coda_wave = mono[c_f0 * hop5 : min(mono.size, c_f1 * hop5 + win15)]
                         if isl_wave.size < 64 or coda_wave.size < 64:
                             continue
@@ -11755,6 +12043,77 @@ def verify_whisper_smoothed_stutters(
             max_slice_prob = max(p_c for _, _, p_c in trimmed_slice)
             if max_slice_prob < 0.30:
                 continue
+
+            # Boundary-truncation guard: when a connected right boundary cut through active speech
+            # (e.g. 'highway' sliced at the internal /w/ dip before '-way', yielding 'Hi'), re-verify
+            # the continuous 2-word span [sw, next_src] so clean connected words are not falsely flagged.
+            if (
+                len(trimmed_slice) == 1
+                and next_src
+                and gap_to_next <= 0.06
+                and next_end_sec >= t_clip1 + 0.14
+                and (slice_budget is None or slice_budget[0] > 0)
+            ):
+                cln_0 = trimmed_slice[0][1]
+                clip1_fi = max(0, min(num_frames - 1, int(round(t_clip1 * sample_rate / hop_len))))
+                clip1_cut_active = bool(
+                    float(np.min(rms_frames[max(0, clip1_fi - 1) : min(num_frames, clip1_fi + 2)])) >= 0.025
+                )
+                is_prefix_trunc = bool(
+                    cln_0
+                    and len(cln_0) < len(sw)
+                    and (
+                        sw.startswith(cln_0)
+                        or _is_phonetic_onset_prefix(cln_0, sw)
+                        or (len(cln_0) >= 2 and phonetic_key(sw).startswith(phonetic_key(cln_0)))
+                    )
+                )
+                is_short_multisyllabic_clip = bool(
+                    cand["expected_syl"] >= 2 and clip_dur_sec < (0.14 * cand["expected_syl"] + 0.10)
+                )
+                if clip1_cut_active and (is_prefix_trunc or is_short_multisyllabic_clip):
+                    if slice_budget is not None:
+                        slice_budget[0] -= 1
+                    if secondary_reasons is not None:
+                        secondary_reasons.append(f"stutter_pair_verify:{sw}")
+                    pair_t1 = min(total_dur, next_end_sec + 0.03)
+                    pair_words = _transcribe_isolated_whisper_slice(
+                        mono,
+                        sample_rate,
+                        t_clip0,
+                        pair_t1,
+                        whisper_model,
+                        lang_code,
+                        pad_sec=0.18,
+                        min_raw_sec=0.15,
+                    )
+                    if pair_words:
+                        if (
+                            len(pair_words) >= 3
+                            and prev_src
+                            and _is_edge_truncated_bleed(pair_words[0][0], pair_words[0][1], prev_src, side="left")
+                        ):
+                            pair_words = pair_words[1:]
+                        if (
+                            len(pair_words) == 2
+                            and not pair_words[0][0].endswith("-")
+                            and not pair_words[1][0].startswith("-")
+                            and _matches_target_word(pair_words[0][1])
+                            and float(pair_words[0][2]) >= 0.45
+                            and (
+                                are_words_equivalent(next_src, pair_words[1][1])
+                                or _is_minor_word_variant(next_src, pair_words[1][1])
+                                or phonetic_key(next_src) == phonetic_key(pair_words[1][1])
+                            )
+                        ):
+                            continue
+                        if (
+                            len(pair_words) == 1
+                            and not pair_words[0][0].endswith("-")
+                            and _matches_target_word(pair_words[0][1])
+                            and float(pair_words[0][2]) >= 0.55
+                        ):
+                            continue
 
         obs_phrase = " ".join(
             re.sub(r"^[^\w\u00C0-\u1EF9-]+|[^\w\u00C0-\u1EF9]+$", "", r_tok) or c_tok

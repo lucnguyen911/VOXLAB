@@ -6885,14 +6885,35 @@ class AudioQualityTest(unittest.TestCase):
             [],
         )
 
-        # 4. Negative 3: next word starts with sibilant ("Unless she can")
-        wave_she, asr_she = build_case(detached_kind="sibilant", detached_span=(0.625, 0.805), we_start=1.02, w2_raw=" she")
+        # 4. Adjacent sibilant pair ("Unless she can"):
+        #    4a. Normal connected speech (continuous /s/+/sh/ without valley) -> NOT flagged
+        wave_she_conn, asr_she_conn = build_case(detached_span=None, we_start=0.58, w2_raw=" she")
+        sh0, sh1 = int(0.55 * sr), int(0.58 * sr)
+        wave_she_conn[sh0:sh1] += _synth_sibilant(t[sh0:sh1], amp=0.060)
         self.assertEqual(
             audio_quality.detect_acoustic_stutter(
-                wave_she, sr, text="Unless she can", asr_words=asr_she, language="en"
+                wave_she_conn, sr, text="Unless she can", asr_words=asr_she_conn, language="en"
             ),
             [],
         )
+        #    4b. Normal paused speech ("Unless | [250ms] | [sh-]she can", onset /sh/ attached to "she") -> NOT flagged
+        wave_she_pause, asr_she_pause = build_case(detached_span=None, we_start=0.92, w2_raw=" she")
+        sh_p0, sh_p1 = int(0.80 * sr), int(0.92 * sr)
+        wave_she_pause[sh_p0:sh_p1] += _synth_sibilant(t[sh_p0:sh_p1], amp=0.060)
+        asr_she_pause[1]["startSec"] = 0.80
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                wave_she_pause, sr, text="Unless she can", asr_words=asr_she_pause, language="en"
+            ),
+            [],
+        )
+        #    4c. Genuine detached coda /s/ echo isolated between two silences ("Unless — [75ms] — sss — [215ms] — she") -> CAUGHT
+        wave_she_bad, asr_she_bad = build_case(detached_kind="sibilant", detached_span=(0.625, 0.805), we_start=1.02, w2_raw=" she")
+        she_bad_issues = audio_quality.detect_acoustic_stutter(
+            wave_she_bad, sr, text="Unless she can", asr_words=asr_she_bad, language="en"
+        )
+        self.assertEqual(len(she_bad_issues), 1, f"Expected detached /s/ echo on 'Unless she' caught, got {she_bad_issues}")
+        self.assertEqual(she_bad_issues[0]["words"], ["unless", "she"])
 
         # 5. Negative 4: broadband/low-mid breath noise instead of high-frequency sibilant
         wave_breath, asr_breath = build_case(detached_kind="breath", detached_span=(0.625, 0.805), we_start=1.02)
@@ -6917,6 +6938,250 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(
             audio_quality.detect_acoustic_stutter(
                 wave_adj, sr, text="Unless we can", asr_words=asr_adj, language="en"
+            ),
+            [],
+        )
+
+    def test_v447_specialists_sts_sibilant_one_metro_pause_and_highway_pair_clear(self):
+        sr = 24000
+        dur = 1.90
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def _synth_sibilant(seg_t: np.ndarray, amp: float) -> np.ndarray:
+            sig = (
+                0.45 * np.sin(2 * np.pi * 5500.0 * seg_t)
+                + 0.35 * np.sin(2 * np.pi * 6800.0 * seg_t)
+                + 0.25 * np.sin(2 * np.pi * 8200.0 * seg_t)
+            )
+            return (amp * sig).astype(np.float32)
+
+        def _add_voiced(w: np.ndarray, st: float, en: float, f1: float = 210.0, f2: float = 520.0, amp: float = 0.20) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            seg = t[i0:i1]
+            w[i0:i1] += amp * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+        # --- Part A: Pass 3B on "-sts" followed by numeric word "one" with soft -47 dB breath ---
+        def build_specialists_one(coda1_dur: float, coda2_dur: float, add_soft_breath: bool = True) -> tuple[np.ndarray, list[dict]]:
+            w = np.zeros_like(t)
+            _add_voiced(w, 0.08, 0.38, amp=0.20)  # "specialists" voiced stem
+            s1_st, s1_en = 0.38, 0.38 + coda1_dur
+            w[int(s1_st * sr) : int(s1_en * sr)] += _synth_sibilant(t[int(s1_st * sr) : int(s1_en * sr)], amp=0.065)
+            # /t/ closure valley = 55ms raw zero gap -> 45ms measured at 15ms sliding window
+            s2_st = s1_en + 0.055
+            s2_en = s2_st + coda2_dur
+            w[int(s2_st * sr) : int(s2_en * sr)] += _synth_sibilant(t[int(s2_st * sr) : int(s2_en * sr)], amp=0.060)
+            if add_soft_breath:
+                # Soft -47 dB breath ripple (RMS ~0.0045, low ZCR) inside post-coda gap
+                b0, b1 = int((s2_en + 0.055) * sr), int((s2_en + 0.28) * sr)
+                w[b0:b1] += (0.006 * np.sin(2 * np.pi * 650.0 * t[b0:b1])).astype(np.float32)
+            one_st = s2_en + 0.415
+            _add_voiced(w, one_st, one_st + 0.19, f1=225.0, f2=560.0, amp=0.20)  # "one"
+            _add_voiced(w, one_st + 0.22, one_st + 0.46, f1=200.0, f2=480.0, amp=0.19)  # "metro"
+            asr = [
+                {"word": " specialists", "startSec": 0.08, "endSec": s2_en, "probability": 0.99},
+                {"word": " one", "startSec": one_st, "endSec": one_st + 0.19, "probability": 0.99},
+                {"word": " metro", "startSec": one_st + 0.22, "endSec": one_st + 0.46, "probability": 0.99},
+            ]
+            return w, asr
+
+        # A1. Positive: elongated double-/s/ coda (155ms + 45ms + 170ms = 370ms) + soft breath -> CAUGHT
+        w_sts_bad, asr_sts_bad = build_specialists_one(0.155, 0.170, add_soft_breath=True)
+        sts_issues = audio_quality.detect_acoustic_stutter(
+            w_sts_bad, sr, text="specialists one metro", asr_words=asr_sts_bad, language="en"
+        )
+        self.assertEqual(len(sts_issues), 1, f"Expected elongated '-sts' coda before 'one' caught, got {sts_issues}")
+        self.assertEqual(sts_issues[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(sts_issues[0]["words"], ["specialists", "one"])
+
+        # A2. Negative: concise natural "-sts" coda (75ms + 45ms + 75ms = 195ms) -> NOT flagged
+        w_sts_ok, asr_sts_ok = build_specialists_one(0.075, 0.075, add_soft_breath=True)
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(
+                w_sts_ok, sr, text="specialists one metro", asr_words=asr_sts_ok, language="en"
+            ),
+            [],
+        )
+
+        # --- Part B: detect_phrase_internal_pauses on small cardinal quantifier + noun ("one | metro") ---
+        w_pause = np.zeros_like(t)
+        _add_voiced(w_pause, 0.08, 0.42, amp=0.20)  # word 0
+        _add_voiced(w_pause, 0.45, 0.65, amp=0.20)  # "one"
+        # 330ms silence gap [0.65..0.98]
+        _add_voiced(w_pause, 0.98, 1.32, amp=0.20)  # word 2
+        _add_voiced(w_pause, 1.35, 1.62, amp=0.20)  # word 3
+
+        asr_one_metro = [
+            {"word": " specialists", "startSec": 0.08, "endSec": 0.42, "probability": 0.99},
+            {"word": " one", "startSec": 0.45, "endSec": 0.65, "probability": 0.99},
+            {"word": " metro", "startSec": 0.98, "endSec": 1.32, "probability": 0.99},
+            {"word": " area", "startSec": 1.35, "endSec": 1.62, "probability": 0.99},
+        ]
+        p_issues = audio_quality.detect_phrase_internal_pauses(
+            "specialists one metro area", asr_one_metro, w_pause, sr, speed=1.0
+        )
+        self.assertEqual(len(p_issues), 1, f"Expected 'one | metro' pause caught, got {p_issues}")
+        self.assertEqual(p_issues[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(p_issues[0]["words"], ["one", "metro"])
+
+        # Negative B1: label head ("part one | introduction") -> NOT flagged
+        asr_part_one = [
+            {"word": " part", "startSec": 0.08, "endSec": 0.42, "probability": 0.99},
+            {"word": " one", "startSec": 0.45, "endSec": 0.65, "probability": 0.99},
+            {"word": " introduction", "startSec": 0.98, "endSec": 1.32, "probability": 0.99},
+            {"word": " overview", "startSec": 1.35, "endSec": 1.62, "probability": 0.99},
+        ]
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses("part one introduction overview", asr_part_one, w_pause, sr, speed=1.0),
+            [],
+        )
+
+        # Negative B2: pronoun head ("the one | company") -> NOT flagged
+        asr_the_one = [
+            {"word": " the", "startSec": 0.08, "endSec": 0.42, "probability": 0.99},
+            {"word": " one", "startSec": 0.45, "endSec": 0.65, "probability": 0.99},
+            {"word": " company", "startSec": 0.98, "endSec": 1.32, "probability": 0.99},
+            {"word": " grew", "startSec": 1.35, "endSec": 1.62, "probability": 0.99},
+        ]
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses("the one company grew", asr_the_one, w_pause, sr, speed=1.0),
+            [],
+        )
+
+        # --- Part C: verify_whisper_smoothed_stutters Step 3 right-boundary truncation pair re-verify ---
+        from types import SimpleNamespace
+
+        w_hw = np.zeros_like(t)
+        _add_voiced(w_hw, 0.06, 0.42, amp=0.20)  # "reason"
+        # "high-" [0.56..0.79], continuous /w/ glide dip [0.79..0.82] (RMS ~0.075 >= 0.025), "-way" [0.82..1.00], "dread" [1.02..1.42]
+        _add_voiced(w_hw, 0.56, 0.79, f1=220.0, f2=540.0, amp=0.20)
+        _add_voiced(w_hw, 0.79, 0.82, f1=200.0, f2=480.0, amp=0.11)
+        _add_voiced(w_hw, 0.82, 1.00, f1=235.0, f2=570.0, amp=0.22)
+        _add_voiced(w_hw, 1.02, 1.42, f1=210.0, f2=500.0, amp=0.20)
+        asr_hw = [
+            {"word": " reason:", "startSec": 0.06, "endSec": 0.42, "probability": 0.99},
+            # Left-shifted primary w_en=0.82 cuts between "high-" and "-way" with degraded prob=0.48
+            {"word": " highway", "startSec": 0.56, "endSec": 0.82, "probability": 0.48},
+            {"word": " dread.", "startSec": 0.82, "endSec": 1.42, "probability": 0.99},
+        ]
+
+        class PairVerifyModel:
+            def __init__(self, first_tokens, pair_tokens):
+                self._responses = [first_tokens, pair_tokens]
+                self.calls = 0
+
+            def transcribe(self, *_args, **_kwargs):
+                idx = min(self.calls, len(self._responses) - 1)
+                self.calls += 1
+                words = [
+                    SimpleNamespace(word=wd, start=st, end=en, probability=pr)
+                    for wd, st, en, pr in self._responses[idx]
+                ]
+                return [SimpleNamespace(words=words)], SimpleNamespace(language="en")
+
+        # C1. Clean connected "highway dread": truncated single-word slice hears "Hi.", 2-word slice hears "Highway Dread" -> CLEARED
+        clean_model = PairVerifyModel(
+            [(" Hi.", 0.18, 0.42, 0.34)],
+            [(" Highway", 0.18, 0.62, 0.69), (" Dread", 0.62, 1.04, 0.97)],
+        )
+        hw_clean_issues = audio_quality.verify_whisper_smoothed_stutters(
+            "reason: highway dread.", asr_hw, w_hw, sr, clean_model, language="en", slice_budget=[4]
+        )
+        self.assertEqual(hw_clean_issues, [], f"Expected truncated 'highway' cleared by 2-word verify, got {hw_clean_issues}")
+        self.assertEqual(clean_model.calls, 2)
+
+        # C2. Genuine stutter "hi-highway dread": 2-word slice hears 3 tokens ("Hi", "highway", "dread") -> STILL FLAGGED
+        stutter_model = PairVerifyModel(
+            [(" Hi.", 0.18, 0.42, 0.48)],
+            [(" Hi", 0.18, 0.34, 0.55), (" highway", 0.36, 0.72, 0.85), (" dread", 0.74, 1.04, 0.96)],
+        )
+        hw_bad_issues = audio_quality.verify_whisper_smoothed_stutters(
+            "reason: highway dread.", asr_hw, w_hw, sr, stutter_model, language="en", slice_budget=[4]
+        )
+        self.assertEqual(len(hw_bad_issues), 1, f"Expected genuine stutter on 'highway' preserved, got {hw_bad_issues}")
+        self.assertEqual(hw_bad_issues[0]["words"], ["highway"])
+
+    def test_v448_tight_participle_modifier_and_stop_release_bridged_pause(self):
+        sr = 24000
+        dur = 1.90
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def _add_voiced(w: np.ndarray, st: float, en: float, f1: float = 215.0, f2: float = 530.0, amp: float = 0.25) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            seg = t[i0:i1]
+            w[i0:i1] += amp * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+        def build_top_medical(post_release_sil: float) -> tuple[np.ndarray, list[dict]]:
+            w = np.zeros_like(t)
+            _add_voiced(w, 0.05, 0.14, amp=0.22)  # "or"
+            _add_voiced(w, 0.16, 0.44, amp=0.24)  # "seeing"
+            _add_voiced(w, 0.48, 0.72, amp=0.35)  # "top" vowel (RMS ~0.18)
+            # 55ms /p/ stop closure [0.72..0.775], then 60ms weak /p/ release puff [0.775..0.835] (RMS ~0.015, low ZCR)
+            p0, p1 = int(0.775 * sr), int(0.835 * sr)
+            w[p0:p1] += (0.022 * np.sin(2 * np.pi * 320.0 * t[p0:p1])).astype(np.float32)
+            med_st = 0.835 + post_release_sil
+            _add_voiced(w, med_st, med_st + 0.30, amp=0.24)  # "medical"
+            _add_voiced(w, med_st + 0.32, med_st + 0.68, amp=0.22)  # "specialists"
+            asr = [
+                {"word": " or", "startSec": 0.05, "endSec": 0.14, "probability": 0.99},
+                {"word": " seeing", "startSec": 0.16, "endSec": 0.44, "probability": 0.99},
+                {"word": " top", "startSec": 0.48, "endSec": 0.835, "probability": 1.00},
+                {"word": " medical", "startSec": med_st, "endSec": med_st + 0.30, "probability": 1.00},
+                {"word": " specialists", "startSec": med_st + 0.32, "endSec": med_st + 0.68, "probability": 1.00},
+            ]
+            return w, asr
+
+        # 1. Positive: 55ms /p/ closure + 60ms weak /p/ puff + 220ms dead silence = 335ms break -> CAUGHT
+        w_bad, asr_bad = build_top_medical(post_release_sil=0.22)
+        issues = audio_quality.detect_phrase_internal_pauses(
+            "or seeing top medical specialists", asr_bad, w_bad, sr, speed=1.0
+        )
+        self.assertEqual(len(issues), 1, f"Expected 'top | medical' stop-bridged pause caught, got {issues}")
+        self.assertEqual(issues[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(issues[0]["words"], ["top", "medical"])
+
+        # 2. Negative 1: short post-release gap (100ms) -> total ~215ms < 0.30s -> NOT flagged
+        w_ok, asr_ok = build_top_medical(post_release_sil=0.10)
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(
+                "or seeing top medical specialists", asr_ok, w_ok, sr, speed=1.0
+            ),
+            [],
+        )
+
+        # 3. Negative 2: linking participle predicative complement ("staying strong | medical teams") -> NOT flagged
+        asr_link = [
+            {"word": " while", "startSec": 0.05, "endSec": 0.14, "probability": 0.99},
+            {"word": " staying", "startSec": 0.16, "endSec": 0.44, "probability": 0.99},
+            {"word": " strong", "startSec": 0.48, "endSec": 0.835, "probability": 1.00},
+            {"word": " medical", "startSec": 1.055, "endSec": 1.355, "probability": 1.00},
+            {"word": " teams", "startSec": 1.375, "endSec": 1.735, "probability": 1.00},
+        ]
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(
+                "while staying strong medical teams", asr_link, w_bad, sr, speed=1.0
+            ),
+            [],
+        )
+
+        # 4. Negative 3: non-modifier noun after participle ("making profit | medical teams") -> NOT flagged
+        asr_noun = [
+            {"word": " while", "startSec": 0.05, "endSec": 0.14, "probability": 0.99},
+            {"word": " making", "startSec": 0.16, "endSec": 0.44, "probability": 0.99},
+            {"word": " profit", "startSec": 0.48, "endSec": 0.835, "probability": 1.00},
+            {"word": " medical", "startSec": 1.055, "endSec": 1.355, "probability": 1.00},
+            {"word": " teams", "startSec": 1.375, "endSec": 1.735, "probability": 1.00},
+        ]
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(
+                "while making profit medical teams", asr_noun, w_bad, sr, speed=1.0
+            ),
+            [],
+        )
+
+        # 5. Negative 4: punctuated boundary ("or seeing top, medical specialists") -> NOT flagged
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(
+                "or seeing top, medical specialists", asr_bad, w_bad, sr, speed=1.0
             ),
             [],
         )
