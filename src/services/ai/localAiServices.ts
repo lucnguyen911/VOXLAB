@@ -131,6 +131,7 @@ export interface AudioQualityValidationResult {
     detectedWordsCount?: number;
     sourceWordsCount?: number;
   };
+  words?: { word: string; startSec: number; endSec: number; probability?: number }[];
   summary: string;
   durationSec: number;
   sampleRate: number;

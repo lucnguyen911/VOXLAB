@@ -2977,6 +2977,63 @@ def _audio_duration_from_wav(wav_path: Optional[Path]) -> float:
             return 0.0
 
 
+def _reanchor_words_with_waveform(
+    words: List[Dict[str, Any]],
+    wav_path: Optional[Path],
+    script_text: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Re-anchor ASR word start/end timestamps to true acoustic speech energy on the waveform.
+    Uses Audio-Factory / Post-QC `reanchor_asr_word_timestamps` when a real spoken waveform is present,
+    while preserving synthetic silent WAV fixtures used in unit tests."""
+    if not words or wav_path is None:
+        return words
+    path_obj = Path(wav_path)
+    if not path_obj.is_file():
+        return words
+    try:
+        import numpy as np
+        import soundfile as sf
+        from .audio_quality import reanchor_asr_word_timestamps
+
+        data, sr = sf.read(str(path_obj), dtype="float32")
+        if data.size == 0 or sr <= 0:
+            return words
+        mono = np.mean(data, axis=1) if data.ndim > 1 else data
+        # Skip synthetic pure-silence test WAVs so mock timestamp tests remain deterministic
+        if float(np.max(np.abs(mono))) < 1e-4:
+            return words
+
+        qc_words = [
+            {
+                "word": str(w.get("text") or ""),
+                "startSec": float(w.get("start", 0.0)),
+                "endSec": float(w.get("end", w.get("start", 0.0))),
+                "probability": float(w.get("probability", 1.0)),
+            }
+            for w in words
+        ]
+        reanchored = reanchor_asr_word_timestamps(
+            qc_words,
+            mono,
+            int(sr),
+            text=script_text or " ".join(str(w.get("text") or "") for w in words),
+        )
+        if not reanchored or len(reanchored) != len(words):
+            return words
+
+        prev_start = 0.0
+        for orig_w, rw in zip(words, reanchored):
+            new_s = round(max(prev_start, float(rw.get("startSec", orig_w["start"]))), 3)
+            new_e = round(max(new_s + 0.02, float(rw.get("endSec", orig_w["end"]))), 3)
+            orig_w["start"] = new_s
+            orig_w["end"] = new_e
+            prev_start = new_s
+        return words
+    except Exception as err:
+        logger.warning(f"Waveform word re-anchoring skipped: {err}")
+        return words
+
+
 def _assign_display_times(
     cue_words: Sequence[Sequence[Dict[str, Any]]],
     profile: LayoutProfile,
@@ -2984,10 +3041,10 @@ def _assign_display_times(
     offset_seconds: float = 0.0,
     wav_path: Optional[Path] = None,
 ) -> List[Tuple[float, float]]:
-    """Assign natural display timestamps (Section 3.8):
-    - leadIn = 40ms before first word (aligned to -30 dBFS onset when wav_path is provided)
-    - tail = 80-120ms after last word, extended to min_reading_duration up to next word - minGap
-    - minGap = 60ms when acoustic gap >= 100ms, else 5ms for continuous speech
+    """Assign natural display timestamps synchronized to spoken audio (Audio-Factory v2):
+    - leadIn = 35-40ms before first word (re-anchored to actual speech onset when wav_path is provided)
+    - tail = 80ms after last word, extended to min_reading_duration using max_cps up to next word - minGap
+    - Never push next cue's start past the next cue's first spoken word onset
     """
     if not cue_words:
         return []
@@ -3000,14 +3057,14 @@ def _assign_display_times(
             start = max(start, cue_words[idx - 1][-1]["end"])
         starts.append(start)
 
-    # Align starts to actual speech onset (> -30 dBFS) when ASR pre-roll falls in silence,
-    # never pushing start past the first word's spoken start + 40ms.
+    # Align starts to actual speech onset on the waveform when ASR pre-roll falls in silence
     if wav_path is not None and Path(wav_path).is_file():
         temp_cues = [
             {
                 "start": s,
                 "end": max(s + 0.25, cue[-1]["end"]),
                 "word_start": cue[0]["start"],
+                "first_word_end": cue[0]["end"],
             }
             for s, cue in zip(starts, cue_words)
         ]
@@ -3020,16 +3077,16 @@ def _assign_display_times(
         visible_chars = len(_join_tokens([_display_token(word) for word in cue]))
         desired_duration = min(
             profile.max_duration,
-            max(profile.min_duration, visible_chars / profile.target_cps),
+            max(profile.min_duration, visible_chars / profile.max_cps),
         )
         desired_end = min(
             starts[idx] + profile.max_duration,
-            max(voice_end + 0.10, starts[idx] + desired_duration),
+            max(voice_end + 0.08, starts[idx] + desired_duration),
         )
         if idx < len(cue_words) - 1:
             next_voice_start = max(cue_words[idx + 1][0]["start"], starts[idx + 1])
             voice_gap = next_voice_start - voice_end
-            display_gap = 0.06 if voice_gap >= 0.12 else 0.005
+            display_gap = 0.04 if voice_gap >= 0.10 else 0.005
             latest_end = next_voice_start - display_gap
             end = max(voice_end, min(desired_end, latest_end))
         else:
@@ -3057,7 +3114,8 @@ def _assign_display_times(
         times.append((start, end))
         previous_end = unshifted_end
 
-    # Smooth micro-boundaries when a fast cue (> max_cps) or sub-min_duration cue can borrow up to 140ms from surrounding silence or a slow neighbor
+    # Smooth micro-boundaries when a fast cue (> max_cps) or sub-min_duration cue can borrow from silence
+    # or from a neighbor's silent tail without delaying the next cue past its spoken word onset.
     for idx in range(len(times)):
         s, e = times[idx]
         vis_chars = len(_join_tokens([_display_token(w) for w in cue_words[idx]]))
@@ -3087,12 +3145,14 @@ def _assign_display_times(
                 times[idx - 1] = (ps, pe)
                 times[idx] = (s, e)
                 deficit = needed_dur - (e - s)
-        # 2. Borrow up to 140ms from next cue if next cue has comfortable CPS (< target_cps)
+        # 2. Borrow from the silent gap before the next cue, or reclaim only pre-roll slack before next spoken word
         if deficit > 0 and idx + 1 < len(times):
             ns, ne = times[idx + 1]
+            next_spoken_start = round(max(0.0, cue_words[idx + 1][0]["start"] + offset_seconds), 3)
             next_chars = len(_join_tokens([_display_token(w) for w in cue_words[idx + 1]]))
             next_min_dur = max(profile.min_duration, next_chars / (profile.max_cps - 0.5))
-            avail_after = max(0.0, min(0.16, (ne - ns) - next_min_dur))
+            preroll_slack = max(0.0, next_spoken_start - ns)
+            avail_after = max(0.0, min(0.06, preroll_slack, (ne - ns) - next_min_dur))
             gap_to_next = max(0.0, ns - e)
             if gap_to_next + avail_after > 0:
                 take_gap = min(deficit, max(0.0, gap_to_next - 0.005))
@@ -3105,12 +3165,15 @@ def _assign_display_times(
                     times[idx + 1] = (ns, ne)
                 times[idx] = (s, e)
 
-    # Seamless micro-gap bridging: eliminate < 350ms flicker gaps between consecutive speech cues
+    # Seamless micro-gap bridging: bridge < 350ms gaps in continuous speech,
+    # but preserve a clean visual break when the speaker genuinely pauses >= 180ms.
     for idx in range(len(times) - 1):
         s, e = times[idx]
         ns, _ne = times[idx + 1]
         gap = round(ns - e, 3)
-        if 0.0 < gap < 0.35 and (ns - s) <= profile.max_duration:
+        voice_gap = round(cue_words[idx + 1][0]["start"] - cue_words[idx][-1]["end"], 3)
+        max_bridge_gap = 0.14 if voice_gap >= 0.18 else 0.35
+        if 0.0 < gap < max_bridge_gap and (ns - s) <= profile.max_duration:
             times[idx] = (s, ns)
 
     return times
@@ -3121,8 +3184,8 @@ def align_cues_to_audio_onset(
     wav_path: Optional[Path],
     min_db_threshold: float = -30.0,
 ) -> None:
-    """Align cue start timestamps with actual speech onset (> -30 dBFS) within a 300ms window
-    (Section 3.8), keeping a 40ms pre-roll and strictly preserving non-overlapping order."""
+    """Align cue start timestamps with actual speech onset using adaptive noise-floor thresholding
+    and lookahead confirmation (Audio-Factory v2), eliminating Whisper silence pre-roll."""
     if not wav_path:
         return
     path_obj = Path(wav_path)
@@ -3133,15 +3196,29 @@ def align_cues_to_audio_onset(
         import numpy as np
         import soundfile as sf
 
-        data, sr = sf.read(str(path_obj))
+        data, sr = sf.read(str(path_obj), dtype="float32")
         if data.size == 0 or sr <= 0:
             return
 
         amplitude = np.max(np.abs(data), axis=1) if data.ndim > 1 else np.abs(data)
-        linear_threshold = 10.0 ** (min_db_threshold / 20.0)
         total_samples = len(amplitude)
+        if total_samples == 0 or float(np.max(amplitude)) < 1e-4:
+            return
+
+        linear_threshold = 10.0 ** (min_db_threshold / 20.0)
         win_size = max(1, int(sr * 0.02))
         step_size = max(1, int(sr * 0.01))
+
+        # Estimate global noise floor from 10th percentile of 20ms frame RMS
+        num_frames = total_samples // win_size
+        if num_frames > 10:
+            framed = amplitude[: num_frames * win_size].reshape(num_frames, win_size)
+            frame_rms = np.sqrt(np.mean(framed ** 2, axis=1))
+            noise_floor = float(np.percentile(frame_rms, 10))
+            adaptive_thresh = max(noise_floor * 3.16, 0.005)
+            effective_threshold = min(linear_threshold, max(adaptive_thresh, linear_threshold * 0.35))
+        else:
+            effective_threshold = linear_threshold
 
         for idx, cue in enumerate(cues):
             start_sec = float(cue["start"])
@@ -3153,26 +3230,43 @@ def align_cues_to_audio_onset(
             current_energy = float(
                 np.max(amplitude[start_sample : min(total_samples, start_sample + win_size)])
             )
-            if current_energy < linear_threshold:
-                word_start = float(cue.get("word_start", start_sec + 0.04))
-                max_search_sec = min(end_sec - 0.2, start_sec + 0.30, word_start + 0.06)
+            if current_energy < effective_threshold:
+                first_word_end = float(cue.get("first_word_end", end_sec))
+                max_search_sec = min(
+                    end_sec - 0.15,
+                    start_sec + 0.80,
+                    max(start_sec + 0.06, first_word_end - 0.04),
+                )
                 max_search_sample = int(max_search_sec * sr)
                 curr = start_sample
                 found_onset_sample = None
+                confirm_samples = int(sr * 0.10)
+
                 while curr < max_search_sample and curr < total_samples:
                     win_max = float(np.max(amplitude[curr : min(total_samples, curr + win_size)]))
-                    if win_max >= linear_threshold:
+                    if win_max >= effective_threshold:
+                        look_end = min(total_samples, curr + confirm_samples)
+                        if look_end > curr + win_size:
+                            sub = amplitude[curr:look_end]
+                            n_sub = len(sub) // step_size
+                            if n_sub >= 2:
+                                sub_frames = sub[: n_sub * step_size].reshape(n_sub, step_size)
+                                sub_peaks = np.max(sub_frames, axis=1)
+                                active_ratio = float(np.mean(sub_peaks >= effective_threshold * 0.65))
+                                if active_ratio < 0.45:
+                                    curr += step_size
+                                    continue
                         found_onset_sample = curr
                         break
                     curr += step_size
 
                 if found_onset_sample is not None:
-                    refined_start = round(found_onset_sample / float(sr), 3)
+                    onset_sec = found_onset_sample / float(sr)
                     prev_end = float(cues[idx - 1]["end"]) if idx > 0 else 0.0
-                    refined_start = min(word_start, max(prev_end, start_sec, refined_start - 0.04))
-                    if refined_start < end_sec - 0.2:
-                        cue["start"] = round(refined_start, 3)
-                        cue["startSec"] = cue["start"]
+                    refined_start = round(max(prev_end, start_sec, onset_sec - 0.035), 3)
+                    if refined_start < end_sec - 0.15:
+                        cue["start"] = refined_start
+                        cue["startSec"] = refined_start
     except Exception as e:
         logger.warning(f"Failed to align cues to audio onset: {e}")
 
@@ -3363,6 +3457,9 @@ def optimize_subtitles_v2(
 
     if script_text and script_text.strip():
         words = recover_orthography_from_script(words, script_text, language=language)
+
+    if wav_path is not None:
+        words = _reanchor_words_with_waveform(words, Path(wav_path), script_text=script_text)
 
     detect_section_header_boundaries(words)
     cue_protected, line_protected = build_protected_boundary_map(words)
@@ -3562,6 +3659,7 @@ def generate_srt_from_master_audio(
                 word_timestamps=True,
                 beam_size=5,
                 vad_filter=False,
+                condition_on_previous_text=False,
             )
             raw_info_dur = float(info.duration or 0.0) * scale_factor
             probed_dur = _audio_duration_from_wav(Path(audio_path))

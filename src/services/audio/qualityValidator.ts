@@ -572,6 +572,7 @@ export async function validateChunkAudioQuality(
           status: res.status,
           issues: res.issues || [],
           metrics: res.metrics,
+          words: res.words,
           summary: res.summary || (res.status === "pass" ? "Đạt" : "Đã kiểm tra"),
           checkedAt: now,
           audioPath: chunk.audioFilePath,

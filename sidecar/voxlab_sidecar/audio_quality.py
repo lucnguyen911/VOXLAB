@@ -5098,6 +5098,136 @@ def _is_zero_that_embedded_subject_predicate_split(
     return _find_zero_that_embedded_subject_span(source_words, src_clean, delimiters, idx) is not None
 
 
+_APPROXIMATOR_OBJECT_MODIFIERS = frozenset({
+    "roughly", "nearly", "approximately", "almost", "about", "around",
+})
+
+
+def _looks_like_clause_finite_verb(tok: str) -> bool:
+    if not tok:
+        return False
+    if tok in COMMON_FINITE_VERBS_AND_AUX:
+        return True
+    return len(tok) >= 4 and tok.endswith("s") and not tok.endswith(("ss", "ous", "is", "us"))
+
+
+def _is_post_comma_short_subject_predicate_split(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    idx: int,
+) -> bool:
+    """True when a short 2-3 word definite/possessive subject immediately following a short
+    introductory comma adjunct (e.g. 'Every single year, the gas pump | quietly drains...')
+    is split from its finite predicate by an unpunctuated pause.
+    """
+    if idx < 2 or idx + 1 >= len(src_clean):
+        return False
+    right = src_clean[idx + 1]
+    predicate_starts = _looks_like_clause_finite_verb(right) or (
+        (right in _PREVERBAL_ADVERBS or (len(right) >= 5 and right.endswith("ly")))
+        and idx + 2 < len(src_clean)
+        and not has_punctuation_boundary(delimiters[idx + 2], source_words[idx + 2])
+        and _looks_like_clause_finite_verb(src_clean[idx + 2])
+    )
+    if not predicate_starts:
+        return False
+
+    comma_k = -1
+    for k in range(idx, max(0, idx - 3), -1):
+        if has_punctuation_boundary(delimiters[k], source_words[k]):
+            comma_k = k
+            break
+    if comma_k < 1 or comma_k > 5:
+        return False
+    prev_delim = delimiters[comma_k] + source_words[comma_k - 1]
+    if "," not in prev_delim and "，" not in prev_delim:
+        return False
+    # Introductory pre-comma adjunct must be a non-clausal phrase (no finite verb)
+    if any(w in (LEXICAL_FINITE_VERBS | MODAL_AND_AUX_VERBS) for w in src_clean[:comma_k]):
+        return False
+    subj_span = src_clean[comma_k : idx + 1]
+    if not (2 <= len(subj_span) <= 3):
+        return False
+    if subj_span[0] not in (DET_AND_POSSESSIVE_SET - {"that"}):
+        return False
+    if any(_looks_like_clause_finite_verb(w) for w in subj_span[:-1]):
+        return False
+    if sum(_estimate_expected_syllables(t) for t in subj_span) > 5:
+        return False
+    return True
+
+
+def _is_verb_approximator_object_split(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    idx: int,
+) -> bool:
+    """True when a lexical transitive finite verb is split from an immediate quantitative direct object
+    introduced by an approximator (e.g. 'quietly drains | roughly $2,400').
+    """
+    if idx < 1 or idx + 2 >= len(src_clean):
+        return False
+    left = src_clean[idx]
+    right = src_clean[idx + 1]
+    after_right = src_clean[idx + 2]
+    if right not in _APPROXIMATOR_OBJECT_MODIFIERS:
+        return False
+    if has_punctuation_boundary(delimiters[idx + 1], source_words[idx + 1]) or has_punctuation_boundary(
+        delimiters[idx + 2], source_words[idx + 2]
+    ):
+        return False
+    if not (_is_numeric_scope_word(after_right) or is_version_or_number_token(source_words[idx + 2])):
+        return False
+    if left in MODAL_AND_AUX_VERBS or left in ("is", "are", "was", "were", "be", "been", "being"):
+        return False
+    if not _looks_like_clause_finite_verb(left):
+        return False
+    if idx > 0 and not has_punctuation_boundary(delimiters[idx], source_words[idx]):
+        if src_clean[idx - 1] in DET_AND_POSSESSIVE_SET:
+            return False
+    return True
+
+
+def _is_unpunctuated_quant_object_prep_split(
+    source_words: list[str],
+    src_clean: list[str],
+    delimiters: list[str],
+    left_span_start: int,
+    idx: int,
+) -> bool:
+    """True when a verb's quantitative/currency direct object is split from its subcategorized
+    prepositional complement by a sentence-break-length pause (e.g. 'drains roughly $2,400 | out of...').
+    """
+    if left_span_start < 1 or idx < left_span_start or idx + 1 >= len(src_clean):
+        return False
+    left = src_clean[idx]
+    right = src_clean[idx + 1]
+    if not (_is_numeric_scope_word(left) or is_version_or_number_token(source_words[idx])):
+        return False
+    if has_punctuation_boundary(delimiters[idx + 1], source_words[idx + 1]):
+        return False
+    is_subcat_prep = (
+        (right in ("out", "off") and idx + 2 < len(src_clean) and src_clean[idx + 2] in ("of", "from", "to"))
+        or right in ("into", "onto", "from", "to", "toward", "towards", "across", "through")
+    )
+    if not is_subcat_prep:
+        return False
+    for k in range(left_span_start, idx + 1):
+        if has_punctuation_boundary(delimiters[k], source_words[k]):
+            return False
+    v_idx = left_span_start - 1
+    if src_clean[v_idx] in _APPROXIMATOR_OBJECT_MODIFIERS:
+        if has_punctuation_boundary(delimiters[v_idx], source_words[v_idx]) or v_idx < 1:
+            return False
+        v_idx -= 1
+    v_tok = src_clean[v_idx]
+    if v_tok in MODAL_AND_AUX_VERBS or v_tok in ("is", "are", "was", "were", "be", "been", "being"):
+        return False
+    return _looks_like_clause_finite_verb(v_tok) or (len(v_tok) >= 5 and v_tok.endswith(("ing", "ed")))
+
+
 def detect_phrase_internal_pauses(
     text: str,
     asr_words: list[dict[str, Any]],
@@ -5162,74 +5292,128 @@ def detect_phrase_internal_pauses(
 
     for i, j, left_is_num, right_is_num, left_span_start in candidate_boundaries:
         left, right = src_clean[i], src_clean[i + 1]
-        if not left or not right or right in PHRASE_OPENER_WORDS:
-            continue
-        if _is_focus_adjunct_opener(source_words, src_clean, delimiters, i + 1):
-            continue
-        if left not in PHRASE_HEAD_WORDS and _is_pp_intensifier_opener(source_words, src_clean, delimiters, i + 1):
+        if not left or not right:
             continue
         if has_punctuation_boundary(delimiters[i + 1], source_words[i + 1]):
             continue
-        is_pct_head_pair = (not right_is_num) and _is_attributive_percent_head_noun_pair(
+        is_quant_obj_prep_pair = (
+            (left_is_num or _is_numeric_scope_word(left))
+            and (not right_is_num)
+            and _is_unpunctuated_quant_object_prep_split(source_words, src_clean, delimiters, left_span_start, i)
+        )
+        if not is_quant_obj_prep_pair and right in PHRASE_OPENER_WORDS:
+            continue
+        if _is_focus_adjunct_opener(source_words, src_clean, delimiters, i + 1):
+            continue
+        if left not in PHRASE_HEAD_WORDS and not is_quant_obj_prep_pair and _is_pp_intensifier_opener(
+            source_words, src_clean, delimiters, i + 1
+        ):
+            continue
+        is_pct_head_pair = (not is_quant_obj_prep_pair) and (not right_is_num) and _is_attributive_percent_head_noun_pair(
             source_words, src_clean, delimiters, left_span_start, i
         )
         is_pre_num_mod_pair = (
-            (not is_pct_head_pair)
+            (not is_quant_obj_prep_pair)
+            and (not is_pct_head_pair)
             and (not left_is_num)
             and (right_is_num or _is_numeric_scope_word(right))
             and _is_tight_pre_numeral_modifier(source_words, src_clean, delimiters, i)
         )
         is_small_quant_noun_pair = (
-            (not is_pct_head_pair)
+            (not is_quant_obj_prep_pair)
+            and (not is_pct_head_pair)
             and (not is_pre_num_mod_pair)
             and (not right_is_num)
             and _is_small_quantifier_noun_pair(source_words, src_clean, delimiters, left_span_start, i)
         )
-        if not is_pct_head_pair and not is_pre_num_mod_pair and not is_small_quant_noun_pair and (
-            left_is_num or right_is_num or _is_numeric_scope_word(left) or _is_numeric_scope_word(right)
+        if (
+            not is_quant_obj_prep_pair
+            and not is_pct_head_pair
+            and not is_pre_num_mod_pair
+            and not is_small_quant_noun_pair
+            and (left_is_num or right_is_num or _is_numeric_scope_word(left) or _is_numeric_scope_word(right))
         ):
             continue
         is_head_pair = (
-            not is_pct_head_pair and not is_pre_num_mod_pair and not is_small_quant_noun_pair
+            not is_quant_obj_prep_pair
+            and not is_pct_head_pair
+            and not is_pre_num_mod_pair
+            and not is_small_quant_noun_pair
         ) and (left in PHRASE_HEAD_WORDS)
         is_mod_noun_pair = (
-            not is_pct_head_pair and not is_pre_num_mod_pair and not is_small_quant_noun_pair and not is_head_pair
+            not is_quant_obj_prep_pair
+            and not is_pct_head_pair
+            and not is_pre_num_mod_pair
+            and not is_small_quant_noun_pair
+            and not is_head_pair
         ) and (
             _is_tight_np_pp_modifier_pair(source_words, src_clean, delimiters, i)
             or _is_tight_participle_modifier_pair(source_words, src_clean, delimiters, i)
         )
         is_part_comp_pair = (
-            not is_pct_head_pair
+            not is_quant_obj_prep_pair
+            and not is_pct_head_pair
             and not is_pre_num_mod_pair
             and not is_small_quant_noun_pair
             and not is_head_pair
             and not is_mod_noun_pair
         ) and _is_participle_complement_pair(source_words, src_clean, delimiters, i)
+        is_verb_approx_obj_pair = (
+            not is_quant_obj_prep_pair
+            and not is_pct_head_pair
+            and not is_pre_num_mod_pair
+            and not is_small_quant_noun_pair
+            and not is_head_pair
+            and not is_mod_noun_pair
+            and not is_part_comp_pair
+        ) and _is_verb_approximator_object_split(source_words, src_clean, delimiters, i)
+        is_post_comma_subj_split = (
+            not is_quant_obj_prep_pair
+            and not is_pct_head_pair
+            and not is_pre_num_mod_pair
+            and not is_small_quant_noun_pair
+            and not is_head_pair
+            and not is_mod_noun_pair
+            and not is_part_comp_pair
+            and not is_verb_approx_obj_pair
+        ) and _is_post_comma_short_subject_predicate_split(source_words, src_clean, delimiters, i)
         embedded_subj_span = (
             _find_zero_that_embedded_subject_span(source_words, src_clean, delimiters, i)
             if (
-                not is_pct_head_pair
+                not is_quant_obj_prep_pair
+                and not is_pct_head_pair
                 and not is_pre_num_mod_pair
                 and not is_small_quant_noun_pair
                 and not is_head_pair
                 and not is_mod_noun_pair
                 and not is_part_comp_pair
+                and not is_verb_approx_obj_pair
+                and not is_post_comma_subj_split
             )
             else None
         )
         is_embedded_subj_split = embedded_subj_span is not None
         if not (
-            is_pct_head_pair
+            is_quant_obj_prep_pair
+            or is_pct_head_pair
             or is_pre_num_mod_pair
             or is_small_quant_noun_pair
             or is_head_pair
             or is_mod_noun_pair
             or is_part_comp_pair
+            or is_verb_approx_obj_pair
+            or is_post_comma_subj_split
             or is_embedded_subj_split
         ):
             continue
         if not (
-            is_head_pair or is_pct_head_pair or is_pre_num_mod_pair or is_small_quant_noun_pair
+            is_head_pair
+            or is_pct_head_pair
+            or is_pre_num_mod_pair
+            or is_small_quant_noun_pair
+            or is_quant_obj_prep_pair
+            or is_verb_approx_obj_pair
+            or is_post_comma_subj_split
         ) and is_prosodic_phrase_boundary(
             source_words, src_clean, i, i + 1, source_words[i], source_words[i + 1], delimiters=delimiters
         ):
@@ -5263,6 +5447,10 @@ def detect_phrase_internal_pauses(
             or sum(_estimate_expected_syllables(t) for t in embedded_subj_span) >= 9
         ):
             pair_threshold = max(threshold, 0.45 / eff_speed)
+        elif is_quant_obj_prep_pair:
+            pair_threshold = max(threshold, 0.50 / eff_speed)
+        elif is_post_comma_subj_split or is_verb_approx_obj_pair:
+            pair_threshold = max(threshold, 0.34 / eff_speed)
         if (
             silence < pair_threshold
             and silence >= 0.18
@@ -5275,7 +5463,9 @@ def detect_phrase_internal_pauses(
             continue
         raw_left = source_words[i].strip(" ,.;:!?\"'()")
         raw_right = source_words[i + 1].strip(" ,.;:!?\"'()")
-        if is_pct_head_pair:
+        if is_quant_obj_prep_pair:
+            head_tag = f"quant_obj_prep:{left}+{right}"
+        elif is_pct_head_pair:
             head_tag = f"percent+{right}"
         elif is_pre_num_mod_pair:
             head_tag = f"pre_num+{left}"
@@ -5287,6 +5477,10 @@ def detect_phrase_internal_pauses(
             head_tag = f"{src_clean[i - 1]}+{left}"
         elif is_part_comp_pair:
             head_tag = f"participle:{left}"
+        elif is_verb_approx_obj_pair:
+            head_tag = f"verb_approx:{left}+{right}"
+        elif is_post_comma_subj_split:
+            head_tag = f"post_comma_subj:{left}"
         else:
             head_tag = f"embedded_subj:{left}"
         issues.append({
@@ -13270,11 +13464,23 @@ def validate_audio_quality(
         warning_issues = [i for i in alignment_issues if i.get("severity") == "warning"]
         unverified_issues = [i for i in alignment_issues if i.get("severity") == "unverified"]
 
+        exported_words = [
+            {
+                "word": str(w.get("word") or ""),
+                "startSec": round(float(w.get("startSec", 0.0)), 3),
+                "endSec": round(float(w.get("endSec", 0.0)), 3),
+                "probability": round(float(w.get("probability", 1.0)), 4),
+            }
+            for w in (detected_words or [])
+            if str(w.get("word") or "").strip()
+        ]
+
         if error_issues:
             return {
                 "status": "error",
                 "issues": alignment_issues,
                 "metrics": metrics,
+                "words": exported_words,
                 "summary": error_issues[0]["message"],
                 "durationSec": dur,
                 "sampleRate": info.get("sampleRate", 0),
@@ -13287,6 +13493,7 @@ def validate_audio_quality(
                 "status": "warning",
                 "issues": alignment_issues,
                 "metrics": metrics,
+                "words": exported_words,
                 "summary": warning_issues[0]["message"],
                 "durationSec": dur,
                 "sampleRate": info.get("sampleRate", 0),
@@ -13299,6 +13506,7 @@ def validate_audio_quality(
                 "status": "unverified",
                 "issues": alignment_issues,
                 "metrics": metrics,
+                "words": exported_words,
                 "summary": unverified_issues[0]["message"],
                 "durationSec": dur,
                 "sampleRate": info.get("sampleRate", 0),
@@ -13311,6 +13519,7 @@ def validate_audio_quality(
             "status": "pass",
             "issues": [],
             "metrics": metrics,
+            "words": exported_words,
             "summary": "Đạt",
             "durationSec": dur,
             "sampleRate": info.get("sampleRate", 0),

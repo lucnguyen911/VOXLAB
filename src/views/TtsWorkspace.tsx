@@ -1363,11 +1363,15 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         }));
 
         const fastWav = !isMp3 ? await concatPcmWavsFast(concatInputs, chosenPath) : null;
+        let assembleRes: {
+          durationSec?: number;
+          segments?: { index: number; startSec: number; endSec: number; durationSec: number }[];
+        } | null = null;
         if (!fastWav) {
           if (!ai) {
             throw new Error("Dịch vụ xử lý âm thanh cục bộ chưa sẵn sàng.");
           }
-          await ai.assemble({
+          assembleRes = await ai.assemble({
             inputs: concatInputs,
             outputPath: chosenPath,
             format: isMp3 ? "mp3" : "wav",
@@ -1381,10 +1385,11 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           const { invoke } = await import("@tauri-apps/api/core");
 
           try {
-            const timedChunks = fastWav?.segments
+            const activeSegments = fastWav?.segments || assembleRes?.segments;
+            const timedChunks = activeSegments
               ? sortedChunks.map((c, idx) => ({
                   ...c,
-                  durationSec: fastWav.segments[idx]?.durationSec ?? c.durationSec,
+                  durationSec: activeSegments[idx]?.durationSec ?? c.durationSec,
                 }))
               : sortedChunks;
             const srtContent = generateSrtFromChunks(timedChunks, {

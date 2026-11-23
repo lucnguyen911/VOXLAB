@@ -59,10 +59,18 @@ export interface AudioQualityMetrics {
   timingMs?: Record<string, number>;
 }
 
+export interface AudioQualityWordTimestamp {
+  word: string;
+  startSec: number;
+  endSec: number;
+  probability?: number;
+}
+
 export interface AudioQualityReview {
   status: AudioQualityStatus;
   issues: AudioQualityIssue[];
   metrics?: AudioQualityMetrics;
+  words?: AudioQualityWordTimestamp[];
   summary: string;
   checkedAt: number;
   audioPath?: string;

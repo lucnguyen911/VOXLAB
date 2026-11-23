@@ -7186,6 +7186,68 @@ class AudioQualityTest(unittest.TestCase):
             [],
         )
 
+    def test_v449_post_comma_short_subject_verb_approx_and_quant_obj_prep_pauses(self):
+        sr = 24000
+        dur = 9.0
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def _add_voiced(w: np.ndarray, st: float, en: float, f1: float = 215.0, f2: float = 530.0, amp: float = 0.24) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            seg = t[i0:i1]
+            w[i0:i1] += amp * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+        def build_gaspump_case(
+            pause_after_pump: float = 0.36,
+            pause_after_drains: float = 0.39,
+            pause_after_num: float = 0.70,
+        ) -> tuple[np.ndarray, list[dict]]:
+            w = np.zeros_like(t)
+            spec = [
+                (" Every", 0.25, 0.02),
+                (" single", 0.25, 0.02),
+                (" year,", 0.30, 0.31),
+                (" the", 0.10, 0.02),
+                (" gas", 0.24, 0.02),
+                (" pump", 0.24, pause_after_pump),
+                (" quietly", 0.34, 0.02),
+                (" drains", 0.32, pause_after_drains),
+                (" roughly", 0.34, 0.02),
+                (" $2,400", 0.65, pause_after_num),
+                (" out", 0.18, 0.02),
+                (" of", 0.14, 0.02),
+                (" the", 0.10, 0.02),
+                (" budget.", 0.35, 0.05),
+            ]
+            asr = []
+            cur = 0.10
+            for tok, d_tok, gap_after in spec:
+                _add_voiced(w, cur, cur + d_tok)
+                asr.append({"word": tok, "startSec": round(cur, 3), "endSec": round(cur + d_tok, 3), "probability": 0.99})
+                cur += d_tok + gap_after
+            return w, asr
+
+        text = "Every single year, the gas pump quietly drains roughly $2,400 out of the budget."
+
+        # 1. Positive: all 3 unpunctuated clause/predicate breaks caught
+        w_bad, asr_bad = build_gaspump_case(0.36, 0.39, 0.70)
+        issues = audio_quality.detect_phrase_internal_pauses(text, asr_bad, w_bad, sr, speed=1.0)
+        self.assertEqual(len(issues), 3, f"Expected 3 phrase-internal pause issues, got {issues}")
+        self.assertEqual([iss["words"] for iss in issues], [["pump", "quietly"], ["drains", "roughly"], ["2.400", "out"]])
+
+        # 2. Negative 1: fluent reading (short natural transitions; 0.38s pause before 'out of' is < 0.50s threshold)
+        w_fluent, asr_fluent = build_gaspump_case(0.05, 0.05, 0.38)
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(text, asr_fluent, w_fluent, sr, speed=1.0),
+            [],
+        )
+
+        # 3. Negative 2: punctuated boundaries exempt
+        text_punct = "Every single year, the gas pump, quietly drains, roughly $2,400, out of the budget."
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(text_punct, asr_bad, w_bad, sr, speed=1.0),
+            [],
+        )
+
     def test_v445_timestamp_formatting_trim_and_message_sync(self):
         self.assertEqual(audio_quality.format_timestamp(0.0), "00:00.0")
         self.assertEqual(audio_quality.format_timestamp(-0.3), "00:00.0")

@@ -2,6 +2,18 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.3] — 2026-11-24
+
+### Added & Improved
+- **Đồng bộ Timestamp Phụ đề chuẩn từng mili-giây (`Subtitle Sync v2.0`)**:
+  - **Re-anchor biên từ theo năng lượng sóng âm (`_reanchor_words_with_waveform`)**: Tích hợp bộ căn chỉnh biên từ âm học từ `Audio-Factory` vào quy trình tạo phụ đề Master (`optimize_subtitles_v2`), khử hoàn toàn hiện tượng Whisper đặt mốc bắt đầu sớm `150–500ms` vào vùng im lặng hoặc hơi thở.
+  - **Bắt điểm khởi âm bằng ngưỡng nhiễu nền thích ứng (`align_cues_to_audio_onset`)**: Tính ngưỡng nhiễu nền tự động (`10th percentile` RMS) kết hợp kiểm tra duy trì năng lượng giọng nói (`lookahead confirmation`) trong cửa sổ `800ms`, gỡ bỏ khóa cứng `min(word_start)` và tuyệt đối không vay lấn thời gian sang từ đang đọc của câu kế tiếp.
+  - **Đồng bộ trực tiếp Word Timestamps từ Hậu kiểm sang TTS / Hàng loạt**: Lưu lại danh sách mốc thời gian từng từ đã re-anchor trong Hậu kiểm (`qualityReview.words`) và kết quả `segments` từ `ai.assemble` để gán timestamp chính xác cho từng mệnh đề phụ đề mà không cần chờ chạy lại ASR lần 2.
+
+### Fixed
+- **Nâng cấp Hậu kiểm Ngắt nghỉ Cú pháp (`Hậu kiểm v4.4.9`)**:
+  - Bắt lỗi ngắt nghỉ bất thường giữa cụm chủ ngữ ngắn sau dấu phẩy và vị ngữ (`Every single year, the gas pump | quietly drains`), giữa ngoại động từ và trạng từ ước lượng trước tân ngữ số (`drains | roughly $2,400`), và giữa tân ngữ số lượng/tiền tệ với cụm giới từ bổ nghĩa liền sau (`$2,400 | out of`).
+
 ## [1.0.2] — 2026-11-23
 
 ### Fixed

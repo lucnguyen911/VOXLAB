@@ -644,6 +644,48 @@ class SubtitleOptimizerTest(unittest.TestCase):
         self.assertTrue(any("difficult component" in line for line in all_lines_beta), f"'difficult component' split: {all_lines_beta}")
         self.assertTrue(any("in-home care" in line for line in all_lines_beta), f"'in-home care' split: {all_lines_beta}")
 
+    def test_audio_onset_alignment_eliminates_silence_preroll_and_never_delays_next_spoken_word(self):
+        import tempfile
+        import numpy as np
+        import soundfile as sf
+
+        # Whisper places word 1 early at 0.05s inside leading silence, while actual speech starts at 0.42s
+        seg = {
+            "id": 1,
+            "startSec": 0.05,
+            "endSec": 3.40,
+            "text": "Every single year, the gas pump quietly drains household budgets.",
+            "words": [
+                {"word": "Every", "startSec": 0.05, "endSec": 0.65, "probability": 0.99},
+                {"word": "single", "startSec": 0.65, "endSec": 1.00, "probability": 0.99},
+                {"word": "year,", "startSec": 1.00, "endSec": 1.40, "probability": 0.99},
+                {"word": "the", "startSec": 1.72, "endSec": 1.86, "probability": 0.99},
+                {"word": "gas", "startSec": 1.86, "endSec": 2.12, "probability": 0.99},
+                {"word": "pump", "startSec": 2.12, "endSec": 2.40, "probability": 0.99},
+                {"word": "quietly", "startSec": 2.40, "endSec": 2.75, "probability": 0.99},
+                {"word": "drains", "startSec": 2.75, "endSec": 3.05, "probability": 0.99},
+                {"word": "household", "startSec": 3.05, "endSec": 3.25, "probability": 0.99},
+                {"word": "budgets.", "startSec": 3.25, "endSec": 3.40, "probability": 0.99},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav_path = os.path.join(tmpdir, "onset.wav")
+            sr = 16000
+            samples = np.zeros(int(sr * 3.6), dtype=np.float32)
+            t_burst1 = np.arange(int(0.42 * sr), int(1.40 * sr)) / float(sr)
+            samples[int(0.42 * sr) : int(1.40 * sr)] = 0.25 * np.sin(2.0 * np.pi * 220.0 * t_burst1)
+            t_burst2 = np.arange(int(1.72 * sr), int(3.40 * sr)) / float(sr)
+            samples[int(1.72 * sr) : int(3.40 * sr)] = 0.25 * np.sin(2.0 * np.pi * 220.0 * t_burst2)
+            sf.write(wav_path, samples, sr, subtype="PCM_16")
+
+            cues = optimize_subtitles_v2([seg], video_format="16:9", max_lines=2, wav_path=wav_path)
+            self.assertGreaterEqual(len(cues), 2)
+            # First cue must advance out of the 0.05..0.42s silence window near actual speech onset (~0.38s)
+            self.assertGreaterEqual(cues[0]["startSec"], 0.34)
+            self.assertLessEqual(cues[0]["startSec"], 0.44)
+            # Second cue ("the gas pump...") must never start AFTER its first spoken word (1.72s)
+            self.assertLessEqual(cues[1]["startSec"], 1.725)
+
 
 if __name__ == "__main__":
     unittest.main()

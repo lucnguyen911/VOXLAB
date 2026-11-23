@@ -440,6 +440,52 @@ describe("Subtitle SRT System Specification Tests (Sections 1 - 20)", () => {
     const wrappedCue118 = wrapCueTextBalanced("your Powerwall 3 can automatically discharge", profile16_9_2);
     assert.equal(wrappedCue118, "your Powerwall 3\ncan automatically discharge");
   });
+
+  // 26. POST-QC REANCHORED WORD TIMESTAMPS ALIGN LONG CHUNK CLAUSES TO EXACT SPOKEN AUDIO
+  it("Test 26: buildSpeechUnitsFromChunks aligns decomposed clauses to Post-QC reanchored word timestamps", () => {
+    const chunk: ChunkItem = {
+      id: "chunk_reanchored",
+      index: 1,
+      text: "Every single year, the gas pump quietly drains roughly two thousand dollars out of the household budget.",
+      originalText:
+        "Every single year, the gas pump quietly drains roughly two thousand dollars out of the household budget.",
+      status: "ready",
+      durationSec: 8.5,
+      pauseAfterMs: 400,
+      qualityReview: {
+        status: "pass",
+        issues: [],
+        summary: "Đạt",
+        checkedAt: 1,
+        words: [
+          { word: "Every", startSec: 0.32, endSec: 0.58 },
+          { word: "single", startSec: 0.58, endSec: 0.88 },
+          { word: "year,", startSec: 0.88, endSec: 1.25 },
+          { word: "the", startSec: 1.62, endSec: 1.75 },
+          { word: "gas", startSec: 1.75, endSec: 2.02 },
+          { word: "pump", startSec: 2.02, endSec: 2.35 },
+          { word: "quietly", startSec: 2.71, endSec: 3.15 },
+          { word: "drains", startSec: 3.15, endSec: 3.66 },
+          { word: "roughly", startSec: 4.05, endSec: 4.48 },
+          { word: "two", startSec: 4.48, endSec: 4.72 },
+          { word: "thousand", startSec: 4.72, endSec: 5.15 },
+          { word: "dollars", startSec: 5.15, endSec: 5.62 },
+          { word: "out", startSec: 6.32, endSec: 6.55 },
+          { word: "of", startSec: 6.55, endSec: 6.72 },
+          { word: "the", startSec: 6.72, endSec: 6.88 },
+          { word: "household", startSec: 6.88, endSec: 7.45 },
+          { word: "budget.", startSec: 7.45, endSec: 7.98 },
+        ],
+      },
+    };
+
+    const cues = generateSubtitlesFromChunks([chunk], { aspectRatio: "16:9", maxLines: 2 });
+    assert.ok(cues.length >= 2);
+    // First cue starts at the reanchored spoken onset (~0.285s) rather than 0.000s leading silence
+    assert.ok(cues[0].startSec >= 0.25 && cues[0].startSec <= 0.35);
+    // Last cue ends near the last spoken word end (~8.04s) rather than stretching into trailing silence (8.50s)
+    assert.ok(cues[cues.length - 1].endSec >= 7.95 && cues[cues.length - 1].endSec <= 8.12);
+  });
 });
 
 

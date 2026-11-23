@@ -29,12 +29,95 @@ export interface SubtitlePipelineOptions {
   wrapLines?: boolean;
 }
 
+function roundMs(sec: number): number {
+  return Math.round(sec * 1000) / 1000;
+}
+
 /**
- * Builds precise SpeechUnits from generated TTS ChunkItems using real audio durations
- * and calculated punctuation pauses (with trailing silence deduction).
+ * Maps decomposed clause strings onto waveform-reanchored ASR word timestamps
+ * collected during Post-QC (`chunk.qualityReview.words`), returning null if word timestamps
+ * are absent or insufficient so the caller can fall back to silence-aware proportional timing.
+ */
+function alignClausesWithReanchoredWords(
+  chunkId: string,
+  validClauses: string[],
+  chunkStartSec: number,
+  chunkEndSec: number,
+  pauseAfterSec: number,
+  words?: { word: string; startSec: number; endSec: number }[]
+): SpeechUnit[] | null {
+  if (!words || words.length === 0 || validClauses.length === 0) return null;
+
+  const chunkDuration = Math.max(0.1, chunkEndSec - chunkStartSec);
+  const validWords = words.filter(
+    (w) =>
+      typeof w.startSec === "number" &&
+      typeof w.endSec === "number" &&
+      Number.isFinite(w.startSec) &&
+      Number.isFinite(w.endSec) &&
+      w.startSec >= -0.05 &&
+      w.endSec <= chunkDuration + 0.25
+  );
+  if (validWords.length === 0) return null;
+
+  const clauseWordCounts = validClauses.map((c) => Math.max(1, getWordCount(c)));
+  const totalScriptWords = clauseWordCounts.reduce((acc, n) => acc + n, 0);
+  if (totalScriptWords <= 0) return null;
+
+  const units: SpeechUnit[] = [];
+  let consumedScriptWords = 0;
+  let prevUnitEnd = chunkStartSec;
+
+  for (let k = 0; k < validClauses.length; k++) {
+    const isLast = k === validClauses.length - 1;
+    const startWordIdx = Math.min(
+      validWords.length - 1,
+      Math.floor((consumedScriptWords / totalScriptWords) * validWords.length)
+    );
+    consumedScriptWords += clauseWordCounts[k];
+    const endWordIdx = isLast
+      ? validWords.length - 1
+      : Math.max(
+          startWordIdx,
+          Math.min(
+            validWords.length - 1,
+            Math.round((consumedScriptWords / totalScriptWords) * validWords.length) - 1
+          )
+        );
+
+    const firstW = validWords[startWordIdx];
+    const lastW = validWords[endWordIdx];
+    const rawStart = chunkStartSec + Math.max(0, firstW.startSec - 0.035);
+    const rawEnd = chunkStartSec + Math.min(chunkDuration, Math.max(firstW.startSec + 0.06, lastW.endSec + 0.06));
+    const subStart = roundMs(Math.max(prevUnitEnd, Math.min(chunkEndSec - 0.05, rawStart)));
+    const subEnd = roundMs(Math.max(subStart + 0.05, Math.min(chunkEndSec, rawEnd)));
+
+    let gapToNextSec = 0;
+    if (!isLast && endWordIdx + 1 < validWords.length) {
+      const nextWordStart = chunkStartSec + validWords[endWordIdx + 1].startSec;
+      gapToNextSec = roundMs(Math.max(0, nextWordStart - subEnd));
+    }
+
+    units.push({
+      id: validClauses.length === 1 ? chunkId : `${chunkId}_sub_${k + 1}`,
+      text: validClauses[k],
+      startSec: subStart,
+      endSec: subEnd,
+      durationSec: roundMs(Math.max(0.05, subEnd - subStart)),
+      pauseAfterSec: isLast ? pauseAfterSec : gapToNextSec,
+    });
+    prevUnitEnd = subEnd;
+  }
+
+  return units;
+}
+
+/**
+ * Builds precise SpeechUnits from generated TTS ChunkItems using real audio durations,
+ * Post-QC waveform-reanchored word timestamps (`qualityReview.words`), leading/trailing
+ * silence offsets, and calculated punctuation pauses.
  * Long TTS chunks (> 8 words or > 36 chars) are decomposed into natural sentence/clause
- * sub-units with proportional timing so `generateSubtitlesFromChunks` never copies
- * a 20-35 word TTS chunk as a single monolithic cue.
+ * sub-units so `generateSubtitlesFromChunks` never copies a 20-35 word TTS chunk as a single monolithic cue.
  */
 export function buildSpeechUnitsFromChunks(
   chunks: ChunkItem[],
@@ -101,16 +184,30 @@ export function buildSpeechUnitsFromChunks(
     const cleanChunkText = chunk.text.replace(/\[pause[^\]]*\]/gi, " ").replace(/\s+/g, " ").trim();
     if (!cleanChunkText) continue;
 
+    const reanchoredWords = chunk.qualityReview?.words;
+
     // Short chunks remain a single unit so adjacent short chunks can merge cleanly
     if (getWordCount(cleanChunkText) <= 8 && getDisplayWidth(cleanChunkText) <= 36) {
-      units.push({
-        id: chunk.id,
-        text: cleanChunkText,
+      const alignedShort = alignClausesWithReanchoredWords(
+        chunk.id,
+        [cleanChunkText],
         startSec,
         endSec,
-        durationSec,
-        pauseAfterSec: pauseSec,
-      });
+        pauseSec,
+        reanchoredWords
+      );
+      if (alignedShort && alignedShort.length === 1) {
+        units.push(alignedShort[0]);
+      } else {
+        units.push({
+          id: chunk.id,
+          text: cleanChunkText,
+          startSec,
+          endSec,
+          durationSec,
+          pauseAfterSec: pauseSec,
+        });
+      }
       continue;
     }
 
@@ -123,16 +220,49 @@ export function buildSpeechUnitsFromChunks(
 
     const validClauses = subClauses.map((c) => c.trim()).filter(Boolean);
     if (validClauses.length <= 1) {
-      units.push({
-        id: chunk.id,
-        text: cleanChunkText,
+      const alignedSingle = alignClausesWithReanchoredWords(
+        chunk.id,
+        [cleanChunkText],
         startSec,
         endSec,
-        durationSec,
-        pauseAfterSec: pauseSec,
-      });
+        pauseSec,
+        reanchoredWords
+      );
+      if (alignedSingle && alignedSingle.length === 1) {
+        units.push(alignedSingle[0]);
+      } else {
+        units.push({
+          id: chunk.id,
+          text: cleanChunkText,
+          startSec,
+          endSec,
+          durationSec,
+          pauseAfterSec: pauseSec,
+        });
+      }
       continue;
     }
+
+    // Priority 1: Use waveform-reanchored word timestamps from Post-QC if available
+    const alignedUnits = alignClausesWithReanchoredWords(
+      chunk.id,
+      validClauses,
+      startSec,
+      endSec,
+      pauseSec,
+      reanchoredWords
+    );
+    if (alignedUnits && alignedUnits.length === validClauses.length) {
+      units.push(...alignedUnits);
+      continue;
+    }
+
+    // Priority 2: Fallback proportional timing bounded by leadingSilenceMs / trailingSilenceMs
+    const leadSec = Math.min(durationSec * 0.25, Math.max(0, (chunk.leadingSilenceMs ?? 0) / 1000));
+    const trailSec = Math.min(durationSec * 0.25, Math.max(0, (chunk.trailingSilenceMs ?? 0) / 1000));
+    const activeStartSec = roundMs(startSec + Math.max(0, leadSec - 0.035));
+    const activeEndSec = roundMs(Math.max(activeStartSec + 0.1, endSec - Math.max(0, trailSec - 0.06)));
+    const activeDurationSec = Math.max(0.1, activeEndSec - activeStartSec);
 
     const weights = validClauses.map((c) => {
       const charWeight = Math.max(1, c.length);
@@ -140,15 +270,15 @@ export function buildSpeechUnitsFromChunks(
       return charWeight + punctBonus;
     });
     const totalWeight = weights.reduce((acc, w) => acc + w, 0) || 1;
-    let subCursor = startSec;
+    let subCursor = activeStartSec;
 
     for (let k = 0; k < validClauses.length; k++) {
       const isLastSub = k === validClauses.length - 1;
       const subDur = isLastSub
-        ? Math.max(0.05, endSec - subCursor)
-        : Math.max(0.05, Math.round((durationSec * (weights[k] / totalWeight)) * 1000) / 1000);
-      const subStart = Math.round(subCursor * 1000) / 1000;
-      const subEnd = isLastSub ? Math.round(endSec * 1000) / 1000 : Math.round((subStart + subDur) * 1000) / 1000;
+        ? Math.max(0.05, activeEndSec - subCursor)
+        : Math.max(0.05, roundMs(activeDurationSec * (weights[k] / totalWeight)));
+      const subStart = roundMs(subCursor);
+      const subEnd = isLastSub ? roundMs(activeEndSec) : roundMs(subStart + subDur);
       subCursor = subEnd;
 
       units.push({

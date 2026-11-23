@@ -428,12 +428,15 @@ export class TtsExecutor {
         if (fastWav) {
           fastWavSegments = fastWav.segments;
         } else {
-          await ai.assemble({
+          const assembleRes = await ai.assemble({
             inputs: concatInputs,
             outputPath: audioResolution.resolvedPath,
             format: targetAudioFormat,
             punctuationPauses: ttsSnapshot?.pauses,
           });
+          if (assembleRes?.segments) {
+            fastWavSegments = assembleRes.segments;
+          }
         }
       } catch (e) {
         const err = AiError.from(e);
