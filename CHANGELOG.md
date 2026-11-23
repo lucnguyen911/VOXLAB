@@ -2,6 +2,14 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.2] — 2026-11-23
+
+### Fixed
+- **Nâng cấp Hậu kiểm Âm học & Ngắt nghỉ (`Hậu kiểm v4.4.8`)**:
+  - **Pass 3B (Lặp / kéo dài âm gió `/s/`)**: Mở rộng kiểm tra cho từ đứng trước số đếm (`specialists one`), bỏ qua gợn hơi thở nhẹ (`< -47 dB`) trong khoảng lặng sau âm gió, bổ sung ngưỡng bảo vệ ngữ âm cho đuôi kép `-sts / -sks / -sps`, và hỗ trợ bắt âm gió lặp tách rời giữa hai từ liền nhau cùng có âm gió (`...-s | s-...`).
+  - **Ngắt nghỉ bất thường trong cụm (`ABNORMAL_PAUSE`)**: Bắt lỗi ngắt nghỉ sau lượng từ nhỏ bổ nghĩa trực tiếp cho danh từ (`one | metro area`) và cụm ngoại động từ V-ing + tính từ bổ nghĩa trước danh từ (`seeing top | medical specialists`), bao gồm cả trường hợp tiếng bật âm tắc yếu (`/p, t, k/`) tách đôi khoảng lặng.
+  - **Khử cảnh báo giả do cắt biên từ nối liền**: Kiểm tra lại lát cắt 2 từ liên tục ở Step 3 khi biên phải của từ đa âm tiết bị cắt xuyên qua vùng sóng đang nói (khắc phục cảnh báo giả `"highway"` nghe thành `"Hi"`).
+
 ## [1.0.1] — 2026-11-22
 
 ### Added
