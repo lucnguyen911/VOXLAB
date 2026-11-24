@@ -686,6 +686,79 @@ class SubtitleOptimizerTest(unittest.TestCase):
             # Second cue ("the gas pump...") must never start AFTER its first spoken word (1.72s)
             self.assertLessEqual(cues[1]["startSec"], 1.725)
 
+    def test_breath_intake_below_minus_30db_is_ignored_while_preserving_true_fricative(self):
+        import tempfile
+        import numpy as np
+        import soundfile as sf
+
+        # Word 1 ("Every") has Whisper start at 0.08s covering a 220ms -35 dBFS breath (0.12..0.34s),
+        # dip at 0.34..0.44s, then real speech at 0.44..1.35s.
+        # Word 4 ("soon") has a 40ms contiguous high-ZCR /s/ fricative (1.76..1.80s) directly attached
+        # to the vowel at 1.80..2.90s, preceded by a -35 dBFS breath at 1.50..1.70s.
+        seg = {
+            "id": 1,
+            "startSec": 0.08,
+            "endSec": 3.10,
+            "text": "Every single year. Soon everyone will notice the change.",
+            "words": [
+                {"word": "Every", "startSec": 0.08, "endSec": 0.72, "probability": 0.99},
+                {"word": "single", "startSec": 0.72, "endSec": 1.05, "probability": 0.99},
+                {"word": "year.", "startSec": 1.05, "endSec": 1.48, "probability": 0.99},
+                {"word": "Soon", "startSec": 1.50, "endSec": 2.08, "probability": 0.99},
+                {"word": "everyone", "startSec": 2.08, "endSec": 2.42, "probability": 0.99},
+                {"word": "will", "startSec": 2.42, "endSec": 2.58, "probability": 0.99},
+                {"word": "notice", "startSec": 2.58, "endSec": 2.82, "probability": 0.99},
+                {"word": "the", "startSec": 2.82, "endSec": 2.92, "probability": 0.99},
+                {"word": "change.", "startSec": 2.92, "endSec": 3.10, "probability": 0.99},
+            ],
+        }
+        rng = np.random.default_rng(42)
+        sr = 16000
+        samples = np.zeros(int(sr * 3.4), dtype=np.float32)
+
+        # Low-ZCR breath intake (-35 dBFS peak = 0.018) at 0.12..0.34s
+        b1_len = int(0.22 * sr)
+        t_b1 = np.arange(b1_len) / float(sr)
+        samples[int(0.12 * sr) : int(0.12 * sr) + b1_len] = (
+            0.015 * np.sin(2.0 * np.pi * 160.0 * t_b1)
+            + 0.003 * rng.standard_normal(b1_len)
+        ).astype(np.float32)
+
+        # True speech burst 1 (-12 dBFS) at 0.44..1.35s
+        s1_len = int(0.91 * sr)
+        t_s1 = np.arange(s1_len) / float(sr)
+        samples[int(0.44 * sr) : int(0.44 * sr) + s1_len] = (0.25 * np.sin(2.0 * np.pi * 220.0 * t_s1)).astype(np.float32)
+
+        # Inter-clause breath intake (-35 dBFS peak) at 1.50..1.70s
+        b2_len = int(0.20 * sr)
+        t_b2 = np.arange(b2_len) / float(sr)
+        samples[int(1.50 * sr) : int(1.50 * sr) + b2_len] = (
+            0.015 * np.sin(2.0 * np.pi * 150.0 * t_b2)
+            + 0.003 * rng.standard_normal(b2_len)
+        ).astype(np.float32)
+
+        # High-ZCR contiguous /s/ fricative at 1.76..1.80s (5500 Hz -> ZCR ~ 0.68) directly into vowel 1.80..3.00s
+        f_len = int(0.04 * sr)
+        t_f = np.arange(f_len) / float(sr)
+        samples[int(1.76 * sr) : int(1.76 * sr) + f_len] = (0.024 * np.sin(2.0 * np.pi * 5500.0 * t_f)).astype(np.float32)
+        s2_len = int(1.20 * sr)
+        t_s2 = np.arange(s2_len) / float(sr)
+        samples[int(1.80 * sr) : int(1.80 * sr) + s2_len] = (0.25 * np.sin(2.0 * np.pi * 240.0 * t_s2)).astype(np.float32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wav_path = os.path.join(tmpdir, "breath_test.wav")
+            sf.write(wav_path, samples, sr, subtype="PCM_16")
+            cues = optimize_subtitles_v2([seg], video_format="16:9", max_lines=2, wav_path=wav_path)
+            self.assertGreaterEqual(len(cues), 2)
+            # Cue 1 must skip the 0.12..0.34s -35 dBFS breath and start right at ~0.415s (before 0.44s)
+            self.assertGreaterEqual(cues[0]["startSec"], 0.39)
+            self.assertLessEqual(cues[0]["startSec"], 0.45)
+            # Cue 2 must skip the 1.50..1.70s breath and catch the 1.76s /s/ fricative (~1.73..1.78s)
+            self.assertGreaterEqual(cues[1]["startSec"], 1.71)
+            self.assertLessEqual(cues[1]["startSec"], 1.79)
+            # Cue 1 must NOT glue across the 0.40s pause onto Cue 2
+            self.assertLess(cues[0]["endSec"], cues[1]["startSec"] - 0.10)
+
 
 if __name__ == "__main__":
     unittest.main()

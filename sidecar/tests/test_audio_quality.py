@@ -7248,6 +7248,74 @@ class AudioQualityTest(unittest.TestCase):
             [],
         )
 
+    def test_v450_sks_double_sibilant_echo_tasks_punctuated_and_utterance_final(self):
+        sr = 24000
+        dur = 2.0
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False, dtype=np.float32)
+
+        def _synth_sib(seg_t: np.ndarray, amp: float) -> np.ndarray:
+            sig = (
+                0.45 * np.sin(2 * np.pi * 5500.0 * seg_t)
+                + 0.35 * np.sin(2 * np.pi * 6800.0 * seg_t)
+                + 0.25 * np.sin(2 * np.pi * 8200.0 * seg_t)
+            )
+            return (amp * sig).astype(np.float32)
+
+        def _add_v(w: np.ndarray, st: float, en: float, f1: float = 210.0, f2: float = 520.0, amp: float = 0.20) -> None:
+            i0, i1 = int(st * sr), int(en * sr)
+            seg = t[i0:i1]
+            w[i0:i1] += amp * (0.65 * np.sin(2 * np.pi * f1 * seg) + 0.35 * np.sin(2 * np.pi * f2 * seg)).astype(np.float32)
+
+        def build_tasks_case(
+            coda1_dur: float = 0.075,
+            raw_gap: float = 0.055,
+            coda2_dur: float = 0.105,
+            coda2_amp: float = 0.060,
+            with_next_word: bool = True,
+        ) -> tuple[np.ndarray, list[dict]]:
+            w = np.zeros_like(t)
+            _add_v(w, 0.08, 0.34, amp=0.20)  # "daily"
+            _add_v(w, 0.36, 0.62, amp=0.22)  # "tasks" voiced vowel /tæ/
+            s1_st, s1_en = 0.62, 0.62 + coda1_dur
+            w[int(s1_st * sr) : int(s1_en * sr)] += _synth_sib(t[int(s1_st * sr) : int(s1_en * sr)], amp=0.065)
+            s2_st = s1_en + raw_gap
+            s2_en = s2_st + coda2_dur
+            w[int(s2_st * sr) : int(s2_en * sr)] += _synth_sib(t[int(s2_st * sr) : int(s2_en * sr)], amp=coda2_amp)
+            asr = [
+                {"word": " daily", "startSec": 0.08, "endSec": 0.34, "probability": 0.99},
+                {"word": " tasks", "startSec": 0.36, "endSec": round(s2_en, 3), "probability": 0.99},
+            ]
+            if with_next_word:
+                w2_st = s2_en + 0.34
+                _add_v(w, w2_st, w2_st + 0.24, f1=225.0, f2=560.0, amp=0.20)
+                asr.append({"word": " where", "startSec": round(w2_st, 3), "endSec": round(w2_st + 0.24, 3), "probability": 0.99})
+            return w, asr
+
+        # 1. Unpunctuated "daily tasks where" with swallowed /k/ and 105ms second /s/ -> CAUGHT
+        w_bad, asr_bad = build_tasks_case(0.075, 0.055, 0.105, 0.060, with_next_word=True)
+        iss_unpunct = audio_quality.detect_acoustic_stutter(w_bad, sr, text="daily tasks where", asr_words=asr_bad, language="en")
+        self.assertEqual(len(iss_unpunct), 1, f"Expected double /s/ on 'tasks where' caught, got {iss_unpunct}")
+        self.assertEqual(iss_unpunct[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(iss_unpunct[0]["words"], ["tasks", "where"])
+
+        # 2. Punctuated "daily tasks, where" -> CAUGHT on ["tasks"]
+        iss_punct = audio_quality.detect_acoustic_stutter(w_bad, sr, text="daily tasks, where", asr_words=asr_bad, language="en")
+        self.assertEqual(len(iss_punct), 1, f"Expected double /s/ on 'tasks, where' caught, got {iss_punct}")
+        self.assertEqual(iss_punct[0]["words"], ["tasks"])
+
+        # 3. Utterance-final "daily tasks." -> CAUGHT on ["tasks"]
+        w_final, asr_final = build_tasks_case(0.075, 0.055, 0.105, 0.060, with_next_word=False)
+        iss_final = audio_quality.detect_acoustic_stutter(w_final, sr, text="daily tasks.", asr_words=asr_final, language="en")
+        self.assertEqual(len(iss_final), 1, f"Expected utterance-final double /s/ on 'tasks.' caught, got {iss_final}")
+        self.assertEqual(iss_final[0]["words"], ["tasks"])
+
+        # 4. Clean tight /k/ closure (25ms raw -> 15ms measured < 40ms) -> NOT flagged
+        w_tight, asr_tight = build_tasks_case(0.075, 0.025, 0.095, 0.050, with_next_word=True)
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(w_tight, sr, text="daily tasks where", asr_words=asr_tight, language="en"),
+            [],
+        )
+
     def test_v445_timestamp_formatting_trim_and_message_sync(self):
         self.assertEqual(audio_quality.format_timestamp(0.0), "00:00.0")
         self.assertEqual(audio_quality.format_timestamp(-0.3), "00:00.0")

@@ -730,8 +730,13 @@ def main(argv: list[str] | None = None) -> int:
                 "validationReport": validation_report,
             }
 
+        def align_cues_handler(params: dict) -> dict:
+            _ensure_fresh_qc_modules()
+            return subtitle_optimizer.align_cues_rpc(params)
+
         server.register_heavy("subtitle.generate_srt", generate_srt_handler)
         server.register_light("subtitle.optimize", optimize_subtitle_handler)
+        server.register_light("subtitle.align_cues", align_cues_handler)
     server.register_light("system.info", lambda _p: system_info(args.runtime, asr, tts))
     server.register_light("tts.engines", tts.engines)
     server.register_heavy("tts.load", tts.load)

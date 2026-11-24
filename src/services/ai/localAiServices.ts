@@ -585,6 +585,24 @@ export class LocalAiServices {
     });
   }
 
+  async alignSubtitleCues(params: {
+    cues: Array<{ index: number; startSec: number; endSec: number; text: string }>;
+    audioPath: string;
+    minDbThreshold?: number;
+    alignEnds?: boolean;
+  }): Promise<{
+    srt: string;
+    cues: Array<{ index: number; startSec: number; endSec: number; text: string }>;
+    totalCues: number;
+  }> {
+    return this.call("core", "subtitle.align_cues", {
+      cues: params.cues,
+      audioPath: params.audioPath,
+      minDbThreshold: params.minDbThreshold ?? -28.0,
+      alignEnds: params.alignEnds ?? true,
+    });
+  }
+
   /** Soft cancel first; if the engine is inside one blocking call, hard-cancel (kill) after graceMs. */
   async cancelActive(graceMs = 1500): Promise<void> {
     const a = this.active;

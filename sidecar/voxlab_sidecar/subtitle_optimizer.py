@@ -2977,57 +2977,274 @@ def _audio_duration_from_wav(wav_path: Optional[Path]) -> float:
             return 0.0
 
 
+def _load_mono_audio(path_obj: Path) -> Tuple[Optional[Any], int]:
+    """Decode any audio or video container (.wav, .mp3, .flac, .m4a, .mp4, .mov, .mkv)
+    into mono float32 samples + sample rate using soundfile with PyAV fallback."""
+    import numpy as np
+
+    try:
+        import soundfile as sf
+
+        data, sr = sf.read(str(path_obj), dtype="float32")
+        if data.size > 0 and sr > 0:
+            mono = np.mean(data, axis=1) if data.ndim > 1 else data
+            return np.asarray(mono, dtype=np.float32), int(sr)
+    except Exception:
+        pass
+
+    try:
+        import av
+
+        with av.open(str(path_obj)) as container:
+            if not container.streams.audio:
+                return None, 0
+            resampler = av.AudioResampler(format="fltp", layout="mono", rate=16000)
+            chunks = []
+            for frame in container.decode(audio=0):
+                for out_frame in resampler.resample(frame):
+                    chunks.append(out_frame.to_ndarray()[0])
+            for out_frame in resampler.resample(None):
+                chunks.append(out_frame.to_ndarray()[0])
+            if chunks:
+                mono = np.concatenate(chunks).astype(np.float32)
+                return mono, 16000
+    except Exception:
+        pass
+
+    return None, 0
+
+
+def _compute_speech_envelope(
+    mono: Any,
+    sr: int,
+    min_db_threshold: float = -28.0,
+) -> Optional[Dict[str, Any]]:
+    """Compute 10ms-hop breath-immune speech envelope (peak, RMS, ZCR).
+
+    Strictly enforces a hard >= -30 dBFS floor on normal speech recordings so
+    inhalation / breath intakes (-48..-32 dBFS) can never trigger subtitle starts.
+    """
+    import numpy as np
+
+    total_samples = int(mono.size)
+    if total_samples == 0 or sr <= 0:
+        return None
+    abs_audio = np.abs(mono)
+    global_max = float(np.max(abs_audio))
+    if global_max < 1e-4:
+        return None
+
+    win_size = max(1, int(sr * 0.020))
+    hop_size = max(1, int(sr * 0.010))
+    if total_samples < win_size:
+        return None
+
+    n_frames = 1 + (total_samples - win_size) // hop_size
+    if n_frames <= 0:
+        return None
+
+    # Vectorized strided framing (zero-copy view)
+    stride = mono.strides[0]
+    frames = np.lib.stride_tricks.as_strided(
+        mono,
+        shape=(n_frames, win_size),
+        strides=(hop_size * stride, stride),
+    )
+    frame_peak = np.max(np.abs(frames), axis=1).astype(np.float32)
+    frame_rms = np.sqrt(np.mean(frames * frames, axis=1)).astype(np.float32)
+    sign_changes = (frames[:, :-1] * frames[:, 1:]) < 0.0
+    frame_zcr = np.mean(sign_changes, axis=1).astype(np.float32)
+
+    # Strict breath-immune floor: never lower below -30.0 dBFS on normal loudness audio
+    requested_peak = 10.0 ** (float(min_db_threshold) / 20.0)
+    hard_breath_floor = 10.0 ** (-30.0 / 20.0)  # 0.03162 (-30.0 dBFS)
+    if global_max >= 0.10:
+        # Normal TTS / studio / video audio (peak >= -20 dBFS)
+        p95_peak = float(np.percentile(frame_peak, 95))
+        noise_floor_rms = float(np.percentile(frame_rms, 10))
+        peak_thresh = max(
+            hard_breath_floor,
+            requested_peak,
+            min(0.055, p95_peak * 0.14),
+            noise_floor_rms * 4.5,
+        )
+        rms_thresh = max(0.013, noise_floor_rms * 3.5, peak_thresh * 0.34)
+    else:
+        # Unusually quiet recording (< -20 dBFS full-scale peak)
+        peak_thresh = max(0.008, min(requested_peak, global_max * 0.25))
+        rms_thresh = max(0.004, peak_thresh * 0.34)
+
+    return {
+        "frame_peak": frame_peak,
+        "frame_rms": frame_rms,
+        "frame_zcr": frame_zcr,
+        "hop_sec": hop_size / float(sr),
+        "win_sec": win_size / float(sr),
+        "n_frames": n_frames,
+        "duration_sec": total_samples / float(sr),
+        "peak_thresh": float(peak_thresh),
+        "rms_thresh": float(rms_thresh),
+    }
+
+
+def _find_breath_immune_onset(
+    start_sec: float,
+    max_search_sec: float,
+    env: Dict[str, Any],
+) -> Optional[float]:
+    """Find the first true speech onset in [start_sec, max_search_sec], ignoring < -30 dBFS breaths
+    while preserving contiguous high-ZCR initial unvoiced consonants (/s/, /f/, /ʃ/, /kʰ/)."""
+    import numpy as np
+
+    hop = env["hop_sec"]
+    n_frames = env["n_frames"]
+    f_peak = env["frame_peak"]
+    f_rms = env["frame_rms"]
+    f_zcr = env["frame_zcr"]
+    peak_th = env["peak_thresh"]
+    rms_th = env["rms_thresh"]
+
+    i_start = max(0, min(n_frames - 1, int(start_sec / hop)))
+    i_end = max(i_start + 1, min(n_frames, int(max_search_sec / hop) + 1))
+
+    nucleus_idx: Optional[int] = None
+    confirm_frames = max(3, int(round(0.080 / hop)))
+
+    for i in range(i_start, i_end):
+        if f_peak[i] >= peak_th and f_rms[i] >= rms_th:
+            look_end = min(n_frames, i + confirm_frames)
+            if look_end > i + 1:
+                sub_peaks = f_peak[i:look_end]
+                active_ratio = float(np.mean(sub_peaks >= peak_th * 0.80))
+                if active_ratio < 0.40 and f_peak[i] < peak_th * 1.60:
+                    continue
+            nucleus_idx = i
+            break
+
+    if nucleus_idx is None:
+        return None
+
+    # Backtrack up to 50ms ONLY across unbroken contiguous unvoiced consonant frication (ZCR >= 0.32).
+    # Breaths have low ZCR (0.08..0.22) and/or a valley before the vowel, so backtracking stops cleanly.
+    onset_idx = nucleus_idx
+    max_back = max(0, nucleus_idx - 5)
+    fric_peak_min = max(0.014, peak_th * 0.38)
+    for j in range(nucleus_idx - 1, max_back - 1, -1):
+        if f_peak[j] >= fric_peak_min and f_zcr[j] >= 0.32:
+            onset_idx = j
+        else:
+            break
+
+    return onset_idx * hop
+
+
+def _find_breath_immune_offset(
+    min_search_sec: float,
+    end_sec: float,
+    env: Dict[str, Any],
+) -> Optional[float]:
+    """Find the last true speech/coda frame in [min_search_sec, end_sec], trimming trailing
+    silence and detached post-word breath exhalations."""
+    hop = env["hop_sec"]
+    win = env["win_sec"]
+    n_frames = env["n_frames"]
+    f_peak = env["frame_peak"]
+    f_rms = env["frame_rms"]
+    f_zcr = env["frame_zcr"]
+    peak_th = env["peak_thresh"]
+    rms_th = env["rms_thresh"]
+
+    i_min = max(0, min(n_frames - 1, int(min_search_sec / hop)))
+    i_max = max(i_min, min(n_frames - 1, int(end_sec / hop)))
+
+    voiced_idx: Optional[int] = None
+    for i in range(i_max, i_min - 1, -1):
+        if f_peak[i] >= peak_th * 0.78 and f_rms[i] >= rms_th * 0.78:
+            voiced_idx = i
+            break
+
+    if voiced_idx is None:
+        return None
+
+    # Extend forward at most 60ms ONLY across contiguous final unvoiced fricative coda (/s/, /t/, /k/)
+    offset_idx = voiced_idx
+    max_fwd = min(i_max, voiced_idx + 6)
+    coda_peak_min = max(0.018, peak_th * 0.45)
+    for j in range(voiced_idx + 1, max_fwd + 1):
+        if f_peak[j] >= coda_peak_min and f_zcr[j] >= 0.32:
+            offset_idx = j
+        else:
+            break
+
+    return min(env["duration_sec"], offset_idx * hop + win)
+
+
 def _reanchor_words_with_waveform(
     words: List[Dict[str, Any]],
     wav_path: Optional[Path],
     script_text: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Re-anchor ASR word start/end timestamps to true acoustic speech energy on the waveform.
-    Uses Audio-Factory / Post-QC `reanchor_asr_word_timestamps` when a real spoken waveform is present,
-    while preserving synthetic silent WAV fixtures used in unit tests."""
+    """Re-anchor ASR word start/end timestamps to true breath-immune speech energy (>= -28/-30 dBFS).
+
+    Strictly decoupled from Post-QC `audio_quality.reanchor_asr_word_timestamps` so low-level
+    breath intakes (< -30 dBFS) never anchor subtitle timestamps early while Post-QC sensitivity
+    remains 100% untouched."""
     if not words or wav_path is None:
         return words
     path_obj = Path(wav_path)
     if not path_obj.is_file():
         return words
     try:
-        import numpy as np
-        import soundfile as sf
-        from .audio_quality import reanchor_asr_word_timestamps
-
-        data, sr = sf.read(str(path_obj), dtype="float32")
-        if data.size == 0 or sr <= 0:
+        mono, sr = _load_mono_audio(path_obj)
+        if mono is None or sr <= 0:
             return words
-        mono = np.mean(data, axis=1) if data.ndim > 1 else data
-        # Skip synthetic pure-silence test WAVs so mock timestamp tests remain deterministic
-        if float(np.max(np.abs(mono))) < 1e-4:
+        env = _compute_speech_envelope(mono, sr, min_db_threshold=-28.0)
+        if env is None:
             return words
 
-        qc_words = [
-            {
-                "word": str(w.get("text") or ""),
-                "startSec": float(w.get("start", 0.0)),
-                "endSec": float(w.get("end", w.get("start", 0.0))),
-                "probability": float(w.get("probability", 1.0)),
-            }
-            for w in words
-        ]
-        reanchored = reanchor_asr_word_timestamps(
-            qc_words,
-            mono,
-            int(sr),
-            text=script_text or " ".join(str(w.get("text") or "") for w in words),
-        )
-        if not reanchored or len(reanchored) != len(words):
-            return words
+        hop = env["hop_sec"]
+        n_frames = env["n_frames"]
+        f_peak = env["frame_peak"]
+        peak_th = env["peak_thresh"]
 
-        prev_start = 0.0
-        for orig_w, rw in zip(words, reanchored):
-            new_s = round(max(prev_start, float(rw.get("startSec", orig_w["start"]))), 3)
-            new_e = round(max(new_s + 0.02, float(rw.get("endSec", orig_w["end"]))), 3)
-            orig_w["start"] = new_s
-            orig_w["end"] = new_e
-            prev_start = new_s
+        n_words = len(words)
+        for idx, w in enumerate(words):
+            orig_s = float(w.get("start", 0.0))
+            orig_e = float(w.get("end", orig_s + 0.05))
+            if orig_e <= orig_s + 0.02:
+                continue
+
+            prev_e = float(words[idx - 1]["end"]) if idx > 0 else 0.0
+            next_s = float(words[idx + 1]["start"]) if idx + 1 < n_words else env["duration_sec"]
+            gap_before = orig_s - prev_e
+            gap_after = next_s - orig_e
+
+            new_s = orig_s
+            new_e = orig_e
+
+            # Advance word start out of silence or < -30 dBFS breath intake
+            s_frame = max(0, min(n_frames - 1, int(orig_s / hop)))
+            if idx == 0 or gap_before >= 0.08 or f_peak[s_frame] < peak_th:
+                max_search_s = min(orig_e - 0.03, orig_s + 0.70)
+                if max_search_s > orig_s + 0.015:
+                    onset = _find_breath_immune_onset(orig_s, max_search_s, env)
+                    if onset is not None and onset > orig_s:
+                        new_s = round(max(prev_e, onset), 3)
+
+            # Trim word end back out of trailing silence or detached breath exhalation
+            e_frame = max(0, min(n_frames - 1, int(max(0.0, orig_e - hop) / hop)))
+            if idx == n_words - 1 or gap_after >= 0.08 or f_peak[e_frame] < peak_th * 0.78:
+                min_search_e = max(new_s + 0.04, orig_e - 0.70)
+                if orig_e > min_search_e + 0.015:
+                    offset = _find_breath_immune_offset(min_search_e, orig_e, env)
+                    if offset is not None and offset < orig_e:
+                        new_e = round(max(new_s + 0.03, offset), 3)
+
+            new_s = round(max(prev_e, new_s), 3)
+            new_e = round(max(new_s + 0.02, new_e), 3)
+            w["start"] = new_s
+            w["end"] = new_e
+
         return words
     except Exception as err:
         logger.warning(f"Waveform word re-anchoring skipped: {err}")
@@ -3057,7 +3274,7 @@ def _assign_display_times(
             start = max(start, cue_words[idx - 1][-1]["end"])
         starts.append(start)
 
-    # Align starts to actual speech onset on the waveform when ASR pre-roll falls in silence
+    # Align starts to actual breath-immune speech onset on the waveform when ASR pre-roll falls in silence/breath
     if wav_path is not None and Path(wav_path).is_file():
         temp_cues = [
             {
@@ -3068,7 +3285,7 @@ def _assign_display_times(
             }
             for s, cue in zip(starts, cue_words)
         ]
-        align_cues_to_audio_onset(temp_cues, wav_path, min_db_threshold=-30.0)
+        align_cues_to_audio_onset(temp_cues, wav_path, min_db_threshold=-28.0, align_ends=False)
         starts = [float(tc["start"]) for tc in temp_cues]
 
     ends: List[float] = []
@@ -3081,16 +3298,19 @@ def _assign_display_times(
         )
         desired_end = min(
             starts[idx] + profile.max_duration,
-            max(voice_end + 0.08, starts[idx] + desired_duration),
+            max(voice_end + 0.06, starts[idx] + desired_duration),
         )
         if idx < len(cue_words) - 1:
             next_voice_start = max(cue_words[idx + 1][0]["start"], starts[idx + 1])
             voice_gap = next_voice_start - voice_end
+            if voice_gap >= 0.18:
+                # Real pause before next cue: do not hang subtitle far over dead air or next breath
+                desired_end = min(desired_end, voice_end + 0.16)
             display_gap = 0.04 if voice_gap >= 0.10 else 0.005
             latest_end = next_voice_start - display_gap
             end = max(voice_end, min(desired_end, latest_end))
         else:
-            end = desired_end
+            end = min(desired_end, voice_end + 0.20)
             if audio_duration > 0.0:
                 end = min(audio_duration, end)
         ends.append(end)
@@ -3123,25 +3343,28 @@ def _assign_display_times(
         deficit = needed_dur - (e - s)
         if deficit <= 0:
             continue
-        # 1. Borrow from silence before s, or from previous cue's post-voice tail hold
-        min_allowed_s = (times[idx - 1][1] + 0.005) if idx > 0 else 0.0
-        avail_before = max(0.0, min(0.18, s - min_allowed_s))
+        # 1. Never pull cue start earlier than 40ms before its actual spoken word onset
+        # (prevents dragging subtitle starts backward into pre-speech silence or breath intakes).
+        spoken_start = round(max(0.0, cue_words[idx][0]["start"] + offset_seconds), 3)
+        earliest_voice_s = max(0.0, round(spoken_start - 0.04, 3))
+        min_allowed_s = max((times[idx - 1][1] + 0.005) if idx > 0 else 0.0, earliest_voice_s)
+        avail_before = max(0.0, min(0.04, s - min_allowed_s))
         if avail_before > 0:
             take = min(deficit, avail_before)
             s = round(s - take, 3)
             times[idx] = (s, e)
             deficit = needed_dur - (e - s)
-        if deficit > 0 and idx > 0:
+        if deficit > 0 and idx > 0 and s > earliest_voice_s:
             ps, pe = times[idx - 1]
             prev_voice_end = cue_words[idx - 1][-1]["end"] + offset_seconds
             prev_chars = len(_join_tokens([_display_token(w) for w in cue_words[idx - 1]]))
             prev_min_dur = max(profile.min_duration, prev_chars / (profile.max_cps - 0.5))
             prev_tail_slack = max(0.0, pe - max(prev_voice_end, ps + prev_min_dur))
-            avail_prev = min(0.16, prev_tail_slack)
+            avail_prev = min(0.04, prev_tail_slack, max(0.0, s - earliest_voice_s))
             if avail_prev > 0 and abs(s - pe) <= 0.06:
                 take_prev = min(deficit, avail_prev)
                 pe = round(pe - take_prev, 3)
-                s = round(max(pe + 0.005, s - take_prev), 3)
+                s = round(max(pe + 0.005, earliest_voice_s, s - take_prev), 3)
                 times[idx - 1] = (ps, pe)
                 times[idx] = (s, e)
                 deficit = needed_dur - (e - s)
@@ -3165,15 +3388,14 @@ def _assign_display_times(
                     times[idx + 1] = (ns, ne)
                 times[idx] = (s, e)
 
-    # Seamless micro-gap bridging: bridge < 350ms gaps in continuous speech,
-    # but preserve a clean visual break when the speaker genuinely pauses >= 180ms.
+    # Seamless micro-gap bridging: bridge only < 80ms gaps in genuinely continuous speech.
+    # Never glue cues across real pauses or into the next cue's pre-speech breath intake.
     for idx in range(len(times) - 1):
         s, e = times[idx]
         ns, _ne = times[idx + 1]
         gap = round(ns - e, 3)
         voice_gap = round(cue_words[idx + 1][0]["start"] - cue_words[idx][-1]["end"], 3)
-        max_bridge_gap = 0.14 if voice_gap >= 0.18 else 0.35
-        if 0.0 < gap < max_bridge_gap and (ns - s) <= profile.max_duration:
+        if voice_gap < 0.12 and 0.0 < gap < 0.08 and (ns - s) <= profile.max_duration:
             times[idx] = (s, ns)
 
     return times
@@ -3182,91 +3404,71 @@ def _assign_display_times(
 def align_cues_to_audio_onset(
     cues: List[Dict[str, Any]],
     wav_path: Optional[Path],
-    min_db_threshold: float = -30.0,
+    min_db_threshold: float = -28.0,
+    align_ends: bool = False,
 ) -> None:
-    """Align cue start timestamps with actual speech onset using adaptive noise-floor thresholding
-    and lookahead confirmation (Audio-Factory v2), eliminating Whisper silence pre-roll."""
-    if not wav_path:
+    """Align cue start (and optionally end) timestamps with actual breath-immune speech
+    energy (>= -28/-30 dBFS) on any audio/video container, eliminating Whisper silence
+    pre-roll and < -30 dBFS breath-intake false triggers."""
+    if not wav_path or not cues:
         return
     path_obj = Path(wav_path)
     if not path_obj.is_file():
         return
 
     try:
-        import numpy as np
-        import soundfile as sf
-
-        data, sr = sf.read(str(path_obj), dtype="float32")
-        if data.size == 0 or sr <= 0:
+        mono, sr = _load_mono_audio(path_obj)
+        if mono is None or sr <= 0:
+            return
+        env = _compute_speech_envelope(mono, sr, min_db_threshold=min_db_threshold)
+        if env is None:
             return
 
-        amplitude = np.max(np.abs(data), axis=1) if data.ndim > 1 else np.abs(data)
-        total_samples = len(amplitude)
-        if total_samples == 0 or float(np.max(amplitude)) < 1e-4:
-            return
-
-        linear_threshold = 10.0 ** (min_db_threshold / 20.0)
-        win_size = max(1, int(sr * 0.02))
-        step_size = max(1, int(sr * 0.01))
-
-        # Estimate global noise floor from 10th percentile of 20ms frame RMS
-        num_frames = total_samples // win_size
-        if num_frames > 10:
-            framed = amplitude[: num_frames * win_size].reshape(num_frames, win_size)
-            frame_rms = np.sqrt(np.mean(framed ** 2, axis=1))
-            noise_floor = float(np.percentile(frame_rms, 10))
-            adaptive_thresh = max(noise_floor * 3.16, 0.005)
-            effective_threshold = min(linear_threshold, max(adaptive_thresh, linear_threshold * 0.35))
-        else:
-            effective_threshold = linear_threshold
+        hop = env["hop_sec"]
+        n_frames = env["n_frames"]
+        f_peak = env["frame_peak"]
+        peak_th = env["peak_thresh"]
 
         for idx, cue in enumerate(cues):
-            start_sec = float(cue["start"])
-            end_sec = float(cue["end"])
-            start_sample = int(start_sec * sr)
-            if start_sample >= total_samples or start_sample < 0:
+            start_sec = float(cue.get("start", cue.get("startSec", 0.0)))
+            end_sec = float(cue.get("end", cue.get("endSec", start_sec + 0.25)))
+            if start_sec < 0.0 or start_sec >= env["duration_sec"]:
                 continue
 
-            current_energy = float(
-                np.max(amplitude[start_sample : min(total_samples, start_sample + win_size)])
-            )
-            if current_energy < effective_threshold:
+            s_frame = max(0, min(n_frames - 1, int(start_sec / hop)))
+            if f_peak[s_frame] < peak_th:
                 first_word_end = float(cue.get("first_word_end", end_sec))
                 max_search_sec = min(
-                    end_sec - 0.15,
-                    start_sec + 0.80,
-                    max(start_sec + 0.06, first_word_end - 0.04),
+                    end_sec - 0.12,
+                    start_sec + 0.85,
+                    max(start_sec + 0.06, first_word_end - 0.03),
                 )
-                max_search_sample = int(max_search_sec * sr)
-                curr = start_sample
-                found_onset_sample = None
-                confirm_samples = int(sr * 0.10)
+                if max_search_sec > start_sec + 0.015:
+                    onset_sec = _find_breath_immune_onset(start_sec, max_search_sec, env)
+                    if onset_sec is not None:
+                        prev_end = float(cues[idx - 1].get("end", cues[idx - 1].get("endSec", 0.0))) if idx > 0 else 0.0
+                        refined_start = round(max(prev_end, start_sec, onset_sec - 0.025), 3)
+                        if refined_start < end_sec - 0.12:
+                            cue["start"] = refined_start
+                            cue["startSec"] = refined_start
+                            start_sec = refined_start
 
-                while curr < max_search_sample and curr < total_samples:
-                    win_max = float(np.max(amplitude[curr : min(total_samples, curr + win_size)]))
-                    if win_max >= effective_threshold:
-                        look_end = min(total_samples, curr + confirm_samples)
-                        if look_end > curr + win_size:
-                            sub = amplitude[curr:look_end]
-                            n_sub = len(sub) // step_size
-                            if n_sub >= 2:
-                                sub_frames = sub[: n_sub * step_size].reshape(n_sub, step_size)
-                                sub_peaks = np.max(sub_frames, axis=1)
-                                active_ratio = float(np.mean(sub_peaks >= effective_threshold * 0.65))
-                                if active_ratio < 0.45:
-                                    curr += step_size
-                                    continue
-                        found_onset_sample = curr
-                        break
-                    curr += step_size
-
-                if found_onset_sample is not None:
-                    onset_sec = found_onset_sample / float(sr)
-                    prev_end = float(cues[idx - 1]["end"]) if idx > 0 else 0.0
-                    refined_start = round(max(prev_end, start_sec, onset_sec - 0.035), 3)
-                    if refined_start < end_sec - 0.15:
-                        cue["start"] = refined_start
-                        cue["startSec"] = refined_start
+            if align_ends:
+                e_frame = max(0, min(n_frames - 1, int(max(0.0, end_sec - hop) / hop)))
+                if f_peak[e_frame] < peak_th * 0.78:
+                    min_search_sec = max(start_sec + 0.12, end_sec - 0.85)
+                    if end_sec > min_search_sec + 0.015:
+                        offset_sec = _find_breath_immune_offset(min_search_sec, end_sec, env)
+                        if offset_sec is not None:
+                            next_start = (
+                                float(cues[idx + 1].get("start", cues[idx + 1].get("startSec", env["duration_sec"])))
+                                if idx + 1 < len(cues)
+                                else env["duration_sec"]
+                            )
+                            refined_end = round(min(end_sec, next_start, offset_sec + 0.06), 3)
+                            if refined_end > start_sec + 0.12:
+                                cue["end"] = refined_end
+                                cue["endSec"] = refined_end
     except Exception as e:
         logger.warning(f"Failed to align cues to audio onset: {e}")
 
@@ -3610,6 +3812,46 @@ def _prepare_slowed_audio_if_needed(audio_path: str, speech_speed: float) -> Tup
         return audio_path, None
 
 
+def align_cues_rpc(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Lightweight RPC entry point (`subtitle.align_cues`) for waveform-aligning TTS/SRT cues."""
+    raw_cues = params.get("cues") or []
+    audio_path = params.get("audioPath")
+    min_db = float(params.get("minDbThreshold") if params.get("minDbThreshold") is not None else -28.0)
+    align_ends = bool(params.get("alignEnds", True))
+    aligned = [
+        {
+            "index": int(c.get("index", idx + 1)),
+            "start": float(c.get("startSec", c.get("start", 0.0))),
+            "end": float(c.get("endSec", c.get("end", 0.0))),
+            "startSec": float(c.get("startSec", c.get("start", 0.0))),
+            "endSec": float(c.get("endSec", c.get("end", 0.0))),
+            "text": str(c.get("text", "")),
+        }
+        for idx, c in enumerate(raw_cues)
+    ]
+    if audio_path and aligned:
+        align_cues_to_audio_onset(
+            aligned,
+            Path(audio_path),
+            min_db_threshold=min_db,
+            align_ends=align_ends,
+        )
+    srt_content = export_cues_to_srt(aligned)
+    return {
+        "srt": srt_content,
+        "cues": [
+            {
+                "index": c["index"],
+                "startSec": c["startSec"],
+                "endSec": c["endSec"],
+                "text": c["text"],
+            }
+            for c in aligned
+        ],
+        "totalCues": len(aligned),
+    }
+
+
 def generate_srt_from_master_audio(
     audio_path: str,
     script_text: Optional[str] = None,
@@ -3658,7 +3900,8 @@ def generate_srt_from_master_audio(
                 language=whisper_lang,
                 word_timestamps=True,
                 beam_size=5,
-                vad_filter=False,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 350, "speech_pad_ms": 150},
                 condition_on_previous_text=False,
             )
             raw_info_dur = float(info.duration or 0.0) * scale_factor

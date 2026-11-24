@@ -10415,6 +10415,16 @@ def detect_acoustic_stutter(
                     ):
                         p3_pairs.append((si, aj, bool(s_nxt.is_number or a_nxt.is_number)))
 
+        def _sibilant_spec32(wave_arr: np.ndarray) -> np.ndarray:
+            mag_s = np.abs(np.fft.rfft(wave_arr * np.hanning(wave_arr.size)))
+            if mag_s.size >= 32:
+                edg_s = np.linspace(0, mag_s.size, 33, dtype=int)
+                vec_s = np.array([np.mean(mag_s[edg_s[b_i] : max(edg_s[b_i] + 1, edg_s[b_i + 1])]) for b_i in range(32)], dtype=np.float32)
+            else:
+                vec_s = np.pad(mag_s.astype(np.float32), (0, 32 - mag_s.size))
+            nrm_s = float(np.linalg.norm(vec_s))
+            return vec_s / nrm_s if nrm_s > 1e-6 else vec_s
+
         hop5 = max(1, int(round(0.005 * sample_rate)))
         win15 = max(hop5 + 1, int(round(0.015 * sample_rate)))
         if p3_pairs and mono.size >= win15 * 4:
@@ -10428,13 +10438,15 @@ def detect_acoustic_stutter(
                 if si < 0 or si + 1 >= len(p3_src_clean) or aj < 0 or aj + 1 >= len(asr_words):
                     continue
                 sw1, sw2 = p3_src_clean[si], p3_src_clean[si + 1]
+                has_punct = has_punctuation_boundary(p3_delims[si + 1], p3_src_words[si + 1])
+                is_double_sib_cluster = bool(sw1 and sw1.endswith(("sts", "sks", "sps")))
                 if (
                     not sw1
                     or not sw2
                     or si in p3_pm_src
                     or (si + 1) in p3_pm_src
                     or _is_numeric_scope_word(sw1)
-                    or has_punctuation_boundary(p3_delims[si + 1], p3_src_words[si + 1])
+                    or (has_punct and not is_double_sib_cluster)
                 ):
                     continue
                 w1_obj, w2_obj = asr_words[aj], asr_words[aj + 1]
@@ -10468,7 +10480,8 @@ def detect_acoustic_stutter(
                     fv2 -= 1
                     step2 += 1
                 vv_gap = (fv2 - fv1) * fsec5
-                if not (0.24 <= vv_gap <= 0.90) or (fv2 - fv1) <= 8:
+                max_vv_gap = 1.40 if (has_punct and is_double_sib_cluster) else 0.90
+                if not (0.24 <= vv_gap <= max_vv_gap) or (fv2 - fv1) <= 8:
                     continue
                 g_rms = rms_5[fv1:fv2]
                 g_zcr = zcr_5[fv1:fv2]
@@ -10488,7 +10501,8 @@ def detect_acoustic_stutter(
 
                 emitted_p3 = False
                 if (
-                    not right_is_num
+                    not has_punct
+                    and not right_is_num
                     and not _is_numeric_scope_word(sw2)
                     and (0.24 <= vv_gap <= 0.55)
                     and float(np.max(g_rms)) < 0.030
@@ -10532,19 +10546,19 @@ def detect_acoustic_stutter(
                         emitted_p3 = True
 
                 # Pass 3B: Detached coda sibilant echo (e.g. 'Unless — [valley] — [detached /s/] — [silence] — we'
-                # or elongated double-/s/ coda on '-sts/-sks/-sps' or sibilant-to-sibilant boundary echoes)
+                # or double-/s/ coda with swallowed stop on '-sts/-sks/-sps' like 'tasks' / 'specialists')
                 if (
                     not emitted_p3
-                    and 0.26 <= vv_gap <= 0.90
+                    and 0.26 <= vv_gap <= max_vv_gap
                     and sw1.endswith(("s", "z", "x", "sh", "ch", "ce", "se", "ze", "ge", "dge"))
                 ):
-                    is_double_sib_cluster = sw1.endswith(("sts", "sks", "sps"))
-                    sw2_starts_sib = (
+                    sw2_starts_sib = (not has_punct) and (
                         sw2.startswith(("s", "z", "sh", "ch", "ce", "ci", "cy", "ps", "ts", "x", "0", "6", "7"))
                         or sw2 in ("16", "17")
                     )
-                    min_dur_i = 0.130 if is_double_sib_cluster else (0.075 if sw2_starts_sib else 0.065)
+                    min_dur_i = 0.105 if is_double_sib_cluster else (0.075 if sw2_starts_sib else 0.065)
                     min_pre_sil = 0.045 if sw2_starts_sib else 0.040
+                    max_pre_sil = 0.160 if has_punct else 0.350
                     min_post_sil = 0.150 if is_double_sib_cluster else (0.140 if sw2_starts_sib else 0.100)
                     for idx_i, (ist, ien) in enumerate(islands):
                         dur_i = (ien - ist) * fsec5
@@ -10573,7 +10587,8 @@ def detect_acoustic_stutter(
                             continue
                         pre_sil = (pre_gap_end - pre_gap_start) * fsec5
                         post_sil = (post_gap_end - post_gap_start) * fsec5
-                        if pre_sil < min_pre_sil or float(np.min(rms_5[pre_gap_start:pre_gap_end])) > min(0.0035, 0.20 * pk_i):
+                        min_pre_rms = float(np.min(rms_5[pre_gap_start:pre_gap_end]))
+                        if pre_sil < min_pre_sil or pre_sil > max_pre_sil or min_pre_rms > min(0.0035, 0.20 * pk_i):
                             continue
                         if post_sil < min_post_sil or float(np.min(rms_5[post_gap_start:post_gap_end])) > 0.0025:
                             continue
@@ -10587,9 +10602,22 @@ def detect_acoustic_stutter(
                         isl_wave = mono[(fv1 + ist) * hop5 : min(mono.size, (fv1 + ien) * hop5 + win15)]
                         c_f0 = v1_end + int(coda_sib_idx[0])
                         c_f1 = v1_end + int(coda_sib_idx[-1]) + 1
-                        if is_double_sib_cluster and ((fv1 + ien) - c_f0) * fsec5 < 0.290:
+                        cluster_span = ((fv1 + ien) - c_f0) * fsec5
+                        pure_coda_rel = np.where(zcr_5[c_f0:c_f1] >= 0.42)[0]
+                        c_f0_pure = (c_f0 + int(pure_coda_rel[0])) if pure_coda_rel.size >= 3 else c_f0
+                        coda_pk = (
+                            float(np.max(rms_5[c_f0:c_f1][pure_coda_rel]))
+                            if pure_coda_rel.size > 0
+                            else float(np.median(rms_5[c_f0:c_f1]))
+                        )
+                        is_compact_double_sib = is_double_sib_cluster and (dur_i < 0.130 or cluster_span < 0.290)
+                        if is_double_sib_cluster and cluster_span < 0.220:
                             continue
-                        coda_wave = mono[c_f0 * hop5 : min(mono.size, c_f1 * hop5 + win15)]
+                        if is_compact_double_sib and (
+                            pk_i < 0.65 * coda_pk or min_pre_rms > min(0.0025, 0.12 * pk_i)
+                        ):
+                            continue
+                        coda_wave = mono[c_f0_pure * hop5 : min(mono.size, c_f1 * hop5 + win15)]
                         if isl_wave.size < 64 or coda_wave.size < 64:
                             continue
                         spec_isl = np.abs(np.fft.rfft(isl_wave * np.hanning(isl_wave.size))) ** 2
@@ -10597,30 +10625,46 @@ def detect_acoustic_stutter(
                         tot_pow = float(np.sum(spec_isl)) + 1e-12
                         hf_ratio = float(np.sum(spec_isl[freqs_isl >= 3200.0]) / tot_pow)
                         lf_ratio = float(np.sum(spec_isl[(freqs_isl >= 80.0) & (freqs_isl <= 1000.0)]) / tot_pow)
-                        if hf_ratio < 0.65 or lf_ratio > 0.15:
+                        req_hf = 0.80 if is_compact_double_sib else 0.65
+                        if hf_ratio < req_hf or lf_ratio > 0.15:
                             continue
-                        coda_sp, _, _ = _compute_chunk_acoustic_vecs(coda_wave)
-                        isl_sp, _, _ = _compute_chunk_acoustic_vecs(isl_wave)
+                        coda_sp = _sibilant_spec32(coda_wave)
+                        isl_sp = _sibilant_spec32(isl_wave)
                         coda_cos_sim = float(np.dot(coda_sp, isl_sp))
-                        if coda_cos_sim < 0.72:
+                        req_cos = 0.85 if is_compact_double_sib else 0.72
+                        if coda_cos_sim < req_cos:
                             continue
                         t_h_start = round((fv1 + ist) * fsec5, 3)
-                        t_h_end = round(min(w2_en, fv2 * fsec5 + 0.18), 3)
+                        t_h_end = (
+                            round((fv1 + ien) * fsec5 + 0.02, 3)
+                            if has_punct
+                            else round(min(w2_en, fv2 * fsec5 + 0.18), 3)
+                        )
                         if any(abs(t_h_start - r[0]) < 0.25 for r in detected_ranges):
                             continue
                         detected_ranges.append((t_h_start, t_h_end))
                         raw_w1 = p3_src_words[si].strip(" ,.;:!?\"'()") or sw1
                         raw_w2 = p3_src_words[si + 1].strip(" ,.;:!?\"'()") or sw2
                         ts = format_timestamp(t_h_start)
+                        if has_punct:
+                            iss_words = [sw1]
+                            iss_excerpt = raw_w1
+                            iss_norm = sw1
+                            iss_msg = f'Nghi vấn lặp âm gió / vấp âm tại từ "{raw_w1}" — khoảng {ts}. Vui lòng nghe kiểm tra.'
+                        else:
+                            iss_words = [sw1, sw2]
+                            iss_excerpt = f"{raw_w1} {raw_w2}"
+                            iss_norm = f"{sw1} {sw2}"
+                            iss_msg = f'Nghi vấn lặp âm gió / vấp âm tại cụm "{raw_w1} {raw_w2}" — khoảng {ts}. Vui lòng nghe kiểm tra.'
                         issues.append({
                             "severity": "warning",
                             "code": "SUSPECTED_STUTTER",
-                            "message": f'Nghi vấn lặp âm gió / vấp âm tại cụm "{raw_w1} {raw_w2}" — khoảng {ts}. Vui lòng nghe kiểm tra.',
-                            "words": [sw1, sw2],
+                            "message": iss_msg,
+                            "words": iss_words,
                             "timeRange": [t_h_start, t_h_end],
-                            "sourceExcerpt": f"{raw_w1} {raw_w2}",
-                            "asrRawExcerpt": f"{raw_w1} {raw_w2}",
-                            "asrNormalizedExcerpt": f"{sw1} {sw2}",
+                            "sourceExcerpt": iss_excerpt,
+                            "asrRawExcerpt": iss_excerpt,
+                            "asrNormalizedExcerpt": iss_norm,
                             "tokenSource": "primary_asr",
                             "evidence": (
                                 f"Inter-word detached coda sibilant echo vv_gap={vv_gap:.3f}s "
@@ -10629,6 +10673,132 @@ def detect_acoustic_stutter(
                             ),
                         })
                         break
+
+        # Pass 3C: Utterance-final double-sibilant coda echo on '-sts/-sks/-sps' (e.g. '...daily tasks.')
+        last_si = len(p3_src_clean) - 1
+        if (
+            last_si >= 0
+            and mono.size >= win15 * 4
+            and last_si not in p3_pm_src
+            and p3_src_clean[last_si].endswith(("sts", "sks", "sps"))
+            and p3_src_spans
+            and p3_asr_spans
+            and p3_src_spans[-1].canonical == p3_asr_spans[-1].canonical
+        ):
+            fsec5 = hop5 / float(sample_rate)
+            fr5 = np.lib.stride_tricks.sliding_window_view(mono, win15)[::hop5]
+            rms_5 = np.sqrt(np.mean(np.square(fr5, dtype=np.float32), axis=1))
+            zcr_5 = np.mean(np.abs(np.diff(np.signbit(fr5), axis=1)), axis=1)
+            n5 = len(rms_5)
+            max_edge_step = max(1, int(round(0.10 / fsec5)))
+            sw_last = p3_src_clean[last_si]
+            w_last_obj = asr_words[p3_asr_spans[-1].orig_end - 1]
+            if float(w_last_obj.get("probability", 1.0)) >= 0.50:
+                wl_st = float(w_last_obj.get("startSec", 0.0))
+                wl_en = float(w_last_obj.get("endSec", 0.0))
+                f_sl = max(0, min(n5 - 1, int(round(wl_st / fsec5))))
+                f_el = min(n5, max(f_sl + 1, int(round(wl_en / fsec5))))
+                v_last = np.where((rms_5[f_sl:f_el] >= 0.025) & (zcr_5[f_sl:f_el] < 0.22))[0]
+                if v_last.size > 0:
+                    vl_end = int(f_sl + v_last[-1])
+                    fvl = vl_end
+                    step_l = 0
+                    while fvl < n5 and rms_5[fvl] >= 0.0035 and step_l < max_edge_step:
+                        fvl += 1
+                        step_l += 1
+                    fvl_limit = min(n5, fvl + int(round(0.90 / fsec5)))
+                    if fvl_limit - fvl > 8:
+                        gl_rms = rms_5[fvl:fvl_limit]
+                        gl_zcr = zcr_5[fvl:fvl_limit]
+                        act_l = gl_rms >= 0.0035
+                        isl_last: list[tuple[int, int]] = []
+                        in_il = False
+                        ist_l = 0
+                        for g_i in range(len(act_l)):
+                            if act_l[g_i] and not in_il:
+                                in_il = True
+                                ist_l = g_i
+                            elif not act_l[g_i] and in_il:
+                                in_il = False
+                                isl_last.append((ist_l, g_i))
+                        if in_il:
+                            isl_last.append((ist_l, len(act_l)))
+                        for idx_i, (ist_l, ien_l) in enumerate(isl_last):
+                            dur_l = (ien_l - ist_l) * fsec5
+                            if not (0.105 <= dur_l <= 0.350):
+                                continue
+                            pk_l = float(np.max(gl_rms[ist_l:ien_l]))
+                            if not (0.012 <= pk_l <= 0.12):
+                                continue
+                            if float(np.mean(gl_zcr[ist_l:ien_l])) < 0.35 or float(np.max(gl_zcr[ist_l:ien_l])) < 0.45:
+                                continue
+                            pre_gs = (fvl + isl_last[idx_i - 1][1]) if idx_i > 0 else fvl
+                            pre_ge = fvl + ist_l
+                            if pre_ge <= pre_gs or pre_gs <= vl_end:
+                                continue
+                            pre_sil_l = (pre_ge - pre_gs) * fsec5
+                            min_pre_rms_l = float(np.min(rms_5[pre_gs:pre_ge]))
+                            if not (0.040 <= pre_sil_l <= 0.160) or min_pre_rms_l > min(0.0035, 0.20 * pk_l):
+                                continue
+                            coda_l_rms = rms_5[vl_end:pre_gs]
+                            coda_l_zcr = zcr_5[vl_end:pre_gs]
+                            coda_l_idx = np.where((coda_l_zcr >= 0.32) & (coda_l_rms >= 0.008))[0]
+                            if coda_l_idx.size < 5:
+                                continue
+                            cf0_l = vl_end + int(coda_l_idx[0])
+                            cf1_l = vl_end + int(coda_l_idx[-1]) + 1
+                            span_l = ((fvl + ien_l) - cf0_l) * fsec5
+                            pure_rel_l = np.where(zcr_5[cf0_l:cf1_l] >= 0.42)[0]
+                            cf0_l_pure = (cf0_l + int(pure_rel_l[0])) if pure_rel_l.size >= 3 else cf0_l
+                            coda_pk_l = (
+                                float(np.max(rms_5[cf0_l:cf1_l][pure_rel_l]))
+                                if pure_rel_l.size > 0
+                                else float(np.median(rms_5[cf0_l:cf1_l]))
+                            )
+                            compact_l = dur_l < 0.130 or span_l < 0.290
+                            if span_l < 0.220:
+                                continue
+                            if compact_l and (pk_l < 0.65 * coda_pk_l or min_pre_rms_l > min(0.0025, 0.12 * pk_l)):
+                                continue
+                            isl_w_l = mono[(fvl + ist_l) * hop5 : min(mono.size, (fvl + ien_l) * hop5 + win15)]
+                            coda_w_l = mono[cf0_l_pure * hop5 : min(mono.size, cf1_l * hop5 + win15)]
+                            if isl_w_l.size < 64 or coda_w_l.size < 64:
+                                continue
+                            sp_l = np.abs(np.fft.rfft(isl_w_l * np.hanning(isl_w_l.size))) ** 2
+                            frq_l = np.fft.rfftfreq(isl_w_l.size, d=1.0 / sample_rate)
+                            tot_l = float(np.sum(sp_l)) + 1e-12
+                            hf_l = float(np.sum(sp_l[frq_l >= 3200.0]) / tot_l)
+                            lf_l = float(np.sum(sp_l[(frq_l >= 80.0) & (frq_l <= 1000.0)]) / tot_l)
+                            if hf_l < (0.80 if compact_l else 0.65) or lf_l > 0.15:
+                                continue
+                            c_vec_l = _sibilant_spec32(coda_w_l)
+                            i_vec_l = _sibilant_spec32(isl_w_l)
+                            cos_l = float(np.dot(c_vec_l, i_vec_l))
+                            if cos_l < (0.85 if compact_l else 0.72):
+                                continue
+                            t_hs = round((fvl + ist_l) * fsec5, 3)
+                            t_he = round(min(mono.size / float(sample_rate), (fvl + ien_l) * fsec5 + 0.02), 3)
+                            if any(abs(t_hs - r[0]) < 0.25 for r in detected_ranges):
+                                continue
+                            detected_ranges.append((t_hs, t_he))
+                            raw_last = p3_src_words[last_si].strip(" ,.;:!?\"'()") or sw_last
+                            ts_l = format_timestamp(t_hs)
+                            issues.append({
+                                "severity": "warning",
+                                "code": "SUSPECTED_STUTTER",
+                                "message": f'Nghi vấn lặp âm gió / vấp âm tại từ "{raw_last}" — khoảng {ts_l}. Vui lòng nghe kiểm tra.',
+                                "words": [sw_last],
+                                "timeRange": [t_hs, max(t_hs + 0.05, t_he)],
+                                "sourceExcerpt": raw_last,
+                                "asrRawExcerpt": raw_last,
+                                "asrNormalizedExcerpt": sw_last,
+                                "tokenSource": "primary_asr",
+                                "evidence": (
+                                    f"Utterance-final detached coda sibilant echo dur={dur_l:.3f}s "
+                                    f"pre_sil={pre_sil_l:.3f}s hf={hf_l:.2f} cos={cos_l:.2f}"
+                                ),
+                            })
+                            break
 
     return issues
 

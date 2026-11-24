@@ -463,11 +463,30 @@ export class TtsExecutor {
             durationSec: fastWavSegments?.[idx]?.durationSec ?? c.durationSec,
           }))
         : sortedChunks;
-      const subtitleCues = generateSubtitlesFromChunks(timedChunks, {
+      let subtitleCues = generateSubtitlesFromChunks(timedChunks, {
         punctuationPauses: ttsSnapshot?.pauses,
         ...(transSnapshot?.aspectRatio ? { aspectRatio: transSnapshot.aspectRatio } : {}),
         ...(transSnapshot?.maxLines ? { maxLines: transSnapshot.maxLines } : {}),
       });
+      if (audioResolution.action !== "skip" && audioResolution.resolvedPath) {
+        try {
+          const alignedRes = await ai.alignSubtitleCues({
+            cues: subtitleCues,
+            audioPath: audioResolution.resolvedPath,
+            minDbThreshold: -28.0,
+            alignEnds: true,
+          });
+          if (alignedRes?.cues && alignedRes.cues.length === subtitleCues.length) {
+            subtitleCues = subtitleCues.map((c, idx) => ({
+              ...c,
+              startSec: alignedRes.cues[idx].startSec,
+              endSec: alignedRes.cues[idx].endSec,
+            }));
+          }
+        } catch {
+          // Graceful fallback when sidecar alignment is unavailable (e.g. unit tests)
+        }
+      }
       const subContent =
         subFormat === "vtt" ? exportToVtt(subtitleCues) : exportToSrt(subtitleCues);
 

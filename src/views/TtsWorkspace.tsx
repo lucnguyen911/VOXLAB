@@ -38,7 +38,11 @@ import {
   translateSrtContent1to1,
 } from "../services/audio/masterExport";
 import { loadStoredTtsSettings } from "../components/inspector/TtsInspector";
-import { loadSubtitleSettings } from "../services/subtitle";
+import {
+  loadSubtitleSettings,
+  generateSubtitlesFromChunks,
+  exportToSrt,
+} from "../services/subtitle";
 import { loadTranslationSettings } from "../services/translation";
 import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import {
@@ -1392,12 +1396,31 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                   durationSec: activeSegments[idx]?.durationSec ?? c.durationSec,
                 }))
               : sortedChunks;
-            const srtContent = generateSrtFromChunks(timedChunks, {
+            let subtitleCues = generateSubtitlesFromChunks(timedChunks, {
               punctuationPauses: ttsSettings.pauses,
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
-              optimize: true,
             });
+            if (ai) {
+              try {
+                const alignedRes = await ai.alignSubtitleCues({
+                  cues: subtitleCues,
+                  audioPath: chosenPath,
+                  minDbThreshold: -28.0,
+                  alignEnds: true,
+                });
+                if (alignedRes?.cues && alignedRes.cues.length === subtitleCues.length) {
+                  subtitleCues = subtitleCues.map((c, idx) => ({
+                    ...c,
+                    startSec: alignedRes.cues[idx].startSec,
+                    endSec: alignedRes.cues[idx].endSec,
+                  }));
+                }
+              } catch (alignErr) {
+                console.warn("Breath-immune waveform cue alignment skipped:", alignErr);
+              }
+            }
+            const srtContent = exportToSrt(subtitleCues);
             const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
             await invoke("fs_write_text", {
               path: srtPath,

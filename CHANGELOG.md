@@ -2,6 +2,17 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.4] — 2026-11-24
+
+### Fixed & Improved
+- **Kháng tiếng lấy hơi `< -30 dBFS` & Đồng bộ Phụ đề chính xác theo Waveform (`Subtitle Sync v2.1`)**:
+  - **Tách hoàn toàn bộ dò sóng âm Phụ đề khỏi ngưỡng siêu nhạy của Hậu kiểm**: Xây dựng bộ đo bao năng lượng giọng nói kháng tiếng lấy hơi (`_compute_speech_envelope`, `_find_breath_immune_onset`, `_find_breath_immune_offset`) với sàn cứng `>= -28/-30 dBFS`, loại bỏ hoàn toàn lỗi đặt mốc phụ đề sớm `250–500ms` vào tiếng lấy hơi (`-48..-32 dBFS`) trong khi vẫn bảo toàn phụ âm gió thật đầu/cuối từ (`/s/, /f/, /ʃ/, /kʰ/`).
+  - **Cắt gọn điểm kết thúc (`end`) & bỏ nối cầu qua khoảng nghỉ**: Ngăn bộ làm mượt kéo lùi điểm bắt đầu phụ đề sớm vào khoảng lặng (`<= 40ms` lead-in) và chỉ nối khoảng hở `< 80ms` khi đọc liền mạch, không dính đuôi phụ đề vào tiếng lấy hơi câu sau.
+  - **Hỗ trợ căn sóng âm trực tiếp cho file Video (`.mp4/.mov/.mkv`) & bật Silero VAD**: Bổ sung giải mã audio qua `PyAV` cho container video và bật `vad_filter=True` cho Whisper khi bóc băng Master.
+  - **Đồng bộ căn sóng âm cho cả xuất SRT ở Tab TTS & Xử lý Hàng loạt**: Đăng ký RPC nhẹ `subtitle.align_cues` căn chỉnh trực tiếp các cue TTS trên file Master Audio vừa ghép.
+- **Nâng cấp Hậu kiểm Phát âm Lặp âm gió `/s/` (`Hậu kiểm v4.5.0`)**:
+  - Bắt chính xác lỗi lặp 2 dấu `/s/` trên các từ đuôi `-sks / -sts / -sps` (như `"tasks"` bị nuốt âm `/k/` thành `"tass-sss"`) kể cả khi đứng trước dấu câu hoặc cuối câu, sử dụng phổ 32 băng tần bất biến theo độ dài (`_sibilant_spec32`) và đo ngưỡng đỉnh âm gió thuần (`ZCR >= 0.42`).
+
 ## [1.0.3] — 2026-11-24
 
 ### Added & Improved

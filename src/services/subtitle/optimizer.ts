@@ -20,10 +20,10 @@ export interface OptimizeOptions {
 }
 
 /**
- * Bridges micro-gaps (< 350ms) between consecutive cues to eliminate visual flicker,
- * matching the Python sidecar optimizer (`subtitle_optimizer.py`).
+ * Bridges only tiny micro-gaps (< 80ms) in genuinely continuous speech to avoid flicker
+ * without gluing cues across real pauses or into the next cue's pre-speech breath intake.
  */
-export function bridgeSubtitleMicroGaps(cues: SubtitleCue[], maxBridgeSec = 0.35): SubtitleCue[] {
+export function bridgeSubtitleMicroGaps(cues: SubtitleCue[], maxBridgeSec = 0.08): SubtitleCue[] {
   if (!cues || cues.length <= 1) return cues;
   const result = cues.map((c) => ({ ...c }));
   for (let i = 0; i < result.length - 1; i++) {
