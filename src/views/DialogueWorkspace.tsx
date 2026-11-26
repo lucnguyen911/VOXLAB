@@ -35,6 +35,7 @@ import {
   buildDefaultExportPath,
   saveLastExportDirFromFilePath,
 } from "../services/storage/exportDirMemory";
+import { exportAlignedDialogueSrt } from "../services/subtitle/masterSubtitleExport";
 import { DialogueEditor } from "../components/dialogue/DialogueEditor";
 import { DialogueStudio } from "../components/dialogue/DialogueStudio";
 import { DialogueInspector } from "../components/dialogue/DialogueInspector";
@@ -480,22 +481,44 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         currentAsrModel,
         "dialogue"
       );
-      return { ...checkingSeg, qualityReview: review };
+      const readySeg: DialogueSegment = { ...checkingSeg, qualityReview: review };
+      setSegments((prev) =>
+        prev.map((s) =>
+          s.id === seg.id &&
+          s.status === "ready" &&
+          (s.cleanText || s.rawText) === (checkingSeg.cleanText || checkingSeg.rawText) &&
+          getChunkAudioSignature(s) === audioSig
+            ? { ...s, qualityReview: review }
+            : s
+        )
+      );
+      return readySeg;
     } catch (qErr: any) {
       console.warn("Dialogue segment quality validation error:", qErr);
+      const fallbackReview: NonNullable<DialogueSegment["qualityReview"]> = {
+        status: "unverified",
+        summary: `Chưa kiểm chứng (${qErr?.message || "lỗi hậu kiểm"})`,
+        issues: [],
+        checkedAt: Date.now(),
+        audioPath: res.outputPath,
+        text: seg.cleanText || seg.rawText,
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
+        asrModelId: currentAsrModel,
+        audioSignature: audioSig,
+      };
+      setSegments((prev) =>
+        prev.map((s) =>
+          s.id === seg.id &&
+          s.status === "ready" &&
+          (s.cleanText || s.rawText) === (checkingSeg.cleanText || checkingSeg.rawText) &&
+          getChunkAudioSignature(s) === audioSig
+            ? { ...s, qualityReview: fallbackReview }
+            : s
+        )
+      );
       return {
         ...checkingSeg,
-        qualityReview: {
-          status: "unverified",
-          summary: `Chưa kiểm chứng (${qErr?.message || "lỗi hậu kiểm"})`,
-          issues: [],
-          checkedAt: Date.now(),
-          audioPath: res.outputPath,
-          text: seg.cleanText || seg.rawText,
-          validatorVersion: QUALITY_VALIDATOR_VERSION,
-          asrModelId: currentAsrModel,
-          audioSignature: audioSig,
-        },
+        qualityReview: fallbackReview,
       };
     }
   };
@@ -996,11 +1019,15 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
           gapAfterMs: Math.round((plan.timeline[i]?.pauseAfterSec ?? 0) * 1000),
         }));
         const fastWav = !isMp3 ? await concatPcmWavsFast(concatInputs, chosenPath) : null;
+        let assembleRes: {
+          durationSec?: number;
+          segments?: { index: number; startSec: number; endSec: number; durationSec: number }[];
+        } | null = null;
         if (!fastWav) {
           if (!ai) {
             throw new Error("Dịch vụ xử lý âm thanh cục bộ chưa sẵn sàng.");
           }
-          await ai.assemble({
+          assembleRes = await ai.assemble({
             inputs: concatInputs,
             outputPath: chosenPath,
             format: isMp3 ? "mp3" : "wav",
@@ -1012,7 +1039,11 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         if (settings.exportSrt) {
           try {
             const subtitleSettings = loadSubtitleSettings();
-            const srt = generateDialogueSrt(plan.timeline, {
+            const srt = await exportAlignedDialogueSrt({
+              timeline: plan.timeline,
+              assembledSegments: fastWav?.segments || assembleRes?.segments,
+              masterAudioPath: chosenPath,
+              ai,
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
             });

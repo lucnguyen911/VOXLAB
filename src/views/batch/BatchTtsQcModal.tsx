@@ -53,7 +53,10 @@ import { googleTranslateTtsProvider } from "../../services/providers/googleProvi
 import { resolveBatchVoiceTarget } from "../../services/batch/batchModelResolver";
 import { getEffectiveRules } from "../../services/pronunciation";
 import { computeChunkPausesMs } from "../../services/audio/masterExport";
-import { generateSubtitlesFromChunks } from "../../services/subtitle/pipeline";
+import {
+  exportUnifiedMasterSubtitlesFromTts,
+  exportAlignedDialogueSrt,
+} from "../../services/subtitle/masterSubtitleExport";
 import { exportToSrt, exportToVtt, formatSrtTimestamp } from "../../services/subtitle/exporter";
 import { parseSubtitle } from "../../services/subtitle/parser";
 import { SubtitleCue } from "../../services/subtitle/types";
@@ -63,7 +66,6 @@ import {
   DialogueSegment,
 } from "../../types/dialogue";
 import { calculateDialogueTimeline } from "../../services/dialogue/masterAssembly";
-import { generateDialogueSrt } from "../../services/dialogue/srtExporter";
 import { loadSubtitleSettings } from "../../services/subtitle/profiles";
 import { parsePauseDurationMs } from "../../services/pause";
 import {
@@ -1077,18 +1079,23 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
           exportSrt: dialogueSnapshot?.exportSrt ?? true,
         };
         const assembly = calculateDialogueTimeline(segments, globalSettings);
-        await ai.assemble({
+        const assembleRes = await ai.assemble({
           inputs: assembly.timeline.map((entry, idx) => ({
             path: sortedChunks[idx].audioFilePath,
             gapAfterMs: Math.round(entry.pauseAfterSec * 1000),
           })),
           outputPath: masterAudioPath,
           format,
+          punctuationPauses: dialogueSnapshot?.pauses,
         });
 
         if (activeSubtitlePath) {
           const subSettings = loadSubtitleSettings();
-          const srtContent = generateDialogueSrt(assembly.timeline, {
+          const srtContent = await exportAlignedDialogueSrt({
+            timeline: assembly.timeline,
+            assembledSegments: assembleRes?.segments,
+            masterAudioPath,
+            ai,
             aspectRatio: subSettings.aspectRatio,
             maxLines: subSettings.maxLines,
           });
@@ -1109,20 +1116,32 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
           pauseAfterMs: "auto",
           audioUrl: c.audioFilePath,
           audioFilePath: c.audioFilePath,
+          qualityReview: c.qualityReview,
           status: "ready",
         }));
         const pauses = computeChunkPausesMs(chunkItems, ttsSnapshot?.pauses);
-        await ai.assemble({
+        const assembleRes = await ai.assemble({
           inputs: sortedChunks.map((c, idx) => ({
             path: c.audioFilePath,
             gapAfterMs: pauses[idx],
           })),
           outputPath: masterAudioPath,
           format,
+          punctuationPauses: ttsSnapshot?.pauses,
         });
 
         if (activeSubtitlePath) {
-          const cues = generateSubtitlesFromChunks(chunkItems);
+          const subSettings = loadSubtitleSettings();
+          const cues = await exportUnifiedMasterSubtitlesFromTts({
+            chunks: chunkItems,
+            assembledSegments: assembleRes?.segments,
+            masterAudioPath,
+            ai,
+            aspectRatio: subSettings.aspectRatio,
+            maxLines: subSettings.maxLines,
+            punctuationPauses: ttsSnapshot?.pauses,
+            asrModelId: currentAsrModel,
+          });
           const subContent = activeSubtitlePath.toLowerCase().endsWith(".vtt")
             ? exportToVtt(cues)
             : exportToSrt(cues);

@@ -141,14 +141,25 @@ export function buildSpeechUnitsFromChunks(
   };
 
   for (let i = 0; i < sorted.length; i++) {
-    const chunk = sorted[i];
-    const durationSec =
-      typeof chunk.durationSec === "number" && !isNaN(chunk.durationSec)
-        ? Math.max(0.1, chunk.durationSec)
-        : 1.0;
+    const chunk = sorted[i] as ChunkItem & {
+      _assembledStartSec?: number;
+      _assembledEndSec?: number;
+    };
+    const hasExactBounds =
+      typeof chunk._assembledStartSec === "number" &&
+      typeof chunk._assembledEndSec === "number" &&
+      Number.isFinite(chunk._assembledStartSec) &&
+      Number.isFinite(chunk._assembledEndSec) &&
+      chunk._assembledEndSec > chunk._assembledStartSec;
 
-    const startSec = currentTime;
-    const endSec = currentTime + durationSec;
+    const durationSec = hasExactBounds
+      ? Math.max(0.05, chunk._assembledEndSec! - chunk._assembledStartSec!)
+      : typeof chunk.durationSec === "number" && !isNaN(chunk.durationSec)
+      ? Math.max(0.1, chunk.durationSec)
+      : 1.0;
+
+    const startSec = hasExactBounds ? chunk._assembledStartSec! : currentTime;
+    const endSec = hasExactBounds ? chunk._assembledEndSec! : currentTime + durationSec;
     currentTime = endSec;
 
     // Calculate pause duration before next chunk
@@ -156,23 +167,30 @@ export function buildSpeechUnitsFromChunks(
     let pauseSec = 0;
 
     if (!isLast) {
-      if (punctuationPauses) {
-        const targetPauseMs = getTargetPauseMs(
-          chunk.text,
-          punctuationPauses,
-          chunk.pauseAfterMs
-        );
-        const effectivePauseMs = calculateEffectiveSilenceGapMs(
-          targetPauseMs,
-          chunk.trailingSilenceMs ?? 0,
-          sorted[i + 1]?.leadingSilenceMs ?? 0
-        );
-        pauseSec = effectivePauseMs / 1000;
-      } else if (typeof chunk.pauseAfterMs === "number" && chunk.pauseAfterMs > 0) {
-        pauseSec = chunk.pauseAfterMs / 1000;
+      const nextAssembled = sorted[i + 1] as ChunkItem & { _assembledStartSec?: number };
+      if (hasExactBounds && typeof nextAssembled?._assembledStartSec === "number") {
+        pauseSec = Math.max(0, nextAssembled._assembledStartSec - endSec);
+        currentTime = nextAssembled._assembledStartSec;
+      } else {
+        if (punctuationPauses) {
+          const targetPauseMs = getTargetPauseMs(
+            chunk.text,
+            punctuationPauses,
+            chunk.pauseAfterMs
+          );
+          const effectivePauseMs = calculateEffectiveSilenceGapMs(
+            targetPauseMs,
+            chunk.trailingSilenceMs ?? 0,
+            sorted[i + 1]?.leadingSilenceMs ?? 0
+          );
+          pauseSec = effectivePauseMs / 1000;
+        } else if (typeof chunk.pauseAfterMs === "number" && chunk.pauseAfterMs > 0) {
+          pauseSec = chunk.pauseAfterMs / 1000;
+        }
+        currentTime += pauseSec;
       }
-      currentTime += pauseSec;
     } else if (
+      !hasExactBounds &&
       !punctuationPauses &&
       typeof chunk.pauseAfterMs === "number" &&
       chunk.pauseAfterMs > 0

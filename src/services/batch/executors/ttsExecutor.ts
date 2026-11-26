@@ -16,7 +16,7 @@ import { ChunkItem } from "../../../types/ui";
 import { normalizeText, getDefaultEnabledGroupIds } from "../../normalizer/engine";
 import { splitScriptWithPauses, TTS_SMART_CHUNK_OPTIONS } from "../../pause/chunker";
 import { computeChunkPausesMs } from "../../audio/masterExport";
-import { generateSubtitlesFromChunks } from "../../subtitle/pipeline";
+import { exportUnifiedMasterSubtitlesFromTts } from "../../subtitle/masterSubtitleExport";
 import { exportToSrt, exportToVtt } from "../../subtitle/exporter";
 import {
   resolveJobOutputDirectory,
@@ -29,7 +29,11 @@ import { concatPcmWavsFast } from "../batchRuntime";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 import { googleTranslateTtsProvider } from "../../providers/googleProvider";
-import { resolveBatchVoiceTarget } from "../batchModelResolver";
+import {
+  resolveBatchVoiceTarget,
+  resolveBatchWhisperModelId,
+} from "../batchModelResolver";
+import { loadSubtitleSettings } from "../../subtitle/profiles";
 import { getEffectiveRules } from "../../pronunciation";
 import {
   validateChunkAudioQuality,
@@ -219,6 +223,11 @@ export class TtsExecutor {
     }
 
     // 4b. Dedicated post-TTS Whisper quality validation pass (avoids TTS <-> ASR GPU model thrashing)
+    const transSnapshotForQc =
+      job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
+    const effectiveAsrModel = resolveBatchWhisperModelId(
+      transSnapshotForQc?.whisperModel || loadSubtitleSettings().whisperModel
+    );
     let retriesUsed = 0;
     if (typeof ai.validateAudioQuality === "function" && sortedChunks.length > 0) {
       if (sortedChunks.length > 1) {
@@ -249,6 +258,7 @@ export class TtsExecutor {
             punctuationPauses: ttsSnapshot.pauses,
             speed,
             majorAlreadySplit: majorSplit,
+            asrModelId: effectiveAsrModel,
           });
           if (shaped && typeof shaped.durationSec === "number" && shaped.durationSec > 0) {
             chunk.durationSec = shaped.durationSec;
@@ -274,7 +284,7 @@ export class TtsExecutor {
             undefined,
             ai,
             speed,
-            undefined,
+            effectiveAsrModel,
             "current"
           );
         } catch {
@@ -384,7 +394,7 @@ export class TtsExecutor {
                 undefined,
                 ai,
                 speed,
-                undefined,
+                effectiveAsrModel,
                 "current"
               );
             } catch {
@@ -412,7 +422,9 @@ export class TtsExecutor {
     const outputArtifactPaths: string[] = [];
 
     // 6. Assemble master from the real chunk audio (fast native Rust WAV concat or sidecar MP3 LAME encode)
-    let fastWavSegments: Array<{ durationSec: number }> | undefined;
+    let fastWavSegments:
+      | Array<{ index: number; startSec: number; endSec: number; durationSec: number }>
+      | undefined;
     if (audioResolution.action !== "skip") {
       onProgress?.(75, "Đang ghép nối tệp âm thanh Master...");
       const pauses = computeChunkPausesMs(sortedChunks, ttsSnapshot?.pauses);
@@ -453,40 +465,22 @@ export class TtsExecutor {
       (job.effectiveConfigSnapshot?.tasks.tts?.sentencePauseMs !== undefined);
 
     if (needsSubtitle) {
-      onProgress?.(88, "Đang xuất phụ đề đồng bộ...");
+      onProgress?.(88, "Đang đồng bộ & tối ưu phụ đề theo sóng âm...");
       const transSnapshot =
         job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
       const subFormat = job.outputSnapshot?.outputSubtitleFormat || "srt";
-      const timedChunks = fastWavSegments
-        ? sortedChunks.map((c, idx) => ({
-            ...c,
-            durationSec: fastWavSegments?.[idx]?.durationSec ?? c.durationSec,
-          }))
-        : sortedChunks;
-      let subtitleCues = generateSubtitlesFromChunks(timedChunks, {
+      const masterPathForSub =
+        audioResolution.action !== "skip" ? audioResolution.resolvedPath : undefined;
+      const subtitleCues = await exportUnifiedMasterSubtitlesFromTts({
+        chunks: sortedChunks,
+        assembledSegments: fastWavSegments,
+        masterAudioPath: masterPathForSub,
+        ai,
+        aspectRatio: transSnapshot?.aspectRatio,
+        maxLines: transSnapshot?.maxLines === 1 ? 1 : transSnapshot?.maxLines === 2 ? 2 : undefined,
         punctuationPauses: ttsSnapshot?.pauses,
-        ...(transSnapshot?.aspectRatio ? { aspectRatio: transSnapshot.aspectRatio } : {}),
-        ...(transSnapshot?.maxLines ? { maxLines: transSnapshot.maxLines } : {}),
+        asrModelId: effectiveAsrModel,
       });
-      if (audioResolution.action !== "skip" && audioResolution.resolvedPath) {
-        try {
-          const alignedRes = await ai.alignSubtitleCues({
-            cues: subtitleCues,
-            audioPath: audioResolution.resolvedPath,
-            minDbThreshold: -28.0,
-            alignEnds: true,
-          });
-          if (alignedRes?.cues && alignedRes.cues.length === subtitleCues.length) {
-            subtitleCues = subtitleCues.map((c, idx) => ({
-              ...c,
-              startSec: alignedRes.cues[idx].startSec,
-              endSec: alignedRes.cues[idx].endSec,
-            }));
-          }
-        } catch {
-          // Graceful fallback when sidecar alignment is unavailable (e.g. unit tests)
-        }
-      }
       const subContent =
         subFormat === "vtt" ? exportToVtt(subtitleCues) : exportToSrt(subtitleCues);
 

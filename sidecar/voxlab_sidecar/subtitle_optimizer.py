@@ -47,24 +47,28 @@ class LayoutProfile:
     hard_pause: float
 
 
-# YouTube Cinematic Subtitle Profiles (Section 3.3)
+# YouTube Cinematic Subtitle Profiles (Audio-Factory Reference Synced)
+SEMANTIC_OVERFLOW_MAX_WIDTH = 50
+CONTINUATION_OVERFLOW_MAX_WIDTH = 46
+SEMANTIC_OVERFLOW_PENALTY = 12.0
+
 PROFILES: Dict[Tuple[str, int], LayoutProfile] = {
     ("16:9", 1): LayoutProfile(
         format_id="16:9",
         max_lines=1,
-        target_width=29,
-        max_width=32,
-        max_cue_chars=32,
-        target_words=6,
-        max_words=10,
-        min_duration=0.85,
-        target_duration=2.2,
-        max_duration=6.0,
-        target_cps=15.0,
+        target_width=36,
+        max_width=42,
+        max_cue_chars=50,
+        target_words=7,
+        max_words=14,
+        min_duration=5.0 / 6.0,
+        target_duration=2.5,
+        max_duration=7.0,
+        target_cps=16.0,
         max_cps=20.0,
         soft_pause=0.25,
         preferred_pause=0.45,
-        hard_pause=0.80,
+        hard_pause=0.85,
     ),
     ("16:9", 2): LayoutProfile(
         format_id="16:9",
@@ -86,15 +90,15 @@ PROFILES: Dict[Tuple[str, int], LayoutProfile] = {
     ("1:1", 1): LayoutProfile(
         format_id="1:1",
         max_lines=1,
-        target_width=25,
-        max_width=29,
-        max_cue_chars=29,
-        target_words=5,
-        max_words=9,
-        min_duration=0.80,
-        target_duration=2.0,
-        max_duration=5.5,
-        target_cps=14.5,
+        target_width=28,
+        max_width=35,
+        max_cue_chars=35,
+        target_words=6,
+        max_words=12,
+        min_duration=0.90,
+        target_duration=2.2,
+        max_duration=7.0,
+        target_cps=15.0,
         max_cps=19.0,
         soft_pause=0.22,
         preferred_pause=0.40,
@@ -120,16 +124,16 @@ PROFILES: Dict[Tuple[str, int], LayoutProfile] = {
     ("9:16", 1): LayoutProfile(
         format_id="9:16",
         max_lines=1,
-        target_width=21,
-        max_width=26,
-        max_cue_chars=26,
-        target_words=4,
-        max_words=7,
-        min_duration=0.75,
-        target_duration=1.8,
-        max_duration=4.8,
+        target_width=26,
+        max_width=32,
+        max_cue_chars=32,
+        target_words=5,
+        max_words=11,
+        min_duration=0.80,
+        target_duration=1.9,
+        max_duration=7.0,
         target_cps=14.0,
-        max_cps=18.5,
+        max_cps=18.0,
         soft_pause=0.20,
         preferred_pause=0.35,
         hard_pause=0.65,
@@ -2098,6 +2102,8 @@ def build_protected_boundary_map(
             if display_width(rate_text) <= 18:
                 line_protected[boundary] = f"unit rate: {rate_text}"
             continue
+        elif not left_has_punct and left in {"very", "quite", "too", "fairly", "rather"} and right not in CLAUSE_STARTERS:
+            reason = f"degree intensifier with modified word: {left_raw} {right_raw}"
         elif not left_has_punct and (left in FORBIDDEN_ENDINGS or left.endswith("'s") or left.endswith("’s")):
             if right not in {"before", "after", "when", "while", "because", "if", "although"}:
                 reason = f"forbidden ending: {left}"
@@ -2179,6 +2185,11 @@ def build_protected_boundary_map(
             and left not in {"elderly", "friendly", "family", "only", "likely", "unlikely", "early"}
             and right not in CLAUSE_STARTERS
             and right not in PREPOSITIONS
+            and not (
+                idx > 0
+                and clean[idx - 1] in {"very", "quite", "too", "so", "more", "most"}
+                and right in {"is", "are", "was", "were"}
+            )
         ):
             reason = "adverb with following predicate or modifier"
             line_protect_also = False
@@ -2499,6 +2510,21 @@ def _wrap_words(
     if profile.max_lines == 1:
         if total_chars <= profile.max_width:
             return [one_line]
+        if (
+            profile.format_id == "16:9"
+            and profile.max_width < total_chars <= SEMANTIC_OVERFLOW_MAX_WIDTH
+            and _clean_token(cue_words[0]["text"]) in DETERMINERS
+            and (_clean_token(cue_words[0]["text"]) != "that" or cue_words[0]["text"].strip()[:1].isupper())
+            and cue_words[-1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+            and any(_looks_like_verb(word["text"]) for word in cue_words)
+        ):
+            return [one_line]
+        if (
+            profile.format_id == "16:9"
+            and profile.max_width < total_chars <= CONTINUATION_OVERFLOW_MAX_WIDTH
+            and bool(cue_words and cue_words[0].get("semantic_continuation_overflow"))
+        ):
+            return [one_line]
         return None
 
     if total_chars <= profile.target_width:
@@ -2638,10 +2664,12 @@ def _cue_cost(
     cps = visible_chars / max(0.10, achievable_duration)
     word_count = len(cue_words)
 
-    cost = 55.0 if profile.max_lines >= 2 else 25.0
+    cost = 55.0 if profile.max_lines >= 2 else 0.0
     cost += abs(word_count - profile.target_words) * 7.5
     cost += abs(raw_duration - profile.target_duration) * 16.0
     cost += abs(widest_line - profile.target_width) * 1.8
+    if widest_line > profile.max_width:
+        cost += (widest_line - profile.max_width) ** 2 * SEMANTIC_OVERFLOW_PENALTY
 
     if cps > profile.target_cps:
         cost += (cps - profile.target_cps) ** 2 * 18.0
@@ -2666,7 +2694,9 @@ def _cue_cost(
     elif word_count == 1 and not (is_block_start and is_block_end):
         cost += 950.0
     elif word_count == 2 and not _standalone_is_valid(cue_words, is_block_start=is_block_start):
-        cost += 1350.0 if not is_block_end else 850.0
+        if profile.max_lines == 1 and not is_block_end:
+            return math.inf, None, {}
+        cost += 1350.0 if not is_block_end else 3200.0 if profile.max_lines == 1 else 850.0
     elif (
         word_count == 3
         and profile.max_lines >= 2
@@ -2900,6 +2930,18 @@ def _merge_safe_fragment_cues(
         first_clean = _clean_token(next_first["text"])
         last_clean = _clean_token(previous_last["text"])
         duration = max(0.05, joined[-1]["end"] - joined[0]["start"])
+        flat_text = _join_tokens([_display_token(word) for word in joined])
+        flat_cps = _visible_chars(flat_text) / duration
+        continuation_overflow = (
+            profile.format_id == "16:9"
+            and profile.max_lines == 1
+            and display_width(flat_text) <= CONTINUATION_OVERFLOW_MAX_WIDTH
+            and flat_cps <= profile.max_cps
+            and first_clean in PREPOSITIONS | RELATIVES
+            and _has_predicate(previous)
+        )
+        if continuation_overflow and display_width(flat_text) > profile.max_width:
+            joined[0]["semantic_continuation_overflow"] = True
         wrapped_joined = _wrap_words(joined, profile, line_protected)
         if wrapped_joined is None:
             merged.append(current)
@@ -2935,6 +2977,7 @@ def _merge_safe_fragment_cues(
                 or (len(previous) <= 4 and len(current) <= 4)
             )
         )
+        max_merge_cps = profile.max_cps if profile.max_lines == 1 else (profile.target_cps + 2.2)
         can_merge = (
             not next_first.get("source_boundary_before")
             and not previous_last.get("hard_sentence_end")
@@ -2942,11 +2985,13 @@ def _merge_safe_fragment_cues(
             and not next_first.get("in_section_header")
             and len(joined) <= profile.max_words
             and duration <= profile.max_duration
-            and cps <= profile.target_cps + 2.2
+            and cps <= max_merge_cps
         )
         if can_merge and (dangling_start or dangling_end or short_fragment or adjacent_short_one_liners):
             merged[-1] = joined
         else:
+            if continuation_overflow and "semantic_continuation_overflow" in joined[0]:
+                joined[0].pop("semantic_continuation_overflow", None)
             merged.append(current)
     return merged
 
@@ -3528,7 +3573,22 @@ def validate_final_cues(
         words = cue.get("words", [])
         cue_number = idx + 1
 
-        if len(lines) > profile.max_lines or any(display_width(line) > profile.max_width for line in lines):
+        semantic_one_line_ok = (
+            len(lines) == 1
+            and profile.format_id == "16:9"
+            and profile.max_lines == 1
+            and display_width(lines[0]) <= SEMANTIC_OVERFLOW_MAX_WIDTH
+            and (
+                bool(words and words[0].get("semantic_continuation_overflow"))
+                or (
+                    bool(words)
+                    and _clean_token(words[0]["text"]) in DETERMINERS
+                    and words[-1]["text"].rstrip().endswith(TERMINAL_PUNCTUATION + CLAUSE_PUNCTUATION)
+                    and any(_looks_like_verb(w["text"]) for w in words)
+                )
+            )
+        )
+        if (len(lines) > profile.max_lines or any(display_width(line) > profile.max_width for line in lines)) and not semantic_one_line_ok:
             if len(words) > 1:
                 item = {"cue_index": cue_number, "code": "LAYOUT", "text": text}
                 layout_violations.append(item)

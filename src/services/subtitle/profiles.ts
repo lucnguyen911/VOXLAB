@@ -59,6 +59,51 @@ export function getSubtitleProfile(
 ): SubtitleProfile {
   const base = SUBTITLE_PROFILES[aspectRatio] || SUBTITLE_PROFILES["16:9"];
   const safeLines = maxLines === 1 ? 1 : 2;
+  if (safeLines === 1) {
+    if (aspectRatio === "16:9") {
+      return {
+        ...base,
+        maxLines: 1,
+        targetWidth: 36,
+        maxWidth: 42,
+        targetWords: 7,
+        maxWords: 14,
+        minDuration: 5.0 / 6.0,
+        targetDuration: 2.5,
+        maxDuration: 7.0,
+        targetCps: 16.0,
+        maxCps: 20.0,
+      };
+    }
+    if (aspectRatio === "1:1") {
+      return {
+        ...base,
+        maxLines: 1,
+        targetWidth: 28,
+        maxWidth: 35,
+        targetWords: 6,
+        maxWords: 12,
+        minDuration: 0.9,
+        targetDuration: 2.2,
+        maxDuration: 7.0,
+        targetCps: 15.0,
+        maxCps: 19.0,
+      };
+    }
+    return {
+      ...base,
+      maxLines: 1,
+      targetWidth: 26,
+      maxWidth: 32,
+      targetWords: 5,
+      maxWords: 11,
+      minDuration: 0.8,
+      targetDuration: 1.9,
+      maxDuration: 7.0,
+      targetCps: 14.0,
+      maxCps: 18.0,
+    };
+  }
   return {
     ...base,
     maxLines: safeLines,

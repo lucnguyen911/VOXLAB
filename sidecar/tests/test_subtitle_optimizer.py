@@ -759,6 +759,67 @@ class SubtitleOptimizerTest(unittest.TestCase):
             # Cue 1 must NOT glue across the 0.40s pause onto Cue 2
             self.assertLess(cues[0]["endSec"], cues[1]["startSec"] - 0.10)
 
+    def test_one_line_horizontal_profile_matches_audio_factory_and_avoids_flash_orphans(self):
+        p16_1 = get_profile("16:9", 1)
+        p11_1 = get_profile("1:1", 1)
+        p916_1 = get_profile("9:16", 1)
+        self.assertEqual(p16_1.max_width, 42)
+        self.assertEqual(p16_1.target_width, 36)
+        self.assertEqual(p11_1.max_width, 35)
+        self.assertEqual(p916_1.max_width, 32)
+
+        # Real timing from "au that 1.mp4" where narrow 32-char 1-line previously produced a 0.44s / 36 CPS flash cue
+        seg = {
+            "id": 1,
+            "startSec": 0.02,
+            "endSec": 13.72,
+            "text": (
+                "I believe the consensus estimate among analysts that follows the AI space "
+                "very closely is that there will be at least a 15 gigawatt shortfall of power in 2027 for AI chips."
+            ),
+            "words": [
+                {"word": "I", "startSec": 0.02, "endSec": 0.20, "probability": 0.99},
+                {"word": "believe", "startSec": 0.20, "endSec": 0.62, "probability": 0.99},
+                {"word": "the", "startSec": 0.62, "endSec": 0.78, "probability": 0.99},
+                {"word": "consensus", "startSec": 0.78, "endSec": 1.38, "probability": 0.99},
+                {"word": "estimate", "startSec": 1.38, "endSec": 1.94, "probability": 0.99},
+                {"word": "among", "startSec": 2.40, "endSec": 2.75, "probability": 0.99},
+                {"word": "analysts", "startSec": 2.75, "endSec": 3.45, "probability": 0.99},
+                {"word": "that", "startSec": 3.45, "endSec": 3.70, "probability": 0.99},
+                {"word": "follows", "startSec": 3.70, "endSec": 4.16, "probability": 0.99},
+                {"word": "the", "startSec": 4.16, "endSec": 4.35, "probability": 0.99},
+                {"word": "AI", "startSec": 4.35, "endSec": 4.70, "probability": 0.99},
+                {"word": "space", "startSec": 4.70, "endSec": 5.10, "probability": 0.99},
+                {"word": "very", "startSec": 5.10, "endSec": 5.32, "probability": 0.99},
+                {"word": "closely", "startSec": 5.32, "endSec": 5.75, "probability": 0.99},
+                {"word": "is", "startSec": 5.75, "endSec": 5.88, "probability": 0.99},
+                {"word": "that", "startSec": 5.88, "endSec": 6.00, "probability": 0.99},
+                {"word": "there", "startSec": 6.00, "endSec": 6.12, "probability": 0.99},
+                {"word": "will", "startSec": 6.12, "endSec": 6.26, "probability": 0.99},
+                {"word": "be", "startSec": 6.26, "endSec": 6.38, "probability": 0.99},
+                {"word": "at", "startSec": 6.38, "endSec": 6.46, "probability": 0.99},
+                {"word": "least", "startSec": 6.46, "endSec": 6.58, "probability": 0.99},
+                {"word": "a", "startSec": 6.58, "endSec": 6.80, "probability": 0.99},
+                {"word": "15", "startSec": 6.80, "endSec": 7.50, "probability": 0.99},
+                {"word": "gigawatt", "startSec": 7.50, "endSec": 8.64, "probability": 0.99},
+                {"word": "shortfall", "startSec": 8.67, "endSec": 9.65, "probability": 0.99},
+                {"word": "of", "startSec": 9.65, "endSec": 9.95, "probability": 0.99},
+                {"word": "power", "startSec": 9.95, "endSec": 10.42, "probability": 0.99},
+                {"word": "in", "startSec": 10.42, "endSec": 10.75, "probability": 0.99},
+                {"word": "2027", "startSec": 10.75, "endSec": 11.95, "probability": 0.99},
+                {"word": "for", "startSec": 11.95, "endSec": 12.35, "probability": 0.99},
+                {"word": "AI", "startSec": 12.35, "endSec": 12.95, "probability": 0.99},
+                {"word": "chips.", "startSec": 12.95, "endSec": 13.72, "probability": 0.99},
+            ],
+        }
+        cues = optimize_subtitles_v2([seg], video_format="16:9", max_lines=1)
+        self.assertIn(len(cues), (5, 6))
+        for c in cues:
+            dur = c["endSec"] - c["startSec"]
+            self.assertGreaterEqual(dur, 0.80, f"Flash cue remained: {c}")
+            self.assertLessEqual(display_width(c["text"]), 42)
+        self.assertFalse(any(c["text"].endswith(" very") for c in cues))
+
 
 if __name__ == "__main__":
     unittest.main()

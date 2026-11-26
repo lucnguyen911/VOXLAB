@@ -2,6 +2,16 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.5] — 2026-11-26
+
+### Fixed & Improved
+- **Đồng nhất Bước Cuối Xuất Phụ Đề theo chuẩn `Audio-Factory` (`Subtitle Sync v2.2`)**:
+  - **Khử hoàn toàn lỗi trôi lệch tích lũy trên bài dài (`0.000s` drift)**: Lấy trực tiếp mốc biên thực tế `[startSec, endSec, durationSec]` từ bộ ghép file Master Audio (`fastWav.segments` / `assembleRes.segments`) thay vì cộng dồn khoảng lặng ước tính, chấm dứt hiện tượng phụ đề chạy sớm gần `5 giây` ở cuối bài 25–60 phút.
+  - **Hợp nhất cổng tối ưu Word-level DP (`exportUnifiedMasterSubtitlesFromTts`) cho Tab TTS, Tab Phụ đề, Hội thoại và Hàng loạt**: Tự động ánh xạ `qualityReview.words` vào đúng timeline Master Audio để chạy bộ tối ưu Python `optimize_subtitles_v2` trong `~0.1s` (hoặc tự động chạy `generateMasterSubtitles` nếu tắt Hậu kiểm), giữ chuẩn cả định dạng số/viết tắt (`$400`, `$4,800`, `2026`, `AI`, `G20`) lẫn danh từ riêng trong kịch bản.
+  - **Chuẩn hóa khổ phụ đề 1 dòng (`max_lines = 1`) theo `Audio-Factory`**: Mở khổ `16:9` 1 dòng lên `target_width=36, max_width=42, max_words=14` (`1:1` 1 dòng: `28/35`; `9:16` 1 dòng: `26/32`) kèm luật `SEMANTIC_OVERFLOW` và bảo vệ cụm trạng từ chỉ mức độ (`very closely`), loại bỏ hoàn toàn các cue chớp `< 0.8s` và `CPS > 20`.
+- **Đồng bộ 100% Hậu kiểm (`v4.5.0`) giữa Tab TTS, Tab Hội thoại và Tab Hàng loạt**:
+  - Đồng bộ `QUALITY_VALIDATOR_VERSION = "4.5.0"`, bổ sung chuẩn hóa nhịp nghỉ dấu câu (`enforcePunctuationPauses`) trước khi Hậu kiểm ở nhánh Hàng loạt Hội thoại, truyền thống nhất model Whisper đã chọn và khóa chống ghi đè kết quả bất đồng bộ khi người dùng sửa câu thoại.
+
 ## [1.0.4] — 2026-11-24
 
 ### Fixed & Improved

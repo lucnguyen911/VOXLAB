@@ -110,8 +110,9 @@ export class TranscriptionExecutor {
     // Inference phase with progress
     onProgress?.(40, "Đang nhận diện giọng nói và bóc băng lời thoại...");
 
-    let rawSegments: WhisperSegment[];
-    let detectedLanguage: string;
+    let rawSegments: WhisperSegment[] = [];
+    let detectedLanguage: string = "en";
+    let precomputedMasterCues: SubtitleCue[] | null = null;
 
     if (mockSegments && mockSegments.length > 0) {
       // Test seam only (unit tests of timing/export). Production always runs the sidecar below.
@@ -130,50 +131,100 @@ export class TranscriptionExecutor {
         };
       }
       const audioPath = options.audioFilePath || job.sourceFilePath;
-      try {
-        const r = await ai.transcribe(
-          audioPath,
-          transSnapshot?.audioLanguage || "auto",
-          true,
-          (pct, stage) => onProgress?.(Math.floor(40 + pct * 0.3), `Whisper: ${stage}`),
-          effectiveWhisperModel
-        );
-        rawSegments = r.segments.map((s, idx) => ({
-          id: idx + 1,
-          startSec: s.startSec,
-          endSec: s.endSec,
-          text: s.text,
-          words: s.words?.map((w) => ({
-            word: w.word,
-            startSec: w.startSec,
-            endSec: w.endSec,
-            confidence: w.probability,
-          })),
-        }));
-        detectedLanguage = r.language;
-      } catch (e) {
-        const err = AiError.from(e);
-        const wasCancelled = err.code === "CANCELLED" || isCancelled?.();
-        return {
-          task: "transcription",
-          status: wasCancelled ? "cancelled" : "failed",
-          progressPct: 40,
-          outputArtifactPaths: [],
-          error: wasCancelled ? undefined : `Lỗi Whisper ASR: ${err.message}`,
-          startedAt,
-          completedAt: Date.now(),
-        };
-      }
-      if (rawSegments.length === 0) {
-        return {
-          task: "transcription",
-          status: "failed",
-          progressPct: 70,
-          outputArtifactPaths: [],
-          error: "Whisper không nhận diện được lời thoại nào trong tệp media.",
-          startedAt,
-          completedAt: Date.now(),
-        };
+      const subSettings = loadSubtitleSettings();
+      const aspectRatio = transSnapshot?.aspectRatio || subSettings.aspectRatio;
+      const maxLines = (transSnapshot?.maxLines || subSettings.maxLines) === 1 ? 1 : 2;
+
+      if (typeof ai.generateMasterSubtitles === "function") {
+        try {
+          const masterRes = await ai.generateMasterSubtitles(
+            {
+              audioPath,
+              language: transSnapshot?.audioLanguage || "auto",
+              aspectRatio,
+              maxLines,
+              asrModelId: effectiveWhisperModel,
+              speechSpeed,
+            },
+            (pct, stage) => onProgress?.(Math.floor(15 + pct * 0.68), `Whisper: ${stage}`)
+          );
+          precomputedMasterCues = (masterRes.cues || []).map((c, idx) => ({
+            index: c.index || idx + 1,
+            startSec: Number(Number(c.startSec).toFixed(3)),
+            endSec: Number(Number(c.endSec).toFixed(3)),
+            text: c.text,
+          }));
+          detectedLanguage = masterRes.language || "en";
+          if (!precomputedMasterCues || precomputedMasterCues.length === 0) {
+            return {
+              task: "transcription",
+              status: "failed",
+              progressPct: 70,
+              outputArtifactPaths: [],
+              error: "Whisper không nhận diện được lời thoại nào trong tệp media.",
+              startedAt,
+              completedAt: Date.now(),
+            };
+          }
+        } catch (e) {
+          const err = AiError.from(e);
+          const wasCancelled = err.code === "CANCELLED" || isCancelled?.();
+          return {
+            task: "transcription",
+            status: wasCancelled ? "cancelled" : "failed",
+            progressPct: 40,
+            outputArtifactPaths: [],
+            error: wasCancelled ? undefined : `Lỗi Whisper ASR: ${err.message}`,
+            startedAt,
+            completedAt: Date.now(),
+          };
+        }
+      } else {
+        try {
+          const r = await ai.transcribe(
+            audioPath,
+            transSnapshot?.audioLanguage || "auto",
+            true,
+            (pct, stage) => onProgress?.(Math.floor(40 + pct * 0.3), `Whisper: ${stage}`),
+            effectiveWhisperModel
+          );
+          rawSegments = r.segments.map((s, idx) => ({
+            id: idx + 1,
+            startSec: s.startSec,
+            endSec: s.endSec,
+            text: s.text,
+            words: s.words?.map((w) => ({
+              word: w.word,
+              startSec: w.startSec,
+              endSec: w.endSec,
+              confidence: w.probability,
+            })),
+          }));
+          detectedLanguage = r.language;
+        } catch (e) {
+          const err = AiError.from(e);
+          const wasCancelled = err.code === "CANCELLED" || isCancelled?.();
+          return {
+            task: "transcription",
+            status: wasCancelled ? "cancelled" : "failed",
+            progressPct: 40,
+            outputArtifactPaths: [],
+            error: wasCancelled ? undefined : `Lỗi Whisper ASR: ${err.message}`,
+            startedAt,
+            completedAt: Date.now(),
+          };
+        }
+        if (rawSegments.length === 0) {
+          return {
+            task: "transcription",
+            status: "failed",
+            progressPct: 70,
+            outputArtifactPaths: [],
+            error: "Whisper không nhận diện được lời thoại nào trong tệp media.",
+            startedAt,
+            completedAt: Date.now(),
+          };
+        }
       }
     }
 
@@ -192,48 +243,48 @@ export class TranscriptionExecutor {
 
     onProgress?.(70, "Đang căn chỉnh mốc thời gian phụ đề theo tốc độ...");
 
-    // Timeline Remapping based on speech speed (0.8 | 0.9 | 1.0)
-    const remappedSegments = remapWhisperOutputToOriginalTimeline(rawSegments, speechSpeed);
-
     // Convert segments to formatted SubtitleCue list (using YouTube Cinematic DP optimizer when available)
-    let subtitleCues: SubtitleCue[] = [];
-    if (!mockSegments && ai && typeof ai.optimizeSubtitlesV2 === "function") {
-      try {
-        const subSettings = loadSubtitleSettings();
-        const aspectRatio = transSnapshot?.aspectRatio || subSettings.aspectRatio;
-        const maxLines = transSnapshot?.maxLines || subSettings.maxLines;
-        const optRes = await ai.optimizeSubtitlesV2({
-          segments: remappedSegments.map((s, idx) => ({
-            id: typeof s.id === "number" ? s.id : Number(s.id) || idx + 1,
-            startSec: s.startSec,
-            endSec: s.endSec,
-            text: s.text,
-            words: s.words?.map((w) => ({
-              word: w.word,
-              startSec: w.startSec,
-              endSec: w.endSec,
-              probability: w.confidence ?? 0.99,
-            })),
-          })),
-          aspectRatio,
-          maxLines,
-          audioPath: speechSpeed === 1.0 ? (options.audioFilePath || job.sourceFilePath) : undefined,
-          language: detectedLanguage || "en",
-        });
-        if (optRes?.cues?.length) {
-          subtitleCues = optRes.cues;
-        }
-      } catch {
-        // Fallback when mock backend does not implement subtitle.optimize
-      }
-    }
+    let subtitleCues: SubtitleCue[] = precomputedMasterCues || [];
     if (subtitleCues.length === 0) {
-      subtitleCues = remappedSegments.map((s, idx) => ({
-        index: idx + 1,
-        startSec: s.startSec,
-        endSec: s.endSec,
-        text: s.text.trim(),
-      }));
+      const remappedSegments = remapWhisperOutputToOriginalTimeline(rawSegments, speechSpeed);
+      if (!mockSegments && ai && typeof ai.optimizeSubtitlesV2 === "function") {
+        try {
+          const subSettings = loadSubtitleSettings();
+          const aspectRatio = transSnapshot?.aspectRatio || subSettings.aspectRatio;
+          const maxLines = transSnapshot?.maxLines || subSettings.maxLines;
+          const optRes = await ai.optimizeSubtitlesV2({
+            segments: remappedSegments.map((s, idx) => ({
+              id: typeof s.id === "number" ? s.id : Number(s.id) || idx + 1,
+              startSec: s.startSec,
+              endSec: s.endSec,
+              text: s.text,
+              words: s.words?.map((w) => ({
+                word: w.word,
+                startSec: w.startSec,
+                endSec: w.endSec,
+                probability: w.confidence ?? 0.99,
+              })),
+            })),
+            aspectRatio,
+            maxLines,
+            audioPath: speechSpeed === 1.0 ? (options.audioFilePath || job.sourceFilePath) : undefined,
+            language: detectedLanguage || "en",
+          });
+          if (optRes?.cues?.length) {
+            subtitleCues = optRes.cues;
+          }
+        } catch {
+          // Fallback when mock backend does not implement subtitle.optimize
+        }
+      }
+      if (subtitleCues.length === 0) {
+        subtitleCues = remappedSegments.map((s, idx) => ({
+          index: idx + 1,
+          startSec: s.startSec,
+          endSec: s.endSec,
+          text: s.text.trim(),
+        }));
+      }
     }
 
     onProgress?.(85, "Đang định dạng và lưu tệp phụ đề...");

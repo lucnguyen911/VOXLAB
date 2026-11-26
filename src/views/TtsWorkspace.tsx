@@ -40,9 +40,9 @@ import {
 import { loadStoredTtsSettings } from "../components/inspector/TtsInspector";
 import {
   loadSubtitleSettings,
-  generateSubtitlesFromChunks,
   exportToSrt,
 } from "../services/subtitle";
+import { exportUnifiedMasterSubtitlesFromTts } from "../services/subtitle/masterSubtitleExport";
 import { loadTranslationSettings } from "../services/translation";
 import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import {
@@ -1389,37 +1389,18 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
           const { invoke } = await import("@tauri-apps/api/core");
 
           try {
+            setProgressStage("Đang đồng bộ & tối ưu phụ đề theo sóng âm...");
             const activeSegments = fastWav?.segments || assembleRes?.segments;
-            const timedChunks = activeSegments
-              ? sortedChunks.map((c, idx) => ({
-                  ...c,
-                  durationSec: activeSegments[idx]?.durationSec ?? c.durationSec,
-                }))
-              : sortedChunks;
-            let subtitleCues = generateSubtitlesFromChunks(timedChunks, {
-              punctuationPauses: ttsSettings.pauses,
+            const subtitleCues = await exportUnifiedMasterSubtitlesFromTts({
+              chunks: sortedChunks,
+              assembledSegments: activeSegments,
+              masterAudioPath: chosenPath,
+              ai,
               aspectRatio: subtitleSettings.aspectRatio,
               maxLines: subtitleSettings.maxLines,
+              punctuationPauses: ttsSettings.pauses,
+              asrModelId: subtitleSettings.whisperModel,
             });
-            if (ai) {
-              try {
-                const alignedRes = await ai.alignSubtitleCues({
-                  cues: subtitleCues,
-                  audioPath: chosenPath,
-                  minDbThreshold: -28.0,
-                  alignEnds: true,
-                });
-                if (alignedRes?.cues && alignedRes.cues.length === subtitleCues.length) {
-                  subtitleCues = subtitleCues.map((c, idx) => ({
-                    ...c,
-                    startSec: alignedRes.cues[idx].startSec,
-                    endSec: alignedRes.cues[idx].endSec,
-                  }));
-                }
-              } catch (alignErr) {
-                console.warn("Breath-immune waveform cue alignment skipped:", alignErr);
-              }
-            }
             const srtContent = exportToSrt(subtitleCues);
             const srtPath = chosenPath.replace(/\.(wav|mp3)$/i, ".srt");
             await invoke("fs_write_text", {

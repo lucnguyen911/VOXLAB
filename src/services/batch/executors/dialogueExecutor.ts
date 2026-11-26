@@ -22,7 +22,7 @@ import {
   calculateDialogueTimeline,
   resolveTurnPauseRange,
 } from "../../dialogue/masterAssembly";
-import { generateDialogueSrt } from "../../dialogue/srtExporter";
+import { exportAlignedDialogueSrt } from "../../subtitle/masterSubtitleExport";
 import { loadSubtitleSettings } from "../../subtitle";
 import {
   resolveJobOutputDirectory,
@@ -36,7 +36,10 @@ import { concatPcmWavsFast } from "../batchRuntime";
 import { getEngineAdvancedSettings } from "../../ai/ttsAdvancedSettings";
 import { edgeTtsProvider } from "../../providers/edgeProvider";
 import { googleTranslateTtsProvider } from "../../providers/googleProvider";
-import { resolveBatchVoiceTarget } from "../batchModelResolver";
+import {
+  resolveBatchVoiceTarget,
+  resolveBatchWhisperModelId,
+} from "../batchModelResolver";
 import { getEffectiveRules } from "../../pronunciation";
 import {
   validateChunkAudioQuality,
@@ -165,7 +168,13 @@ export class DialogueExecutor {
           scratchScope,
           `turn_${String(i + 1).padStart(4, "0")}.${target.audioExt}`
         );
-        let r: { durationSec: number; outputPath: string };
+        let r: {
+          durationSec: number;
+          outputPath: string;
+          leadingSilenceMs?: number;
+          trailingSilenceMs?: number;
+          majorPunctuationSplit?: boolean;
+        };
         if (target.isGoogleVoice) {
           r = await googleTranslateTtsProvider.synthesize({
             voiceId: vId,
@@ -197,6 +206,11 @@ export class DialogueExecutor {
         }
         seg.durationSec = r.durationSec; // real duration → speaker timeline + subtitles
         seg.audioFilePath = r.outputPath;
+        if (typeof r.leadingSilenceMs === "number") seg.leadingSilenceSec = r.leadingSilenceMs / 1000;
+        if (typeof r.trailingSilenceMs === "number") seg.trailingSilenceSec = r.trailingSilenceMs / 1000;
+        (seg as DialogueSegment & { _majorPunctuationSplit?: boolean })._majorPunctuationSplit = Boolean(
+          r.majorPunctuationSplit
+        );
         seg.status = "ready";
         segmentPaths.push(r.outputPath);
       } catch (e) {
@@ -218,6 +232,50 @@ export class DialogueExecutor {
     }
 
     // 4b. Dedicated post-TTS Whisper quality validation pass (avoids TTS <-> ASR GPU model thrashing)
+    const transSnapshotForQc =
+      job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
+    const effectiveAsrModel = resolveBatchWhisperModelId(
+      transSnapshotForQc?.whisperModel || loadSubtitleSettings().whisperModel
+    );
+    const maybeShapeDialoguePauses = async (seg: DialogueSegment) => {
+      if (
+        !dialogueSnapshot?.pauses ||
+        !seg.audioFilePath ||
+        typeof ai.enforcePunctuationPauses !== "function"
+      ) {
+        return;
+      }
+      const majorSplit = Boolean(
+        (seg as DialogueSegment & { _majorPunctuationSplit?: boolean })._majorPunctuationSplit
+      );
+      const inner = (seg.cleanText || seg.rawText).trim().slice(0, -1);
+      const needsShape = majorSplit
+        ? /[,，、:;：；]/.test(inner)
+        : /[,.;:!?…，、。；：！？]/.test(inner);
+      if (!needsShape) return;
+      try {
+        const shaped = await ai.enforcePunctuationPauses({
+          audioPath: seg.audioFilePath,
+          text: seg.cleanText || seg.rawText,
+          punctuationPauses: dialogueSnapshot.pauses,
+          speed,
+          majorAlreadySplit: majorSplit,
+          asrModelId: effectiveAsrModel,
+        });
+        if (shaped && typeof shaped.durationSec === "number" && shaped.durationSec > 0) {
+          seg.durationSec = shaped.durationSec;
+          if (typeof shaped.leadingSilenceMs === "number") {
+            seg.leadingSilenceSec = shaped.leadingSilenceMs / 1000;
+          }
+          if (typeof shaped.trailingSilenceMs === "number") {
+            seg.trailingSilenceSec = shaped.trailingSilenceMs / 1000;
+          }
+        }
+      } catch {
+        // Non-blocking: pause shaping failure must not abort batch dialogue synthesis
+      }
+    };
+
     let retriesUsed = 0;
     if (typeof ai.validateAudioQuality === "function" && segments.length > 0) {
       if (segments.length > 1) {
@@ -228,13 +286,14 @@ export class DialogueExecutor {
       for (let i = 0; i < segments.length; i++) {
         const seg = segments[i];
         if (isCancelled?.()) return cancelled(68);
+        await maybeShapeDialoguePauses(seg);
         try {
           seg.qualityReview = await validateChunkAudioQuality(
             seg,
             undefined,
             ai,
             speed,
-            undefined,
+            effectiveAsrModel,
             "dialogue"
           );
         } catch {
@@ -288,7 +347,13 @@ export class DialogueExecutor {
                 scratchScope,
                 `turn_${String(segIdx + 1).padStart(4, "0")}_retry${attempt}.${target.audioExt}`
               );
-              let r: { durationSec: number; outputPath: string };
+              let r: {
+                durationSec: number;
+                outputPath: string;
+                leadingSilenceMs?: number;
+                trailingSilenceMs?: number;
+                majorPunctuationSplit?: boolean;
+              };
               if (target.isGoogleVoice) {
                 r = await googleTranslateTtsProvider.synthesize({
                   voiceId: vId,
@@ -322,6 +387,11 @@ export class DialogueExecutor {
               }
               seg.durationSec = r.durationSec;
               seg.audioFilePath = r.outputPath;
+              if (typeof r.leadingSilenceMs === "number") seg.leadingSilenceSec = r.leadingSilenceMs / 1000;
+              if (typeof r.trailingSilenceMs === "number") seg.trailingSilenceSec = r.trailingSilenceMs / 1000;
+              (seg as DialogueSegment & { _majorPunctuationSplit?: boolean })._majorPunctuationSplit = Boolean(
+                r.majorPunctuationSplit
+              );
               seg.status = "ready";
               segmentPaths[segIdx] = r.outputPath;
             } catch (e) {
@@ -339,13 +409,14 @@ export class DialogueExecutor {
           for (const segIdx of flaggedIndices) {
             if (isCancelled?.()) return cancelled(72);
             const seg = segments[segIdx];
+            await maybeShapeDialoguePauses(seg);
             try {
               seg.qualityReview = await validateChunkAudioQuality(
                 seg,
                 undefined,
                 ai,
                 speed,
-                undefined,
+                effectiveAsrModel,
                 "dialogue"
               );
             } catch {
@@ -391,6 +462,10 @@ export class DialogueExecutor {
 
     const outputArtifactPaths: string[] = [];
 
+    let assembledDialogueSegments:
+      | { index: number; startSec: number; endSec: number; durationSec: number }[]
+      | undefined;
+
     if (audioResolution.action !== "skip") {
       onProgress?.(75, "Đang ghép nối âm thanh hội thoại đa nhân vật...");
       const concatInputs = assembly.timeline.map((entry, i) => ({
@@ -402,12 +477,18 @@ export class DialogueExecutor {
           targetAudioFormat === "wav"
             ? await concatPcmWavsFast(concatInputs, audioResolution.resolvedPath)
             : null;
-        if (!fastWav) {
-          await ai.assemble({
+        if (fastWav) {
+          assembledDialogueSegments = fastWav.segments;
+        } else {
+          const assembleRes = await ai.assemble({
             inputs: concatInputs,
             outputPath: audioResolution.resolvedPath,
             format: targetAudioFormat,
+            punctuationPauses: dialogueSnapshot?.pauses,
           });
+          if (assembleRes?.segments) {
+            assembledDialogueSegments = assembleRes.segments;
+          }
         }
       } catch (e) {
         const err = AiError.from(e);
@@ -419,11 +500,17 @@ export class DialogueExecutor {
 
     // 7. Generate Speaker-labeled Subtitle (.srt / .vtt)
     if (globalSettings.exportSrt) {
-      onProgress?.(90, "Đang tạo phụ đề phân vai có nhãn nhân vật...");
+      onProgress?.(90, "Đang tạo phụ đề phân vai đồng bộ theo sóng âm...");
       const transSnapshot =
         job.effectiveConfigSnapshot?.tasks.transcription || job.configOverrides.transcription;
       const subSettings = loadSubtitleSettings();
-      const srtContent = generateDialogueSrt(assembly.timeline, {
+      const masterPathForSub =
+        audioResolution.action !== "skip" ? audioResolution.resolvedPath : undefined;
+      const srtContent = await exportAlignedDialogueSrt({
+        timeline: assembly.timeline,
+        assembledSegments: assembledDialogueSegments,
+        masterAudioPath: masterPathForSub,
+        ai,
         aspectRatio: transSnapshot?.aspectRatio || subSettings.aspectRatio,
         maxLines: transSnapshot?.maxLines || subSettings.maxLines,
       });
