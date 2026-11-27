@@ -63,6 +63,8 @@ import {
   saveTtsSessionBackup,
   loadTtsSessionBackup,
   hydrateTtsSessionChunksFromDisk,
+  loadTtsWorkingText,
+  saveTtsWorkingText,
 } from "../services/tts/workspaceSessionStorage";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
@@ -147,17 +149,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   const { t } = useI18n();
   const [progressStage, setProgressStage] = useState<string>("");
 
-  const [workingText, setWorkingText] = useState(() => {
-    try {
-      const saved = localStorage.getItem("voxlab_script_working_text");
-      if (!saved || saved.trim() === INITIAL_SCRIPT.trim()) {
-        return "";
-      }
-      return saved;
-    } catch {
-      return "";
-    }
-  });
+  const [workingText, setWorkingText] = useState(() => loadTtsWorkingText(INITIAL_SCRIPT));
 
   const initialRestoredSessionRef = useRef<{
     stage: "prep" | "studio";
@@ -371,11 +363,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 
   const handleWorkingTextChange = (text: string) => {
     setWorkingText(text);
-    try {
-      localStorage.setItem("voxlab_script_working_text", text);
-    } catch {
-      // ignore
-    }
+    saveTtsWorkingText(text);
   };
 
   // Deterministic normalization modal open
@@ -391,11 +379,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       if (!success) {
         handleWorkingTextChange(normalizedText);
       } else {
-        try {
-          localStorage.setItem("voxlab_script_working_text", textareaRef.current.value);
-        } catch {
-          // ignore
-        }
+        saveTtsWorkingText(textareaRef.current.value);
       }
     } else {
       handleWorkingTextChange(normalizedText);
@@ -419,11 +403,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
         const next = workingText.slice(0, start) + ` ${token} ` + workingText.slice(end);
         handleWorkingTextChange(next);
       } else {
-        try {
-          localStorage.setItem("voxlab_script_working_text", textarea.value);
-        } catch {
-          // ignore
-        }
+        saveTtsWorkingText(textarea.value);
       }
     } else {
       handleWorkingTextChange(`${workingText} ${token}`);
@@ -712,7 +692,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
   // Triggers when chunks are ready with audio, but review is outdated or missing (e.g. validator version bump or ASR model change)
   // Strictly sequential (concurrency 1), guarded against infinite loops and stale audio races.
   useEffect(() => {
-    if (isGenerating && !isOnlineBatchGeneratingRef.current) return;
+    if (isGenerating) return;
     if (!isAsrReady) return;
     // Enforce global concurrency = 1 across the auto-validation queue so multiple chunks never run Whisper concurrently
     if (inFlightValidationsRef.current.size > 0) return;
@@ -867,6 +847,34 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     onCancel?.();
   };
 
+  const confirmVoiceScriptCompatibility = (sampleText: string): boolean => {
+    if (!isTauriRuntime() || typeof window === "undefined" || typeof window.confirm !== "function") {
+      return true;
+    }
+    const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
+    const matchedVoice = availableVoices.find((v) => v.id === activeVoiceId);
+    if (!matchedVoice || !Array.isArray(matchedVoice.supportedLanguages)) {
+      return true;
+    }
+    const langs = matchedVoice.supportedLanguages.map((l) => l.toLowerCase());
+    if (langs.length === 0 || langs.includes("*") || langs.includes("auto")) {
+      return true;
+    }
+    const hasViDiacritics = /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i.test(sampleText);
+    const latinWords = sampleText.match(/[A-Za-z]{2,}/g) || [];
+    if (!hasViDiacritics && latinWords.length >= 8 && langs.length === 1 && langs[0] === "vi") {
+      return window.confirm(
+        `Kịch bản hiện tại không có dấu Tiếng Việt nhưng đang chọn giọng đơn ngữ Tiếng Việt "${matchedVoice.name}". Tiếp tục đọc có thể khiến phát âm sai toàn bộ bài.\n\nBạn vẫn muốn tiếp tục đọc bằng giọng "${matchedVoice.name}"?`
+      );
+    }
+    if (hasViDiacritics && !langs.includes("vi")) {
+      return window.confirm(
+        `Kịch bản hiện tại là Tiếng Việt nhưng giọng "${matchedVoice.name}" chỉ hỗ trợ [${langs.join(", ").toUpperCase()}]. Tiếp tục đọc có thể phát âm sai.\n\nBạn vẫn muốn tiếp tục?`
+      );
+    }
+    return true;
+  };
+
   const buildBatchVoiceSnapshot = (): EffectiveVoiceSnapshot | null => {
     const availableVoices = (voices && voices.length > 0) ? voices : MOCK_VOICES;
     const matchedVoice = availableVoices.find((v) => v.id === activeVoiceId);
@@ -921,7 +929,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency: isOnlineBatch ? 3 : 1,
+          concurrency: 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -957,7 +965,15 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             setChunks((prev) =>
               prev.map((c) =>
                 c.id === chunkId
-                  ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
+                  ? {
+                      ...c,
+                      status: "failed",
+                      durationSec: undefined,
+                      audioUrl: undefined,
+                      audioFilePath: undefined,
+                      qualityReview: undefined,
+                      errorMessage: String(err?.message || err),
+                    }
                   : c
               )
             );
@@ -1016,7 +1032,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency: isOnlineBatch ? 3 : 1,
+          concurrency: 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -1052,7 +1068,15 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             setChunks((prev) =>
               prev.map((c) =>
                 c.id === chunkId
-                  ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
+                  ? {
+                      ...c,
+                      status: "failed",
+                      durationSec: undefined,
+                      audioUrl: undefined,
+                      audioFilePath: undefined,
+                      qualityReview: undefined,
+                      errorMessage: String(err?.message || err),
+                    }
                   : c
               )
             );
@@ -1111,7 +1135,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency: isOnlineBatch ? 3 : 1,
+          concurrency: 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -1147,7 +1171,15 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             setChunks((prev) =>
               prev.map((c) =>
                 c.id === chunkId
-                  ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
+                  ? {
+                      ...c,
+                      status: "failed",
+                      durationSec: undefined,
+                      audioUrl: undefined,
+                      audioFilePath: undefined,
+                      qualityReview: undefined,
+                      errorMessage: String(err?.message || err),
+                    }
                   : c
               )
             );
@@ -1175,6 +1207,12 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     const validCustom = Array.isArray(customChunks) ? (customChunks as ChunkItem[]) : undefined;
     const targetChunks = validCustom || chunks;
     if (!targetChunks || targetChunks.length === 0) return;
+
+    // Pre-flight script/voice language compatibility check
+    const combinedSample = targetChunks.slice(0, 5).map((c) => c.text).join(" ");
+    if (!confirmVoiceScriptCompatibility(combinedSample)) {
+      return;
+    }
 
     // Pre-flight ASR readiness check
     const readiness = await checkAsrReadiness(currentAsrModel);
@@ -1214,7 +1252,7 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
       await batchQueueExecutor.runBatch(
         targetIds,
         {
-          concurrency: isOnlineBatch ? 3 : 1,
+          concurrency: 1,
           onWorkerChange: (_active, pending) => {
             setPendingItems(pending ?? 0);
           },
@@ -1250,7 +1288,15 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
             setChunks((prev) =>
               prev.map((c) =>
                 c.id === chunkId
-                  ? { ...c, status: "failed", errorMessage: String(err?.message || err) }
+                  ? {
+                      ...c,
+                      status: "failed",
+                      durationSec: undefined,
+                      audioUrl: undefined,
+                      audioFilePath: undefined,
+                      qualityReview: undefined,
+                      errorMessage: String(err?.message || err),
+                    }
                   : c
               )
             );

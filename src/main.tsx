@@ -7,8 +7,16 @@ import "./App.css";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { installProductionAntiInspect } from "./utils/antiInspect";
 import { sanitizeDiagnostics } from "./services/license/licenseService";
+import { isTauriRuntime } from "./services/ai/tauriBackend";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  purgeEphemeralWorkspaceStateFromLocalStorage,
+  syncWorkspaceSessionWithProcessId,
+} from "./services/tts/workspaceSessionStorage";
+import { resetBatchJobsPreservingSettings } from "./services/batch/batchStorage";
 
 installProductionAntiInspect();
+purgeEphemeralWorkspaceStateFromLocalStorage();
 
 const isProd = Boolean(
   (import.meta as unknown as { env?: { PROD?: boolean } })?.env?.PROD
@@ -49,10 +57,26 @@ window.addEventListener("unhandledrejection", (event) => {
   }
 });
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>,
-);
+async function bootstrapApplication() {
+  if (isTauriRuntime()) {
+    try {
+      const procId = await invoke<string>("get_process_session_id");
+      await syncWorkspaceSessionWithProcessId({
+        currentProcessId: procId,
+        onFreshProcessLaunch: () => resetBatchJobsPreservingSettings(),
+      });
+    } catch (err) {
+      console.warn("[bootstrap] Process session sync warning:", err);
+    }
+  }
+
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </React.StrictMode>,
+  );
+}
+
+void bootstrapApplication();

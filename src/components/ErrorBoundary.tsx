@@ -45,6 +45,7 @@ export class ErrorBoundary extends Component<Props, State> {
   private handleReload = () => {
     try {
       localStorage.removeItem("voxlab_tts_stage");
+      sessionStorage.removeItem("voxlab_tts_stage");
     } catch {
       // ignore
     }

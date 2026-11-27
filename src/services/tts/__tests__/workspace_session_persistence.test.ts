@@ -6,8 +6,11 @@ import {
   DialogueSegment,
 } from "../../../types/dialogue";
 import {
+  PROCESS_SESSION_ID_STORAGE_KEY,
   TTS_SESSION_STORAGE_KEY,
+  TTS_WORKING_TEXT_STORAGE_KEY,
   DIALOGUE_SESSION_STORAGE_KEY,
+  DIALOGUE_SCRIPT_STORAGE_KEY,
   reconcileChunksPreservingGeneratedAudio,
   saveTtsSessionBackup,
   loadTtsSessionBackup,
@@ -15,6 +18,11 @@ import {
   saveDialogueSessionBackup,
   loadDialogueSessionBackup,
   hydrateDialogueSegmentsFromDisk,
+  loadTtsWorkingText,
+  saveTtsWorkingText,
+  loadDialogueWorkingScript,
+  saveDialogueWorkingScript,
+  syncWorkspaceSessionWithProcessId,
 } from "../workspaceSessionStorage";
 
 function createMemoryStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
@@ -293,7 +301,114 @@ async function runTests() {
     assert.equal(hydrated[0].audioBlobUrl, "blob:rehydrated:C:/scratch/dialogue/seg_1.wav");
   }
 
-  console.log("PASS: workspace_session_persistence tests (3 suites)");
+  // 4. Process-Scoped Session Lifecycle: preserves across in-app tab switches / reloads, wipes on app exit & restart while keeping settings
+  {
+    const sessionStore = createMemoryStorage();
+    const localStore = createMemoryStorage();
+
+    // Seed durable app settings + legacy v1.0.6 ephemeral keys in localStorage
+    localStore.setItem("voxlab_active_model", "OmniVoice");
+    localStore.setItem("voxlab_active_voice_id", "clone_custom_en");
+    localStore.setItem("voxlab_tts_inspector_settings_v1", JSON.stringify({ speed: 1.05 }));
+    localStore.setItem("voxlab_dialogue_settings", JSON.stringify({ model: "Omni Voice" }));
+    localStore.setItem("voxlab_theme", "dark");
+    localStore.setItem(TTS_WORKING_TEXT_STORAGE_KEY, "Legacy stale script from v1.0.6");
+    localStore.setItem(TTS_SESSION_STORAGE_KEY, '{"version":1,"stage":"studio"}');
+    localStore.setItem(DIALOGUE_SCRIPT_STORAGE_KEY, "Nam: Old dialogue");
+    localStore.setItem(DIALOGUE_SESSION_STORAGE_KEY, '{"version":1,"stage":"studio"}');
+
+    let freshLaunchCount = 0;
+
+    // First launch of Process #1 ("proc_1000_aaa"): purges legacy localStorage drafts & binds session
+    const isFresh1 = await syncWorkspaceSessionWithProcessId({
+      currentProcessId: "proc_1000_aaa",
+      sessionStore,
+      localStore,
+      onFreshProcessLaunch: () => {
+        freshLaunchCount += 1;
+      },
+    });
+    assert.equal(isFresh1, true);
+    assert.equal(freshLaunchCount, 1);
+    assert.equal(sessionStore.getItem(PROCESS_SESSION_ID_STORAGE_KEY), "proc_1000_aaa");
+
+    // Legacy localStorage drafts are purged, while all durable app settings stay 100% intact
+    assert.equal(localStore.getItem(TTS_WORKING_TEXT_STORAGE_KEY), null);
+    assert.equal(localStore.getItem(TTS_SESSION_STORAGE_KEY), null);
+    assert.equal(localStore.getItem(DIALOGUE_SCRIPT_STORAGE_KEY), null);
+    assert.equal(localStore.getItem(DIALOGUE_SESSION_STORAGE_KEY), null);
+    assert.equal(localStore.getItem("voxlab_active_model"), "OmniVoice");
+    assert.equal(localStore.getItem("voxlab_active_voice_id"), "clone_custom_en");
+    assert.equal(localStore.getItem("voxlab_tts_inspector_settings_v1"), '{"speed":1.05}');
+    assert.equal(localStore.getItem("voxlab_dialogue_settings"), '{"model":"Omni Voice"}');
+    assert.equal(localStore.getItem("voxlab_theme"), "dark");
+
+    // User works inside Process #1 (TTS + Dialogue + Dubbing drafts saved in sessionStore)
+    saveTtsWorkingText("Current TTS draft in open session", sessionStore);
+    saveTtsSessionBackup(
+      {
+        stage: "studio",
+        workingText: "Current TTS draft in open session",
+        chunks: [
+          {
+            id: "c_live",
+            index: 1,
+            text: "Current TTS draft in open session",
+            originalText: "Current TTS draft in open session",
+            pauseAfterMs: "auto",
+            status: "ready",
+            durationSec: 3.2,
+            audioFilePath: "C:/scratch/tts/c_live.wav",
+          },
+        ],
+      },
+      sessionStore
+    );
+    saveDialogueWorkingScript("A: Live dialogue", sessionStore);
+    sessionStore.setItem("voxlab_dubbing_session_backup", '{"originalCues":[{"index":1}]}');
+
+    // Tab switches / WebView reload inside SAME Process #1 ("proc_1000_aaa"): session MUST survive 100%
+    const isFreshReload = await syncWorkspaceSessionWithProcessId({
+      currentProcessId: "proc_1000_aaa",
+      sessionStore,
+      localStore,
+      onFreshProcessLaunch: () => {
+        freshLaunchCount += 1;
+      },
+    });
+    assert.equal(isFreshReload, false);
+    assert.equal(freshLaunchCount, 1);
+    assert.equal(loadTtsWorkingText("", sessionStore), "Current TTS draft in open session");
+    assert.equal(loadTtsSessionBackup("Current TTS draft in open session", sessionStore)?.stage, "studio");
+    assert.equal(loadDialogueWorkingScript("", sessionStore), "A: Live dialogue");
+    assert.equal(sessionStore.getItem("voxlab_dubbing_session_backup"), '{"originalCues":[{"index":1}]}');
+
+    // User exits VoxLab and launches a NEW Process #2 ("proc_2000_bbb"):
+    // ALL workspace sessions MUST be wiped clean, while durable app settings remain 100% intact!
+    const isFreshRestart = await syncWorkspaceSessionWithProcessId({
+      currentProcessId: "proc_2000_bbb",
+      sessionStore,
+      localStore,
+      onFreshProcessLaunch: () => {
+        freshLaunchCount += 1;
+      },
+    });
+    assert.equal(isFreshRestart, true);
+    assert.equal(freshLaunchCount, 2);
+    assert.equal(sessionStore.getItem(PROCESS_SESSION_ID_STORAGE_KEY), "proc_2000_bbb");
+    assert.equal(loadTtsWorkingText("", sessionStore), "");
+    assert.equal(loadTtsSessionBackup("Current TTS draft in open session", sessionStore), null);
+    assert.equal(loadDialogueWorkingScript("", sessionStore), "");
+    assert.equal(sessionStore.getItem("voxlab_dubbing_session_backup"), null);
+
+    // Durable settings are still 100% preserved after app restart
+    assert.equal(localStore.getItem("voxlab_active_model"), "OmniVoice");
+    assert.equal(localStore.getItem("voxlab_active_voice_id"), "clone_custom_en");
+    assert.equal(localStore.getItem("voxlab_tts_inspector_settings_v1"), '{"speed":1.05}');
+    assert.equal(localStore.getItem("voxlab_dialogue_settings"), '{"model":"Omni Voice"}');
+  }
+
+  console.log("PASS: workspace_session_persistence tests (4 suites)");
 }
 
 runTests().catch((err) => {

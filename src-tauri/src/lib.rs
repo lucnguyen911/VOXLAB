@@ -98,6 +98,20 @@ fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
     Ok(dir.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn get_process_session_id() -> String {
+    static PROCESS_SESSION_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PROCESS_SESSION_ID
+        .get_or_init(|| {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            format!("proc_{}_{}", std::process::id(), nanos)
+        })
+        .clone()
+}
+
 fn safe_app_data_path(base_dir: &std::path::Path, relative_path: &str) -> Result<std::path::PathBuf, String> {
     let rel = std::path::Path::new(relative_path);
     if rel.is_absolute() {
@@ -415,6 +429,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_data_dir,
+            get_process_session_id,
             save_app_data_file,
             read_app_data_file,
             get_license_summary,
@@ -513,5 +528,13 @@ mod storage_tests {
         assert_eq!(std::fs::read(target.join("license.enc")).unwrap(), b"lic_bytes");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn process_session_id_is_non_empty_and_stable_within_process() {
+        let first = get_process_session_id();
+        let second = get_process_session_id();
+        assert!(first.starts_with("proc_"));
+        assert_eq!(first, second);
     }
 }

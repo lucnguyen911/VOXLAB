@@ -1,8 +1,20 @@
 import { ChunkItem } from "../../types/ui";
 import { DialogueCharacter, DialogueSegment } from "../../types/dialogue";
 
+export const PROCESS_SESSION_ID_STORAGE_KEY = "voxlab_process_session_id";
 export const TTS_SESSION_STORAGE_KEY = "voxlab_tts_session_v1";
+export const TTS_WORKING_TEXT_STORAGE_KEY = "voxlab_script_working_text";
 export const DIALOGUE_SESSION_STORAGE_KEY = "voxlab_dialogue_session_v1";
+export const DIALOGUE_SCRIPT_STORAGE_KEY = "voxlab_dialogue_script";
+
+export const EPHEMERAL_WORKSPACE_STORAGE_KEYS = [
+  TTS_SESSION_STORAGE_KEY,
+  TTS_WORKING_TEXT_STORAGE_KEY,
+  DIALOGUE_SESSION_STORAGE_KEY,
+  DIALOGUE_SCRIPT_STORAGE_KEY,
+  "voxlab_dubbing_session_backup",
+  "voxlab_tts_stage",
+] as const;
 
 export type KeyValueStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -30,6 +42,17 @@ interface DialogueSessionPayloadV1 {
 
 function getDefaultStorage(): KeyValueStorage | null {
   try {
+    if (typeof sessionStorage !== "undefined") {
+      return sessionStorage;
+    }
+  } catch {
+    // ignore storage access errors
+  }
+  return null;
+}
+
+function getDefaultPersistentStorage(): KeyValueStorage | null {
+  try {
     if (typeof localStorage !== "undefined") {
       return localStorage;
     }
@@ -37,6 +60,149 @@ function getDefaultStorage(): KeyValueStorage | null {
     // ignore storage access errors
   }
   return null;
+}
+
+/**
+ * Removes legacy ephemeral workspace session keys from persistent `localStorage`
+ * while leaving all durable app settings (models, voices, history, theme, keys) untouched.
+ */
+export function purgeEphemeralWorkspaceStateFromLocalStorage(
+  persistentStorage: KeyValueStorage | null = getDefaultPersistentStorage()
+): void {
+  if (!persistentStorage) return;
+  for (const key of EPHEMERAL_WORKSPACE_STORAGE_KEYS) {
+    try {
+      persistentStorage.removeItem(key);
+    } catch {
+      // ignore storage errors
+    }
+  }
+}
+
+/**
+ * Binds `sessionStorage` workspace drafts to the current OS process boot ID (`currentProcessId`).
+ * - Within the same running app process (tab switches or WebView reload): preserves all session state.
+ * - On a fresh app launch after quitting: wipes ephemeral workspace drafts (and optional transient queues)
+ *   while preserving all app settings, models, voices, and history.
+ */
+export async function syncWorkspaceSessionWithProcessId(options: {
+  currentProcessId: string;
+  sessionStore?: KeyValueStorage | null;
+  localStore?: KeyValueStorage | null;
+  onFreshProcessLaunch?: () => Promise<void> | void;
+}): Promise<boolean> {
+  const sessionStore =
+    options.sessionStore !== undefined ? options.sessionStore : getDefaultStorage();
+  const localStore =
+    options.localStore !== undefined ? options.localStore : getDefaultPersistentStorage();
+
+  purgeEphemeralWorkspaceStateFromLocalStorage(localStore);
+
+  const trimmedProcId = (options.currentProcessId || "").trim();
+  if (!trimmedProcId || !sessionStore) {
+    return false;
+  }
+
+  let prevProcId: string | null = null;
+  try {
+    prevProcId = sessionStore.getItem(PROCESS_SESSION_ID_STORAGE_KEY);
+  } catch {
+    prevProcId = null;
+  }
+
+  if (prevProcId === trimmedProcId) {
+    return false;
+  }
+
+  for (const key of EPHEMERAL_WORKSPACE_STORAGE_KEYS) {
+    try {
+      sessionStore.removeItem(key);
+    } catch {
+      // ignore
+    }
+  }
+
+  try {
+    sessionStore.setItem(PROCESS_SESSION_ID_STORAGE_KEY, trimmedProcId);
+  } catch {
+    // ignore
+  }
+
+  if (options.onFreshProcessLaunch) {
+    try {
+      await options.onFreshProcessLaunch();
+    } catch (err) {
+      console.warn("[workspaceSessionStorage] Fresh launch cleanup warning:", err);
+    }
+  }
+
+  return true;
+}
+
+export function loadTtsWorkingText(
+  defaultPlaceholderToIgnore = "",
+  storage: KeyValueStorage | null = getDefaultStorage()
+): string {
+  if (!storage) return "";
+  try {
+    const saved = storage.getItem(TTS_WORKING_TEXT_STORAGE_KEY);
+    if (!saved) return "";
+    if (defaultPlaceholderToIgnore && saved.trim() === defaultPlaceholderToIgnore.trim()) {
+      return "";
+    }
+    return saved;
+  } catch {
+    return "";
+  }
+}
+
+export function saveTtsWorkingText(
+  text: string,
+  storage: KeyValueStorage | null = getDefaultStorage()
+): void {
+  if (!storage) return;
+  try {
+    if (!text) {
+      storage.removeItem(TTS_WORKING_TEXT_STORAGE_KEY);
+    } else {
+      storage.setItem(TTS_WORKING_TEXT_STORAGE_KEY, text);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function loadDialogueWorkingScript(
+  defaultPlaceholderToIgnore = "",
+  storage: KeyValueStorage | null = getDefaultStorage()
+): string {
+  if (!storage) return "";
+  try {
+    const saved = storage.getItem(DIALOGUE_SCRIPT_STORAGE_KEY);
+    if (!saved) return "";
+    if (defaultPlaceholderToIgnore && saved.trim() === defaultPlaceholderToIgnore.trim()) {
+      return "";
+    }
+    return saved;
+  } catch {
+    return "";
+  }
+}
+
+export function saveDialogueWorkingScript(
+  script: string,
+  storage: KeyValueStorage | null = getDefaultStorage()
+): void {
+  if (!storage) return;
+  try {
+    if (!script) {
+      storage.removeItem(DIALOGUE_SCRIPT_STORAGE_KEY);
+    } else {
+      storage.setItem(DIALOGUE_SCRIPT_STORAGE_KEY, script);
+    }
+  } catch {
+    // ignore
+  }
 }
 
 function normalizeScriptKey(text: string): string {

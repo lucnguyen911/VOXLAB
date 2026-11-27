@@ -60,6 +60,8 @@ import {
   saveDialogueSessionBackup,
   loadDialogueSessionBackup,
   hydrateDialogueSegmentsFromDisk,
+  loadDialogueWorkingScript,
+  saveDialogueWorkingScript,
 } from "../services/tts/workspaceSessionStorage";
 import { MOCK_VOICES } from "../mock/data";
 import {
@@ -91,18 +93,10 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
 }) => {
   const { t } = useI18n();
 
-  // Session script state (persisted to localStorage)
-  const [rawScript, setRawScript] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem("voxlab_dialogue_script");
-      if (!saved || saved.trim() === SAMPLE_VIETNAMESE_DIALOGUE.trim()) {
-        return "";
-      }
-      return saved;
-    } catch {
-      return "";
-    }
-  });
+  // Session script state (ephemeral per-app-launch via sessionStorage)
+  const [rawScript, setRawScript] = useState<string>(() =>
+    loadDialogueWorkingScript(SAMPLE_VIETNAMESE_DIALOGUE)
+  );
 
   const initialRestoredDialogueRef = useRef<ReturnType<typeof loadDialogueSessionBackup> | undefined>(
     undefined
@@ -392,11 +386,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       });
     });
 
-    try {
-      localStorage.setItem("voxlab_dialogue_script", rawScript);
-    } catch {
-      // ignore
-    }
+    saveDialogueWorkingScript(rawScript);
   }, [rawScript]);
 
   // Persist settings
@@ -947,12 +937,7 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
         .map((s) => `[${s.characterName}]: ${s.rawText}`)
         .join("\n\n");
       setRawScript(reconstructed);
-
-      try {
-        localStorage.setItem("voxlab_dialogue_script", reconstructed);
-      } catch {
-        // ignore
-      }
+      saveDialogueWorkingScript(reconstructed);
 
       return updated;
     });

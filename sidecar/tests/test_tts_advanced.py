@@ -737,6 +737,39 @@ class TestQwenServiceAndOps(unittest.TestCase):
             mock_prep.assert_called_once()
             self.assertEqual(mock_prep.call_args[1].get("skip_transcribe"), True)
 
+    def test_edge_tts_atomic_write_never_leaves_zero_byte_file_on_stream_failure(self):
+        import tempfile
+        from voxlab_sidecar import edge_tts_engine
+        from voxlab_sidecar.protocol import SidecarError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_mp3 = os.path.join(tmpdir, "chunk_18_atomic.mp3")
+
+            class _FailingCommunicate:
+                def __init__(self, **_kwargs):
+                    pass
+
+                async def stream(self):
+                    if False:
+                        yield {"type": "audio", "data": b""}
+                    raise RuntimeError("WebSocket handshake 403 rate limited")
+
+            with patch.object(edge_tts_engine.edge_tts, "Communicate", _FailingCommunicate), \
+                 patch.object(edge_tts_engine, "_sync_clock_skew_from_server"), \
+                 patch.object(edge_tts_engine.time, "sleep"):
+                with self.assertRaises(SidecarError):
+                    edge_tts_engine.synthesize_edge_tts(
+                        text="On November nineteenth, Tesla officially brought Cybercab rides.",
+                        voice="en-US-AndrewNeural",
+                        output_path=target_mp3,
+                    )
+            self.assertFalse(
+                os.path.exists(target_mp3),
+                "Failed Edge TTS synthesis must never leave a 0-byte target MP3 file on disk",
+            )
+            leftover_tmps = [f for f in os.listdir(tmpdir) if f.endswith(".tmp")]
+            self.assertEqual(leftover_tmps, [])
+
 
 if __name__ == "__main__":
     unittest.main()

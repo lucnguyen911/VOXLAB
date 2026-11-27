@@ -93,13 +93,17 @@ def synthesize_edge_tts(
     if not voice or not voice.strip():
         raise SidecarError("INVALID_PARAMS", "voice must not be empty")
 
+    created_temp_output = False
     if not output_path:
         fd, output_path = tempfile.mkstemp(suffix=".mp3", prefix="voxlab_edge_preview_")
         os.close(fd)
+        created_temp_output = True
+
+    tmp_path = f"{output_path}.{os.getpid()}.{threading.get_ident()}.tmp"
 
     async def _do_synth() -> None:
         comm = edge_tts.Communicate(text=text, voice=voice, rate=rate, pitch=pitch, volume=volume)
-        with open(output_path, "wb") as f:
+        with open(tmp_path, "wb") as f:
             has_audio = False
             async for chunk in comm.stream():
                 if chunk["type"] == "audio":
@@ -109,28 +113,49 @@ def synthesize_edge_tts(
                 raise SidecarError("PROVIDER_UNAVAILABLE", "Edge TTS returned no audio data")
 
     loop = _get_edge_loop()
-    for attempt in range(3):
-        try:
-            fut = asyncio.run_coroutine_threadsafe(_do_synth(), loop)
-            fut.result(timeout=75)
-            break
-        except edge_tts.exceptions.NoAudioReceived:
-            if attempt < 2:
-                time.sleep(0.3 * (attempt + 1))
-                continue
-            raise SidecarError("PROVIDER_UNAVAILABLE", "No audio received from Edge TTS service")
-        except SidecarError:
-            raise
-        except Exception as e:
-            err_str = str(e)
-            if "voice" in err_str.lower() and "not found" in err_str.lower():
-                raise SidecarError("VOICE_NOT_FOUND", f"Edge voice '{voice}' not found")
-            if "403" in err_str:
+    backoff_schedule = (0.8, 1.8, 3.5)
+    try:
+        for attempt in range(4):
+            try:
+                fut = asyncio.run_coroutine_threadsafe(_do_synth(), loop)
+                fut.result(timeout=75)
+                if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) <= 0:
+                    raise SidecarError("PROVIDER_UNAVAILABLE", "Edge TTS produced empty audio stream")
+                os.replace(tmp_path, output_path)
+                break
+            except edge_tts.exceptions.NoAudioReceived:
                 _sync_clock_skew_from_server()
-            if attempt < 2:
-                time.sleep(0.3 * (attempt + 1))
-                continue
-            raise SidecarError("NETWORK_ERROR", f"Edge TTS request failed: {e}")
+                if attempt < len(backoff_schedule):
+                    time.sleep(backoff_schedule[attempt])
+                    continue
+                raise SidecarError("PROVIDER_UNAVAILABLE", "No audio received from Edge TTS service")
+            except SidecarError:
+                if attempt < len(backoff_schedule):
+                    _sync_clock_skew_from_server()
+                    time.sleep(backoff_schedule[attempt])
+                    continue
+                raise
+            except Exception as e:
+                err_str = str(e)
+                if "voice" in err_str.lower() and "not found" in err_str.lower():
+                    raise SidecarError("VOICE_NOT_FOUND", f"Edge voice '{voice}' not found")
+                if "403" in err_str or "handshake" in err_str.lower() or "reset" in err_str.lower():
+                    _sync_clock_skew_from_server()
+                if attempt < len(backoff_schedule):
+                    time.sleep(backoff_schedule[attempt])
+                    continue
+                raise SidecarError("NETWORK_ERROR", f"Edge TTS request failed: {e}")
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        if created_temp_output and os.path.exists(output_path) and os.path.getsize(output_path) == 0:
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
 
     size_bytes = os.path.getsize(output_path) if os.path.exists(output_path) else 0
     try:

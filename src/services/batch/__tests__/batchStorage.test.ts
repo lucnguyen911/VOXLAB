@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   loadBatchState,
   saveBatchState,
+  resetBatchJobsPreservingSettings,
   normalizeCrashedState,
   createInitialBatchState,
   BATCH_STORAGE_FILE,
@@ -170,5 +171,22 @@ test("TASK-05: Durable State Storage & Crash Normalizer Suite", async (t) => {
         return err.message.includes("Zero Audio Binary Invariant Violated");
       }
     );
+  });
+
+  await t.test("resetBatchJobsPreservingSettings clears transient jobs on fresh app launch while preserving settings", async () => {
+    const state = createInitialBatchState();
+    state.queueStatus = "paused";
+    state.settings.outputDirectory = "D:/MyCustomExports";
+    state.settings.outputAudioFormat = "mp3";
+    state.jobs.push(createMockJob("transient-job-1"), createMockJob("transient-job-2"));
+    await saveBatchState(state);
+
+    await resetBatchJobsPreservingSettings();
+
+    const afterRestart = await loadBatchState();
+    assert.equal(afterRestart.queueStatus, "idle");
+    assert.equal(afterRestart.jobs.length, 0);
+    assert.equal(afterRestart.settings.outputDirectory, "D:/MyCustomExports");
+    assert.equal(afterRestart.settings.outputAudioFormat, "mp3");
   });
 });

@@ -248,3 +248,24 @@ export async function saveBatchQueueState(
   await saveBatchState(nextState);
 }
 
+/**
+ * Clears transient queued/staged batch jobs on a fresh application launch while
+ * preserving durable Batch configuration settings (`outputDirectory`, formats, `globalDefaults`).
+ */
+export async function resetBatchJobsPreservingSettings(): Promise<void> {
+  try {
+    const current = await loadBatchState();
+    if (current.jobs.length === 0 && current.queueStatus === "idle") {
+      return;
+    }
+    await saveBatchState({
+      ...current,
+      queueStatus: "idle",
+      jobs: [],
+      updatedAt: Date.now(),
+    });
+  } catch {
+    // ignore if storage not yet initialized
+  }
+}
+

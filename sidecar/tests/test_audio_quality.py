@@ -8061,6 +8061,363 @@ class AudioQualityTest(unittest.TestCase):
         iss_vi = audio_quality.detect_phrase_internal_pauses("tháng, hoặc hơn", asr_vi, w_vi, sr, speed=1.0)
         self.assertEqual([(i["code"], i["words"]) for i in iss_vi], [("ABNORMAL_PAUSE", ["hoặc", "hơn"])])
 
+    def test_v453_parameter_invariant_post_qc(self):
+        from types import SimpleNamespace
+
+        sr = 24000
+
+        # 1) Dynamic SNR Silence Calibration:
+        #    When denoise=False leaves a steady low-frequency room floor (RMS ~ 0.0135 > legacy 0.012)
+        #    while active speech is loud (amp=0.45, RMS ~ 0.318), a real 0.36s phrase-internal break
+        #    ("you [0.36s] can") must STILL be caught without missing defects!
+        t3 = np.arange(int(sr * 2.2), dtype=np.float32) / sr
+        rng = np.random.default_rng(42)
+        # Low-ZCR hum floor (RMS ~ 0.0135 > 0.012) + loud voiced speech (amp=0.48)
+        w_noisy = (0.019 * np.sin(2 * np.pi * 60.0 * t3) + 0.001 * rng.standard_normal(t3.size)).astype(np.float32)
+        for s_t, e_t, f_hz in [(0.15, 0.42, 195.0), (0.78, 1.05, 210.0), (1.05, 1.55, 200.0)]:
+            i0, i1 = int(round(s_t * sr)), int(round(e_t * sr))
+            w_noisy[i0:i1] += (0.48 * np.sin(2 * np.pi * f_hz * t3[i0:i1])).astype(np.float32)
+        asr_noisy = [
+            {"word": " you", "startSec": 0.15, "endSec": 0.42, "probability": 0.98},
+            {"word": " can", "startSec": 0.78, "endSec": 1.05, "probability": 0.95},
+            {"word": " unlock", "startSec": 1.05, "endSec": 1.55, "probability": 0.99},
+        ]
+        iss_noisy = audio_quality.detect_phrase_internal_pauses(
+            "you can unlock", asr_noisy, w_noisy, sr, speed=1.0
+        )
+        self.assertEqual(
+            [(i["code"], i["words"]) for i in iss_noisy],
+            [("ABNORMAL_PAUSE", ["you", "can"])],
+            f"Dynamic SNR calibration must catch real pause even with 0.0135 hum floor, got {iss_noisy}",
+        )
+
+        # 2) Two-Sided Lexical Completion Invariance & Major Punctuation Guard:
+        #    (a) Sentence-ending period ("check cleanliness. [0.40s] That left") must NEVER trigger broken-word
+        #        nor consume slice_budget!
+        t4 = np.arange(int(sr * 3.0), dtype=np.float32) / sr
+        w_period = np.zeros_like(t4)
+        for s_t, e_t in [(0.10, 0.38), (0.38, 1.05), (1.45, 1.92), (1.92, 2.25)]:
+            i0, i1 = int(round(s_t * sr)), int(round(e_t * sr))
+            w_period[i0:i1] = (0.26 * np.sin(2 * np.pi * 205.0 * t4[i0:i1])).astype(np.float32)
+        asr_period = [
+            {"word": " check", "startSec": 0.10, "endSec": 0.38, "probability": 0.99},
+            {"word": " cleanliness.", "startSec": 0.38, "endSec": 1.05, "probability": 0.98},
+            {"word": " That", "startSec": 1.45, "endSec": 1.92, "probability": 0.62},
+            {"word": " left", "startSec": 1.92, "endSec": 2.25, "probability": 0.99},
+        ]
+
+        class _CountingWhisper:
+            def __init__(self, responses):
+                self.calls = 0
+                self.last_hotwords = None
+                self._responses = responses
+
+            def transcribe(self, _path, **kwargs):
+                self.last_hotwords = kwargs.get("hotwords")
+                toks = self._responses[min(self.calls, len(self._responses) - 1)]
+                self.calls += 1
+                return [
+                    SimpleNamespace(
+                        words=[
+                            SimpleNamespace(word=txt, start=0.20 + 0.2 * k, end=0.38 + 0.2 * k, probability=pr)
+                            for k, (txt, pr) in enumerate(toks)
+                        ]
+                    )
+                ], None
+
+        budget_p = [4]
+        m_period = _CountingWhisper([[("Cleanliness.", 0.95)], [("That", 0.42), ("left", 0.98)]])
+        iss_period = audio_quality.detect_broken_word_pauses(
+            "check cleanliness. That left",
+            asr_period,
+            w_period,
+            sr,
+            whisper_model=m_period,
+            language="en",
+            slice_budget=budget_p,
+        )
+        self.assertEqual(iss_period, [])
+        self.assertEqual(budget_p[0], 4, "Major period boundary must not waste broken-word slice budget")
+
+        #    (b) Natural clause boundary ("American city [0.47s] as its") where pre-slice hears full "city."
+        #        and post-slice hears "as" with low isolated prob (0.28) + "commercial [0.26s] Cybercab" -> 0 issues!
+        w_clause = np.zeros_like(t4)
+        for s_t, e_t in [(0.10, 0.55), (0.55, 0.98), (1.45, 1.88), (1.88, 2.20)]:
+            i0, i1 = int(round(s_t * sr)), int(round(e_t * sr))
+            w_clause[i0:i1] = (0.26 * np.sin(2 * np.pi * 205.0 * t4[i0:i1])).astype(np.float32)
+        asr_clause = [
+            {"word": " American", "startSec": 0.10, "endSec": 0.55, "probability": 0.99},
+            {"word": " city", "startSec": 0.55, "endSec": 0.98, "probability": 0.98},
+            {"word": " as", "startSec": 1.45, "endSec": 1.88, "probability": 0.70},
+            {"word": " its", "startSec": 1.88, "endSec": 2.20, "probability": 0.99},
+        ]
+        m_clause = _CountingWhisper([
+            [("American", 0.98), ("city.", 0.96)],
+            [("as", 0.28), ("its", 0.95)],
+        ])
+        self.assertEqual(
+            audio_quality.detect_broken_word_pauses(
+                "American city as its", asr_clause, w_clause, sr, whisper_model=m_clause, language="en", slice_budget=[4]
+            ),
+            [],
+        )
+
+        asr_cyber = [
+            {"word": " brought", "startSec": 0.10, "endSec": 0.55, "probability": 0.99},
+            {"word": " commercial", "startSec": 0.55, "endSec": 0.98, "probability": 0.98},
+            {"word": " Cybercab", "startSec": 1.24, "endSec": 1.88, "probability": 0.72},
+            {"word": " rides", "startSec": 1.88, "endSec": 2.20, "probability": 0.99},
+        ]
+        m_cyber = _CountingWhisper([
+            [("commercial", 0.95)],
+            [("Cybercap", 0.66)],
+        ])
+        self.assertEqual(
+            audio_quality.detect_broken_word_pauses(
+                "brought commercial Cybercab rides",
+                asr_cyber,
+                w_clause,
+                sr,
+                whisper_model=m_cyber,
+                language="en",
+                slice_budget=[4],
+            ),
+            [],
+        )
+
+        # 3) Mid-Chunk Silero VAD Dropout Recovery (< 1.20s, e.g. 1.05s "rolls into a dark"):
+        #    Active speech inside [1.00, 2.05] dropped by primary VAD must be cleared by isolated vad_filter=False slice!
+        t5 = np.arange(int(sr * 3.2), dtype=np.float32) / sr
+        w_vad = np.zeros_like(t5)
+        for s_t, e_t in [(0.15, 0.55), (0.55, 1.00), (1.05, 2.00), (2.05, 2.55), (2.55, 2.95)]:
+            i0, i1 = int(round(s_t * sr)), int(round(e_t * sr))
+            w_vad[i0:i1] = (0.28 * np.sin(2 * np.pi * 210.0 * t5[i0:i1])).astype(np.float32)
+        asr_vad_dropped = [
+            {"word": " makes", "startSec": 0.15, "endSec": 0.55, "probability": 0.99},
+            {"word": " nothing", "startSec": 0.55, "endSec": 1.00, "probability": 0.96},
+            # "rolls into a dark" [1.05 .. 2.00] dropped by aggressive primary VAD (gap = 1.05s < 1.20s)!
+            {"word": " corner", "startSec": 2.05, "endSec": 2.55, "probability": 0.97},
+            {"word": " before", "startSec": 2.55, "endSec": 2.95, "probability": 0.99},
+        ]
+        m_vad_rescue = _CountingWhisper([
+            [
+                ("nothing", 0.97),
+                ("rolls", 0.94),
+                ("into", 0.96),
+                ("a", 0.92),
+                ("dark", 0.95),
+                ("corner", 0.98),
+            ]
+        ])
+        iss_vad = audio_quality.analyze_word_alignment_issues(
+            "makes nothing rolls into a dark corner before",
+            asr_vad_dropped,
+            speed=1.0,
+            language="en",
+            audio_duration_sec=3.2,
+            audio_data=w_vad,
+            sample_rate=sr,
+            whisper_model=m_vad_rescue,
+            slice_budget=[4],
+            core_scope=True,
+        )
+        self.assertEqual(
+            [i for i in iss_vad if i["code"] in ("MISSING_WORD", "SUSPECTED_SWALLOWED")],
+            [],
+            f"Active-speech VAD dropout must be rescued by isolated slice, got {iss_vad}",
+        )
+
+        # 4) Mid-Chunk DTW Timestamp-Pileup Collapse Recovery (large-v3-turbo zero-duration 8.76..8.76 pileup):
+        asr_dtw_pileup = [
+            {"word": " makes", "startSec": 0.15, "endSec": 0.55, "probability": 0.99},
+            {"word": " nothing", "startSec": 0.55, "endSec": 1.00, "probability": 0.99},
+            {"word": " to", "startSec": 1.00, "endSec": 1.25, "probability": 0.00},
+            {"word": " make", "startSec": 1.25, "endSec": 1.25, "probability": 0.04},
+            {"word": " sure", "startSec": 1.25, "endSec": 1.25, "probability": 0.49},
+            {"word": " nothing", "startSec": 1.25, "endSec": 1.25, "probability": 0.85},
+            {"word": " to", "startSec": 1.25, "endSec": 1.55, "probability": 0.02},
+            {"word": " drive.", "startSec": 1.55, "endSec": 2.05, "probability": 0.00},
+            {"word": " corner", "startSec": 2.05, "endSec": 2.55, "probability": 0.97},
+            {"word": " before", "startSec": 2.55, "endSec": 2.95, "probability": 0.99},
+        ]
+        m_dtw_rescue = _CountingWhisper([
+            [
+                ("rolls", 0.98),
+                ("into", 0.99),
+                ("a", 0.96),
+                ("dark", 0.99),
+            ]
+        ])
+        recovered_dtw = audio_quality.recover_degenerate_asr_loops(
+            None,
+            asr_dtw_pileup,
+            3.2,
+            m_dtw_rescue,
+            language="en",
+            slice_budget=[3],
+            audio_data=w_vad,
+            sample_rate=sr,
+            text="makes nothing rolls into a dark corner before",
+        )
+        self.assertEqual(
+            [audio_quality.clean_word(w["word"]) for w in recovered_dtw],
+            ["makes", "nothing", "rolls", "into", "a", "dark", "corner", "before"],
+        )
+
+    def test_v454_currency_shift_fused_intensifier_pause_and_harmonic_squeak(self):
+        from types import SimpleNamespace
+
+        sr = 24000
+
+        # 1) Prefix-currency ('$1', ',015') swallowing spoken "dollars" [0.92..1.50s] + 0.20s pause [1.51..1.71s]
+        #    + "every" ("ev-" [1.72..1.84s], /r/ dip [1.85..1.99s], "-ry" [2.00..2.22s])
+        #    + 0.195s dead pause [2.23..2.425s]
+        #    + "single" (/s/ [2.43..2.56s], "-ingle" [2.57..2.77s]) + "month," [2.78..3.22s].
+        t_cur = np.arange(int(sr * 4.2), dtype=np.float32) / sr
+        w_cur = np.zeros_like(t_cur)
+
+        def _put_voiced(buf: np.ndarray, t_arr: np.ndarray, s_t: float, e_t: float, amp: float, f0_hz: float = 145.0) -> None:
+            i0, i1 = int(round(s_t * sr)), int(round(e_t * sr))
+            seg_t = t_arr[i0:i1]
+            buf[i0:i1] = (
+                amp * (0.72 * np.sin(2 * np.pi * f0_hz * seg_t) + 0.28 * np.sin(2 * np.pi * (2.0 * f0_hz) * seg_t))
+            ).astype(np.float32)
+
+        def _put_sib(buf: np.ndarray, t_arr: np.ndarray, s_t: float, e_t: float, amp: float = 0.045) -> None:
+            i0, i1 = int(round(s_t * sr)), int(round(e_t * sr))
+            seg_t = t_arr[i0:i1]
+            buf[i0:i1] = (amp * np.sin(2 * np.pi * 6200.0 * seg_t)).astype(np.float32)
+
+        _put_voiced(w_cur, t_cur, 0.10, 0.84, 0.24)          # "one thousand fifteen" ($1,015 digits)
+        _put_voiced(w_cur, t_cur, 0.88, 1.45, 0.25)          # spoken "dollars" (no separate Whisper token!)
+        _put_sib(w_cur, t_cur, 1.45, 1.50, 0.032)            # /z/ coda of "dollars"
+        # [1.51 .. 1.71]: 0.20s silence after "dollars"
+        _put_voiced(w_cur, t_cur, 1.72, 1.85, 0.34)          # "EV-"
+        _put_voiced(w_cur, t_cur, 1.85, 2.00, 0.052)         # voiced /r/ glide inside "every" (rms ~ 0.034)
+        _put_voiced(w_cur, t_cur, 2.00, 2.22, 0.15)          # "-ry"
+        # [2.23 .. 2.425]: 0.195s dead pause right after "every" before "single"!
+        _put_sib(w_cur, t_cur, 2.43, 2.56, 0.045)            # /s/ onset of "single"
+        _put_voiced(w_cur, t_cur, 2.57, 2.77, 0.28)          # "-ingle"
+        _put_voiced(w_cur, t_cur, 2.78, 3.22, 0.29)          # "month,"
+        # [3.23 .. 3.65]: comma pause
+        _put_voiced(w_cur, t_cur, 3.66, 3.92, 0.24)          # "or"
+
+        raw_cur_asr = [
+            {"word": " $1", "startSec": 0.10, "endSec": 0.42, "probability": 0.999},
+            {"word": ",015", "startSec": 0.42, "endSec": 0.92, "probability": 1.000},
+            {"word": " every", "startSec": 0.92, "endSec": 2.00, "probability": 0.998},
+            {"word": " single", "startSec": 2.00, "endSec": 2.78, "probability": 1.000},
+            {"word": " month,", "startSec": 2.78, "endSec": 3.23, "probability": 1.000},
+            {"word": " or", "startSec": 3.66, "endSec": 3.92, "probability": 1.000},
+        ]
+        txt_cur = "one thousand fifteen dollars every single month, or"
+        reanchored_cur = audio_quality.reanchor_asr_word_timestamps(
+            raw_cur_asr, w_cur, sr, text=txt_cur
+        )
+        every_w = reanchored_cur[2]
+        single_w = reanchored_cur[3]
+        self.assertGreaterEqual(every_w["startSec"], 1.68, f"Expected 'every' snapped past 'dollars' pause, got {reanchored_cur}")
+        self.assertAlmostEqual(every_w["endSec"], 2.22, delta=0.04)
+        self.assertAlmostEqual(single_w["startSec"], 2.42, delta=0.04)
+
+        pauses_cur = audio_quality.detect_phrase_internal_pauses(
+            txt_cur, reanchored_cur, w_cur, sr, speed=1.0
+        )
+        self.assertEqual(
+            [(i["code"], i["words"]) for i in pauses_cur],
+            [("ABNORMAL_PAUSE", ["every", "single"])],
+            f"Expected abnormal pause inside fused 'every single', got {pauses_cur}",
+        )
+
+        # Negative guard 1a: seamless "every single month" (no pause) + loose preposition "in [0.20s] senior" (< 0.30s) -> 0 issues
+        t_clean = np.arange(int(sr * 3.0), dtype=np.float32) / sr
+        w_clean_p = np.zeros_like(t_clean)
+        _put_voiced(w_clean_p, t_clean, 0.15, 0.52, 0.25)    # "every"
+        _put_sib(w_clean_p, t_clean, 0.53, 0.65, 0.045)      # /s/ of "single" (only 10ms transition)
+        _put_voiced(w_clean_p, t_clean, 0.65, 0.92, 0.26)    # "-ingle"
+        _put_voiced(w_clean_p, t_clean, 0.93, 1.32, 0.26)    # "month"
+        _put_voiced(w_clean_p, t_clean, 1.40, 1.62, 0.24)    # "in"
+        # [1.62 .. 1.82]: 0.20s micro-pause before "senior" (< 0.30s standard head-word threshold)
+        _put_sib(w_clean_p, t_clean, 1.82, 1.94, 0.045)
+        _put_voiced(w_clean_p, t_clean, 1.94, 2.38, 0.25)    # "senior"
+        asr_clean_p = [
+            {"word": " every", "startSec": 0.15, "endSec": 0.52, "probability": 0.99},
+            {"word": " single", "startSec": 0.53, "endSec": 0.92, "probability": 0.99},
+            {"word": " month", "startSec": 0.93, "endSec": 1.32, "probability": 0.99},
+            {"word": " in", "startSec": 1.40, "endSec": 1.62, "probability": 0.99},
+            {"word": " senior", "startSec": 1.82, "endSec": 2.38, "probability": 0.99},
+        ]
+        self.assertEqual(
+            audio_quality.detect_phrase_internal_pauses(
+                "every single month in senior", asr_clean_p, w_clean_p, sr, speed=1.0
+            ),
+            [],
+        )
+
+        # 2) Vocal harmonic squeak + glottal cut merged into high-prob 'In' ("a year, [EE!] in senior")
+        t_sq = np.arange(int(sr * 3.0), dtype=np.float32) / sr
+        w_sq = np.zeros_like(t_sq)
+        _put_voiced(w_sq, t_sq, 0.20, 0.42, 0.22, f0_hz=135.0)  # "a"
+        _put_voiced(w_sq, t_sq, 0.44, 0.82, 0.24, f0_hz=130.0)  # "year,"
+        # [0.90 .. 1.00]: loud harmonic shriek (f0=620Hz + 3100Hz harmonic -> high RMS, zcr < 0.28, cent > 2800Hz, hi_ratio > 0.65)
+        i_sq0, i_sq1 = int(round(0.90 * sr)), int(round(1.00 * sr))
+        seg_sq = t_sq[i_sq0:i_sq1]
+        w_sq[i_sq0:i_sq1] = (
+            0.14 * np.sin(2 * np.pi * 620.0 * seg_sq) + 0.34 * np.sin(2 * np.pi * 3150.0 * seg_sq)
+        ).astype(np.float32)
+        # [1.00 .. 1.09]: 90ms dead glottal cut
+        _put_voiced(w_sq, t_sq, 1.09, 1.24, 0.30, f0_hz=125.0)  # real "in"
+        _put_sib(w_sq, t_sq, 1.25, 1.40, 0.055)                 # /s/ of "senior"
+        _put_voiced(w_sq, t_sq, 1.40, 1.80, 0.26, f0_hz=165.0)  # "-enior"
+        _put_voiced(w_sq, t_sq, 1.82, 2.25, 0.25, f0_hz=150.0)  # "auto"
+
+        asr_sq = [
+            {"word": " a", "startSec": 0.20, "endSec": 0.42, "probability": 0.999},
+            {"word": " year.", "startSec": 0.44, "endSec": 0.84, "probability": 1.000},
+            {"word": " In", "startSec": 0.88, "endSec": 1.25, "probability": 0.994},
+            {"word": " senior", "startSec": 1.25, "endSec": 1.80, "probability": 0.999},
+            {"word": " auto", "startSec": 1.82, "endSec": 2.25, "probability": 1.000},
+        ]
+
+        class _SqueakMockWhisper:
+            def transcribe(self, _path, **_kwargs):
+                return [
+                    SimpleNamespace(
+                        words=[SimpleNamespace(word=" Okay.", start=0.18, end=0.34, probability=0.14)]
+                    )
+                ], SimpleNamespace(language="en")
+
+        iss_sq = audio_quality.verify_whisper_smoothed_stutters(
+            "a year, in senior auto",
+            asr_sq,
+            w_sq,
+            sr,
+            _SqueakMockWhisper(),
+            language="en",
+            slice_budget=[4],
+        )
+        self.assertEqual(
+            [(i["code"], i["words"]) for i in iss_sq],
+            [("SUSPECTED_STUTTER", ["in"])],
+            f"Expected harmonic squeak on 'in' flagged as SUSPECTED_STUTTER, got {iss_sq}",
+        )
+
+        # Negative guard 2b: clean waveform without squeak must return [] without wasting slice budget
+        w_sq_clean = np.copy(w_sq)
+        w_sq_clean[i_sq0:i_sq1] = 0.0
+        budget_clean = [4]
+        iss_sq_clean = audio_quality.verify_whisper_smoothed_stutters(
+            "a year, in senior auto",
+            asr_sq,
+            w_sq_clean,
+            sr,
+            _SqueakMockWhisper(),
+            language="en",
+            slice_budget=budget_clean,
+        )
+        self.assertEqual(iss_sq_clean, [])
+        self.assertEqual(budget_clean[0], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,7 @@ import {
   type ModelInstallProgressEvent,
 } from "./services/ai/aiRuntimeSettings";
 import { resolveLocalEngine } from "./services/ai/ttsEngines";
+import { saveTtsWorkingText } from "./services/tts/workspaceSessionStorage";
 import { AppUpdateModal } from "./components/modals/AppUpdateModal";
 import {
   checkAppUpdate,
@@ -128,6 +129,8 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   };
 
   const VOICES_STORAGE_KEY = "voxlab_voices_v1";
+  const ACTIVE_VOICE_STORAGE_KEY = "voxlab_active_voice_id";
+  const ACTIVE_MODEL_STORAGE_KEY = "voxlab_active_model";
 
   function loadInitialVoices(): VoiceProfile[] {
     try {
@@ -144,8 +147,24 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
 
   // Voice State
   const [voices, setVoices] = useState<VoiceProfile[]>(loadInitialVoices);
-  const [activeVoiceId, setActiveVoiceId] = useState<string>("edge_vi_hoaimy");
-  const [activeModel, setActiveModel] = useState<string>("Kokoro-82M");
+  const [activeVoiceId, setActiveVoiceId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_VOICE_STORAGE_KEY);
+      if (saved && saved.trim()) {
+        return saved.trim();
+      }
+    } catch {}
+    return "edge_vi_hoaimy";
+  });
+  const [activeModel, setActiveModel] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_MODEL_STORAGE_KEY);
+      if (saved && saved.trim()) {
+        return saved.trim();
+      }
+    } catch {}
+    return "Kokoro-82M";
+  });
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
 
   // Reconcile durable cloneVoiceRegistry (voices/clone_voices.json) with UI VoiceProfile state on startup
@@ -155,6 +174,9 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
       .then((reconciled) => {
         if (!cancelled) {
           setVoices(reconciled);
+          setActiveVoiceId((curr) =>
+            reconciled.some((v) => v.id === curr) ? curr : "edge_vi_hoaimy"
+          );
         }
       })
       .catch(() => {});
@@ -163,7 +185,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
     };
   }, []);
 
-  // Sync voices to localStorage
+  // Sync voices, activeVoiceId, and activeModel to localStorage
   useEffect(() => {
     try {
       localStorage.setItem(VOICES_STORAGE_KEY, JSON.stringify(voices));
@@ -171,6 +193,18 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
       // ignore
     }
   }, [voices]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_VOICE_STORAGE_KEY, activeVoiceId);
+    } catch {}
+  }, [activeVoiceId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_MODEL_STORAGE_KEY, activeModel);
+    } catch {}
+  }, [activeModel]);
 
   // TTS State
   const [selectedChunk, setSelectedChunk] = useState<ChunkItem | null>(null);
@@ -400,9 +434,7 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
   const [ttsIncomingScript, setTtsIncomingScript] = useState<string | null>(null);
 
   const handleSendTranscriptToTts = (text: string) => {
-    try {
-      localStorage.setItem("voxlab_script_working_text", text);
-    } catch {}
+    saveTtsWorkingText(text);
     setTtsIncomingScript(text);
     setActiveWorkspace("tts");
   };
@@ -681,8 +713,17 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
                 </div>
               )}
 
-              {activeWorkspace === "batch" && (
-                <BatchWorkspace />
+              {mountedWorkspaces.batch && (
+                <div
+                  className={
+                    activeWorkspace === "batch"
+                      ? "flex-1 flex flex-col overflow-hidden min-h-0 min-w-0"
+                      : "hidden"
+                  }
+                  aria-hidden={activeWorkspace !== "batch"}
+                >
+                  <BatchWorkspace />
+                </div>
               )}
 
               {activeWorkspace === "history" && (

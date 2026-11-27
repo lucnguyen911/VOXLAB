@@ -812,7 +812,7 @@ describe("Audio Quality Validator Tests", () => {
   });
 
   it("V19: detects outdated quality reviews and associates validatorVersion and asrModelId", async () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "4.5.2");
+    assert.equal(QUALITY_VALIDATOR_VERSION, "4.5.4");
 
     const chunkNoAudio: ChunkItem = {
       id: "c_v19",
@@ -824,7 +824,7 @@ describe("Audio Quality Validator Tests", () => {
     };
 
     const review = await validateChunkAudioQuality(chunkNoAudio, undefined, undefined, undefined, "large-v3-turbo");
-    assert.equal(review.validatorVersion, "4.5.2");
+    assert.equal(review.validatorVersion, "4.5.4");
     assert.equal(review.asrModelId, "large-v3-turbo");
 
     const chunkWithCurrentReview: ChunkItem = {
@@ -1320,8 +1320,8 @@ describe("Audio Quality Validator Tests", () => {
     assert.equal(isReviewOutdated(v300Chunk, "large-v3-turbo", true), true);
   });
 
-  it("V30: v4.5.2 invalidates v3.1.0 - v4.5.1 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
-    assert.equal(QUALITY_VALIDATOR_VERSION, "4.5.2");
+  it("V30: v4.5.4 invalidates v3.1.0 - v4.5.3 reviews, prioritizes warning labels over unverified in mixed chunks, and reports unverified issuesCount", () => {
+    assert.equal(QUALITY_VALIDATOR_VERSION, "4.5.4");
 
     const v310Chunk: ChunkItem = {
       id: "chunk_v30_old",
@@ -1364,6 +1364,26 @@ describe("Audio Quality Validator Tests", () => {
       },
     };
     assert.equal(isReviewOutdated(v450Chunk, "large-v3-turbo", true), true);
+
+    const v452Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v30_v452",
+      qualityReview: {
+        ...v310Chunk.qualityReview!,
+        validatorVersion: "4.5.2",
+      },
+    };
+    assert.equal(isReviewOutdated(v452Chunk, "large-v3-turbo", true), true);
+
+    const v453Chunk: ChunkItem = {
+      ...v310Chunk,
+      id: "chunk_v30_v453",
+      qualityReview: {
+        ...v310Chunk.qualityReview!,
+        validatorVersion: "4.5.3",
+      },
+    };
+    assert.equal(isReviewOutdated(v453Chunk, "large-v3-turbo", true), true);
 
     const mixedWarningChunk: ChunkItem = {
       id: "chunk_v30_mixed",
@@ -1561,7 +1581,7 @@ describe("Audio Quality Validator Tests", () => {
         summary: "Đạt",
         checkedAt: Date.now(),
         text: "Already verified chunk with Turbo.",
-        validatorVersion: "4.5.2",
+        validatorVersion: QUALITY_VALIDATOR_VERSION,
         asrModelId: "large-v3-turbo",
         audioSignature: "C:\\scratch\\tts\\chunk_decoupled.wav::4.2",
       },

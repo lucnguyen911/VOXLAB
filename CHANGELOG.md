@@ -2,6 +2,20 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.7] — 2026-11-27
+
+### Fixed & Improved
+- **Phiên Làm Việc Tạm Theo Vòng Đời Tiến Trình (`Process-Scoped Ephemeral Workspace Sessions`)**:
+  - Giữ nguyên toàn bộ đoạn audio đã đọc, trạng thái Hậu kiểm và kịch bản đang làm việc khi chuyển đổi qua lại giữa các tab trong cùng phiên mở app, nhưng tự động dọn sạch dữ liệu phiên làm việc tạm của tab khi người dùng thoát và khởi động lại ứng dụng.
+  - Bảo toàn 100% các cài đặt và dữ liệu bền vững của ứng dụng sau khi khởi động lại (mô hình AI & giọng đọc đang chọn, lịch sử tác vụ, thư viện giọng, cài đặt hệ thống và khóa bản quyền).
+- **Ghi Nhớ Giọng Đọc / Mô Hình Đang Chọn & Gia Cố Online Edge TTS (`Voice Persistence & Atomic Edge TTS`)**:
+  - Tự động lưu giữ giọng đọc và mô hình TTS đang chọn giữa các lần mở ứng dụng, đồng thời bổ sung kiểm tra tương thích ngôn ngữ kịch bản trước khi tổng hợp.
+  - Chuyển quy trình ghi file Edge TTS sang cơ chế nguyên tử (`.tmp` + `os.replace`), bổ sung thử lại theo cấp số nhân và tự động đồng bộ độ lệch giờ máy chủ, ngăn chặn triệt để lỗi sinh tệp MP3 `0-byte`.
+- **Nâng cấp Hậu kiểm Tự Hiệu Chỉnh Bất Biến Tham Số & Dò Tạp Âm Rít (`Hậu kiểm v4.5.4`)**:
+  - **Tự hiệu chỉnh theo SNR & tốc độ nhả chữ từng câu (`Parameter-Invariant Post-QC`)**: Tự động cân chỉnh ngưỡng khoảng lặng theo nhiễu nền thực tế và tốc độ phát âm nội câu, kết hợp khôi phục tự động cụm từ bị chập mốc DTW / rớt Silero VAD giữa câu, giúp điều chỉnh các thông số nâng cao (`Mức hướng dẫn`, `Nhiệt độ vị trí`, `Khử nhiễu`) không gây bắt nhầm lỗi hoặc bỏ sót lỗi.
+  - **Bù trễ mốc thời gian sau ký hiệu tiền tệ & bắt ngắt nhịp cụm khóa chặt (`Currency Shift & Fused Intensifiers`)**: Neo chuẩn lại biên từ khi Whisper gom ký hiệu tiền tệ (`$1,015`, `€`, `£`, `¥`) làm ẩn hộp thời gian của từ đơn vị (`dollars`, `cents`...), đồng thời bổ sung ngưỡng nhạy riêng cho các cụm định lượng nhấn mạnh không thể tách rời (`every single`, `any single`, `no single`, `each single`, `bất kỳ`, `bất cứ`).
+  - **Phát hiện tạp âm rít thanh quản / vấp giọng hài tần số cao (`Harmonic Squeak Verifier`)**: Bắt chính xác các xung tạp âm rít hoặc đứt thanh môn bất thường ngay cả khi Whisper có ngữ cảnh gộp ẩn vào từ ngắn với độ tin cậy cao.
+
 ## [1.0.6] — 2026-11-27
 
 ### Fixed & Improved
