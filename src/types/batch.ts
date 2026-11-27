@@ -92,6 +92,8 @@ export interface BatchQcChunkItem {
   characterName?: string;
   voiceId?: string;
   durationSec: number;
+  leadingSilenceMs?: number;
+  trailingSilenceMs?: number;
   audioFilePath: string;
   audioRevision?: number;
   qualityReview?: AudioQualityReview;

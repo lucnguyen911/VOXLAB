@@ -43,6 +43,7 @@ import {
 import { checkAsrReadiness } from "../../services/ai/asrReadiness";
 import { BatchOrchestrator } from "../../services/batch/batchOrchestrator";
 import {
+  concatPcmWavsFast,
   getSharedAiServices,
   tauriAiFs,
 } from "../../services/batch/batchRuntime";
@@ -605,6 +606,8 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
     let synthResult: {
       durationSec: number;
       outputPath: string;
+      leadingSilenceMs?: number;
+      trailingSilenceMs?: number;
       majorPunctuationSplit?: boolean;
     };
     if (isGoogleVoice) {
@@ -651,6 +654,12 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
           });
           if (shaped && shaped.durationSec > 0) {
             synthResult.durationSec = shaped.durationSec;
+            if (typeof shaped.leadingSilenceMs === "number") {
+              synthResult.leadingSilenceMs = shaped.leadingSilenceMs;
+            }
+            if (typeof shaped.trailingSilenceMs === "number") {
+              synthResult.trailingSilenceMs = shaped.trailingSilenceMs;
+            }
           }
         } catch {
           // Non-blocking
@@ -665,6 +674,12 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       text: targetChunk.text,
       originalText: targetChunk.originalText || targetChunk.text,
       durationSec: synthResult.durationSec,
+      ...(typeof synthResult.leadingSilenceMs === "number"
+        ? { leadingSilenceMs: synthResult.leadingSilenceMs }
+        : {}),
+      ...(typeof synthResult.trailingSilenceMs === "number"
+        ? { trailingSilenceMs: synthResult.trailingSilenceMs }
+        : {}),
       pauseAfterMs: "auto",
       audioUrl: synthResult.outputPath,
       audioFilePath: synthResult.outputPath,
@@ -685,6 +700,12 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
       ...targetChunk,
       status: "ready",
       durationSec: synthResult.durationSec,
+      ...(typeof synthResult.leadingSilenceMs === "number"
+        ? { leadingSilenceMs: synthResult.leadingSilenceMs }
+        : {}),
+      ...(typeof synthResult.trailingSilenceMs === "number"
+        ? { trailingSilenceMs: synthResult.trailingSilenceMs }
+        : {}),
       audioFilePath: synthResult.outputPath,
       audioRevision: nextAudioRevision,
       qualityReview,
@@ -1113,6 +1134,12 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
           text: c.text,
           originalText: c.originalText || c.text,
           durationSec: c.durationSec,
+          ...(typeof c.leadingSilenceMs === "number"
+            ? { leadingSilenceMs: c.leadingSilenceMs }
+            : {}),
+          ...(typeof c.trailingSilenceMs === "number"
+            ? { trailingSilenceMs: c.trailingSilenceMs }
+            : {}),
           pauseAfterMs: "auto",
           audioUrl: c.audioFilePath,
           audioFilePath: c.audioFilePath,
@@ -1120,21 +1147,29 @@ export const BatchTtsQcModal: React.FC<BatchTtsQcModalProps> = ({
           status: "ready",
         }));
         const pauses = computeChunkPausesMs(chunkItems, ttsSnapshot?.pauses);
-        const assembleRes = await ai.assemble({
-          inputs: sortedChunks.map((c, idx) => ({
-            path: c.audioFilePath,
-            gapAfterMs: pauses[idx],
-          })),
-          outputPath: masterAudioPath,
-          format,
-          punctuationPauses: ttsSnapshot?.pauses,
-        });
+        const concatInputs = sortedChunks.map((c, idx) => ({
+          path: c.audioFilePath,
+          gapAfterMs: pauses[idx],
+        }));
+        const fastWav =
+          format === "wav"
+            ? await concatPcmWavsFast(concatInputs, masterAudioPath)
+            : null;
+        const assembleRes = fastWav
+          ? null
+          : await ai.assemble({
+              inputs: concatInputs,
+              outputPath: masterAudioPath,
+              format,
+              punctuationPauses: ttsSnapshot?.pauses,
+            });
+        const activeSegments = fastWav?.segments || assembleRes?.segments;
 
         if (activeSubtitlePath) {
           const subSettings = loadSubtitleSettings();
           const cues = await exportUnifiedMasterSubtitlesFromTts({
             chunks: chunkItems,
-            assembledSegments: assembleRes?.segments,
+            assembledSegments: activeSegments,
             masterAudioPath,
             ai,
             aspectRatio: subSettings.aspectRatio,

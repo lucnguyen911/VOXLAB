@@ -5393,6 +5393,8 @@ def detect_phrase_internal_pauses(
             else None
         )
         is_embedded_subj_split = embedded_subj_span is not None
+        is_tight_cohesion_pair = False
+        tight_cohesion_tag = ""
         if not (
             is_quant_obj_prep_pair
             or is_pct_head_pair
@@ -5405,6 +5407,43 @@ def detect_phrase_internal_pauses(
             or is_post_comma_subj_split
             or is_embedded_subj_split
         ):
+            tc_ok, tc_kind, _tc_th = classify_phrase_cohesion_pair(
+                source_words,
+                src_clean,
+                delimiters,
+                i,
+                i + 1,
+                source_words[i],
+                source_words[i + 1],
+                eff_speed,
+                threshold,
+            )
+            if tc_ok and tc_kind in (
+                "tight_pronoun_verb",
+                "tight_aux_verb",
+                "tight_infinitive",
+                "tight_verb_particle",
+                "tight_preposition",
+                "tight_partitive_of",
+                "tight_determiner",
+                "product_version",
+                "compound_proper_noun",
+            ):
+                is_tight_cohesion_pair = True
+                tight_cohesion_tag = tc_kind
+        if not (
+            is_quant_obj_prep_pair
+            or is_pct_head_pair
+            or is_pre_num_mod_pair
+            or is_small_quant_noun_pair
+            or is_head_pair
+            or is_mod_noun_pair
+            or is_part_comp_pair
+            or is_verb_approx_obj_pair
+            or is_post_comma_subj_split
+            or is_embedded_subj_split
+            or is_tight_cohesion_pair
+        ):
             continue
         if not (
             is_head_pair
@@ -5414,6 +5453,7 @@ def detect_phrase_internal_pauses(
             or is_quant_obj_prep_pair
             or is_verb_approx_obj_pair
             or is_post_comma_subj_split
+            or is_tight_cohesion_pair
         ) and is_prosodic_phrase_boundary(
             source_words, src_clean, i, i + 1, source_words[i], source_words[i + 1], delimiters=delimiters
         ):
@@ -5430,7 +5470,13 @@ def detect_phrase_internal_pauses(
             and float(asr_words[j - 1].get("probability", 0.0)) >= 0.80
         ):
             p1 = float(asr_words[j - 1].get("probability", 1.0))
-        if min(p1, p2) < 0.50:
+        # Universal probability resilience for 1:1 script-matched pairs: when TTS unnaturally isolates a short
+        # function/head word (e.g. "month, | or | more", "you | can"), Whisper's token confidence on the isolated
+        # word often drops to 0.20-0.49 even though lexical identity is already matched and the anchor word is >= 0.75.
+        w1_lex_ok = left_is_num or are_words_equivalent(left, asr_clean[j]) or _is_minor_word_variant(left, asr_clean[j])
+        w2_lex_ok = right_is_num or are_words_equivalent(right, asr_clean[j + 1]) or _is_minor_word_variant(right, asr_clean[j + 1])
+        min_req_prob = 0.20 if (w1_lex_ok and w2_lex_ok and max(p1, p2) >= 0.75) else 0.50
+        if min(p1, p2) < min_req_prob:
             continue
         s1, e1 = float(w1.get("startSec", 0.0)), float(w1.get("endSec", 0.0))
         s2, e2 = float(w2.get("startSec", 0.0)), float(w2.get("endSec", 0.0))
@@ -5481,6 +5527,8 @@ def detect_phrase_internal_pauses(
             head_tag = f"verb_approx:{left}+{right}"
         elif is_post_comma_subj_split:
             head_tag = f"post_comma_subj:{left}"
+        elif is_tight_cohesion_pair:
+            head_tag = tight_cohesion_tag
         else:
             head_tag = f"embedded_subj:{left}"
         issues.append({
@@ -5716,7 +5764,8 @@ def detect_broken_word_pauses(
                         cand_gaps.append(("A", gap_dur, t_s0 + r0 * fsec, t_s0 + k * fsec))
 
             # Tier 1B (Place B): Silence snapped onto (j0 - 1) | j0 while prev absorbed prefix or j0 truncated
-            if not cand_gaps and syl1 >= 2 and j0 > 0 and s_cur.orig_start > 0 and not has_punct_before:
+            # Applies across BOTH unpunctuated and punctuated boundaries when acoustic syllable displacement is present.
+            if not cand_gaps and syl1 >= 2 and j0 > 0 and s_cur.orig_start > 0:
                 pw = asr_words[j0 - 1]
                 ps = float(pw.get("startSec", 0.0))
                 pe = float(pw.get("endSec", ps))
@@ -5725,23 +5774,123 @@ def detect_broken_word_pauses(
                     if sil_d >= min_sil and abs(b_gs - pe) <= 0.08:
                         prev_w_clean = src_clean[s_cur.orig_start - 1]
                         prev_syl = _word_expected_spoken_syllables(prev_w_clean)
+                        prev_is_num = _is_numeric_scope_word(prev_w_clean)
                         w0_rem = float(asr_words[j0].get("endSec", b_ge)) - b_ge
                         w0_prob = float(asr_words[j0].get("probability", 1.0))
                         prev_dur = b_gs - ps
-                        if (
-                            w0_rem < (0.13 * syl1 / eff_speed)
-                            or w0_prob < 0.88
-                            or (
-                                first_w not in PHRASE_OPENER_WORDS
-                                and prev_dur >= (0.22 * prev_syl + 0.15) / eff_speed
+                        if not has_punct_before:
+                            b_trig = (
+                                w0_rem < (0.13 * syl1 / eff_speed)
+                                or w0_prob < 0.88
+                                or (
+                                    first_w not in PHRASE_OPENER_WORDS
+                                    and prev_dur >= (0.22 * prev_syl + 0.15) / eff_speed
+                                )
                             )
-                        ):
+                        else:
+                            b_trig = (
+                                w0_rem < (0.135 * syl1 / eff_speed)
+                                or w0_prob < 0.80
+                                or (
+                                    not prev_is_num
+                                    and prev_dur >= (0.20 * prev_syl + 0.14) / eff_speed
+                                )
+                            )
+                        if b_trig:
                             cand_gaps.append(("B", sil_d, b_gs, b_ge))
+
+            # Tier 1C (Place C): Suffix of multi-syllable `s_cur` severed across following silence j1 | (j1 + 1)
+            # onto `j1 + 1` (even when `j1 + 1` is a 1-syllable word like "so"/"the" and even across a comma!).
+            if (
+                not cand_gaps
+                and not s_cur.is_number
+                and s_len == 1
+                and syl1 >= 2
+                and (j1 + 1) < len(asr_words)
+                and s_cur.orig_end < len(src_clean)
+            ):
+                nw = asr_words[j1 + 1]
+                ns = float(nw.get("startSec", 0.0))
+                ne = float(nw.get("endSec", ns))
+                if (ns - t_e1) >= min_sil:
+                    sil_c, c_gs, c_ge = _boundary_silence_interval(mono, sample_rate, t_s0, t_e1, ns, ne)
+                    if sil_c >= min_sil and abs(c_gs - t_e1) <= 0.08:
+                        next_w_clean = src_clean[s_cur.orig_end]
+                        next_syl = _word_expected_spoken_syllables(next_w_clean)
+                        next_is_num = _is_numeric_scope_word(next_w_clean)
+                        cur_pre_dur = c_gs - t_s0
+                        next_post_dur = ne - c_ge
+                        nw_prob = float(nw.get("probability", 1.0))
+                        if not next_is_num and (
+                            cur_pre_dur < (0.145 * syl1) / eff_speed
+                            or next_post_dur >= (0.22 * next_syl + 0.16) / eff_speed
+                            or nw_prob < 0.80
+                        ):
+                            cand_gaps.append(("C", sil_c, c_gs, c_ge))
 
             if not cand_gaps:
                 continue
 
             mode, dur, gs, ge = cand_gaps[0]
+            if mode == "C":
+                pre_t0_c = (
+                    float(asr_words[j0 - 1].get("startSec", t_s0))
+                    if j0 > 0 and (t_s0 - float(asr_words[j0 - 1].get("endSec", 0.0))) < 0.12
+                    else t_s0
+                )
+                post_t1_c = min(total_dur, max(ne + 0.08, ge + 0.65))
+                if slice_budget is not None:
+                    if slice_budget[0] <= 0:
+                        return issues
+                    slice_budget[0] -= 1
+                if secondary_reasons is not None:
+                    secondary_reasons.append(f"broken_word_suffix_pre:{first_w}")
+                pre_sl_c = _run_isolated_whisper_slice_raw(
+                    mono, sample_rate, max(0.0, pre_t0_c - 0.04), gs + 0.02, whisper_model, lang_code
+                )
+                pre_w_c = [str(w.get("word", "")).strip() for w in (pre_sl_c or []) if clean_word(str(w.get("word", "")))]
+                if not pre_w_c:
+                    continue
+                if slice_budget is not None and slice_budget[0] > 0:
+                    slice_budget[0] -= 1
+                if secondary_reasons is not None:
+                    secondary_reasons.append(f"broken_word_suffix_post:{first_w}")
+                post_sl_c = _run_isolated_whisper_slice_raw(
+                    mono, sample_rate, max(0.0, ge - 0.02), post_t1_c, whisper_model, lang_code
+                )
+                post_items_c = [w for w in (post_sl_c or []) if clean_word(str(w.get("word", "")))]
+                if not post_items_c:
+                    continue
+                pre_last_prob_c = float((pre_sl_c or [{}])[-1].get("probability", 0.0))
+                pre_completed_cleanly = (
+                    _slice_matches_target_words([pre_w_c[-1]], [source_words[s_cur.orig_start]], eff_lang)
+                    and pre_last_prob_c >= 0.80
+                )
+                post_first_w_c = str(post_items_c[0].get("word", "")).strip()
+                post_first_prob_c = float(post_items_c[0].get("probability", 0.0))
+                post_starts_cleanly = (
+                    _slice_matches_target_words([post_first_w_c], [source_words[s_cur.orig_end]], eff_lang)
+                    and post_first_prob_c >= 0.55
+                )
+                if pre_completed_cleanly and post_starts_cleanly:
+                    continue
+                raw_first_c = source_words[s_cur.orig_start].strip(" ,.;:!?\"'()") or first_w
+                issues.append({
+                    "severity": "warning",
+                    "code": "ABNORMAL_PAUSE",
+                    "message": (
+                        f'Ngắt nghỉ bất thường ngay trong từ "{raw_first_c}" ({dur:.2f}s) '
+                        f"— khoảng {format_timestamp(gs)}. Vui lòng nghe lại."
+                    ),
+                    "words": [first_w],
+                    "timeRange": [round(gs, 3), round(max(gs, ge), 3)],
+                    "pauseContext": "intra_word",
+                    "evidence": (
+                        f"intra_word_silence={dur:.3f}s mode=C pre={pre_w_c} "
+                        f"post={[str(x.get('word', '')).strip() for x in post_items_c]} post_p0={post_first_prob_c:.2f}"
+                    ),
+                })
+                continue
             use_prev = (mode == "B") or (
                 j0 > 0
                 and s_cur.orig_start > 0
@@ -10474,14 +10623,151 @@ def detect_acoustic_stutter(
                 v2 = np.where((rms_5[f_s2:f_e2] >= 0.025) & (zcr_5[f_s2:f_e2] < 0.22))[0]
                 if v2.size == 0:
                     continue
-                fv2 = int(f_s2 + v2[0])
+                v2_first = int(f_s2 + v2[0])
+                fv2 = v2_first
                 step2 = 0
                 while fv2 > fv1 and rms_5[fv2 - 1] >= 0.0035 and step2 < max_edge_step:
                     fv2 -= 1
                     step2 += 1
                 vv_gap = (fv2 - fv1) * fsec5
                 max_vv_gap = 1.40 if (has_punct and is_double_sib_cluster) else 0.90
-                if not (0.24 <= vv_gap <= max_vv_gap) or (fv2 - fv1) <= 8:
+
+                # Pass 3A-Onset: Aborted voiceless plosive/affricate onset stutter ("put [ch-] trucks")
+                # where primary Whisper LM-smooths a cut-and-restarted onset [burst1 -> hard silence -> onset2+vowel2]
+                # into a high-probability single word.
+                emitted_p3 = False
+                raw_vv_gap = (v2_first - fv1) * fsec5
+                if (
+                    not has_punct
+                    and not right_is_num
+                    and not _is_numeric_scope_word(sw2)
+                    and sw1 != sw2
+                    and sw2.startswith(("p", "t", "k", "c", "q"))
+                    and not sw2.startswith(("th", "ph", "sh"))
+                    and (0.20 <= raw_vv_gap <= 0.55)
+                ):
+                    max_att_step = max(1, int(round(0.15 / fsec5)))
+                    att_s = v2_first
+                    att_step = 0
+                    while att_s > fv1 and rms_5[att_s - 1] >= 0.0030 and att_step < max_att_step:
+                        att_s -= 1
+                        att_step += 1
+                    att_dur = (v2_first - att_s) * fsec5
+                    if 0.045 <= att_dur <= 0.160 and (att_s - fv1) >= 12:
+                        att_rms_sl = rms_5[att_s:v2_first]
+                        att_zcr_sl = zcr_5[att_s:v2_first]
+                        att_pk = float(np.max(att_rms_sl))
+                        if (
+                            att_pk >= 0.022
+                            and float(np.mean(att_zcr_sl)) >= 0.24
+                            and float(np.max(att_zcr_sl)) >= 0.30
+                        ):
+                            int_rms = rms_5[fv1:att_s]
+                            int_zcr = zcr_5[fv1:att_s]
+                            low_zcr_frames = int_rms[int_zcr < 0.18]
+                            has_interior_vowel = low_zcr_frames.size > 0 and float(np.max(low_zcr_frames)) >= 0.025
+                            if not has_interior_vowel:
+                                act_o = int_rms >= 0.0050
+                                isl_o: list[tuple[int, int]] = []
+                                o_i = 0
+                                while o_i < len(act_o):
+                                    if act_o[o_i]:
+                                        o_j = o_i + 1
+                                        while o_j < len(act_o) and (
+                                            act_o[o_j]
+                                            or (
+                                                o_j + 1 < len(act_o)
+                                                and act_o[o_j + 1]
+                                                and int_rms[o_j] >= 0.0025
+                                            )
+                                        ):
+                                            o_j += 1
+                                        isl_o.append((o_i, o_j))
+                                        o_i = o_j
+                                    else:
+                                        o_i += 1
+                                sig_isl_o = [
+                                    (st_o, en_o)
+                                    for (st_o, en_o) in isl_o
+                                    if float(np.max(int_rms[st_o:en_o])) >= 0.012
+                                ]
+                                if len(sig_isl_o) == 1:
+                                    ist_o, ien_o = sig_isl_o[0]
+                                    dur_o = (ien_o - ist_o) * fsec5
+                                    pk_o = float(np.max(int_rms[ist_o:ien_o]))
+                                    mn_zcr_o = float(np.mean(int_zcr[ist_o:ien_o]))
+                                    mx_zcr_o = float(np.max(int_zcr[ist_o:ien_o]))
+                                    pre_sil_o = ist_o * fsec5
+                                    post_sil_o = (len(int_rms) - ien_o) * fsec5
+                                    min_pre_o = float(np.min(int_rms[:ist_o])) if ist_o > 0 else 1.0
+                                    min_post_o = float(np.min(int_rms[ien_o:])) if ien_o < len(int_rms) else 1.0
+                                    if (
+                                        0.025 <= dur_o <= 0.095
+                                        and pk_o >= 0.018
+                                        and 0.32 <= (pk_o / att_pk) <= 1.60
+                                        and mn_zcr_o >= 0.28
+                                        and mx_zcr_o >= 0.34
+                                        and pre_sil_o >= 0.035
+                                        and post_sil_o >= 0.035
+                                        and min_pre_o <= 0.0025
+                                        and min_post_o <= 0.0025
+                                    ):
+                                        b1_wave = mono[
+                                            (fv1 + ist_o) * hop5 : min(mono.size, (fv1 + ien_o) * hop5 + win15)
+                                        ]
+                                        att_wave = mono[
+                                            att_s * hop5 : min(mono.size, v2_first * hop5 + hop5)
+                                        ]
+                                        if b1_wave.size >= 64 and att_wave.size >= 64:
+                                            onset_cos_sim = float(
+                                                np.dot(_sibilant_spec32(b1_wave), _sibilant_spec32(att_wave))
+                                            )
+                                            if onset_cos_sim >= 0.82:
+                                                left_nb = p3_src_clean[si - 1] if si > 0 else ""
+                                                right_nb = (
+                                                    p3_src_clean[si + 2]
+                                                    if (si + 2) < len(p3_src_clean)
+                                                    else ""
+                                                )
+                                                cleared_by_slice = _isolated_slice_clears_stutter(
+                                                    max(0.0, w1_st - 0.03),
+                                                    min(mono.size / float(sample_rate), w2_en + 0.06),
+                                                    [sw1, sw2],
+                                                    f"stutter_clear_onset:{sw1}_{sw2}",
+                                                    left_neighbor=left_nb,
+                                                    right_neighbor=right_nb,
+                                                    min_clear_prob=0.72,
+                                                )
+                                                if not cleared_by_slice:
+                                                    t_h_start = round((fv1 + ist_o) * fsec5, 3)
+                                                    t_h_end = round(min(w2_en, v2_first * fsec5 + 0.18), 3)
+                                                    if not any(abs(t_h_start - r[0]) < 0.25 for r in detected_ranges):
+                                                        detected_ranges.append((t_h_start, t_h_end))
+                                                        raw_w1 = p3_src_words[si].strip(" ,.;:!?\"'()") or sw1
+                                                        raw_w2 = p3_src_words[si + 1].strip(" ,.;:!?\"'()") or sw2
+                                                        ts = format_timestamp(t_h_start)
+                                                        issues.append({
+                                                            "severity": "warning",
+                                                            "code": "SUSPECTED_STUTTER",
+                                                            "message": (
+                                                                f'Nghi vấn vấp phụ âm đầu tại cụm "{raw_w1} {raw_w2}" '
+                                                                f"— khoảng {ts}. Vui lòng nghe kiểm tra."
+                                                            ),
+                                                            "words": [sw1, sw2],
+                                                            "timeRange": [t_h_start, t_h_end],
+                                                            "sourceExcerpt": f"{raw_w1} {raw_w2}",
+                                                            "asrRawExcerpt": f"{raw_w1} {raw_w2}",
+                                                            "asrNormalizedExcerpt": f"{sw1} {sw2}",
+                                                            "tokenSource": "primary_asr",
+                                                            "evidence": (
+                                                                f"Aborted voiceless onset stutter vv_gap={raw_vv_gap:.3f}s "
+                                                                f"b1_dur={dur_o:.3f}s att_dur={att_dur:.3f}s "
+                                                                f"pk_ratio={pk_o / att_pk:.2f} cos={onset_cos_sim:.2f}"
+                                                            ),
+                                                        })
+                                                        emitted_p3 = True
+
+                if emitted_p3 or not (0.24 <= vv_gap <= max_vv_gap) or (fv2 - fv1) <= 8:
                     continue
                 g_rms = rms_5[fv1:fv2]
                 g_zcr = zcr_5[fv1:fv2]
@@ -10498,8 +10784,6 @@ def detect_acoustic_stutter(
                         islands.append((ist, g_i))
                 if in_isl:
                     islands.append((ist, len(act)))
-
-                emitted_p3 = False
                 if (
                     not has_punct
                     and not right_is_num

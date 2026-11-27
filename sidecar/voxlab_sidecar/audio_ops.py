@@ -134,6 +134,7 @@ def detect_and_filter_leading_artifact(
 
     frames = mono[: num_frames * frame_len].reshape(num_frames, frame_len)
     frame_rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    frame_zcr = np.mean(np.diff(np.signbit(frames), axis=1), axis=1)
 
     silence_thresh = max(0.0012, min(0.0035, peak * 0.012))
     active_rms = frame_rms[frame_rms >= silence_thresh * 2.0]
@@ -165,27 +166,60 @@ def detect_and_filter_leading_artifact(
     if main_start < 0 or (main_start - b_start) < 3:
         return mono, {"action": "none", "confidence": "none"}
 
-    # Inspect [b_start, main_start) for either:
-    # (a) a strict silence valley (frame_rms <= silence_thresh * 1.15), or
+    # Walk speech_start back before main_start when an unvoiced initial consonant or sibilant+stop
+    # cluster (e.g. /s/, /f/, /sh/, /sp/, /st/, /sk/ as in "Speaking") precedes the vowel nucleus.
+    speech_start = main_start
+    pre_scan_lo = max(b_start + 2, main_start - 24)
+    f_idx = pre_scan_lo
+    while f_idx < main_start:
+        if frame_zcr[f_idx] >= 0.25 and frame_rms[f_idx] >= silence_thresh * 0.80:
+            run_s = f_idx
+            run_e = f_idx + 1
+            while run_e < main_start and (
+                (frame_zcr[run_e] >= 0.22 and frame_rms[run_e] >= silence_thresh * 0.70)
+                or frame_rms[run_e] >= silence_thresh * 1.8
+            ):
+                run_e += 1
+            run_frames = run_e - run_s
+            max_run_rms = float(np.max(frame_rms[run_s:run_e]))
+            # Accept >=20ms fricative/affricate or >=10ms crisp consonant burst within 90ms stop closure of vowel
+            if (main_start - run_e) <= 9 and (
+                run_frames >= 2 or (frame_zcr[run_s] >= 0.30 and max_run_rms >= silence_thresh * 1.3)
+            ):
+                speech_start = run_s
+                break
+            f_idx = run_e
+        else:
+            f_idx += 1
+
+    if (speech_start - b_start) < 3:
+        return mono, {"action": "none", "confidence": "none"}
+
+    # Inspect [b_start, speech_start) for either:
+    # (a) a strict silence valley (staying near silence without crossing breath/consonant islands), or
     # (b) a local double-onset dip (local peak followed by a dip <= 0.68 * peak_rms before rising again)
     b_end = -1
     valley_end = -1
 
     # Check (a): strict silence valley after initial burst
     cur_end = b_start + 1
-    while cur_end < main_start and frame_rms[cur_end] >= silence_thresh * 0.85:
+    while cur_end < speech_start and frame_rms[cur_end] >= silence_thresh * 0.85:
         cur_end += 1
-    if cur_end < main_start:
+    if cur_end < speech_start:
         v_end = cur_end
-        while v_end < main_start and frame_rms[v_end] < main_onset_thresh:
+        while (
+            v_end < speech_start
+            and frame_rms[v_end] <= silence_thresh * 1.65
+            and not (frame_zcr[v_end] >= 0.25 and frame_rms[v_end] >= silence_thresh * 0.85)
+        ):
             v_end += 1
         if v_end > cur_end:
             b_end = cur_end
             valley_end = v_end
 
     # Check (b): local energy dip inside pre-nucleus region (e.g. pre-pulse at 0.16-0.19s -> dip at 0.20-0.22s -> consonant at 0.23s)
-    if b_end < 0 and (main_start - b_start) >= 5:
-        pre_rms = frame_rms[b_start:main_start]
+    if b_end < 0 and (speech_start - b_start) >= 5:
+        pre_rms = frame_rms[b_start:speech_start]
         for p_rel in range(min(6, pre_rms.size - 3)):
             peak_val = float(pre_rms[p_rel])
             if peak_val < silence_thresh:
@@ -220,6 +254,7 @@ def detect_and_filter_leading_artifact(
     s_b0 = b_start * frame_len
     s_b1 = b_end * frame_len
     s_v1 = valley_end * frame_len
+    s_speech0 = speech_start * frame_len
     s_m0 = main_start * frame_len
     s_m1 = min(mono.size, s_m0 + int(round(0.150 * sr)))
 
@@ -250,7 +285,7 @@ def detect_and_filter_leading_artifact(
         10.0 <= burst_dur_ms <= 95.0
         and valley_dur_ms >= 25.0
         and valley_rms <= silence_thresh * 1.25
-        and valley_end == main_start
+        and valley_end == speech_start
         and rel_rms_ratio <= 0.12
         and burst_peak <= 0.065
         and not is_likely_initial_fricative
@@ -258,7 +293,7 @@ def detect_and_filter_leading_artifact(
 
     if is_high_confidence_artifact:
         safety_head = int(round(0.025 * sr))
-        cut_sample = max(s_b1, s_m0 - safety_head)
+        cut_sample = max(s_b1, s_speech0 - safety_head)
         trimmed = mono[cut_sample:].copy()
         fade_len = min(trimmed.size, max(1, int(round(0.010 * sr))))
         if fade_len > 0:
@@ -270,7 +305,7 @@ def detect_and_filter_leading_artifact(
             "trimmedDurationSec": round(cut_sample / sr, 4),
             "burstStartSec": burst_start_sec,
             "burstEndSec": burst_end_sec,
-            "speechOnsetSec": round(s_m0 / sr, 4),
+            "speechOnsetSec": round(s_speech0 / sr, 4),
             "burstDurationMs": burst_dur_ms,
             "valleyDurationMs": valley_dur_ms,
             "relativeRmsRatio": round(rel_rms_ratio, 4),
@@ -333,12 +368,12 @@ def normalize_internal_breath_seams(
     if mono.ndim > 1:
         mono = mono.mean(axis=1)
     if mono.size < int(0.6 * sr) or sr <= 0:
-        return mono, {"compactedMs": 0.0, "attenuatedBreaths": 0}
+        return mono, {"compactedMs": 0.0, "attenuatedBreaths": 0, "cuts": []}
 
     frame_len = max(1, int(round(0.010 * sr)))  # 10ms frame
     n_frames = mono.size // frame_len
     if n_frames < 60:
-        return mono, {"compactedMs": 0.0, "attenuatedBreaths": 0}
+        return mono, {"compactedMs": 0.0, "attenuatedBreaths": 0, "cuts": []}
 
     frames = mono[: n_frames * frame_len].reshape(n_frames, frame_len)
     rms = np.sqrt(np.mean(frames ** 2, axis=1))
@@ -387,6 +422,7 @@ def normalize_internal_breath_seams(
     pieces: list[np.ndarray] = []
     cursor = 0
     compacted_samples = 0
+    cuts: list[dict[str, float]] = []
     fade_samples = max(1, int(round(0.015 * sr)))
 
     min_trigger_frames = 57
@@ -443,10 +479,17 @@ def normalize_internal_breath_seams(
                     pieces[-1][-fade_samples:] = (
                         pieces[-1][-fade_samples:] * w_out + out[cut_e : cut_e + fade_samples] * w_in
                     )
-                    cursor = cut_e + fade_samples
+                    next_cursor = cut_e + fade_samples
                 else:
-                    cursor = cut_e
+                    next_cursor = cut_e
+                actual_removed = next_cursor - cut_s
+                cursor = next_cursor
                 compacted_samples += cut_e - cut_s
+                cuts.append({
+                    "startSec": round(cut_s / sr, 4),
+                    "endSec": round(next_cursor / sr, 4),
+                    "removedSec": round(actual_removed / sr, 4),
+                })
 
     if cursor < out.size:
         pieces.append(out[cursor:])
@@ -454,6 +497,7 @@ def normalize_internal_breath_seams(
     return final_audio, {
         "compactedMs": round((compacted_samples / sr) * 1000.0, 1),
         "attenuatedBreaths": attenuated_count,
+        "cuts": cuts,
     }
 
 
@@ -591,9 +635,16 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
         cursor = 0
         processed_clips: list[np.ndarray] = []
         edge_metrics: list[dict[str, Any]] = []
+        lead_trims: list[float] = []
+        seam_cuts: list[list[dict[str, float]]] = []
         assemble_max_pause = _max_allowed_pause_from_config(params.get("punctuationPauses"))
         for i, raw_clip in enumerate(clips):
             clip, lead_info = detect_and_filter_leading_artifact(raw_clip, sr)
+            lead_trim_sec = (
+                float(lead_info.get("trimmedDurationSec") or 0.0)
+                if lead_info.get("action") == "trimmed"
+                else 0.0
+            )
             if lead_info.get("action") == "kept_with_warning":
                 boundary_warnings.append({
                     "type": "leading_artifact_suspected",
@@ -604,12 +655,14 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
                     "speechOnsetSec": lead_info.get("speechOnsetSec"),
                     "message": lead_info.get("message", f"Phát hiện xung âm nghi vấn đầu đoạn {i + 1}."),
                 })
-            clip, _seam_info = normalize_internal_breath_seams(
+            clip, seam_info = normalize_internal_breath_seams(
                 clip, sr, max_allowed_pause_sec=assemble_max_pause
             )
             clip, edge_info = attenuate_leading_breath_and_measure_edges(clip, sr)
             processed_clips.append(clip)
             edge_metrics.append(edge_info)
+            lead_trims.append(lead_trim_sec)
+            seam_cuts.append(list(seam_info.get("cuts") or []))
 
         for i, (item, clip) in enumerate(zip(inputs, processed_clips)):
             raw_gap_ms = float(item.get("gapAfterMs") or 0)
@@ -623,8 +676,17 @@ def assemble(_m: str, params: dict[str, Any], ctx: RequestContext) -> dict[str, 
             else:
                 gap_ms = raw_gap_ms
             gap = max(0, int(round(gap_ms * sr / 1000.0)))
-            segments.append({"index": i, "startSec": round(cursor / sr, 4),
-                             "endSec": round((cursor + clip.size) / sr, 4), "durationSec": round(clip.size / sr, 4)})
+            seg_entry: dict[str, Any] = {
+                "index": i,
+                "startSec": round(cursor / sr, 4),
+                "endSec": round((cursor + clip.size) / sr, 4),
+                "durationSec": round(clip.size / sr, 4),
+            }
+            if lead_trims[i] > 0.0:
+                seg_entry["leadingTrimSec"] = round(lead_trims[i], 4)
+            if seam_cuts[i]:
+                seg_entry["compactedCuts"] = seam_cuts[i]
+            segments.append(seg_entry)
 
             # Master Audio Boundary Check: non-zero crossing clicks/pops or excessive silence gap (> 4.0s)
             # TUNING REQUIRED (CONSTRAINTS.md section 7.2)
@@ -1066,6 +1128,8 @@ def shape_internal_punctuation_pauses(
     asr_words: list[dict[str, Any]],
     speed: float = 1.0,
     major_already_split: bool = False,
+    whisper_model: Any = None,
+    lang_code: str | None = None,
 ) -> tuple[np.ndarray, list[dict[str, Any]], list[dict[str, Any]]]:
     """Shapes in-chunk punctuation pauses (especially in-sentence clause/list commas `,`, plus any unsplit
     `. ! ? : ;` marks) directly at minimum-energy zero-crossings without altering pitch or prosody.
@@ -1271,10 +1335,116 @@ def shape_internal_punctuation_pauses(
 
         needed_sec = target_sec - existing_pause_sec
         if needed_sec >= 0.035:
-            # Locate minimum-RMS point inside existing quiet valley or boundary transition
+            def _snap_to_zc(raw_center_idx: int) -> int | None:
+                zc_rad = max(2, int(round(0.003 * sr)))
+                z_lo = max(last_cut_sample + int(0.02 * sr), max(1, raw_center_idx - zc_rad))
+                z_hi = min(mono.size - 2, raw_center_idx + zc_rad)
+                if z_hi <= z_lo:
+                    return None
+                c_out = raw_center_idx
+                best_d = zc_rad + 1
+                for k_idx in range(z_lo, z_hi + 1):
+                    if mono[k_idx - 1] * mono[k_idx] <= 0.0:
+                        d = abs(k_idx - raw_center_idx)
+                        if d < best_d:
+                            best_d = d
+                            c_out = k_idx
+                if best_d > zc_rad:
+                    c_out = z_lo + int(np.argmin(np.abs(mono[z_lo : z_hi + 1])))
+                return c_out
+
+            def _word_matches_script_boundary(obs_tok: dict[str, Any], src_idx_b: int, is_left_side: bool) -> bool:
+                obs_cln = str(obs_tok.get("clean") or aq.clean_word(str(obs_tok.get("word") or "")))
+                exp_cln = src_clean[src_idx_b]
+                if not obs_cln or not exp_cln:
+                    return False
+                if (
+                    aq.are_words_equivalent(exp_cln, obs_cln)
+                    or aq._is_minor_word_variant(exp_cln, obs_cln)
+                    or aq.phonetic_key(exp_cln) == aq.phonetic_key(obs_cln)
+                ):
+                    return True
+                ctx_lo_b = max(0, src_idx_b - 4) if is_left_side else src_idx_b
+                ctx_hi_b = (src_idx_b + 1) if is_left_side else min(len(source_words), src_idx_b + 5)
+                src_sub_sp = aq.collapse_number_tokens(source_words[ctx_lo_b:ctx_hi_b], eff_lang)
+                obs_sub_sp = aq.collapse_number_tokens([str(obs_tok.get("word") or "")], eff_lang)
+                if src_sub_sp and obs_sub_sp:
+                    target_can = src_sub_sp[-1].canonical if is_left_side else src_sub_sp[0].canonical
+                    if obs_sub_sp[0].canonical == target_can or obs_cln in target_can.split():
+                        return True
+                return False
+
+            def _verify_lexical_cut(cand_cut_idx: int) -> bool:
+                if whisper_model is None:
+                    return True
+                ctx_s_sec = max(0.0, min(s1, cand_cut_idx / float(sr) - 0.45) - 0.12)
+                ctx_e_sec = min(total_dur, max(e2, cand_cut_idx / float(sr) + 0.45) + 0.12)
+                ctx_s_i = max(0, int(round(ctx_s_sec * sr)))
+                ctx_e_i = min(mono.size, int(round(ctx_e_sec * sr)))
+                if cand_cut_idx <= ctx_s_i + int(0.04 * sr) or ctx_e_i <= cand_cut_idx + int(0.04 * sr):
+                    return False
+                probe_ins_n = max(int(round(0.22 * sr)), int(round(needed_sec * sr)))
+                probe_buf = np.concatenate([
+                    mono[ctx_s_i:cand_cut_idx],
+                    np.zeros(probe_ins_n, dtype=np.float32),
+                    mono[cand_cut_idx:ctx_e_i],
+                ])
+                rel_a = (cand_cut_idx - ctx_s_i) / float(sr)
+                rel_b = rel_a + probe_ins_n / float(sr)
+                sl_words = aq._run_isolated_whisper_slice_raw(
+                    probe_buf, sr, 0.0, probe_buf.size / float(sr), whisper_model, lang_code
+                )
+                if not sl_words:
+                    return False
+                # 1. No single word may span across the inserted silence [rel_a, rel_b]
+                for tw in sl_words:
+                    ts_w = float(tw.get("startSec", 0.0))
+                    te_w = float(tw.get("endSec", ts_w))
+                    if ts_w < rel_a - 0.025 and te_w > rel_b + 0.025:
+                        return False
+                left_toks = [
+                    tw for tw in sl_words
+                    if 0.5 * (float(tw.get("startSec", 0.0)) + float(tw.get("endSec", 0.0))) <= rel_a + 0.02
+                ]
+                right_toks = [
+                    tw for tw in sl_words
+                    if 0.5 * (float(tw.get("startSec", 0.0)) + float(tw.get("endSec", 0.0))) >= rel_b - 0.02
+                ]
+                if not left_toks or not right_toks:
+                    return False
+                tw_l = left_toks[-1]
+                tw_r = right_toks[0]
+                if float(tw_l.get("probability", 0.0)) < 0.45 or float(tw_r.get("probability", 0.0)) < 0.52:
+                    return False
+                if not _word_matches_script_boundary(tw_l, i, is_left_side=True):
+                    return False
+                if not _word_matches_script_boundary(tw_r, i + 1, is_left_side=False):
+                    return False
+                # 4. Reject if >= 75ms of orphaned active speech sits unaligned right before rel_a or right after rel_b
+                orphan_thresh = max(0.012, 0.12 * ref_rms)
+                l_end_s = min(rel_a, float(tw_l.get("endSec", rel_a)))
+                if rel_a - l_end_s >= 0.075:
+                    sl_o1 = probe_buf[int(round(l_end_s * sr)) : int(round(rel_a * sr))]
+                    n_o1 = sl_o1.size // win_10ms
+                    if n_o1 > 0:
+                        rms_o1 = np.sqrt(np.mean(sl_o1[: n_o1 * win_10ms].reshape(n_o1, win_10ms) ** 2, axis=1))
+                        if int(np.sum(rms_o1 >= orphan_thresh)) >= 7:
+                            return False
+                r_start_s = max(rel_b, float(tw_r.get("startSec", rel_b)))
+                if r_start_s - rel_b >= 0.075:
+                    sl_o2 = probe_buf[int(round(rel_b * sr)) : int(round(r_start_s * sr))]
+                    n_o2 = sl_o2.size // win_10ms
+                    if n_o2 > 0:
+                        rms_o2 = np.sqrt(np.mean(sl_o2[: n_o2 * win_10ms].reshape(n_o2, win_10ms) ** 2, axis=1))
+                        if int(np.sum(rms_o2 >= orphan_thresh)) >= 7:
+                            return False
+                return True
+
+            # Locate minimum-RMS point inside existing quiet valley or verified lexical boundary transition
+            default_center_idx: int
             if best_q_len >= 2 and best_q_start >= 0:
                 q_mid_f = best_q_start + best_q_len // 2
-                center_idx = b_lo_idx + q_mid_f * win_10ms + (win_10ms // 2)
+                default_center_idx = b_lo_idx + q_mid_f * win_10ms + (win_10ms // 2)
             else:
                 fine_w = max(4, int(round(0.006 * sr)))
                 fine_hop = max(1, int(round(0.001 * sr)))
@@ -1287,29 +1457,93 @@ def shape_internal_punctuation_pauses(
                         if e_val < min_e:
                             min_e = e_val
                             best_off = off + fine_w // 2
-                    center_idx = b_lo_idx + best_off
+                    default_center_idx = b_lo_idx + best_off
                 else:
-                    center_idx = (b_lo_idx + b_hi_idx) // 2
+                    default_center_idx = (b_lo_idx + b_hi_idx) // 2
 
-            # Snap to nearest zero-crossing within ±3ms
-            zc_rad = max(2, int(round(0.003 * sr)))
-            z_lo = max(last_cut_sample + int(0.02 * sr), max(1, center_idx - zc_rad))
-            z_hi = min(mono.size - 2, center_idx + zc_rad)
-            if z_hi <= z_lo:
+            cut_idx: int | None = None
+            if whisper_model is None or existing_pause_sec >= 0.10:
+                cand0 = _snap_to_zc(default_center_idx)
+                if cand0 is not None and (whisper_model is None or existing_pause_sec >= 0.14 or _verify_lexical_cut(cand0)):
+                    cut_idx = cand0
+            else:
+                # Rushed/coarticulated punctuation with live ASR model: search local minima across full [s1..e2]
+                # and accept ONLY a cut point that satisfies Universal Lexical Boundary Conservation.
+                eff_spd_p = max(0.5, float(speed or 1.0))
+                syl_cur = max(1, aq._word_expected_spoken_syllables(src_clean[i]))
+                syl_nxt = max(1, aq._word_expected_spoken_syllables(src_clean[i + 1]))
+                pair_span = max(0.08, e2 - s1)
+                min_g1 = min(0.25 * pair_span, max(0.045, 0.065 * syl_cur / eff_spd_p))
+                min_g2 = min(0.25 * pair_span, max(0.045, 0.065 * syl_nxt / eff_spd_p))
+                full_lo_s = max(0.0, s1 + min_g1)
+                full_hi_s = min(total_dur, e2 - min_g2)
+                prop_s = s1 + pair_span * (float(syl_cur) / float(syl_cur + syl_nxt))
+
+                cand_centers: list[int] = []
+                f_lo_i = int(round(full_lo_s * sr))
+                f_hi_i = int(round(full_hi_s * sr))
+                win_8ms = max(4, int(round(0.008 * sr)))
+                hop_3ms = max(1, int(round(0.003 * sr)))
+                if f_hi_i - f_lo_i > win_8ms * 2:
+                    span_view = np.lib.stride_tricks.sliding_window_view(mono[f_lo_i:f_hi_i], win_8ms)[::hop_3ms]
+                    span_rms = np.sqrt(np.mean(span_view * span_view, axis=1) + 1e-12)
+                    scored_minima: list[tuple[float, int]] = []
+                    min_sep_steps = max(1, int(round(0.040 * sr / hop_3ms)))
+                    for m_k in range(len(span_rms)):
+                        lo_nb = max(0, m_k - 3)
+                        hi_nb = min(len(span_rms), m_k + 4)
+                        rv_k = float(span_rms[m_k])
+                        if rv_k > float(np.min(span_rms[lo_nb:hi_nb])) + 1e-7:
+                            continue
+                        if rv_k > 0.45 * ref_rms:
+                            continue
+                        abs_c = f_lo_i + m_k * hop_3ms + win_8ms // 2
+                        t_c = abs_c / float(sr)
+                        score_k = (rv_k / max(1e-5, ref_rms)) + 0.35 * abs(t_c - prop_s) / max(0.20, pair_span)
+                        scored_minima.append((score_k, abs_c))
+                    scored_minima.sort(key=lambda x: x[0])
+                    for _sc, c_pos in scored_minima:
+                        if all(abs(c_pos - prev_c) >= min_sep_steps * hop_3ms for prev_c in cand_centers):
+                            cand_centers.append(c_pos)
+                            if len(cand_centers) >= 4:
+                                break
+
+                df_slice = mono[
+                    max(0, default_center_idx - win_8ms // 2) : min(mono.size, default_center_idx + win_8ms // 2)
+                ]
+                df_rms = float(np.sqrt(np.mean(df_slice * df_slice) + 1e-12)) if df_slice.size > 0 else 1.0
+                if all(abs(default_center_idx - prev_c) >= int(0.040 * sr) for prev_c in cand_centers):
+                    if df_rms <= 0.45 * ref_rms:
+                        cand_centers.append(default_center_idx)
+
+                is_unambiguous_single_dip = (
+                    len(cand_centers) == 1
+                    and abs(cand_centers[0] - default_center_idx) <= int(0.045 * sr)
+                    and abs((default_center_idx / float(sr)) - prop_s) <= max(0.14, 0.28 * pair_span)
+                    and df_rms <= max(quiet_ceil * 1.8, 0.30 * ref_rms)
+                )
+                if is_unambiguous_single_dip:
+                    cut_idx = _snap_to_zc(cand_centers[0])
+                else:
+                    for raw_c in cand_centers[:4]:
+                        snapped_c = _snap_to_zc(raw_c)
+                        if snapped_c is not None and _verify_lexical_cut(snapped_c):
+                            cut_idx = snapped_c
+                            break
+
+            if cut_idx is None:
                 continue
-            cut_idx = center_idx
-            best_zc_dist = zc_rad + 1
-            for k_idx in range(z_lo, z_hi + 1):
-                if mono[k_idx - 1] * mono[k_idx] <= 0.0:
-                    d = abs(k_idx - center_idx)
-                    if d < best_zc_dist:
-                        best_zc_dist = d
-                        cut_idx = k_idx
-            if best_zc_dist > zc_rad:
-                cut_idx = z_lo + int(np.argmin(np.abs(mono[z_lo : z_hi + 1])))
 
             delta_samples = int(round(needed_sec * sr))
             if delta_samples > 0 and cut_idx > last_cut_sample + int(0.02 * sr):
+                cut_sec_exact = cut_idx / float(sr)
+                # Only adjust pre-shift word bounds when the verified cut point relocated outside [e1, s2]
+                if cut_sec_exact < e1 - 0.005 and float(updated_words[j].get("startSec", 0.0)) < cut_sec_exact - 0.02:
+                    updated_words[j]["endSec"] = round(cut_sec_exact, 3)
+                    updated_words[j + 1]["startSec"] = round(cut_sec_exact, 3)
+                elif cut_sec_exact > s2 + 0.005 and float(updated_words[j + 1].get("endSec", total_dur)) > cut_sec_exact + 0.02:
+                    updated_words[j]["endSec"] = round(cut_sec_exact, 3)
+                    updated_words[j + 1]["startSec"] = round(cut_sec_exact, 3)
                 planned_edits.append({
                     "mode": "insert",
                     "cutIdx": cut_idx,
@@ -1509,6 +1743,7 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
     active_model_id = str(model_id)
 
     mgr_model_id: str | None = None
+    whisper_model: Any = None
     precomputed = params.get("_precomputedAsrWords")
     detected_words: list[dict[str, Any]] = []
     if isinstance(precomputed, list) and precomputed:
@@ -1641,7 +1876,15 @@ def enforce_punctuation_pauses(_m: str, params: dict[str, Any], ctx: RequestCont
         }
 
     shaped_audio, updated_words, edits = shape_internal_punctuation_pauses(
-        mono, sr, text, pauses, detected_words, speed=speed, major_already_split=major_already_split
+        mono,
+        sr,
+        text,
+        pauses,
+        detected_words,
+        speed=speed,
+        major_already_split=major_already_split,
+        whisper_model=whisper_model,
+        lang_code=lang_code,
     )
 
     if edits:

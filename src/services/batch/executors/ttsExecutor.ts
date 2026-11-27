@@ -16,7 +16,10 @@ import { ChunkItem } from "../../../types/ui";
 import { normalizeText, getDefaultEnabledGroupIds } from "../../normalizer/engine";
 import { splitScriptWithPauses, TTS_SMART_CHUNK_OPTIONS } from "../../pause/chunker";
 import { computeChunkPausesMs } from "../../audio/masterExport";
-import { exportUnifiedMasterSubtitlesFromTts } from "../../subtitle/masterSubtitleExport";
+import {
+  AssembledSegmentTiming,
+  exportUnifiedMasterSubtitlesFromTts,
+} from "../../subtitle/masterSubtitleExport";
 import { exportToSrt, exportToVtt } from "../../subtitle/exporter";
 import {
   resolveJobOutputDirectory,
@@ -422,9 +425,7 @@ export class TtsExecutor {
     const outputArtifactPaths: string[] = [];
 
     // 6. Assemble master from the real chunk audio (fast native Rust WAV concat or sidecar MP3 LAME encode)
-    let fastWavSegments:
-      | Array<{ index: number; startSec: number; endSec: number; durationSec: number }>
-      | undefined;
+    let fastWavSegments: AssembledSegmentTiming[] | undefined;
     if (audioResolution.action !== "skip") {
       onProgress?.(75, "Đang ghép nối tệp âm thanh Master...");
       const pauses = computeChunkPausesMs(sortedChunks, ttsSnapshot?.pauses);
@@ -517,6 +518,8 @@ export class TtsExecutor {
       originalText: c.originalText,
       voiceId,
       durationSec: c.durationSec ?? 0,
+      ...(typeof c.leadingSilenceMs === "number" ? { leadingSilenceMs: c.leadingSilenceMs } : {}),
+      ...(typeof c.trailingSilenceMs === "number" ? { trailingSilenceMs: c.trailingSilenceMs } : {}),
       audioFilePath: c.audioFilePath || c.audioUrl || "",
       ...(c.qualityReview ? { qualityReview: c.qualityReview } : {}),
     }));

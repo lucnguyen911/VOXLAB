@@ -2,6 +2,19 @@
 
 All notable changes to **VoxLab** are documented in this file.
 
+## [1.0.6] — 2026-11-27
+
+### Fixed & Improved
+- **Bảo toàn Biên Từ Vựng Toàn Cục khi Chèn Nhịp Nghỉ Dấu Câu (`Lexical Boundary Conservation`)**:
+  - Nâng cấp `enforce_punctuation_pauses` / `shape_internal_punctuation_pauses` tìm điểm hõm năng lượng tối ưu trên toàn dải hai từ theo tỷ lệ âm tiết và xác minh trực tiếp bằng lát cắt Whisper cô lập trước khi chèn khoảng lặng, ngăn chặn triệt để hiện tượng chèn nhầm khoảng lặng cắt đôi từ khi giọng đọc nối liền không ngắt tại dấu câu (ví dụ `"acceleration, so"`, `"niche,"`, `"according"`, `"and"`).
+- **Nâng cấp Hậu kiểm Âm học & Cú pháp Toàn Cục (`Hậu kiểm v4.5.2`)**:
+  - **Pass 3A-Onset (Vấp phụ âm tắc/tắc-xát vô thanh đầu từ)**: Bắt chính xác các nhịp vấp bật âm vô thanh bị bỏ dở trước khoảng đóng thanh môn (`"put [ch-] trucks"`, `/tʃ, p, t, k/`) bằng phổ 32 băng tần đồng dạng kết hợp đối chứng lát cắt cô lập.
+  - **Hậu kiểm Đứt Từ Hai Chiều (`Bidirectional Broken-Word Detection`)**: Mở rộng bộ dò đứt từ sang cả 3 dạng hình học (giữa từ, đứt tiền tố sang từ trước, đứt hậu tố sang từ sau kể cả từ đơn âm tiết và qua dấu phẩy).
+  - **Liên kết Cú pháp Chặt & Kháng Tụt Xác Suất Từ Chức Năng (`Syntactic Cohesion`)**: Thống nhất phân loại các cặp cú pháp gắn kết chặt (liên từ `or/and/but/nor`, mạo từ, giới từ, trợ động từ, đại từ + động từ) và hạ sàn xác suất cho từ chức năng ngắn đã khớp 1:1 với kịch bản, chấm dứt việc bỏ lọt khoảng ngắt sai sau liên từ/từ nối (`"...month, or | [360ms] | more than..."`).
+- **Đồng bộ Phụ đề Nội Đoạn Chính Xác Từng Mẫu & Bảo Vệ Phụ Âm Đầu (`Subtitle Sync v2.3`)**:
+  - **Bù trừ cắt gọt nội đoạn (`leadingTrimSec` + `compactedCuts`)**: Ghi nhận chính xác độ dài cắt đầu đoạn và các nhát thu gọn tiếng lấy hơi nội bộ trong `ai.assemble` để dịch chuyển mốc thời gian từng từ trước khi xuất SRT, xóa bỏ hoàn toàn độ trễ phụ đề `+400..+625ms` ở nửa sau bài dài.
+  - **Bảo vệ cụm âm xát đầu câu & đồng bộ tạo lại chunk lẻ**: Neo lùi điểm bắt đầu giọng nói qua phụ âm xát vô thanh đầu câu (`/sp/` trong `"Speaking"`) để không cắt lẹm âm `/s/`, đồng thời lưu giữ khoảng lặng riêng từng chunk và ưu tiên ghép PCM WAV trực tiếp trong cửa sổ Hậu kiểm Hàng loạt.
+
 ## [1.0.5] — 2026-11-26
 
 ### Fixed & Improved

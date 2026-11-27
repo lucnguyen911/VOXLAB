@@ -105,13 +105,22 @@ export interface AssembleInput {
   startSec?: number;
 }
 
+export interface AssembleSegmentInfo {
+  index: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  leadingTrimSec?: number;
+  compactedCuts?: { startSec: number; endSec: number; removedSec: number }[];
+}
+
 export interface AssembleResult {
   outputPath: string;
   format: "wav" | "mp3";
   sampleRate: number;
   durationSec: number;
   peakAmplitude: number;
-  segments: { index: number; startSec: number; endSec: number; durationSec: number }[];
+  segments: AssembleSegmentInfo[];
 }
 
 export interface AudioQualityValidationResult {

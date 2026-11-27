@@ -7748,6 +7748,319 @@ class AudioQualityTest(unittest.TestCase):
         self.assertEqual(len(core), 1)
         self.assertEqual(core[0]["pauseContext"], "intra_word")
 
+    def test_v451_aborted_voiceless_affricate_onset_stutter_put_trucks(self):
+        sr = 24000
+        dur = 3.2
+        t = np.arange(int(sr * dur), dtype=np.float32) / sr
+
+        def _voiced(s_sec: float, e_sec: float, f0: float = 195.0, amp: float = 0.26) -> tuple[int, int, np.ndarray]:
+            i0, i1 = int(round(s_sec * sr)), int(round(e_sec * sr))
+            seg_t = t[i0:i1] - s_sec
+            win = np.ones_like(seg_t)
+            fade = min(len(seg_t) // 4, int(0.010 * sr))
+            if fade > 1:
+                win[:fade] = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                win[-fade:] = np.linspace(1.0, 0.0, fade, dtype=np.float32)
+            sig = (amp * win * (0.65 * np.sin(2 * np.pi * f0 * seg_t) + 0.35 * np.sin(2 * np.pi * 2 * f0 * seg_t))).astype(np.float32)
+            return i0, i1, sig
+
+        def _affricate_burst(n: int, amp: float, f_a: float = 4300.0, f_b: float = 5900.0) -> np.ndarray:
+            bt = np.arange(n, dtype=np.float32) / sr
+            env = np.sin(np.pi * np.linspace(0.08, 0.92, n, dtype=np.float32))
+            return (
+                amp
+                * env
+                * (
+                    0.55 * np.sin(2 * np.pi * f_a * bt)
+                    + 0.30 * np.sin(2 * np.pi * f_b * bt + 0.6)
+                    + 0.15 * np.sin(2 * np.pi * 7100.0 * bt + 1.3)
+                )
+            ).astype(np.float32)
+
+        # 1) Positive: "to put [ch-] trucks, we" with Whisper LM smoothing (prob=0.997)
+        wave_stutter = np.zeros_like(t)
+        for s_t, e_t in [(0.95, 1.12), (1.14, 1.38), (1.40, 1.54), (2.40, 2.62)]:
+            i0, i1, vs = _voiced(s_t, e_t)
+            wave_stutter[i0:i1] = vs
+        # "put" vowel [1.57 .. 1.665]
+        i0, i1, vs_put = _voiced(1.57, 1.665, f0=190.0, amp=0.28)
+        wave_stutter[i0:i1] = vs_put
+        # Closure 1 [1.665 .. 1.730] (65ms dead silence)
+        # Aborted /tʃ/ burst 1 [1.730 .. 1.775] (45ms, RMS ~ 0.036, ZCR ~ 0.39)
+        b1_s, b1_e = int(round(1.730 * sr)), int(round(1.775 * sr))
+        wave_stutter[b1_s:b1_e] = _affricate_burst(b1_e - b1_s, amp=0.082)
+        # Hard airstream cut [1.775 .. 1.830] (55ms dead silence)
+        # Attached /tʃɹ/ onset 2 [1.830 .. 1.915] (85ms, homologous spectrum, RMS ~ 0.052) + "trucks" vowel [1.915 .. 2.24]
+        b2_s, b2_e = int(round(1.830 * sr)), int(round(1.915 * sr))
+        wave_stutter[b2_s:b2_e] = _affricate_burst(b2_e - b2_s, amp=0.115)
+        i0, i1, vs_tr = _voiced(1.915, 2.24, f0=182.0, amp=0.26)
+        wave_stutter[i0:i1] = vs_tr
+
+        script = "going to put trucks, we"
+        asr_smoothed = [
+            {"word": " going", "startSec": 0.95, "endSec": 1.38, "probability": 0.99},
+            {"word": " to", "startSec": 1.40, "endSec": 1.54, "probability": 0.99},
+            {"word": " put", "startSec": 1.57, "endSec": 1.71, "probability": 0.993},
+            {"word": " trucks,", "startSec": 1.71, "endSec": 2.27, "probability": 0.997},
+            {"word": " we", "startSec": 2.40, "endSec": 2.62, "probability": 0.99},
+        ]
+        stut_pos = audio_quality.detect_acoustic_stutter(
+            wave_stutter, sr, text=script, asr_words=asr_smoothed, language="en"
+        )
+        self.assertEqual(len(stut_pos), 1, f"Expected SUSPECTED_STUTTER on 'put [ch-] trucks', got {stut_pos}")
+        self.assertEqual(stut_pos[0]["code"], "SUSPECTED_STUTTER")
+        self.assertEqual(stut_pos[0]["words"], ["put", "trucks"])
+
+        # 2) Negative A: Fluent "put trucks," (no aborted pre-burst) -> 0 issues
+        wave_fluent = wave_stutter.copy()
+        wave_fluent[b1_s:b1_e] = 0.0
+        stut_fluent = audio_quality.detect_acoustic_stutter(
+            wave_fluent, sr, text=script, asr_words=asr_smoothed, language="en"
+        )
+        self.assertEqual(stut_fluent, [])
+
+        # 3) Negative B: Fluent "st-" cluster ("carriers stop": 140ms /s/ + 50ms /t/ closure + 20ms /t/ burst) -> 0 issues
+        wave_st = np.zeros_like(t)
+        i0, i1, vs_c = _voiced(1.20, 1.65, f0=190.0, amp=0.26)
+        wave_st[i0:i1] = vs_c
+        s_i0, s_i1 = int(round(1.70 * sr)), int(round(1.84 * sr))
+        wave_st[s_i0:s_i1] = _affricate_burst(s_i1 - s_i0, amp=0.090, f_a=6200.0, f_b=7600.0)
+        t_i0, t_i1 = int(round(1.89 * sr)), int(round(1.91 * sr))
+        wave_st[t_i0:t_i1] = _affricate_burst(t_i1 - t_i0, amp=0.085, f_a=4200.0, f_b=5800.0)
+        i0, i1, vs_st = _voiced(1.91, 2.25, f0=185.0, amp=0.26)
+        wave_st[i0:i1] = vs_st
+        asr_st = [
+            {"word": " carriers", "startSec": 1.20, "endSec": 1.68, "probability": 0.99},
+            {"word": " stop", "startSec": 1.70, "endSec": 2.26, "probability": 0.99},
+        ]
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(wave_st, sr, text="carriers stop", asr_words=asr_st, language="en"),
+            [],
+        )
+
+        # 4) Negative C: Weak heterologous coda -k release ("Musk chose": 20ms weak 1.9kHz -k release + 85ms /tʃ/) -> 0 issues
+        wave_mc = np.zeros_like(t)
+        i0, i1, vs_m = _voiced(1.30, 1.65, f0=190.0, amp=0.26)
+        wave_mc[i0:i1] = vs_m
+        k_i0, k_i1 = int(round(1.705 * sr)), int(round(1.725 * sr))
+        wave_mc[k_i0:k_i1] = _affricate_burst(k_i1 - k_i0, amp=0.025, f_a=1900.0, f_b=2700.0)
+        ch_i0, ch_i1 = int(round(1.785 * sr)), int(round(1.875 * sr))
+        wave_mc[ch_i0:ch_i1] = _affricate_burst(ch_i1 - ch_i0, amp=0.140, f_a=4500.0, f_b=6200.0)
+        i0, i1, vs_ch = _voiced(1.875, 2.25, f0=185.0, amp=0.26)
+        wave_mc[i0:i1] = vs_ch
+        asr_mc = [
+            {"word": " Musk", "startSec": 1.30, "endSec": 1.73, "probability": 0.99},
+            {"word": " chose", "startSec": 1.78, "endSec": 2.26, "probability": 0.99},
+        ]
+        self.assertEqual(
+            audio_quality.detect_acoustic_stutter(wave_mc, sr, text="Musk chose", asr_words=asr_mc, language="en"),
+            [],
+        )
+
+        # 5) Isolated Whisper slice interaction:
+        #    - Extra middle phantom token ("put the trucks.") confirms SUSPECTED_STUTTER
+        #    - Clean high-confidence 2-token match ("put trucks.") clears borderline candidate
+        from types import SimpleNamespace
+
+        class _MockPhantomWhisper:
+            def transcribe(self, *_a, **_kw):
+                return [
+                    SimpleNamespace(
+                        words=[
+                            SimpleNamespace(word=" put", start=0.05, end=0.22, probability=0.99),
+                            SimpleNamespace(word=" the", start=0.23, end=0.38, probability=0.29),
+                            SimpleNamespace(word=" trucks.", start=0.39, end=0.88, probability=0.95),
+                        ]
+                    )
+                ], None
+
+        class _MockCleanWhisper:
+            def transcribe(self, *_a, **_kw):
+                return [
+                    SimpleNamespace(
+                        words=[
+                            SimpleNamespace(word=" put", start=0.05, end=0.25, probability=0.97),
+                            SimpleNamespace(word=" trucks.", start=0.28, end=0.85, probability=0.98),
+                        ]
+                    )
+                ], None
+
+        confirmed = audio_quality.detect_acoustic_stutter(
+            wave_stutter,
+            sr,
+            text=script,
+            asr_words=asr_smoothed,
+            language="en",
+            whisper_model=_MockPhantomWhisper(),
+            slice_budget=[3],
+        )
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["words"], ["put", "trucks"])
+
+        cleared = audio_quality.detect_acoustic_stutter(
+            wave_stutter,
+            sr,
+            text=script,
+            asr_words=asr_smoothed,
+            language="en",
+            whisper_model=_MockCleanWhisper(),
+            slice_budget=[3],
+        )
+        self.assertEqual(cleared, [])
+
+    def test_v452_pillar2_universal_bidirectional_broken_word_across_punctuated_and_monosyllable_neighbors(self):
+        from types import SimpleNamespace
+
+        sr = 24000
+        t = np.arange(int(sr * 2.4), dtype=np.float32) / sr
+
+        def _burst(w: np.ndarray, s_t: float, e_t: float, f0: float = 210.0) -> None:
+            i0, i1 = int(round(s_t * sr)), int(round(e_t * sr))
+            w[i0:i1] = (0.24 * np.sin(2 * np.pi * f0 * t[i0:i1])).astype(np.float32)
+
+        # 1) Mode C: Suffix severed across comma onto a 1-syllable neighbor ("more acceleration, so" -> "accelerat- | [0.30s] | -tion so")
+        w_mode_c = np.zeros_like(t)
+        _burst(w_mode_c, 0.10, 0.38, 190.0)   # "more"
+        _burst(w_mode_c, 0.38, 0.92, 215.0)   # "accelerat-" (truncated 5-syl word)
+        # [0.92 .. 1.22] 0.30s dead silence!
+        _burst(w_mode_c, 1.22, 1.43, 260.0)   # severed "-tion"
+        _burst(w_mode_c, 1.46, 1.72, 195.0)   # "so" (bloated 0.50s 2-nucleus span [1.22..1.72])
+        asr_mode_c = [
+            {"word": " more", "startSec": 0.10, "endSec": 0.38, "probability": 0.99},
+            {"word": " acceleration,", "startSec": 0.38, "endSec": 0.92, "probability": 0.999},
+            {"word": " so", "startSec": 1.22, "endSec": 1.72, "probability": 0.999},
+        ]
+
+        class _SeqSliceWhisper:
+            def __init__(self, responses):
+                self._responses = list(responses)
+                self.idx = 0
+
+            def transcribe(self, *_a, **_kw):
+                toks = self._responses[min(self.idx, len(self._responses) - 1)]
+                self.idx += 1
+                return [
+                    SimpleNamespace(
+                        words=[
+                            SimpleNamespace(word=txt, start=0.20 + 0.2 * k, end=0.38 + 0.2 * k, probability=pr)
+                            for k, (txt, pr) in enumerate(toks)
+                        ]
+                    )
+                ], None
+
+        # Pre-slice hears truncated/mismatched or post-slice hears bloated/low-prob "so" (0.36) due to "-tion so"
+        model_c = _SeqSliceWhisper([
+            [("more", 0.95), ("accelerate", 0.72)],
+            [("so", 0.36)],
+        ])
+        iss_c = audio_quality.detect_broken_word_pauses(
+            "more acceleration, so",
+            asr_mode_c,
+            w_mode_c,
+            sr,
+            whisper_model=model_c,
+            language="en",
+            slice_budget=[4],
+        )
+        self.assertEqual(len(iss_c), 1, f"Expected broken word 'acceleration' across comma, got {iss_c}")
+        self.assertEqual(iss_c[0]["code"], "ABNORMAL_PAUSE")
+        self.assertEqual(iss_c[0]["pauseContext"], "intra_word")
+        self.assertEqual(iss_c[0]["words"], ["acceleration"])
+
+        # 2) Mode B: Prefix severed across comma onto previous word ("table, according to" -> "table a- | [0.32s] | -ccording to")
+        w_mode_b = np.zeros_like(t)
+        _burst(w_mode_b, 0.12, 0.52, 200.0)   # "table"
+        _burst(w_mode_b, 0.54, 0.70, 250.0)   # severed "a-" absorbed into "table,"
+        # [0.70 .. 1.02] 0.32s dead silence!
+        _burst(w_mode_b, 1.02, 1.38, 215.0)   # "-ccording"
+        _burst(w_mode_b, 1.38, 1.56, 195.0)   # "to"
+        asr_mode_b = [
+            {"word": " table,", "startSec": 0.12, "endSec": 0.70, "probability": 0.99},
+            {"word": " according", "startSec": 1.02, "endSec": 1.38, "probability": 0.99},
+            {"word": " to", "startSec": 1.38, "endSec": 1.56, "probability": 0.99},
+        ]
+        model_b = _SeqSliceWhisper([
+            [("table", 0.96), ("a", 0.62)],
+            [("cording", 0.68), ("to", 0.98)],
+        ])
+        iss_b = audio_quality.detect_broken_word_pauses(
+            "table, according to",
+            asr_mode_b,
+            w_mode_b,
+            sr,
+            whisper_model=model_b,
+            language="en",
+            slice_budget=[4],
+        )
+        self.assertEqual(len(iss_b), 1, f"Expected broken word 'according' across comma, got {iss_b}")
+        self.assertEqual(iss_b[0]["words"], ["according"])
+
+        # 3) Clean comma pause ("more acceleration, [0.30s] so") -> 0 issues
+        w_clean = np.zeros_like(t)
+        _burst(w_clean, 0.10, 0.35, 190.0)
+        _burst(w_clean, 0.35, 1.18, 215.0)   # full 0.83s "acceleration"
+        _burst(w_clean, 1.48, 1.70, 195.0)   # clean 0.22s 1-syllable "so"
+        asr_clean = [
+            {"word": " more", "startSec": 0.10, "endSec": 0.35, "probability": 0.99},
+            {"word": " acceleration,", "startSec": 0.35, "endSec": 1.18, "probability": 0.99},
+            {"word": " so", "startSec": 1.48, "endSec": 1.70, "probability": 0.99},
+        ]
+        model_clean = _SeqSliceWhisper([
+            [("more", 0.98), ("acceleration,", 0.98)],
+            [("so", 0.98)],
+        ])
+        self.assertEqual(
+            audio_quality.detect_broken_word_pauses(
+                "more acceleration, so", asr_clean, w_clean, sr, whisper_model=model_clean, language="en", slice_budget=[4]
+            ),
+            [],
+        )
+
+    def test_v452_pillar3_isolated_function_word_prob_resilience_and_tight_syntactic_cohesion(self):
+        sr = 24000
+        t = np.arange(int(sr * 3.0), dtype=np.float32) / sr
+
+        def _make_wave(spans):
+            w = np.zeros_like(t)
+            for s_t, e_t in spans:
+                i0, i1 = int(round(s_t * sr)), int(round(e_t * sr))
+                w[i0:i1] = (0.24 * np.sin(2 * np.pi * 205.0 * t[i0:i1])).astype(np.float32)
+            return w
+
+        # 1) Isolated coordinator "or" after comma with low Whisper prob (0.38 < 0.50) followed by 0.36s silence before "more"
+        w_or = _make_wave([(0.10, 0.40), (0.40, 0.78), (1.33, 1.63), (1.99, 2.25), (2.25, 2.52)])
+        asr_or = [
+            {"word": " single", "startSec": 0.10, "endSec": 0.40, "probability": 0.99},
+            {"word": " month,", "startSec": 0.40, "endSec": 0.78, "probability": 0.99},
+            {"word": " or", "startSec": 1.33, "endSec": 1.63, "probability": 0.38},
+            {"word": " more", "startSec": 1.99, "endSec": 2.25, "probability": 0.99},
+            {"word": " than", "startSec": 2.25, "endSec": 2.52, "probability": 0.99},
+        ]
+        iss_or = audio_quality.detect_phrase_internal_pauses(
+            "single month, or more than", asr_or, w_or, sr, speed=1.0
+        )
+        self.assertEqual([(i["code"], i["words"]) for i in iss_or], [("ABNORMAL_PAUSE", ["or", "more"])])
+
+        # 2) Tight syntactic cohesion (pronoun + modal: "you [0.35s] can") even with low prob on "can" (0.35)
+        w_yc = _make_wave([(0.15, 0.40), (0.75, 1.00), (1.00, 1.45)])
+        asr_yc = [
+            {"word": " you", "startSec": 0.15, "endSec": 0.40, "probability": 0.98},
+            {"word": " can", "startSec": 0.75, "endSec": 1.00, "probability": 0.35},
+            {"word": " unlock", "startSec": 1.00, "endSec": 1.45, "probability": 0.99},
+        ]
+        iss_yc = audio_quality.detect_phrase_internal_pauses("you can unlock", asr_yc, w_yc, sr, speed=1.0)
+        self.assertEqual([(i["code"], i["words"]) for i in iss_yc], [("ABNORMAL_PAUSE", ["you", "can"])])
+
+        # 3) Vietnamese isolated coordinator ("tháng, hoặc [0.36s] hơn") with low prob on "hoặc" (0.34)
+        w_vi = _make_wave([(0.10, 0.45), (0.95, 1.25), (1.61, 1.95)])
+        asr_vi = [
+            {"word": " tháng,", "startSec": 0.10, "endSec": 0.45, "probability": 0.99},
+            {"word": " hoặc", "startSec": 0.95, "endSec": 1.25, "probability": 0.34},
+            {"word": " hơn", "startSec": 1.61, "endSec": 1.95, "probability": 0.99},
+        ]
+        iss_vi = audio_quality.detect_phrase_internal_pauses("tháng, hoặc hơn", asr_vi, w_vi, sr, speed=1.0)
+        self.assertEqual([(i["code"], i["words"]) for i in iss_vi], [("ABNORMAL_PAUSE", ["hoặc", "hơn"])])
+
 
 if __name__ == "__main__":
     unittest.main()

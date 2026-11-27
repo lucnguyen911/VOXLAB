@@ -462,6 +462,305 @@ class AudioOpsTest(unittest.TestCase):
         self.assertGreaterEqual(gap2, 0.45)
         self.assertLessEqual(updated_words[2]["endSec"], shaped.size / sr + 0.02)
 
+    def test_detect_leading_artifact_preserves_initial_sibilant_cluster_like_speaking(self):
+        sr = 24000
+        rng = np.random.default_rng(42)
+
+        def _make_speaking_opening(with_clean_click: bool) -> np.ndarray:
+            total_n = int(1.15 * sr)
+            sig = (rng.normal(0.0, 1e-5, total_n)).astype(np.float32)
+            if with_clean_click:
+                # Genuine 30ms low-ZCR click at 0.05-0.08s followed by pure silence 0.08-0.44s
+                t_c = np.arange(int(0.03 * sr), dtype=np.float32) / sr
+                sig[int(0.05 * sr) : int(0.08 * sr)] = 0.015 * np.sin(2 * np.pi * 650.0 * t_c)
+            else:
+                # Soft inhale breath at 0.19-0.33s with a brief 10ms dip at 0.21s (Chunk #47 profile)
+                t_b1 = np.arange(int(0.02 * sr), dtype=np.float32) / sr
+                sig[int(0.19 * sr) : int(0.21 * sr)] = 0.0055 * np.sin(2 * np.pi * 550.0 * t_b1)
+                sig[int(0.21 * sr) : int(0.22 * sr)] *= 0.2
+                t_b2 = np.arange(int(0.11 * sr), dtype=np.float32) / sr
+                sig[int(0.22 * sr) : int(0.33 * sr)] = 0.0062 * np.sin(2 * np.pi * 620.0 * t_b2)
+
+            # Initial /s/ of "Speaking" at 0.44-0.54s (~ -42 dB, high ZCR ~ 0.55)
+            n_s = int(0.10 * sr)
+            t_s = np.arange(n_s, dtype=np.float32) / sr
+            sib = 0.0095 * (
+                0.65 * np.sin(2 * np.pi * 6600.0 * t_s)
+                + 0.35 * np.sin(2 * np.pi * 7900.0 * t_s + 0.7)
+            )
+            sig[int(0.44 * sr) : int(0.44 * sr) + n_s] = sib.astype(np.float32)
+            # /p/ stop closure at 0.54-0.60s remains near digital silence
+            # Main vowel /i:/ at 0.61-1.05s (peak ~ 0.85, RMS ~ 0.22)
+            n_v = int(0.44 * sr)
+            t_v = np.arange(n_v, dtype=np.float32) / sr
+            sig[int(0.61 * sr) : int(0.61 * sr) + n_v] = (
+                0.32 * np.sin(2 * np.pi * 190.0 * t_v)
+                + 0.50 * np.sin(2 * np.pi * 380.0 * t_v)
+            ).astype(np.float32)
+            return sig
+
+        for with_click in (False, True):
+            raw = _make_speaking_opening(with_click)
+            out, info = audio_ops.detect_and_filter_leading_artifact(raw, sr)
+            trimmed_sec = float(info.get("trimmedDurationSec") or 0.0) if info.get("action") == "trimmed" else 0.0
+            # Must NEVER trim into /s/ starting at 0.44s (keep >= 20ms lead-in before 0.44s)
+            self.assertLessEqual(
+                trimmed_sec,
+                0.420,
+                f"Trimmed across initial /s/ consonant (with_click={with_click}): {info}",
+            )
+            # Verify /s/ energy right before the 60ms /p/ closure + 0.61s vowel is 100% intact
+            orig_sib = raw[int(0.44 * sr) : int(0.54 * sr)]
+            orig_sib_rms = float(np.sqrt(np.mean(orig_sib ** 2)))
+            s_loc = int(round((0.44 - trimmed_sec) * sr))
+            sib_post = out[s_loc : s_loc + int(0.10 * sr)]
+            sib_rms = float(np.sqrt(np.mean(sib_post ** 2)))
+            self.assertAlmostEqual(sib_rms, orig_sib_rms, delta=1e-4)
+
+    def test_assemble_reports_exact_leading_trim_and_internal_compaction_cuts(self):
+        sr = 24000
+        # Build chunk with:
+        # - isolated high-confidence 30ms click at 0.05-0.08s
+        # - pure silence 0.08-0.44s
+        # - word 1 ("Lower") at 0.44-0.84s
+        # - oversized 0.80s dead-silence seam at 0.84-1.64s (compacted to ~0.38s)
+        # - word 2 ("bills") at 1.64-2.04s (distinct 440 Hz tone so we can measure exact onset in output)
+        total_n = int(2.14 * sr)
+        sig = np.zeros(total_n, dtype=np.float32)
+        t_c = np.arange(int(0.03 * sr), dtype=np.float32) / sr
+        sig[int(0.05 * sr) : int(0.08 * sr)] = 0.014 * np.sin(2 * np.pi * 600.0 * t_c)
+        t_w = np.arange(int(0.40 * sr), dtype=np.float32) / sr
+        sig[int(0.44 * sr) : int(0.84 * sr)] = 0.30 * np.sin(2 * np.pi * 180.0 * t_w)
+        sig[int(1.64 * sr) : int(2.04 * sr)] = 0.32 * np.sin(2 * np.pi * 440.0 * t_w)
+
+        c0_path = os.path.join(self.dir, "c0_trim_and_seam.wav")
+        out_path = os.path.join(self.dir, "master_out.wav")
+        sf.write(c0_path, sig, sr, subtype="PCM_16")
+
+        res = audio_ops.assemble(
+            "audio.assemble",
+            {
+                "inputs": [{"path": c0_path, "gapAfterMs": 0}],
+                "outputPath": out_path,
+                "format": "wav",
+                "mode": "sequential",
+                "sampleRate": 44100,
+            },
+            _Ctx(),
+        )
+        seg0 = res["segments"][0]
+        self.assertGreater(seg0.get("leadingTrimSec", 0.0), 0.35)
+        cuts = seg0.get("compactedCuts") or []
+        self.assertGreaterEqual(len(cuts), 1)
+
+        # Map original pre-assembly word2 start (1.64s) through leadingTrimSec + compactedCuts
+        t1 = max(0.0, 1.64 - float(seg0["leadingTrimSec"]))
+        shift = 0.0
+        for cut in cuts:
+            if t1 <= cut["startSec"]:
+                break
+            elif t1 >= cut["endSec"]:
+                shift += cut["removedSec"]
+            else:
+                shift += t1 - cut["startSec"]
+                break
+        mapped_w2_start = seg0["startSec"] + max(0.0, t1 - shift)
+
+        # Measure actual onset of word 2 (second loud island) in master_out.wav
+        master_wav, master_sr = sf.read(out_path, dtype="float32")
+        env = np.abs(master_wav)
+        # Word 1 ends around 0.425s; search after 0.55s for Word 2 onset
+        s_search = int(0.55 * master_sr)
+        w2_idx = s_search + int(np.argmax(env[s_search:] > 0.05))
+        actual_w2_start = w2_idx / master_sr
+        self.assertAlmostEqual(mapped_w2_start, actual_w2_start, delta=0.010)
+
+    def test_shape_internal_pauses_lexical_boundary_conservation_prevents_mid_word_cuts(self):
+        from types import SimpleNamespace
+
+        sr = 24000
+
+        def _seg_tone(dur_s: float, freq: float, amp: float = 0.24) -> np.ndarray:
+            n = int(round(dur_s * sr))
+            t = np.arange(n, dtype=np.float32) / sr
+            env = np.ones(n, dtype=np.float32)
+            fade = min(n // 4, int(0.008 * sr))
+            if fade > 1:
+                env[:fade] = np.linspace(0.05, 1.0, fade, dtype=np.float32)
+                env[-fade:] = np.linspace(1.0, 0.05, fade, dtype=np.float32)
+            return (amp * env * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+
+        # Case 1: Early DTW endSec ("more acceleration, so" where Whisper snapped e1 onto intra-word /t/ before "-tion")
+        # Timeline:
+        # [0.00..0.10] silence | [0.10..0.38] "more" (190Hz) | [0.38..0.90] "accelerat-" (220Hz)
+        # | [0.90..0.935] intra-word /t/ stop closure (0.0) | [0.935..1.18] "-tion" (330Hz)
+        # | [1.18..1.195] true inter-word dip (amp=0.004) | [1.195..1.48] "so" (440Hz) | [1.48..1.60] silence
+        wave1 = np.concatenate([
+            np.zeros(int(0.10 * sr), dtype=np.float32),
+            _seg_tone(0.28, 190.0),
+            _seg_tone(0.52, 220.0),
+            np.zeros(int(0.035 * sr), dtype=np.float32),
+            _seg_tone(0.245, 330.0),
+            np.full(int(0.015 * sr), 0.002, dtype=np.float32),
+            _seg_tone(0.285, 440.0),
+            np.zeros(int(0.12 * sr), dtype=np.float32),
+        ])
+        skewed_asr1 = [
+            {"word": " more", "startSec": 0.10, "endSec": 0.38, "probability": 0.99},
+            {"word": " acceleration,", "startSec": 0.38, "endSec": 0.91, "probability": 0.99},
+            {"word": " so", "startSec": 0.91, "endSec": 1.48, "probability": 0.99},
+        ]
+
+        class _AcousticAwareMockWhisper1:
+            """Inspects actual frequency bands on either side of any inserted zero-silence run."""
+
+            def transcribe(self, wav_path, **_kw):
+                arr, s_rate = sf.read(wav_path, dtype="float32")
+                # Locate inserted >= 150ms zero run inside the slice (excluding 0.20s outer padding)
+                pad_n = int(0.18 * s_rate)
+                core = arr[pad_n : len(arr) - pad_n] if len(arr) > 2 * pad_n else arr
+                z = np.abs(core) < 1e-6
+                ed = np.where(np.diff(np.concatenate(([0], z.astype(int), [0]))) != 0)[0].reshape(-1, 2)
+                big_z = [(a + pad_n, b + pad_n) for a, b in ed if (b - a) >= int(0.15 * s_rate)]
+                if not big_z:
+                    return [SimpleNamespace(words=[])], None
+                za, zb = big_z[0]
+                right_seg = arr[zb : min(len(arr) - pad_n, zb + int(0.18 * s_rate))]
+                # Check dominant frequency right after the inserted pause:
+                # 330 Hz means "-tion" was severed onto the right side; 440 Hz means clean "so"!
+                mag = np.abs(np.fft.rfft(right_seg))
+                freqs = np.fft.rfftfreq(len(right_seg), 1.0 / s_rate)
+                dom_f = float(freqs[int(np.argmax(mag))]) if len(mag) > 0 else 0.0
+                if 280.0 <= dom_f <= 380.0:
+                    # Cut happened at 0.91s inside "acceleration": "-tion" is orphaned before "so" (low prob)!
+                    return [
+                        SimpleNamespace(
+                            words=[
+                                SimpleNamespace(word=" acceleration,", start=0.25, end=round(za / s_rate - 0.05, 3), probability=0.95),
+                                SimpleNamespace(word=" so", start=round(zb / s_rate + 0.26, 3), end=round(zb / s_rate + 0.52, 3), probability=0.36),
+                            ]
+                        )
+                    ], None
+                return [
+                    SimpleNamespace(
+                        words=[
+                            SimpleNamespace(word=" more", start=0.20, end=0.45, probability=0.98),
+                            SimpleNamespace(word=" acceleration,", start=0.45, end=round(za / s_rate, 3), probability=0.98),
+                            SimpleNamespace(word=" so", start=round(zb / s_rate, 3), end=round(zb / s_rate + 0.28, 3), probability=0.98),
+                        ]
+                    )
+                ], None
+
+        shaped1, upd1, edits1 = audio_ops.shape_internal_punctuation_pauses(
+            wave1,
+            sr,
+            "more acceleration, so",
+            {"comma": 0.30, "period": 0.60, "questionExclamation": 0.50, "colonSemicolon": 0.40},
+            skewed_asr1,
+            whisper_model=_AcousticAwareMockWhisper1(),
+            lang_code="en",
+        )
+        self.assertEqual(len(edits1), 1, f"Expected clean relocated cut at ~1.188s, got {edits1}")
+        cut_sec_1 = edits1[0]["cutIdx"] / sr
+        self.assertGreater(
+            cut_sec_1,
+            1.14,
+            f"Cut at {cut_sec_1:.3f}s severed '-tion' inside 'acceleration' instead of cutting at ~1.188s!",
+        )
+        self.assertGreaterEqual(upd1[1]["endSec"], 1.14)
+
+        # Case 2: Late DTW endSec ("table, according" where Whisper snapped e1 onto /k/ stop closure of "ac-cording")
+        # [0.10..0.52] "table" (200Hz) | [0.52..0.535] true inter-word dip | [0.535..0.67] "a-" (310Hz)
+        # | [0.67..0.705] intra-word /k/ closure (0.0) | [0.705..1.15] "-ccording" (240Hz)
+        wave2 = np.concatenate([
+            np.zeros(int(0.10 * sr), dtype=np.float32),
+            _seg_tone(0.42, 200.0),
+            np.full(int(0.015 * sr), 0.002, dtype=np.float32),
+            _seg_tone(0.135, 310.0),
+            np.zeros(int(0.035 * sr), dtype=np.float32),
+            _seg_tone(0.445, 240.0),
+            np.zeros(int(0.12 * sr), dtype=np.float32),
+        ])
+        skewed_asr2 = [
+            {"word": " table,", "startSec": 0.10, "endSec": 0.68, "probability": 0.99},
+            {"word": " according", "startSec": 0.68, "endSec": 1.15, "probability": 0.99},
+        ]
+
+        class _AcousticAwareMockWhisper2:
+            def transcribe(self, wav_path, **_kw):
+                arr, s_rate = sf.read(wav_path, dtype="float32")
+                pad_n = int(0.18 * s_rate)
+                core = arr[pad_n : len(arr) - pad_n] if len(arr) > 2 * pad_n else arr
+                z = np.abs(core) < 1e-6
+                ed = np.where(np.diff(np.concatenate(([0], z.astype(int), [0]))) != 0)[0].reshape(-1, 2)
+                big_z = [(a + pad_n, b + pad_n) for a, b in ed if (b - a) >= int(0.15 * s_rate)]
+                if not big_z:
+                    return [SimpleNamespace(words=[])], None
+                za, zb = big_z[0]
+                left_tail = arr[max(pad_n, za - int(0.12 * s_rate)) : za]
+                mag = np.abs(np.fft.rfft(left_tail))
+                freqs = np.fft.rfftfreq(len(left_tail), 1.0 / s_rate)
+                dom_f = float(freqs[int(np.argmax(mag))]) if len(mag) > 0 else 0.0
+                if 270.0 <= dom_f <= 350.0:
+                    # Cut happened at 0.68s inside "ac-cording": "according" spans across [za, zb]!
+                    return [
+                        SimpleNamespace(
+                            words=[
+                                SimpleNamespace(word=" table", start=0.20, end=round(za / s_rate - 0.15, 3), probability=0.98),
+                                SimpleNamespace(word=" according", start=round(za / s_rate - 0.13, 3), end=round(zb / s_rate + 0.44, 3), probability=0.78),
+                            ]
+                        )
+                    ], None
+                return [
+                    SimpleNamespace(
+                        words=[
+                            SimpleNamespace(word=" table,", start=0.20, end=round(za / s_rate, 3), probability=0.98),
+                            SimpleNamespace(word=" according", start=round(zb / s_rate, 3), end=round(zb / s_rate + 0.60, 3), probability=0.98),
+                        ]
+                    )
+                ], None
+
+        _, _, edits2 = audio_ops.shape_internal_punctuation_pauses(
+            wave2,
+            sr,
+            "table, according",
+            {"comma": 0.30, "period": 0.60, "questionExclamation": 0.50, "colonSemicolon": 0.40},
+            skewed_asr2,
+            whisper_model=_AcousticAwareMockWhisper2(),
+            lang_code="en",
+        )
+        self.assertEqual(len(edits2), 1, f"Expected clean relocated cut at ~0.528s, got {edits2}")
+        cut_sec_2 = edits2[0]["cutIdx"] / sr
+        self.assertLess(
+            cut_sec_2,
+            0.56,
+            f"Cut at {cut_sec_2:.3f}s severed 'a-' inside 'according' instead of cutting at ~0.528s!",
+        )
+
+        # Case 3: Inseparably fused words where every candidate cut breaks lexical conservation -> skip safely!
+        class _AlwaysBrokenMockWhisper:
+            def transcribe(self, wav_path, **_kw):
+                arr, s_rate = sf.read(wav_path, dtype="float32")
+                return [
+                    SimpleNamespace(
+                        words=[
+                            SimpleNamespace(word=" tableaccording", start=0.20, end=len(arr) / s_rate - 0.20, probability=0.42),
+                        ]
+                    )
+                ], None
+
+        shaped3, _, edits3 = audio_ops.shape_internal_punctuation_pauses(
+            _seg_tone(1.20, 210.0),
+            sr,
+            "table, according",
+            {"comma": 0.30, "period": 0.60, "questionExclamation": 0.50, "colonSemicolon": 0.40},
+            [{"word": " table,", "startSec": 0.0, "endSec": 0.6, "probability": 0.99}, {"word": " according", "startSec": 0.6, "endSec": 1.2, "probability": 0.99}],
+            whisper_model=_AlwaysBrokenMockWhisper(),
+            lang_code="en",
+        )
+        self.assertEqual(edits3, [])
+        self.assertEqual(len(shaped3), int(1.20 * sr))
+
 
 if __name__ == "__main__":
     unittest.main()

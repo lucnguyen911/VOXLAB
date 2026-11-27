@@ -11,11 +11,46 @@ import { SubtitleAspectRatio, SubtitleCue, SubtitleMaxLines } from "./types";
 type OptimizerSegmentInput = Parameters<LocalAiServices["optimizeSubtitlesV2"]>[0]["segments"][number];
 type OptimizerWordInput = NonNullable<OptimizerSegmentInput["words"]>[number];
 
+export interface CompactedSeamCut {
+  startSec: number;
+  endSec: number;
+  removedSec: number;
+}
+
 export interface AssembledSegmentTiming {
   index: number;
   startSec: number;
   endSec: number;
   durationSec: number;
+  leadingTrimSec?: number;
+  compactedCuts?: CompactedSeamCut[];
+}
+
+function mapChunkLocalTimeToAssembledSegment(
+  rawSec: number,
+  seg: AssembledSegmentTiming
+): number {
+  const leadTrim =
+    typeof seg.leadingTrimSec === "number" && seg.leadingTrimSec > 0
+      ? seg.leadingTrimSec
+      : 0;
+  const t1 = Math.max(0, rawSec - leadTrim);
+  const cuts = seg.compactedCuts;
+  if (!cuts || cuts.length === 0) {
+    return t1;
+  }
+  let shift = 0;
+  for (const cut of cuts) {
+    if (t1 <= cut.startSec) {
+      break;
+    } else if (t1 >= cut.endSec) {
+      shift += cut.removedSec;
+    } else {
+      shift += t1 - cut.startSec;
+      break;
+    }
+  }
+  return Math.max(0, t1 - shift);
 }
 
 export interface UnifiedMasterSubtitleOptions {
@@ -133,8 +168,10 @@ export async function exportUnifiedMasterSubtitlesFromTts(
           ) {
             continue;
           }
-          const clampedLocalS = Math.max(0, Math.min(segDur - 0.02, w.startSec));
-          const clampedLocalE = Math.max(clampedLocalS + 0.02, Math.min(segDur + 0.05, w.endSec));
+          const adjStart = mapChunkLocalTimeToAssembledSegment(w.startSec, entry.seg!);
+          const adjEnd = mapChunkLocalTimeToAssembledSegment(w.endSec, entry.seg!);
+          const clampedLocalS = Math.max(0, Math.min(segDur - 0.02, adjStart));
+          const clampedLocalE = Math.max(clampedLocalS + 0.02, Math.min(segDur + 0.05, adjEnd));
           const gStart = roundMs(Math.max(prevGlobalEnd, segStart + clampedLocalS));
           const gEnd = roundMs(Math.max(gStart + 0.02, Math.min(segEnd + 0.05, segStart + clampedLocalE)));
           mappedWords.push({
