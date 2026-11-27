@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { TopBar } from "./components/layout/TopBar";
 import { Sidebar } from "./components/layout/Sidebar";
 import { BottomAudioPlayer, ActiveAudioTrack } from "./components/layout/BottomAudioPlayer";
@@ -267,10 +267,34 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
 
   // Dubbing Workspace State
   const [dubbingSnapshot, setDubbingSnapshot] = useState<DubbingHandoffSnapshot | null>(null);
+  const [dubbingHandoffSeq, setDubbingHandoffSeq] = useState(0);
   const [settingsInitialGroup, setSettingsInitialGroup] = useState<SettingsGroup | undefined>(undefined);
+  const [mountedWorkspaces, setMountedWorkspaces] = useState<Record<WorkspaceId, boolean>>(() => ({
+    tts: activeWorkspace === "tts",
+    dialogue: activeWorkspace === "dialogue",
+    clone: activeWorkspace === "clone",
+    library: activeWorkspace === "library",
+    transcription: activeWorkspace === "transcription",
+    dubbing: activeWorkspace === "dubbing",
+    batch: activeWorkspace === "batch",
+    history: activeWorkspace === "history",
+    settings: activeWorkspace === "settings",
+  }));
+  const prevWorkspaceRef = useRef<WorkspaceId>(activeWorkspace);
+
+  useEffect(() => {
+    setMountedWorkspaces((prev) =>
+      prev[activeWorkspace] ? prev : { ...prev, [activeWorkspace]: true }
+    );
+    if (prevWorkspaceRef.current !== activeWorkspace) {
+      prevWorkspaceRef.current = activeWorkspace;
+      setIsAudioPlaying(false);
+    }
+  }, [activeWorkspace]);
 
   const handleHandoffToDubbing = (snapshot: DubbingHandoffSnapshot) => {
     setDubbingSnapshot(snapshot);
+    setDubbingHandoffSeq((prev) => prev + 1);
     setActiveWorkspace("dubbing");
   };
 
@@ -463,110 +487,138 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
           {/* Workspace Frame: sculpted rounded studio container floating over chassis */}
           <div className={`flex-1 flex flex-col overflow-hidden min-w-0 min-h-0 m-2.5 sm:m-3 ${showBottomPlayer && activeAudioTrack ? 'mb-2 sm:mb-2.5' : ''} rounded-xl border border-borderDefault bg-panel shadow-[0_4px_20px_-4px_rgba(36,24,12,0.08),0_1px_2px_rgba(36,24,12,0.04)] dark:shadow-[0_10px_28px_-6px_rgba(0,0,0,0.58),0_2px_4px_rgba(0,0,0,0.35)] relative`}>
             <main className="flex-1 flex flex-col overflow-hidden relative">
-              {activeWorkspace === "tts" && (
-                <TtsWorkspace
-                  voices={voices}
-                  selectedChunk={selectedChunk}
-                  onNavigateToWorkspace={handleSelectWorkspace}
-                  onSelectChunk={(c) => {
-                    setSelectedChunk(c);
-                    if (!inspectorOpen) setInspectorOpen(true);
-                  }}
-                  onTriggerJob={() => {
-                    setIsGenerating(true);
-                    setIsPaused(false);
-                  }}
-                  onOpenExportValidation={handleOpenExportValidation}
-                  isGenerating={isGenerating}
-                  isPaused={isPaused}
-                  onTogglePause={() => {
-                    if (isPaused || batchQueueExecutor.isQueuePaused()) {
-                      batchQueueExecutor.resume();
+              {mountedWorkspaces.tts && (
+                <div
+                  className={
+                    activeWorkspace === "tts"
+                      ? "flex-1 flex flex-col overflow-hidden min-h-0 min-w-0"
+                      : "hidden"
+                  }
+                  aria-hidden={activeWorkspace !== "tts"}
+                >
+                  <TtsWorkspace
+                    voices={voices}
+                    selectedChunk={selectedChunk}
+                    onNavigateToWorkspace={handleSelectWorkspace}
+                    onSelectChunk={(c) => {
+                      setSelectedChunk(c);
+                      if (!inspectorOpen) setInspectorOpen(true);
+                    }}
+                    onTriggerJob={() => {
+                      setIsGenerating(true);
                       setIsPaused(false);
-                    } else {
-                      batchQueueExecutor.pause();
-                      setIsPaused(true);
-                    }
-                  }}
-                  onCancel={() => {
-                    setIsGenerating(false);
-                    setIsPaused(false);
-                    batchQueueExecutor.cancel();
-                  }}
-                  concurrency={concurrency}
-                  onJobComplete={() => {
-                    setIsGenerating(false);
-                    setIsPaused(false);
-                  }}
-                  currentChunkIndex={currentChunkIndex}
-                  totalChunks={totalChunks}
-                  onChunkProgress={(curr, tot) => {
-                    setCurrentChunkIndex(curr);
-                    setTotalChunks(tot);
-                  }}
-                  activePlayingChunkId={isAudioPlaying ? activeAudioTrack?.id || null : null}
-                  isPlayingAudio={isAudioPlaying}
-                  onPlayChunk={handlePlayChunk}
-                  exportSrt={exportSrt}
-                  translateSrt={translateSrt}
-                  incomingScript={ttsIncomingScript}
-                  onConsumeIncomingScript={() => setTtsIncomingScript(null)}
-                  activeModel={activeModel}
-                  activeVoiceId={activeVoiceId}
-                  inspector={
-                    <TtsInspector
-                      selectedChunk={selectedChunk}
-                      voices={voices}
-                      activeVoiceId={activeVoiceId}
-                      onChangeActiveVoice={handleSelectActiveVoice}
-                      activeModel={activeModel}
-                      onChangeModel={handleChangeActiveModel}
-                      isOpen={inspectorOpen}
-                      onToggle={() => setInspectorOpen(!inspectorOpen)}
-                      inspectorWidth={inspectorWidth}
-                      onWidthChange={(w) => setInspectorWidth(w)}
-                      onOpenVoiceModal={() => setVoiceModalOpen(true)}
-                      exportSrt={exportSrt}
-                      onChangeExportSrt={setExportSrt}
-                      translateSrt={translateSrt}
-                      onChangeTranslateSrt={setTranslateSrt}
-                    />
-                  }
-                  bottomPlayer={
-                    showBottomPlayer && activeAudioTrack ? (
-                      <BottomAudioPlayer
-                        track={activeAudioTrack}
-                        isPlaying={isAudioPlaying}
-                        onTogglePlay={handleTogglePlay}
-                        onClose={handleCloseAudioPlayer}
-                        className="mx-0 mb-0"
+                    }}
+                    onOpenExportValidation={handleOpenExportValidation}
+                    isGenerating={isGenerating}
+                    isPaused={isPaused}
+                    onTogglePause={() => {
+                      if (isPaused || batchQueueExecutor.isQueuePaused()) {
+                        batchQueueExecutor.resume();
+                        setIsPaused(false);
+                      } else {
+                        batchQueueExecutor.pause();
+                        setIsPaused(true);
+                      }
+                    }}
+                    onCancel={() => {
+                      setIsGenerating(false);
+                      setIsPaused(false);
+                      batchQueueExecutor.cancel();
+                    }}
+                    concurrency={concurrency}
+                    onJobComplete={() => {
+                      setIsGenerating(false);
+                      setIsPaused(false);
+                    }}
+                    currentChunkIndex={currentChunkIndex}
+                    totalChunks={totalChunks}
+                    onChunkProgress={(curr, tot) => {
+                      setCurrentChunkIndex(curr);
+                      setTotalChunks(tot);
+                    }}
+                    activePlayingChunkId={isAudioPlaying ? activeAudioTrack?.id || null : null}
+                    isPlayingAudio={isAudioPlaying}
+                    onPlayChunk={handlePlayChunk}
+                    exportSrt={exportSrt}
+                    translateSrt={translateSrt}
+                    incomingScript={ttsIncomingScript}
+                    onConsumeIncomingScript={() => setTtsIncomingScript(null)}
+                    activeModel={activeModel}
+                    activeVoiceId={activeVoiceId}
+                    inspector={
+                      <TtsInspector
+                        selectedChunk={selectedChunk}
+                        voices={voices}
+                        activeVoiceId={activeVoiceId}
+                        onChangeActiveVoice={handleSelectActiveVoice}
+                        activeModel={activeModel}
+                        onChangeModel={handleChangeActiveModel}
+                        isOpen={inspectorOpen}
+                        onToggle={() => setInspectorOpen(!inspectorOpen)}
+                        inspectorWidth={inspectorWidth}
+                        onWidthChange={(w) => setInspectorWidth(w)}
+                        onOpenVoiceModal={() => setVoiceModalOpen(true)}
+                        exportSrt={exportSrt}
+                        onChangeExportSrt={setExportSrt}
+                        translateSrt={translateSrt}
+                        onChangeTranslateSrt={setTranslateSrt}
                       />
-                    ) : null
+                    }
+                    bottomPlayer={
+                      activeWorkspace === "tts" && showBottomPlayer && activeAudioTrack ? (
+                        <BottomAudioPlayer
+                          track={activeAudioTrack}
+                          isPlaying={isAudioPlaying}
+                          onTogglePlay={handleTogglePlay}
+                          onClose={handleCloseAudioPlayer}
+                          className="mx-0 mb-0"
+                        />
+                      ) : null
+                    }
+                  />
+                </div>
+              )}
+
+              {mountedWorkspaces.dialogue && (
+                <div
+                  className={
+                    activeWorkspace === "dialogue"
+                      ? "flex-1 flex flex-col overflow-hidden min-h-0 min-w-0"
+                      : "hidden"
                   }
-                />
+                  aria-hidden={activeWorkspace !== "dialogue"}
+                >
+                  <DialogueWorkspace
+                    isActive={activeWorkspace === "dialogue"}
+                    voices={voices}
+                    onNavigateToClone={() => handleSelectWorkspace("clone")}
+                  />
+                </div>
               )}
 
-              {activeWorkspace === "dialogue" && (
-                <DialogueWorkspace
-                  voices={voices}
-                  onNavigateToClone={() => handleSelectWorkspace("clone")}
-                />
-              )}
-
-              {activeWorkspace === "clone" && (
-                <VoiceCloneWorkspace
-                  voices={voices}
-                  onSaveVoice={handleSaveCloneVoice}
-                  onUpdateVoice={handleUpdateVoice}
-                  onDeleteVoice={handleDeleteVoice}
-                  onSelectForTts={handleSelectVoiceForTts}
-                  onPlayTrack={(track) => {
-                    setActiveAudioTrack(track);
-                    setIsAudioPlaying(true);
-                  }}
-                  activePlayingTrackId={isAudioPlaying ? activeAudioTrack?.id || null : null}
-                  onStopPlaying={() => setIsAudioPlaying(false)}
-                />
+              {mountedWorkspaces.clone && (
+                <div
+                  className={
+                    activeWorkspace === "clone"
+                      ? "flex-1 flex flex-col overflow-hidden min-h-0 min-w-0"
+                      : "hidden"
+                  }
+                  aria-hidden={activeWorkspace !== "clone"}
+                >
+                  <VoiceCloneWorkspace
+                    voices={voices}
+                    onSaveVoice={handleSaveCloneVoice}
+                    onUpdateVoice={handleUpdateVoice}
+                    onDeleteVoice={handleDeleteVoice}
+                    onSelectForTts={handleSelectVoiceForTts}
+                    onPlayTrack={(track) => {
+                      setActiveAudioTrack(track);
+                      setIsAudioPlaying(true);
+                    }}
+                    activePlayingTrackId={isAudioPlaying ? activeAudioTrack?.id || null : null}
+                    onStopPlaying={() => setIsAudioPlaying(false)}
+                  />
+                </div>
               )}
 
               {activeWorkspace === "library" && (
@@ -585,27 +637,48 @@ function AppContent({ initialToast = null }: { initialToast?: string | null }) {
                 />
               )}
 
-              {activeWorkspace === "transcription" && (
-                <TranscriptionWorkspace
-                  onSendToTts={handleSendTranscriptToTts}
-                  onHandoffToDubbing={handleHandoffToDubbing}
-                />
+              {mountedWorkspaces.transcription && (
+                <div
+                  className={
+                    activeWorkspace === "transcription"
+                      ? "flex-1 flex flex-col overflow-hidden min-h-0 min-w-0"
+                      : "hidden"
+                  }
+                  aria-hidden={activeWorkspace !== "transcription"}
+                >
+                  <TranscriptionWorkspace
+                    isActive={activeWorkspace === "transcription"}
+                    onSendToTts={handleSendTranscriptToTts}
+                    onHandoffToDubbing={handleHandoffToDubbing}
+                  />
+                </div>
               )}
 
-              {activeWorkspace === "dubbing" && (
-                <DubbingWorkspace
-                  handoffSnapshot={dubbingSnapshot}
-                  voices={voices}
-                  activeVoiceId={activeVoiceId}
-                  onChangeActiveVoice={handleSelectActiveVoice}
-                  activeModel={activeModel}
-                  onChangeModel={handleChangeActiveModel}
-                  onOpenVoiceModal={() => setVoiceModalOpen(true)}
-                  onNavigateToSettings={(group) => {
-                    setSettingsInitialGroup(group || "translation");
-                    setActiveWorkspace("settings");
-                  }}
-                />
+              {mountedWorkspaces.dubbing && (
+                <div
+                  className={
+                    activeWorkspace === "dubbing"
+                      ? "flex-1 flex flex-col overflow-hidden min-h-0 min-w-0"
+                      : "hidden"
+                  }
+                  aria-hidden={activeWorkspace !== "dubbing"}
+                >
+                  <DubbingWorkspace
+                    key={dubbingHandoffSeq}
+                    isActive={activeWorkspace === "dubbing"}
+                    handoffSnapshot={dubbingSnapshot}
+                    voices={voices}
+                    activeVoiceId={activeVoiceId}
+                    onChangeActiveVoice={handleSelectActiveVoice}
+                    activeModel={activeModel}
+                    onChangeModel={handleChangeActiveModel}
+                    onOpenVoiceModal={() => setVoiceModalOpen(true)}
+                    onNavigateToSettings={(group) => {
+                      setSettingsInitialGroup(group || "translation");
+                      setActiveWorkspace("settings");
+                    }}
+                  />
+                </div>
               )}
 
               {activeWorkspace === "batch" && (

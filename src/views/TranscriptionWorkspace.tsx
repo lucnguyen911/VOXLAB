@@ -84,6 +84,7 @@ export interface EditableSubtitleCue extends SubtitleCue {
 }
 
 export interface TranscriptionWorkspaceProps {
+  isActive?: boolean;
   onSendToTts?: (text: string) => void;
   onHandoffToDubbing?: (snapshot: DubbingHandoffSnapshot) => void;
   initialState?: SubtitleWorkspaceState;
@@ -218,6 +219,7 @@ const CueCardItem = React.memo<CueCardItemProps>(({
 CueCardItem.displayName = "CueCardItem";
 
 export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
+  isActive = true,
   onSendToTts,
   onHandoffToDubbing,
   initialState = "EMPTY",
@@ -356,6 +358,12 @@ export const TranscriptionWorkspace: React.FC<TranscriptionWorkspaceProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (!isActive && isPlaying) {
+      setIsPlaying(false);
+    }
+  }, [isActive, isPlaying]);
 
   const totalDurationSec = fileInfo?.durationSec || 18.5;
 

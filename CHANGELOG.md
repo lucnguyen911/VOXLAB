@@ -5,6 +5,9 @@ All notable changes to **VoxLab** are documented in this file.
 ## [1.0.6] — 2026-11-27
 
 ### Fixed & Improved
+- **Giữ Sống Phiên Làm Việc Đa Tab & Khôi Phục Audio Tạm Từ Ổ Đĩa (`Workspace Keep-Alive & Session Recovery`)**:
+  - Giữ trạng thái mounted (`Keep-Alive`) cho các tab sản xuất (`TTS`, `Hội thoại`, `Phụ đề`, `Dịch & Lồng tiếng`, `Nhân bản giọng`) khi chuyển qua lại giữa các tab, giữ nguyên 100% danh sách đoạn audio chưa xuất, kết quả Hậu kiểm, vị trí cuộn trang và tiến trình đang chạy ngầm.
+  - Bổ sung lưu trữ & tự động khôi phục phiên làm việc từ các tệp `.wav/.mp3` trong thư mục `scratch/` cho Tab TTS và Tab Hội thoại (bao gồm cả bảo toàn các đoạn không đổi khi chuyển `Soạn thảo ↔ Phòng thu` và tự động đồng bộ lại trạng thái khi người dùng dọn bộ nhớ tạm).
 - **Bảo toàn Biên Từ Vựng Toàn Cục khi Chèn Nhịp Nghỉ Dấu Câu (`Lexical Boundary Conservation`)**:
   - Nâng cấp `enforce_punctuation_pauses` / `shape_internal_punctuation_pauses` tìm điểm hõm năng lượng tối ưu trên toàn dải hai từ theo tỷ lệ âm tiết và xác minh trực tiếp bằng lát cắt Whisper cô lập trước khi chèn khoảng lặng, ngăn chặn triệt để hiện tượng chèn nhầm khoảng lặng cắt đôi từ khi giọng đọc nối liền không ngắt tại dấu câu (ví dụ `"acceleration, so"`, `"niche,"`, `"according"`, `"and"`).
 - **Nâng cấp Hậu kiểm Âm học & Cú pháp Toàn Cục (`Hậu kiểm v4.5.2`)**:

@@ -184,6 +184,18 @@ function normalizeLocalFilePath(filePath: string): string {
   return cleanPath;
 }
 
+/** Check whether a local file path exists on disk via Tauri fs_exists. */
+export async function checkLocalFileExists(filePath: string): Promise<boolean> {
+  if (!isTauriRuntime() || !filePath) return false;
+  try {
+    return await invoke<boolean>("fs_exists", {
+      path: normalizeLocalFilePath(filePath),
+    });
+  } catch {
+    return false;
+  }
+}
+
 /** Read a file from disk into a Blob URL for webview audio playback using zero-copy binary IPC. */
 export async function readAudioFileBlobUrl(filePath: string): Promise<string> {
   const cleanPath = normalizeLocalFilePath(filePath);

@@ -52,9 +52,18 @@ import {
 import { loadScriptFromFile } from "../services/document/scriptLoader";
 import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDropHelper";
 import {
+  checkLocalFileExists,
   concatPcmWavsFast,
   getSharedAiServices,
+  readAudioFileBlobUrl,
 } from "../services/batch/batchRuntime";
+import { isTauriRuntime } from "../services/ai/tauriBackend";
+import {
+  reconcileChunksPreservingGeneratedAudio,
+  saveTtsSessionBackup,
+  loadTtsSessionBackup,
+  hydrateTtsSessionChunksFromDisk,
+} from "../services/tts/workspaceSessionStorage";
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
 import {
@@ -137,7 +146,6 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
 }) => {
   const { t } = useI18n();
   const [progressStage, setProgressStage] = useState<string>("");
-  const [stage, setStage] = useState<"prep" | "studio">("prep");
 
   const [workingText, setWorkingText] = useState(() => {
     try {
@@ -151,19 +159,101 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     }
   });
 
+  const initialRestoredSessionRef = useRef<{
+    stage: "prep" | "studio";
+    chunks: ChunkItem[];
+  } | null | undefined>(undefined);
+  if (initialRestoredSessionRef.current === undefined) {
+    initialRestoredSessionRef.current = loadTtsSessionBackup(workingText);
+  }
+
+  const [stage, setStage] = useState<"prep" | "studio">(
+    () => initialRestoredSessionRef.current?.stage ?? "prep"
+  );
+  const [originalText] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [chunks, setChunks] = useState<ChunkItem[]>(
+    () => initialRestoredSessionRef.current?.chunks ?? []
+  );
+  const chunksRef = useRef<ChunkItem[]>(chunks);
+  chunksRef.current = chunks;
+  const [playingChunkId, setPlayingChunkId] = useState<string | null>(null);
+
   React.useEffect(() => {
     if (incomingScript) {
       setWorkingText(incomingScript);
+      const parsedIncoming = splitScriptWithPauses(incomingScript, TTS_SMART_CHUNK_OPTIONS);
+      setChunks((prev) => reconcileChunksPreservingGeneratedAudio(prev, parsedIncoming));
       setStage("prep");
       if (onConsumeIncomingScript) {
         onConsumeIncomingScript();
       }
     }
   }, [incomingScript, onConsumeIncomingScript]);
-  const [originalText] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [chunks, setChunks] = useState<ChunkItem[]>([]);
-  const [playingChunkId, setPlayingChunkId] = useState<string | null>(null);
+
+  useEffect(() => {
+    saveTtsSessionBackup({ stage, workingText, chunks });
+  }, [stage, workingText, chunks]);
+
+  const reconcileTtsScratchAudio = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    const snapshot = chunksRef.current;
+    if (!snapshot.some((c) => c.status === "ready")) return;
+
+    const hydrated = await hydrateTtsSessionChunksFromDisk(snapshot, {
+      fileExists: (p) => checkLocalFileExists(p),
+      readBlobUrl: (p) => readAudioFileBlobUrl(p),
+    });
+
+    const hydratedById = new Map(hydrated.map((c) => [c.id, c]));
+    const prevPathById = new Map(snapshot.map((c) => [c.id, c.audioFilePath]));
+
+    setChunks((curr) => {
+      let anyChanged = false;
+      const next = curr.map((c) => {
+        const h = hydratedById.get(c.id);
+        if (!h || c.status !== "ready" || c.audioFilePath !== prevPathById.get(c.id)) {
+          return c;
+        }
+        if (
+          c.status === h.status &&
+          c.audioUrl === h.audioUrl &&
+          c.audioFilePath === h.audioFilePath
+        ) {
+          return c;
+        }
+        anyChanged = true;
+        return {
+          ...c,
+          status: h.status,
+          audioUrl: h.audioUrl,
+          audioFilePath: h.audioFilePath,
+          durationSec: h.durationSec,
+          leadingSilenceMs: h.leadingSilenceMs,
+          trailingSilenceMs: h.trailingSilenceMs,
+          qualityReview: h.qualityReview,
+          acknowledgedAt: h.acknowledgedAt,
+          acknowledgedAudioSignature: h.acknowledgedAudioSignature,
+        };
+      });
+      if (anyChanged) {
+        masterBlobUrlRef.current = null;
+      }
+      return anyChanged ? next : curr;
+    });
+  }, []);
+
+  useEffect(() => {
+    void reconcileTtsScratchAudio();
+    if (typeof window !== "undefined") {
+      const handleScratchCleared = () => {
+        masterBlobUrlRef.current = null;
+        void reconcileTtsScratchAudio();
+      };
+      window.addEventListener("voxlab_scratch_cleared", handleScratchCleared);
+      return () => window.removeEventListener("voxlab_scratch_cleared", handleScratchCleared);
+    }
+  }, [reconcileTtsScratchAudio]);
 
   const [isNormalizerOpen, setIsNormalizerOpen] = useState(false);
   const [isPronunciationModalOpen, setIsPronunciationModalOpen] = useState(false);
@@ -347,7 +437,9 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
     }
     const parsedChunks = splitScriptWithPauses(workingText, TTS_SMART_CHUNK_OPTIONS);
     if (parsedChunks.length > 0) {
-      setChunks(parsedChunks);
+      setChunks((prev) => reconcileChunksPreservingGeneratedAudio(prev, parsedChunks));
+    } else {
+      setChunks([]);
     }
     setStage("studio");
   };
@@ -1629,7 +1721,9 @@ export const TtsWorkspace: React.FC<TtsWorkspaceProps> = ({
                 if (stage === "prep") {
                   const parsedChunks = splitScriptWithPauses(workingText, TTS_SMART_CHUNK_OPTIONS);
                   if (parsedChunks.length > 0) {
-                    setChunks(parsedChunks);
+                    setChunks((prev) => reconcileChunksPreservingGeneratedAudio(prev, parsedChunks));
+                  } else {
+                    setChunks([]);
                   }
                 }
                 setStage("studio");

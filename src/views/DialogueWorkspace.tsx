@@ -50,10 +50,17 @@ import { createEffectiveVoiceSnapshot, resolveEffectiveActiveModel } from "../se
 import { synthesizeSpeechCore } from "../services/providers/unifiedSynthesis";
 import { getEffectiveRules, prepareSpokenText } from "../services/pronunciation";
 import {
+  checkLocalFileExists,
   concatPcmWavsFast,
   getSharedAiServices,
   readAudioFileBlobUrl,
 } from "../services/batch/batchRuntime";
+import { isTauriRuntime } from "../services/ai/tauriBackend";
+import {
+  saveDialogueSessionBackup,
+  loadDialogueSessionBackup,
+  hydrateDialogueSegmentsFromDisk,
+} from "../services/tts/workspaceSessionStorage";
 import { MOCK_VOICES } from "../mock/data";
 import {
   QUALITY_VALIDATOR_VERSION,
@@ -72,18 +79,17 @@ import {
 import { AsrReadinessModal } from "../components/modals/AsrReadinessModal";
 
 export interface DialogueWorkspaceProps {
+  isActive?: boolean;
   voices: VoiceProfile[];
   onNavigateToClone?: () => void;
 }
 
 export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
+  isActive = true,
   voices,
   onNavigateToClone,
 }) => {
   const { t } = useI18n();
-
-  // Stage management: "prep" (Soạn thảo) vs "studio" (Tạo giọng)
-  const [stage, setStage] = useState<"prep" | "studio">("prep");
 
   // Session script state (persisted to localStorage)
   const [rawScript, setRawScript] = useState<string>(() => {
@@ -97,6 +103,18 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
       return "";
     }
   });
+
+  const initialRestoredDialogueRef = useRef<ReturnType<typeof loadDialogueSessionBackup> | undefined>(
+    undefined
+  );
+  if (initialRestoredDialogueRef.current === undefined) {
+    initialRestoredDialogueRef.current = loadDialogueSessionBackup(rawScript);
+  }
+
+  // Stage management: "prep" (Soạn thảo) vs "studio" (Tạo giọng)
+  const [stage, setStage] = useState<"prep" | "studio">(
+    () => initialRestoredDialogueRef.current?.stage ?? "prep"
+  );
 
   // Settings state (persisted to localStorage)
   const [settings, setSettings] = useState<DialogueGlobalSettings>(() => {
@@ -147,10 +165,16 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
   });
 
   // Active characters list
-  const [characters, setCharacters] = useState<DialogueCharacter[]>([]);
+  const [characters, setCharacters] = useState<DialogueCharacter[]>(
+    () => initialRestoredDialogueRef.current?.characters ?? []
+  );
 
   // Segments list for Studio view (checking each line)
-  const [segments, setSegments] = useState<DialogueSegment[]>([]);
+  const [segments, setSegments] = useState<DialogueSegment[]>(
+    () => initialRestoredDialogueRef.current?.segments ?? []
+  );
+  const segmentsRef = useRef<DialogueSegment[]>(segments);
+  segmentsRef.current = segments;
   const [selectedSegment, setSelectedSegment] = useState<DialogueSegment | null>(null);
 
   // Conversion / Generation state
@@ -250,6 +274,76 @@ export const DialogueWorkspace: React.FC<DialogueWorkspaceProps> = ({
     setIsPlayingSegment(false);
     setActivePlayingSegmentId(null);
   }, []);
+
+  useEffect(() => {
+    if (!isActive) {
+      stopSegmentAudio();
+      setIsPlayingMaster(false);
+    }
+  }, [isActive, stopSegmentAudio]);
+
+  useEffect(() => {
+    saveDialogueSessionBackup({ stage, rawScript, characters, segments });
+  }, [stage, rawScript, characters, segments]);
+
+  const reconcileDialogueScratchAudio = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    const snapshot = segmentsRef.current;
+    if (!snapshot.some((s) => s.status === "ready")) return;
+
+    const hydrated = await hydrateDialogueSegmentsFromDisk(snapshot, {
+      fileExists: (p) => checkLocalFileExists(p),
+      readBlobUrl: (p) => readAudioFileBlobUrl(p),
+    });
+
+    const hydratedById = new Map(hydrated.map((s) => [s.id, s]));
+    const prevPathById = new Map(snapshot.map((s) => [s.id, s.audioFilePath]));
+
+    setSegments((curr) => {
+      let anyChanged = false;
+      const next = curr.map((s) => {
+        const h = hydratedById.get(s.id);
+        if (!h || s.status !== "ready" || s.audioFilePath !== prevPathById.get(s.id)) {
+          return s;
+        }
+        if (
+          s.status === h.status &&
+          s.audioBlobUrl === h.audioBlobUrl &&
+          s.audioFilePath === h.audioFilePath
+        ) {
+          return s;
+        }
+        anyChanged = true;
+        return {
+          ...s,
+          status: h.status,
+          audioBuffer: h.audioBuffer,
+          audioBlobUrl: h.audioBlobUrl,
+          audioFilePath: h.audioFilePath,
+          durationSec: h.durationSec,
+          qualityReview: h.qualityReview,
+          acknowledgedAt: h.acknowledgedAt,
+          acknowledgedAudioSignature: h.acknowledgedAudioSignature,
+        };
+      });
+      if (anyChanged) {
+        setMasterAudioUrl(null);
+      }
+      return anyChanged ? next : curr;
+    });
+  }, []);
+
+  useEffect(() => {
+    void reconcileDialogueScratchAudio();
+    if (typeof window !== "undefined") {
+      const handleScratchCleared = () => {
+        setMasterAudioUrl(null);
+        void reconcileDialogueScratchAudio();
+      };
+      window.addEventListener("voxlab_scratch_cleared", handleScratchCleared);
+      return () => window.removeEventListener("voxlab_scratch_cleared", handleScratchCleared);
+    }
+  }, [reconcileDialogueScratchAudio]);
 
   // Parse script and maintain character assignments + segments preservation
   useEffect(() => {

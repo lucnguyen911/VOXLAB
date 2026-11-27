@@ -982,6 +982,9 @@ export const SettingsWorkspace: React.FC<SettingsWorkspaceProps> = ({
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const freedBytes = await invoke<number>("fs_clear_scratch");
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("voxlab_scratch_cleared"));
+      }
       await fetchRealStorageStats();
       setStorageToast(
         freedBytes > 0

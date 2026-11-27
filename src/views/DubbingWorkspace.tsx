@@ -86,7 +86,12 @@ import { extractFilesFromDropEvent, useTauriDropZone } from "../services/fileDro
 import { useI18n } from "../i18n/context";
 import { createEffectiveVoiceSnapshot, resolveEffectiveActiveModel } from "../services/providers";
 import { getEngineAdvancedSettings } from "../services/ai/ttsAdvancedSettings";
-import { getSharedAiServices, readAudioFileBlobUrl } from "../services/batch/batchRuntime";
+import {
+  checkLocalFileExists,
+  getSharedAiServices,
+  readAudioFileBlobUrl,
+} from "../services/batch/batchRuntime";
+import { isTauriRuntime } from "../services/ai/tauriBackend";
 import { recordCompletedJobToHistory } from "../services/history/historyManager";
 import {
   QUALITY_VALIDATOR_VERSION,
@@ -109,6 +114,7 @@ import {
 import { AsrReadinessModal } from "../components/modals/AsrReadinessModal";
 
 export interface DubbingWorkspaceProps {
+  isActive?: boolean;
   handoffSnapshot?: DubbingHandoffSnapshot | null;
   voices: VoiceProfile[];
   activeVoiceId?: string;
@@ -120,6 +126,7 @@ export interface DubbingWorkspaceProps {
 }
 
 export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
+  isActive = true,
   handoffSnapshot,
   voices,
   activeVoiceId,
@@ -352,6 +359,55 @@ export const DubbingWorkspace: React.FC<DubbingWorkspaceProps> = ({
   const [audioProgress, setAudioProgress] = useState<{ done: number; total: number } | null>(null);
   const [activePreviewCueIndex, setActivePreviewCueIndex] = useState<number | null>(null);
   const [isPlayingCueAudio, setIsPlayingCueAudio] = useState<boolean>(false);
+  const audioSegmentsRef = useRef<Record<number, DubAudioSegment>>(audioSegments);
+  audioSegmentsRef.current = audioSegments;
+
+  useEffect(() => {
+    if (!isActive && isPlayingCueAudio) {
+      setIsPlayingCueAudio(false);
+    }
+  }, [isActive, isPlayingCueAudio]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleScratchCleared = async () => {
+      if (!isTauriRuntime()) return;
+      const snapshot = audioSegmentsRef.current;
+      const entries = Object.entries(snapshot);
+      if (entries.length === 0) return;
+
+      const missingIndices = new Set<number>();
+      await Promise.all(
+        entries.map(async ([key, seg]) => {
+          if (seg.status !== "ready" || !seg.audioFilePath) return;
+          const exists = await checkLocalFileExists(seg.audioFilePath);
+          if (!exists) {
+            missingIndices.add(Number(key));
+          }
+        })
+      );
+
+      if (missingIndices.size === 0) return;
+      setAudioSegments((curr) => {
+        const next = { ...curr };
+        for (const idx of missingIndices) {
+          if (next[idx]?.status === "ready") {
+            next[idx] = {
+              ...next[idx],
+              status: "needs_generation",
+              audioUrl: undefined,
+              fittedAudioUrl: undefined,
+              audioFilePath: undefined,
+              qualityReview: undefined,
+            };
+          }
+        }
+        return next;
+      });
+    };
+    window.addEventListener("voxlab_scratch_cleared", handleScratchCleared);
+    return () => window.removeEventListener("voxlab_scratch_cleared", handleScratchCleared);
+  }, []);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [restoredNotice, setRestoredNotice] = useState<string>("");
   const [autoFitEnabled, setAutoFitEnabled] = useState<boolean>(true);
